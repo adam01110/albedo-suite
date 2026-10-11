@@ -1,0 +1,104 @@
+%% Run in an isolated Erlang VM with the suite test beams on its path:
+%% erl -noshell -pa TEST_BEAMS -eval 'lazy_mcp_native_tests:run(), halt().'
+%% These fakes exercise native lifecycle/state behavior; real stdio transport
+%% coverage is separate. They must never be loaded in a running daemon.
+-module(lazy_mcp_native_tests).
+-export([run/0]).
+
+run() ->
+    ets:new(lazy_mcp_test, [named_table, public]),
+    ets:insert(lazy_mcp_test, [{starts, 0}, {credentials, 0}, {calls, 0}, {tools, 1}]),
+    Config = #{<<"type">> => <<"http">>, <<"url">> => <<"https://example.invalid/mcp">>},
+    Missing = Config#{<<"headers">> => #{<<"X-Test">> => #{<<"env">> => <<"ALBEDO_LAZY_TEST_MISSING_981">>}}},
+    C = #{<<"servers">> => #{<<"a">> => Config, <<"b">> => Config,
+          <<"c">> => Config, <<"missing">> => Missing,
+          <<"disabled">> => Config#{<<"enabled">> => false}, <<"blocked">> => Config}},
+    Cache = fun(_, _) -> error(cache_must_not_be_read) end,
+    Save = fun(_, _, _) -> error(cache_must_not_be_written) end,
+    {ok, Manager} = albedo_mcp:prepare_lazy(enc(C), nil, nil, Cache, Save),
+    assert_startup_has_no_effects(Manager),
+    Tool = assert_concurrent_load_starts_once(Manager),
+    assert_calls_are_not_replayed(Manager, Tool),
+    assert_unload_and_reload(Manager, Tool),
+    assert_operation_cap(Manager),
+    assert_close_stops_loading(Manager),
+    assert_manager_death_closes_client(Config, Cache, Save),
+    assert_eager_compatibility(),
+    io:format("lazy native tests passed~n"),
+    ok.
+
+assert_startup_has_no_effects(Manager) ->
+    0 = count(starts),
+    0 = count(credentials),
+    <<"[]">> = albedo_mcp:definitions(Manager),
+    <<>> = albedo_mcp:context(Manager),
+    [] = albedo_mcp:offline(Manager),
+    nil = albedo_mcp:observe(Manager, true, fun(_) -> error(refresh) end),
+    [#{<<"loaded">> := false, <<"name">> := <<"a">>}, _, _, _] = json:decode(albedo_mcp:servers(Manager)),
+    {error, _} = albedo_mcp:load(Manager, <<"disabled">>),
+    {error, _} = albedo_mcp:load(Manager, <<"blocked">>),
+    0 = count(credentials).
+
+assert_concurrent_load_starts_once(Manager) ->
+    Parent = self(),
+    [spawn(fun() -> Parent ! {loaded, albedo_mcp:load(Manager, <<"a">>)} end) || _ <- lists:seq(1, 8)],
+    Results = [receive {loaded, R} -> R after 5000 -> error(load_timeout) end || _ <- lists:seq(1, 8)],
+    [{ok, Definitions}] = lists:usort(Results),
+    1 = count(starts),
+    1 = count(credentials),
+    [#{<<"name">> := Tool}] = json:decode(Definitions),
+    <<>> = albedo_mcp:context(Manager),
+    Tool.
+
+assert_calls_are_not_replayed(Manager, Tool) ->
+    {ok, _} = albedo_mcp:call(Manager, Tool, <<"{}">>),
+    1 = count(calls),
+    ets:insert(lazy_mcp_test, {fail_call, true}),
+    {error, Unknown} = albedo_mcp:call(Manager, Tool, <<"{}">>),
+    true = binary:match(Unknown, <<"outcome unknown">>) =/= nomatch,
+    2 = count(calls),
+    1 = count(starts),
+    ets:delete(lazy_mcp_test, fail_call).
+
+assert_unload_and_reload(Manager, Tool) ->
+    {ok, nil} = albedo_mcp:unload(Manager, <<"a">>),
+    {error, _} = albedo_mcp:call(Manager, Tool, <<"{}">>),
+    2 = count(calls),
+    {ok, _} = albedo_mcp:load(Manager, <<"a">>),
+    2 = count(starts),
+    {error, _} = albedo_mcp:load(Manager, <<"missing">>),
+    2 = count(starts),
+    {ok, nil} = albedo_mcp:unload(Manager, <<"a">>).
+
+assert_operation_cap(Manager) ->
+    ets:insert(lazy_mcp_test, {tools, 256}),
+    {ok, _} = albedo_mcp:load(Manager, <<"a">>),
+    {ok, _} = albedo_mcp:load(Manager, <<"b">>),
+    ets:insert(lazy_mcp_test, {tools, 1}),
+    {error, _} = albedo_mcp:load(Manager, <<"c">>),
+    512 = length(json:decode(albedo_mcp:definitions(Manager))).
+
+assert_close_stops_loading(Manager) ->
+    nil = albedo_mcp:close(albedo_mcp:closer(Manager)),
+    nil = albedo_mcp:close(Manager),
+    {error, _} = albedo_mcp:load(Manager, <<"a">>).
+
+assert_manager_death_closes_client(Config, Cache, Save) ->
+    %% Independent guards close even when the manager is killed.
+    {ok, KilledManager} = albedo_mcp:prepare_lazy(enc(#{<<"servers">> => #{<<"a">> => Config}}), nil, nil, Cache, Save),
+    {ok, _} = albedo_mcp:load(KilledManager, <<"a">>),
+    [{last_client, Client}] = ets:lookup(lazy_mcp_test, last_client),
+    Monitor = monitor(process, Client),
+    exit(maps:get(lazy_manager, KilledManager), kill),
+    receive {'DOWN', Monitor, process, Client, _} -> ok after 5000 -> error(client_leaked) end,
+    {error, _} = albedo_mcp:prepare_lazy(enc(#{<<"servers">> => #{<<"bad name">> => Config}}), nil, nil, Cache, Save).
+
+assert_eager_compatibility() ->
+    %% Existing eager snapshots stay compatible without transport work.
+    Eager = #{servers => [#{name => <<"eager">>}], operations => []},
+    [#{<<"name">> := <<"eager">>, <<"loaded">> := true}] = json:decode(albedo_mcp:servers(Eager)),
+    {ok, <<"[]">>} = albedo_mcp:load(Eager, <<"eager">>),
+    {error, _} = albedo_mcp:unload(Eager, <<"eager">>).
+
+enc(Value) -> iolist_to_binary(json:encode(Value)).
+count(Key) -> ets:lookup_element(lazy_mcp_test, Key, 2).

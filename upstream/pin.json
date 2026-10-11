@@ -1,0 +1,23 @@
+{
+  "project": "https://tangled.org/okami.mom/albedo",
+  "rev": "c0d04285b16b73fdf1fa7bdd874e50797061e57c",
+  "narHash": "sha256-XjGJRCaLFJNgtGTXg53X4MNPAgvE09/KMBk/hk2zCbE=",
+  "sourceFiles": [
+    "priv/python/albedo_formatter.py",
+    "priv/python/albedo_lsp.py",
+    "priv/python/albedo_plugins/files.py",
+    "priv/python/albedo_plugins/formatter.py",
+    "priv/python/albedo_plugins/lsp.py",
+    "priv/python/albedo_plugins/mcp.py",
+    "src/albedo/daemon/session.gleam",
+    "src/albedo/harness/extension.gleam",
+    "src/albedo/harness/extension/composition.gleam",
+    "src/albedo/harness/extensions.gleam",
+    "src/albedo/harness/extensions/formatter/extension.gleam",
+    "src/albedo/harness/extensions/lsp/extension.gleam",
+    "src/albedo/harness/extensions/mcp/albedo_mcp.erl",
+    "src/albedo/harness/extensions/mcp/extension.gleam",
+    "src/albedo/harness/loop.gleam",
+    "src/albedo/harness/runtime.gleam"
+  ]
+}
