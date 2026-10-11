@@ -60,11 +60,20 @@ Each operation reads the current file from disk and sends full-text `didOpen`
 or `didChange` notifications when needed. Results describe that snapshot, not
 later external edits. Dynamic capability registration is not implemented.
 Tools do not edit files, use unsaved editor buffers, apply server workspace
-edits, or gate final replies. Servers start only on explicit operations, never
+edits. Servers start on explicit operations or deferred pre-final checks, never
 on `servers()` or session setup. Paths must stay within the local workspace;
 symlink escapes are rejected. A server is attached to one project root at a
 time; close it before switching roots. Linux file-descriptor checks enforce
 file scope. Remote kernels do not expose this local-only binding.
+
+Successful `files.write()`/`files.edit()` edits queue deferred diagnostics.
+The pre-final phase runs formatting first when enabled, then checks each edited
+file with all matching enabled servers. Unrelated files and shell/remote writes
+are not tracked. Checks wait until background work is idle. Nonempty diagnostics
+are returned as untrusted feedback and reject the candidate reply once per edit,
+so the model can review them and regenerate its report. Failed checks retain
+pending files and reject acceptance until repaired; failed servers still require
+an explicit close before retry. Explicit LSP calls remain immediate.
 
 Failures are explicit; there is no automatic reconnect or replay. Close a
 failed server before an intentional retry. At most four calls may run or wait

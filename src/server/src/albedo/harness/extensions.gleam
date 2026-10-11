@@ -56,6 +56,7 @@ fn installed() -> Config {
       schedule.extension(),
       paperclips.extension(),
       files.extension(),
+      // Diagnostics inspect published formatter output, not unfinished edits.
       formatter.extension(),
       lsp.extension(),
       memory.extension(),

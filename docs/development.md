@@ -63,7 +63,8 @@ Python, MCP and streaming behavior intact.
 
 LSP owns `albedo_lsp.py`, `albedo_plugins/lsp.py`,
 `harness/extensions/lsp/extension.gleam` and `nix/home-manager/lsp.nix`.
-Retirement also removes its import/registration in `extensions.gleam`, its
+Retirement also removes its file-write tracking in `albedo_plugins/files.py`,
+its import/registration in `extensions.gleam`, its
 settings/enable wiring in `runtime.nix`, its Home Manager import, and its tests
 and fixture. Replace Infra's `albedo/lsp.nix` declaration with native settings
 before removing its suite options.

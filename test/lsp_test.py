@@ -7,8 +7,9 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import types
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 SOURCE = Path(
     os.environ.get(
@@ -56,6 +57,130 @@ class LspTests(unittest.IsolatedAsyncioTestCase):
         for manager in self.managers:
             await manager.close()
         self.temp.cleanup()
+
+    async def test_deferred_diagnostics_and_edit_scope(self):
+        manager = self.manager()
+        manager.record(self.path)
+        self.assertFalse(self.log.exists())
+        first = await manager.finish()
+        self.assertTrue(first["ok"], first)
+        self.assertIn("BAD", first["feedback"])
+        self.assertNotIn("stale", first["feedback"])
+        self.assertEqual((await manager.finish())["feedback"], "")
+        self.path.write_text("clean")
+        manager.record(self.path)
+        self.assertEqual((await manager.finish())["feedback"], "")
+        self.assertEqual(
+            len([e for e in self.logs() if e["event"] == "textDocument/didChange"]), 1
+        )
+        ignored = self.root / "ignored.txt"
+        ignored.write_text("BAD")
+        manager.record(ignored)
+        self.assertTrue((await manager.finish())["ok"])
+        self.assertEqual(manager.pending, {})
+
+    async def test_deferred_all_matching_servers(self):
+        manager = self.manager()
+        manager.config.append({**manager.config[0], "id": "other"})
+        manager.record(self.path)
+        result = await manager.finish()
+        self.assertTrue(result["ok"], result)
+        self.assertIn('"server": "fixture"', result["feedback"])
+        self.assertIn('"server": "other"', result["feedback"])
+
+    async def test_deferred_failure_retains_edit_and_requires_close(self):
+        manager = self.manager("timeout")
+        manager.record(self.path)
+        result = await manager.finish()
+        self.assertFalse(result["ok"])
+        self.assertIn(self.path, manager.pending)
+        result = await manager.finish()
+        self.assertFalse(result["ok"])
+        self.assertIn("close explicitly", result["error"])
+        await manager.close()
+        manager.config[0]["args"][2] = "normal"
+        self.assertTrue((await manager.finish())["ok"])
+
+    async def test_deferred_busy_and_concurrent_edit(self):
+        import types
+
+        manager = self.manager()
+        manager.record(self.path)
+        task = asyncio.create_task(asyncio.Event().wait())
+        stub = types.SimpleNamespace(CELL_TASKS={"busy": task})
+        try:
+            with patch.dict(sys.modules, {"albedo_cells": stub}):
+                self.assertTrue((await manager.finish())["ok"])
+                self.assertFalse(self.log.exists())
+                self.assertIn(self.path, manager.pending)
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        original = manager.diagnostics
+
+        async def changed(*args, **kwargs):
+            result = await original(*args, **kwargs)
+            self.path.write_text("clean")
+            manager.record(self.path)
+            return result
+
+        with patch.object(manager, "diagnostics", changed):
+            result = await manager.finish()
+        self.assertFalse(result["ok"])
+        self.assertIn("changed during", result["error"])
+        self.assertIn(self.path, manager.pending)
+        self.assertEqual((await manager.finish())["feedback"], "")
+
+    async def test_deferred_tracking_and_feedback_caps(self):
+        manager = self.manager()
+        with patch.dict(
+            sys.modules,
+            {
+                "albedo_plugins.run": types.SimpleNamespace(
+                    jobs={
+                        "busy": types.SimpleNamespace(
+                            service=False, exit_code=None
+                        )
+                    }
+                )
+            },
+        ):
+            manager.record(self.path)
+            self.assertTrue((await manager.finish())["ok"])
+            self.assertFalse(self.log.exists())
+        report = {
+            "server": "fixture",
+            "path": str(self.path),
+            "version": 1,
+            "diagnostics": [{"message": "x" * 100000}],
+        }
+        with patch.object(manager, "diagnostics", AsyncMock(return_value=report)):
+            result = await manager.finish()
+        self.assertLessEqual(len(result["feedback"]), 16400)
+        self.assertIn("truncated", result["feedback"])
+        for index in range(1025):
+            manager.record(self.root / f"queued{index}.nix")
+        self.assertEqual(len(manager.pending), 1024)
+        result = await manager.finish()
+        self.assertFalse(result["ok"])
+        self.assertIn("1024", result["error"])
+
+    async def test_deferred_disabled_and_scope(self):
+        manager = self.manager(enabled=False)
+        manager.record(self.path)
+        self.assertTrue((await manager.finish())["ok"])
+        self.assertFalse(self.log.exists())
+        with tempfile.TemporaryDirectory() as outside:
+            target = Path(outside) / "outside.nix"
+            target.write_text("BAD")
+            manager.record(target)
+            self.assertEqual(manager.pending, {})
+            manager.config[0]["enabled"] = True
+            link = self.root / "link.nix"
+            link.symlink_to(target)
+            manager.record(link)
+            self.assertFalse((await manager.finish())["ok"])
+            self.assertFalse(self.log.exists())
 
     async def test_operation_admission_bounds_snapshot_queue(self):
         manager = self.manager()

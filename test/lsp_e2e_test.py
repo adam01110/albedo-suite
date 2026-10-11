@@ -17,8 +17,11 @@ from harness import LOOPBACK_REMOTE, Albedo, Provider, alive, exclusive, python,
 class LspE2ETests(unittest.TestCase):
     def setUp(self):
         self.code = None
+        self.replies = []
 
         def script(request):
+            if self.replies:
+                return self.replies.pop(0)
             if self.code is not None:
                 code, self.code = self.code, None
                 return python(code + "\nprint('LSP_CELL_OK')")
@@ -41,9 +44,22 @@ class LspE2ETests(unittest.TestCase):
                     {
                         "id": name,
                         "bin": sys.executable,
-                        "args": [str(fixture), "--mode", name if name in ("death", "timeout") else "normal", "--log", str(control / "events.jsonl")],
+                        "args": [
+                            str(fixture),
+                            "--mode",
+                            name if name in ("death", "timeout") else "normal",
+                            "--log",
+                            str(control / "events.jsonl"),
+                        ],
                         "enabled": name != "disabled",
-                        "include": ["**/*.nix"],
+                        "include": ["**/*.nix"]
+                        if name in ("fake", "disabled")
+                        or (
+                            name in ("timeout", "death")
+                            and self._testMethodName
+                            == "test_server_death_and_startup_timeout_fail_without_reconnect_or_leak"
+                        )
+                        else [f"**/*.{name}.nix"],
                         "languageIdByExtension": {".nix": "nix"},
                         "cwd": "{root}",
                         "rootMarkers": [".git"],
@@ -55,7 +71,9 @@ class LspE2ETests(unittest.TestCase):
                 )
             app.write_extensions(
                 {
-                    "enabled": {"lsp": self._testMethodName != "test_disabled_has_no_namespace"},
+                    "enabled": {
+                        "lsp": self._testMethodName != "test_disabled_has_no_namespace"
+                    },
                     "lsp": {"version": 1, "servers": servers},
                 }
             )
@@ -68,7 +86,9 @@ class LspE2ETests(unittest.TestCase):
     def turn(self, code=None):
         self.code = code
         before = len(self.provider.requests)
-        self.app.prompt(self.session, "run the regression cell" if code else "hello").close()
+        self.app.prompt(
+            self.session, "run the regression cell" if code else "hello"
+        ).close()
         self.app.idle(self.session, timeout=30)
         requests = [entry["request"] for entry in self.provider.requests[before:]]
         self.assertTrue(requests)
@@ -93,11 +113,18 @@ class LspE2ETests(unittest.TestCase):
         return [json.loads(line) for line in log.read_text().splitlines()]
 
     def starts(self, name):
-        return [event["pid"] for event in self.events(name) if event["event"] == "START"]
+        return [
+            event["pid"] for event in self.events(name) if event["event"] == "START"
+        ]
 
     def assert_no_starts(self):
-        self.assertFalse([pid for name in ("fake", "other", "disabled", "timeout", "death")
-                          for pid in self.starts(name)])
+        self.assertFalse(
+            [
+                pid
+                for name in ("fake", "other", "disabled", "timeout", "death")
+                for pid in self.starts(name)
+            ]
+        )
 
     def stopped(self, markers):
         deadline = time.monotonic() + 10
@@ -106,7 +133,9 @@ class LspE2ETests(unittest.TestCase):
             time.sleep(0.02)
 
     def reload(self):
-        with self.app.api(f"/sessions/{self.session}/reload", {"target": "session"}) as response:
+        with self.app.api(
+            f"/sessions/{self.session}/reload", {"target": "session"}
+        ) as response:
             result = json.load(response)
         self.assertEqual(result["session"]["state"], "applied")
 
@@ -122,7 +151,7 @@ class LspE2ETests(unittest.TestCase):
             headers={"If-Match": etag},
         ).close()
 
-    def test_setup_listing_and_file_edits_never_launch_or_gate_final(self):
+    def test_setup_listing_and_unmatched_edits_never_launch(self):
         self.assert_no_starts()
         self.reload()
         self.turn("""
@@ -131,12 +160,98 @@ servers = lsp.servers()
 assert isinstance(servers, list)
 assert all(s['state'] == 'unloaded' for s in servers)
 assert {'fake', 'other', 'timeout', 'death'} <= {s['id'] for s in servers}
-files.write('scratch.nix', 'BAD incomplete')
-files.edit('scratch.nix', 'BAD incomplete', 'BAD still incomplete')
+files.write('scratch.txt', 'BAD incomplete')
+files.edit('scratch.txt', 'BAD incomplete', 'BAD still incomplete')
 """)
         self.turn()
         self.assert_no_starts()
-        self.assertEqual((self.app.workspace / "scratch.nix").read_text(), "BAD still incomplete")
+        self.assertEqual(
+            (self.app.workspace / "scratch.txt").read_text(), "BAD still incomplete"
+        )
+
+    def test_deferred_diagnostics_reject_once_and_skip_unrelated_files(self):
+        self.replies = [
+            python("files.write('scratch.nix', 'BAD incomplete')"),
+            python(
+                "assert all(s['state'] == 'unloaded' for s in lsp.servers())\nfiles.edit('scratch.nix', 'BAD incomplete', 'BAD completed')"
+            ),
+            text("REJECTED_LSP_CANDIDATE"),
+            text("LSP_FINAL_OK"),
+        ]
+        before = len(self.provider.requests)
+        self.app.prompt(self.session, "edit then finish").close()
+        self.app.idle(self.session, timeout=30)
+        requests = [entry["request"] for entry in self.provider.requests[before:]]
+        self.assertEqual(len(requests), 4)
+        feedback = json.dumps(requests[-1])
+        self.assertIn("LSP diagnostics (untrusted workspace data)", feedback)
+        self.assertIn("BAD completed", feedback)
+        history = json.dumps(self.app.history(self.session))
+        self.assertNotIn("REJECTED_LSP_CANDIDATE", history)
+        self.assertIn("LSP_FINAL_OK", history)
+        opened = [
+            e["params"]["textDocument"]
+            for e in self.events("fake")
+            if e["event"] == "textDocument/didOpen"
+        ]
+        self.assertEqual([d["text"] for d in opened], ["BAD completed"])
+        self.assertTrue(all(d["uri"].endswith("scratch.nix") for d in opened))
+        self.assertFalse(self.starts("other"))
+
+    def test_deferred_checks_formatted_snapshot(self):
+        control = self.app.root / "formatter-control"
+        control.mkdir()
+        fixture = Path(__file__).parent / "fixtures" / "formatter.py"
+        self.app.write_extensions(
+            {
+                "enabled": {"formatter": True, "lsp": True},
+                "formatter": {
+                    "formatters": {
+                        "fake": {
+                            "command": [sys.executable, str(fixture), str(control)]
+                        }
+                    },
+                    "chains": {".nix": ["fake"]},
+                },
+                "lsp": {
+                    "version": 1,
+                    "servers": [
+                        {
+                            "id": "fake",
+                            "bin": sys.executable,
+                            "args": [
+                                str(
+                                    Path(__file__).parent / "fixtures" / "lsp-server.py"
+                                ),
+                                "--log",
+                                str(self.control / "fake/events.jsonl"),
+                            ],
+                            "include": ["**/*.nix"],
+                            "languageIdByExtension": {".nix": "nix"},
+                            "diagnosticsWaitMs": 1000,
+                        }
+                    ],
+                },
+            }
+        )
+        self.reload()
+        self.replies = [
+            python("files.write('scratch.nix', '  clean  ')"),
+            text("REJECTED_FORMAT_CANDIDATE"),
+            text("LSP_FINAL_OK"),
+        ]
+        self.app.prompt(self.session, "edit then finish").close()
+        self.app.idle(self.session, timeout=30)
+        self.assertEqual((self.app.workspace / "scratch.nix").read_text(), "clean\n")
+        opened = [
+            e["params"]["textDocument"]
+            for e in self.events("fake")
+            if e["event"] == "textDocument/didOpen"
+        ]
+        self.assertEqual([d["text"] for d in opened], ["clean\n"])
+        self.assertNotIn(
+            "REJECTED_FORMAT_CANDIDATE", json.dumps(self.app.history(self.session))
+        )
 
     def test_diagnostics_refresh_after_edit_and_clear_stale_errors(self):
         self.turn("""
@@ -157,8 +272,14 @@ assert third['diagnostics'] == []
         self.assertFalse(self.starts("other"))
         self.assertEqual((self.app.workspace / "note.nix").read_text(), "clean\n")
         events = self.events("fake")
-        opened = [e["params"]["textDocument"] for e in events if e["event"] == "textDocument/didOpen"]
-        changed = [e["params"] for e in events if e["event"] == "textDocument/didChange"]
+        opened = [
+            e["params"]["textDocument"]
+            for e in events
+            if e["event"] == "textDocument/didOpen"
+        ]
+        changed = [
+            e["params"] for e in events if e["event"] == "textDocument/didChange"
+        ]
         self.assertEqual(len(opened), 1)
         self.assertEqual(opened[0]["text"], "BAD\n")
         self.assertEqual(opened[0]["languageId"], "nix")
@@ -198,7 +319,9 @@ assert third['diagnostics'] == []
         self.turn("assert 'lsp' not in globals()")
         self.assert_no_starts()
 
-    def test_outside_workspace_symlink_and_ineligible_server_are_rejected_before_launch(self):
+    def test_outside_workspace_symlink_and_ineligible_server_are_rejected_before_launch(
+        self,
+    ):
         outside = self.app.root / "outside.nix"
         outside.write_text("BAD\n")
         (self.app.workspace / "escape.nix").symlink_to(outside)
@@ -237,12 +360,25 @@ assert hover['result']['position'] == {'line': 0, 'character': 5}
         self.assertEqual((self.app.workspace / "note.nix").read_text(), '"😀" value\n')
 
         events = self.events("fake")
-        for method in ("textDocument/hover", "textDocument/definition", "textDocument/references"):
-            params = next(event["params"] for event in events if event["event"] == method)
+        for method in (
+            "textDocument/hover",
+            "textDocument/definition",
+            "textDocument/references",
+        ):
+            params = next(
+                event["params"] for event in events if event["event"] == method
+            )
             self.assertEqual(params["position"], {"line": 0, "character": 5})
-        references = next(event["params"] for event in events if event["event"] == "textDocument/references")
+        references = next(
+            event["params"]
+            for event in events
+            if event["event"] == "textDocument/references"
+        )
         self.assertFalse(references["context"]["includeDeclaration"])
-        self.assertEqual(next(e["cwd"] for e in events if e["event"] == "START"), str(self.app.workspace))
+        self.assertEqual(
+            next(e["cwd"] for e in events if e["event"] == "START"),
+            str(self.app.workspace),
+        )
 
     def test_server_death_and_startup_timeout_fail_without_reconnect_or_leak(self):
         self.turn("""
@@ -265,7 +401,9 @@ assert all(s['state'] != 'loaded' for s in lsp.servers())
         self.assertFalse(self.starts("fake"))
 
     def test_remote_connection_does_not_expose_local_lsp_binding(self):
-        self.turn(LOOPBACK_REMOTE + """
+        self.turn(
+            LOOPBACK_REMOTE
+            + """
 try:
     assert 'lsp' in globals()
     tools = await rem.tools()
@@ -273,5 +411,6 @@ try:
     assert 'lsp' not in tools['names'], tools
 finally:
     await rem.close()
-""")
+"""
+        )
         self.assert_no_starts()

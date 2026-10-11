@@ -28,12 +28,15 @@ import albedo_trace
 from albedo_plugins import run as jobs
 
 
-def _formatter_record(path: Path) -> None:
-    # Disabled and remote kernels do not import the formatter runtime.
+def _record_edit(path: Path) -> None:
+    # Disabled and remote kernels do not configure local checks.
     if "albedo_plugins.formatter" in sys.modules:
         import albedo_formatter
 
         albedo_formatter.record(path)
+    plugin = sys.modules.get("albedo_plugins.lsp")
+    if plugin is not None:
+        plugin.record(path)
 
 
 READ_LIMIT = 16_000
@@ -575,7 +578,7 @@ class Files:
             content[: chosen.index] + new_str + content[chosen.index + len(old_str) :]
         ).encode("utf-8")
         _replace(target, snapshot, replacement)
-        _formatter_record(Path(path).expanduser())
+        _record_edit(Path(path).expanduser())
         return Text(f"Edited {target}")
 
     def write(self, path: str, content: str) -> Text:
@@ -583,7 +586,7 @@ class Files:
         target = Path(path).expanduser()
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
-        _formatter_record(target)
+        _record_edit(target)
         return Text(f"Wrote {target.resolve()} ({len(content.encode())} bytes)")
 
 

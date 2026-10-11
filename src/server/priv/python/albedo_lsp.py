@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import signal
 import stat
+import sys
 
 MAX_BYTES = 8 * 1024 * 1024
 MAX_RESULT = 1024 * 1024
@@ -409,6 +410,90 @@ class Lsp:
         self.clients = {}
         self.guard = asyncio.Lock()
         self.active_operations = 0
+        self.pending = {}
+        self.edit_version = 0
+        self.overflow = False
+        self.finish_lock = asyncio.Lock()
+
+    def record(self, path):
+        """Queue an edit without reading text or starting servers."""
+        path = Path(os.path.abspath(Path(path).expanduser()))
+        if not path.is_relative_to(self.cwd):
+            return
+        if path not in self.pending and len(self.pending) >= 1024:
+            self.overflow = True
+            return
+        self.edit_version += 1
+        self.pending[path] = self.edit_version
+
+    async def finish(self):
+        """Report diagnostics once per edited snapshot, retaining failed checks."""
+        result = {"ok": True, "error": "", "feedback": ""}
+        cells = sys.modules.get("albedo_cells")
+        current = asyncio.current_task()
+        if cells is not None and any(
+            task is not current and not task.done()
+            for task in getattr(cells, "CELL_TASKS", {}).values()
+        ):
+            return result
+        jobs = sys.modules.get("albedo_plugins.run")
+        if jobs is not None and any(
+            not job.service and job.exit_code is None
+            for job in getattr(jobs, "jobs", {}).values()
+        ):
+            return result
+        feedback = ""
+        async with self.finish_lock:
+            try:
+                async with asyncio.timeout(45):
+                    if self.overflow:
+                        raise LspError("LSP tracking exceeds 1024 files")
+                    for path, edit in list(self.pending.items()):
+                        relative = path.relative_to(self.cwd).as_posix()
+                        servers = [
+                            c
+                            for c in self.config
+                            if c["enabled"]
+                            and any(
+                                fnmatch.fnmatchcase(relative, pattern)
+                                or pattern.startswith("**/")
+                                and fnmatch.fnmatchcase(relative, pattern[3:])
+                                for pattern in c["include"]
+                            )
+                        ]
+                        if servers:
+                            before = self.snapshot(path, "diagnostics", None, None)[0]
+                            reports = ""
+                            for config in servers:
+                                report = await self.diagnostics(
+                                    path, server=config["id"]
+                                )
+                                if report["diagnostics"]:
+                                    if len(feedback) + len(reports) < 16384:
+                                        reports += (
+                                            json.dumps(report, ensure_ascii=True)[
+                                                : 16384 - len(feedback) - len(reports)
+                                            ]
+                                            + "\n"
+                                        )
+                            if (
+                                self.pending.get(path) != edit
+                                or self.snapshot(path, "diagnostics", None, None)[0]
+                                != before
+                            ):
+                                raise LspError(
+                                    f"LSP file changed during final check: {path}"
+                                )
+                            feedback = (feedback + reports)[:16384]
+                        del self.pending[path]
+            except (OSError, ValueError, LspError, TimeoutError) as error:
+                result["ok"] = False
+                result["error"] = (str(error) or "LSP final check timed out")[:16384]
+        if feedback:
+            result["feedback"] = feedback + (
+                " [truncated]" if len(feedback) == 16384 else ""
+            )
+        return result
 
     def servers(self):
         return [
