@@ -2,7 +2,7 @@
 
 # albedo-suite
 
-Lazy MCP, deferred formatting, local LSP tools and Home Manager configuration for [Albedo](https://tangled.org/okami.mom/albedo).
+Extensions and Nix integration for [Albedo](https://tangled.org/okami.mom/albedo).
 
 [![Nix](https://img.shields.io/badge/Nix-flake-fe8019?style=flat-square&labelColor=504945&logo=nixos&logoColor=ebdbb2)](https://nixos.org)
 
@@ -12,6 +12,11 @@ Lazy MCP, deferred formatting, local LSP tools and Home Manager configuration fo
 
 This repo holds the Albedo code used by my Nix configuration. Personal settings,
 providers, skills and SOPS declarations stay in Infra.
+
+> [!WARNING]
+> This repository is almost entirely AI-generated, and I rarely review it. It
+> exists as glue for my own Albedo setup, not as a standalone project. I do not
+> provide support for it or accept responsibility for its use.
 
 ## What it changes
 
