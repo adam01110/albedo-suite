@@ -26,6 +26,7 @@ providers, skills and SOPS declarations stay in Infra.
 | [Deferred formatting](docs/formatter.md) | Format tracked files before accepting a final reply, rather than after each edit. |
 | [Local LSP](docs/lsp.md) | Start a language server on an explicit diagnostics or navigation call. |
 | [User questions](docs/questions.md) | Record questions, answer in `/questions`, and resume the asking session. |
+| [RTK and FFF](docs/tool-parity.md) | Filter supported commands through RTK and replace file search with FFF. |
 | CLI diffs | Show diffs by default when enabled. The existing toggle still works. |
 | Home Manager | Install Albedo and merge settings while preserving runtime authentication. |
 

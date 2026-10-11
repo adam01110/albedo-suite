@@ -13,6 +13,7 @@
       readFile
       # keep-sorted end
       ;
+    inherit (pkgs.lib) makeBinPath;
     inherit
       (pkgs)
       # keep-sorted start
@@ -29,6 +30,13 @@
     };
     pin = fromJSON (readFile ../upstream/pin.json);
 
+    toolPath = makeBinPath [
+      # keep-sorted start
+      pkgs.rtk
+      self.packages.${pkgs.stdenv.hostPlatform.system}.albedo-fff
+      # keep-sorted end
+    ];
+
     withServerSources = package:
       package.overrideAttrs (old: {
         # Fail on upstream drift before installing editable source files.
@@ -38,6 +46,11 @@
             cp -r --no-preserve=mode ${../src/server}/. .
           ''
           + (old.postPatch or "");
+        postInstall =
+          (old.postInstall or "")
+          + ''
+            wrapProgram "$out/bin/albedo-daemon" --prefix PATH : ${toolPath}
+          '';
       });
 
     withClientSources = package:
@@ -91,6 +104,7 @@
       # keep-sorted start
       albedo-configure
       albedo-defaults
+      albedo-fff
       albedo-mcp-launcher
       albedo-patched
       # keep-sorted end

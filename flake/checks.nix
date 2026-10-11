@@ -44,6 +44,9 @@
         test -f ${runtime}/lib/albedo/albedo/priv/python/albedo_lsp.py
         test -f ${runtime}/lib/albedo/albedo/priv/python/albedo_plugins/lsp.py
         test -f ${runtime}/lib/albedo/albedo/priv/python/albedo_plugins/questions.py
+        test -f ${runtime}/lib/albedo/albedo/priv/python/albedo_rtk.py
+        test -f ${runtime}/lib/albedo/albedo/priv/python/albedo_fff.mjs
+        test -x ${suitePackages.albedo-fff}/bin/albedo-fff
         touch $out
       '';
 
@@ -53,10 +56,18 @@
       export ALBEDO_FORMATTER_SOURCE=$PYTHONPATH
       export ALBEDO_LSP_SOURCE=$PYTHONPATH
       export ALBEDO_QUESTIONS_SOURCE=$PYTHONPATH
+      export ALBEDO_RTK_SOURCE=$PYTHONPATH
+      export ALBEDO_FFF_SOURCE=$PYTHONPATH
+      export ALBEDO_FFF_COMMAND=${suitePackages.albedo-fff}/bin/albedo-fff
+      export PATH=${pkgs.rtk}/bin:${pkgs.ripgrep}/bin:${pkgs.python311Packages.pytest}/bin:$PATH
+      export ALBEDO_PYTHON_SOURCE=$PYTHONPATH
       python3 -m unittest discover -s ${../test} -p formatter_python_test.py -v
       python3 -m unittest discover -s ${../test} -p lazy_mcp_python_test.py -v
       python3 ${../test}/lsp_test.py -v
       python3 -m unittest discover -s ${../test} -p questions_python_test.py -v
+      python3 -m unittest discover -s ${../test} -p rtk_python_test.py -v
+      python3 -m unittest discover -s ${../test} -p rtk_e2e_test.py -v
+      python3 ${../test}/fff_test.py -v
       touch $out
     '';
   };

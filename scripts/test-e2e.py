@@ -14,6 +14,7 @@ SUITE_CASES = (
     "lazy_mcp_test.py",
     "lsp_e2e_test.py",
     "questions_e2e_test.py",
+    "tool_backends_e2e_test.py",
 )
 UPSTREAM_CASES = (
     "mcp_test.py",

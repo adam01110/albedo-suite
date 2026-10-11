@@ -1,4 +1,4 @@
-"""Bounded reads, exact edits, and ripgrep-backed search over workspace files.
+"""Bounded reads, exact edits, and FFF-backed search over workspace files.
 
 Every external command runs through the supervised `run` job plugin, so this
 module never spawns a process of its own and every child stays in a job's group.
@@ -14,6 +14,8 @@ import json
 import os
 import re
 import shlex
+import shutil
+import secrets
 import stat
 import sys
 import tempfile
@@ -146,19 +148,174 @@ class Search(Generic[Result]):
         raise self._unawaited()
 
 
-async def _run(command: str) -> tuple[int | None, str]:
-    """One supervised shell job, awaited to completion, with its bounded output.
-    The plugin's own work, so neither traced as the cell's command nor refused."""
-    job = jobs.start(["/bin/sh", "-c", command], SEARCH_TIMEOUT, traced=False)
-    try:
-        await job
-        return job.exit_code, job.tail(jobs.preview_limit)
-    except asyncio.CancelledError:
-        await job.stop()
-        raise
-    finally:
-        if job.exit_code is not None or job.timed_out or job.termination is not None:
-            jobs.forget(job)
+class _FFF:
+    """Private supervised RPC worker; no native search fallback."""
+
+    def __init__(self):
+        self.job = None
+        self.directory = None
+        self.lock = asyncio.Lock()
+
+    async def close(self):
+        async with self.lock:
+            await self._close()
+
+    async def _close(self):
+        if self.job is not None:
+            await self.job.stop()
+            jobs.forget(self.job)
+            self.job = None
+        if self.directory is not None:
+            self.directory.cleanup()
+            self.directory = None
+
+    async def request(self, payload):
+        async with self.lock:
+            try:
+                return await asyncio.wait_for(self._request(payload), SEARCH_TIMEOUT)
+            except (OSError, asyncio.TimeoutError, asyncio.CancelledError):
+                await self._close()
+                raise
+
+    async def _request(self, payload):
+        if self.job is not None and (
+            self.job.exit_code is not None
+            or self.job.timed_out
+            or self.job.termination is not None
+        ):
+            detail = self.job.tail(2000)
+            await self._close()
+            raise RuntimeError(f"FFF worker died: {detail}")
+        if self.job is None:
+            command = os.environ.get("ALBEDO_FFF_COMMAND")
+            argv = shlex.split(command) if command else [shutil.which("albedo-fff")]
+            if not argv or not argv[0]:
+                raise RuntimeError(
+                    "FFF runtime missing on this host: install albedo-fff or set ALBEDO_FFF_COMMAND"
+                )
+            self.directory = tempfile.TemporaryDirectory(prefix="albedo-fff-")
+            self.socket = str(Path(self.directory.name) / "rpc.sock")
+            self.secret = secrets.token_hex(32)
+            self.job = jobs.start(
+                [*argv, self.socket, self.secret], 86400, traced=False, service=True
+            )
+            while not (
+                Path(self.socket).exists() and "FFF_READY" in self.job.tail(2000)
+            ):
+                if self.job.exit_code is not None or self.job.task.done():
+                    detail = self.job.tail(2000)
+                    await self._close()
+                    raise RuntimeError(f"FFF worker failed to start: {detail}")
+                await asyncio.sleep(0.01)
+        reader, writer = await asyncio.open_unix_connection(
+            self.socket, limit=16 * 1024 * 1024
+        )
+        try:
+            writer.write(
+                (
+                    json.dumps({**payload, "secret": self.secret, "protocol": 1}) + "\n"
+                ).encode()
+            )
+            await writer.drain()
+            try:
+                reply = await reader.readline()
+                if not reply:
+                    raise OSError("FFF worker closed its connection")
+                result = json.loads(reply)
+            except ValueError as error:
+                raise OSError(
+                    f"FFF invalid or oversized protocol response: {error}"
+                ) from error
+            if result.get("protocol") != 1:
+                raise OSError(
+                    "FFF protocol mismatch: install matching albedo-fff on this host"
+                )
+            if not result["ok"]:
+                raise ValueError(result["error"])
+            return result["value"]
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+
+_fff = _FFF()
+
+
+def _path_regex(pattern):
+    """Segment-aware root-relative globs; ** crosses directory boundaries."""
+    rooted = "/" in pattern
+    pattern = pattern.removeprefix("./")
+    if pattern.startswith("/"):
+        pattern = pattern[1:]
+    prefix = "" if rooted else "(?:.*/)?"
+    parts = pattern.split("/")
+    body = ""
+    for i, part in enumerate(parts):
+        if part == "**":
+            body += "(?:[^/]+/)*" if i < len(parts) - 1 else ".*"
+        else:
+            j = 0
+            while j < len(part):
+                char = part[j]
+                if char == "*":
+                    body += "[^/]*"
+                elif char == "?":
+                    body += "[^/]"
+                elif char == "[":
+                    end = part.find("]", j + 1)
+                    if end < 0:
+                        raise ValueError("unclosed glob character class")
+                    value = part[j + 1 : end]
+                    body += (
+                        "["
+                        + ("^" + value[1:] if value.startswith("!") else value)
+                        + "]"
+                    )
+                    j = end
+                elif char in "{}\\":
+                    raise ValueError(
+                        "FFF compatibility glob supports *, ?, [], **; braces and escapes are unsupported"
+                    )
+                else:
+                    body += re.escape(char)
+                j += 1
+            if i < len(parts) - 1:
+                body += "/"
+    return "^" + prefix + body + "$"
+
+
+def _fff_scope(target, glob, hidden, limit):
+    if hidden:
+        raise ValueError(
+            "hidden=True is unsupported by FFF 0.11: its index excludes hidden files"
+        )
+    if not 1 <= limit <= 10000:
+        raise ValueError("1 <= max_results <= 10000")
+    globs = _globs(glob)
+    native_glob = None
+    if len(globs) == 1 and re.fullmatch(r"[A-Za-z0-9_./ -]+", globs[0]):
+        exact = globs[0].removeprefix("./").removeprefix("/")
+        native_glob = exact if "/" in globs[0] else "**/" + exact
+    file_glob = (
+        target.name
+        if target.is_file() and re.fullmatch(r"[A-Za-z0-9_. -]+", target.name)
+        else None
+    )
+    return {
+        "root": str((target.parent if target.is_file() else target).resolve()),
+        "file": target.name if target.is_file() else None,
+        "hidden": hidden,
+        "limit": limit,
+        "nativeGlob": native_glob,
+        "fileGlob": file_glob,
+        "filters": [
+            {
+                "regex": _path_regex(g[1:] if g.startswith("!") else g),
+                "include": not g.startswith("!"),
+            }
+            for g in globs
+        ],
+    }
 
 
 def _numbered(number: int, lines: Sequence[str]) -> str:
@@ -384,10 +541,10 @@ class Files:
         hidden: bool = False,
         ignored: bool = False,
     ) -> Search[Rows]:
-        """Content search through ripgrep when it is installed, else pure Python.
+        """Content search through the native FFF index, with a rescan barrier.
         `path` may be one path or a list; `context=N` adds N lines around each
         match. A missing path raises. Ignore files and hidden files are skipped
-        unless `ignored=True` / `hidden=True`; an empty result says what was
+        always; hidden=True and ignored=True are unsupported and raise. An empty result says what was
         searched and skipped. Await it: `await files.find(pattern)`."""
         if not 0 <= context <= 50:
             raise ValueError("0 <= context <= 50")
@@ -419,83 +576,72 @@ class Files:
         ignored: bool,
     ) -> Rows:
         albedo_trace.note("search", pattern)
+        if ignored:
+            raise ValueError(
+                "ignored=True is unsupported by FFF 0.11: its index excludes ignored files"
+            )
+        if "\n" in pattern or "\r" in pattern:
+            raise ValueError("FFF line search does not support multiline patterns")
+        # Escape query-parser constraints as hex in regex mode, not plain mode.
+        query = re.escape(pattern) if literal else pattern
+        for char in " \t\v\f":
+            query = query.replace("\\" + char, char).replace(
+                char, rf"\x{ord(char):02x}"
+            )
+        query = query.replace("/", r"\x2f").replace('"', r"\x22").replace("'", r"\x27")
+        if (max_results + 1) * (context * 2 + 1) * LINE_WIDTH * 4 > 4 * 1024 * 1024:
+            raise ValueError(
+                "FFF result exceeds 4 MiB bound; reduce max_results or context"
+            )
+        if case_sensitive is False:
+            query = "(?i)" + query
         targets = _targets(path)
         _require_roots(targets)
-        if not _which("rg"):
-            return _fallback_find(
-                pattern,
-                targets,
-                glob,
-                context,
-                max_results,
-                literal,
-                case_sensitive,
-                hidden,
+        found = []
+        total = searched = 0
+        for target in targets:
+            result = await _fff.request(
+                {
+                    **_fff_scope(target, glob, hidden, max_results),
+                    "op": "find",
+                    "query": query,
+                    "context": context,
+                }
             )
-        flags = []
-        if literal:
-            flags.append("-F")
-        if case_sensitive is True:
-            flags.append("-s")
-        elif case_sensitive is False:
-            flags.append("-i")
-        for value in _globs(glob):
-            flags += ["-g", value]
-        visible = [
-            *(["--hidden"] if hidden else []),
-            *(["--no-ignore"] if ignored else []),
-        ]
-
-        def search(*extra: str) -> str:
-            return " ".join(
-                shlex.quote(part)
-                for part in ["rg", *flags, *extra, "-e", pattern, *map(str, targets)]
-            )
-
-        per_match = 4 + 2 * context
-        status, output = await _run(
-            f"{search('--json', *visible, *(['-C', str(context)] if context else []))}"
-            f" | head -n {max(1, max_results) * per_match}"
-        )
-        if status not in (0, 1, None) and not output.strip():
-            raise RuntimeError(f"search failed: {output.strip()[:400]}")
-        results, matched, searched = [], 0, 0
-        for line in output.splitlines():
-            try:
-                event = json.loads(line)
-            except ValueError:
-                continue
-            kind = event.get("type")
-            if kind == "summary":
-                searched = event["data"]["stats"]["searches"]
-            if kind not in ("match", "context"):
-                continue
-            if kind == "match" and matched >= max_results:
-                return Rows(results, truncated=True)
-            data = event["data"]
-            results.append(
-                Match(
-                    data["path"]["text"],
-                    data["line_number"],
-                    data["lines"]["text"].rstrip("\r\n")[: LINE_WIDTH * 4],
-                    context=kind == "context",
+            searched += result["searched"]
+            total += result["total"]
+            for item in result["items"]:
+                if len(found) < max_results:
+                    found.append((target, item))
+        lines = {}
+        for target, item in found:
+            name = str(
+                target if target.is_file() else target / item["relativePath"]
+            ).removeprefix("./")
+            number = item["lineNumber"]
+            for n, text in enumerate(
+                item.get("contextBefore", []),
+                number - len(item.get("contextBefore", [])),
+            ):
+                lines.setdefault(
+                    (name, n), Match(name, n, text[: LINE_WIDTH * 4], True)
                 )
+            lines[(name, number)] = Match(
+                name, number, item["lineContent"][: LINE_WIDTH * 4]
             )
-            matched += kind == "match"
-        if results:
-            return Rows(results)
-        skipped = [
-            *([] if hidden else ["hidden files"]),
-            *([] if ignored else [".gitignore/.ignore rules"]),
-        ]
-        withheld: list[str] = []
-        if skipped:
-            _, listing = await _run(
-                f"{search('-l', '--hidden', '--no-ignore')} | head -n {WITHHELD}"
-            )
-            withheld = listing.splitlines()
+            for n, text in enumerate(item.get("contextAfter", []), number + 1):
+                lines.setdefault(
+                    (name, n), Match(name, n, text[: LINE_WIDTH * 4], True)
+                )
+        skipped = ["FFF ignore rules", "binary files", "files above 1 GiB"]
+        if not hidden:
+            skipped.append("hidden files")
         return Rows(
-            note=_empty_note(pattern, targets, searched, skipped, glob, withheld)
+            sorted(lines.values(), key=lambda m: (m.path, m.line)),
+            truncated=total > max_results,
+            note=_empty_note(pattern, targets, searched, skipped, glob, [])
+            if not lines
+            else "",
         )
 
     def paths(
@@ -507,9 +653,9 @@ class Files:
         max_results: int = 100,
         hidden: bool = False,
     ) -> Search[Rows]:
-        """File names, not contents; the same ripgrep-or-Python split. A pattern
+        """File names, not contents; enumerated by the native FFF index. A pattern
         with *, ? or [ is a glob over names, or over the path from the search
-        root when it has a /; other text matches anywhere in the path.
+        root when it has a /; other text uses ranked fuzzy filename matching.
         `path` may be one path or a list. Await it: `await files.paths(pattern)`."""
         return Search(
             "files.paths", lambda: self._paths(pattern, path, glob, max_results, hidden)
@@ -523,24 +669,45 @@ class Files:
         max_results: int,
         hidden: bool,
     ) -> Rows:
+        mode = "fuzzy" if pattern and not any(c in pattern for c in "*?[") else "paths"
+        return await self._names(mode, pattern, path, glob, max_results, hidden)
+
+    async def _names(self, op, pattern, path, glob, max_results, hidden):
         targets = _targets(path)
-        globs = _globs(glob)
-        if not _which("rg"):
-            return _fallback_paths(pattern, targets, globs, max_results, hidden)
-        flags = ["--files"]
-        if hidden:
-            flags.append("--hidden")
-        for value in globs:
-            flags += ["-g", value]
-        command = " ".join(
-            shlex.quote(part) for part in ["rg", *flags, *map(str, targets)]
-        )
-        _, output = await _run(command)
-        matches = _name_matcher(pattern)
-        # rg lists "./x" under ".", where a path from the root is just "x"
-        listed = (line.removeprefix("./") for line in output.splitlines() if line)
-        found = [line for line in listed if matches(line)]
-        return Rows(found[:max_results], truncated=len(found) > max_results)
+        _require_roots(targets)
+        rows = []
+        total = 0
+        for target in targets:
+            name = None
+            base = False
+            if op == "paths" and pattern:
+                base = "/" not in pattern and any(c in pattern for c in "*?[")
+                name = (
+                    _path_regex(pattern)
+                    if any(c in pattern for c in "*?[")
+                    else re.escape(pattern)
+                )
+            result = await _fff.request(
+                {
+                    **_fff_scope(target, glob, hidden, max_results),
+                    "op": op,
+                    "query": pattern or "",
+                    "name": name,
+                    "nameBase": base,
+                }
+            )
+            total += result["total"]
+            rows.extend(
+                str(
+                    target if target.is_file() else target / item["relativePath"]
+                ).removeprefix("./")
+                for item in result["items"]
+            )
+        return Rows(rows[:max_results], truncated=total > max_results)
+
+    async def close(self):
+        """Destroy FFF indexes and stop the supervised worker."""
+        await _fff.close()
 
     def edit(
         self, path: str, old_str: str, new_str: str, line_hint: int | None = None
@@ -590,14 +757,6 @@ class Files:
         return Text(f"Wrote {target.resolve()} ({len(content.encode())} bytes)")
 
 
-def _which(name: str) -> str | None:
-    for directory in os.environ.get("PATH", "").split(os.pathsep):
-        candidate = Path(directory) / name
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return str(candidate)
-    return None
-
-
 def _require_roots(targets: list[Path]) -> None:
     for target in targets:
         if not target.exists():
@@ -627,79 +786,6 @@ def _empty_note(
     return note
 
 
-def _fallback_find(
-    pattern,
-    targets: list[Path],
-    glob,
-    context,
-    max_results,
-    literal,
-    case_sensitive,
-    hidden,
-) -> Rows:
-    rows, searched = _fallback_scan(
-        pattern, targets, glob, context, max_results, literal, case_sensitive, hidden
-    )
-    if rows:
-        return rows
-    withheld = []
-    if not hidden:
-        everything, _ = _fallback_scan(
-            pattern, targets, glob, 0, WITHHELD, literal, case_sensitive, True
-        )
-        withheld = [match.path for match in everything]
-    skipped = [] if hidden else ["hidden files"]
-    return Rows(note=_empty_note(pattern, targets, searched, skipped, glob, withheld))
-
-
-def _fallback_scan(
-    pattern,
-    targets: list[Path],
-    glob,
-    context,
-    max_results,
-    literal,
-    case_sensitive,
-    hidden,
-) -> tuple[Rows, int]:
-    flags = 0 if case_sensitive else re.IGNORECASE
-    matcher = re.compile(re.escape(pattern) if literal else pattern, flags)
-    globs = _globs(glob)
-    results, matched, searched = [], 0, 0
-    for target in targets:
-        for file in _walk(target, hidden):
-            if not _globbed(file, globs):
-                continue
-            try:
-                lines = file.read_text(encoding="utf-8", errors="replace").splitlines()
-            except OSError:
-                continue
-            searched += 1
-            hits = [
-                number for number, line in enumerate(lines, 1) if matcher.search(line)
-            ]
-            hit = set(hits)
-            shown = 0
-            for number in hits:
-                if matched >= max_results:
-                    return Rows(results, truncated=True), searched
-                for around in range(
-                    max(number - context, shown + 1),
-                    min(number + context, len(lines)) + 1,
-                ):
-                    results.append(
-                        Match(
-                            str(file),
-                            around,
-                            lines[around - 1][: LINE_WIDTH * 4],
-                            context=around not in hit,
-                        )
-                    )
-                    shown = around
-                matched += 1
-    return Rows(results), searched
-
-
 def _targets(path: str | Sequence[str]) -> list[Path]:
     return [
         Path(item).expanduser() for item in ([path] if isinstance(path, str) else path)
@@ -708,53 +794,6 @@ def _targets(path: str | Sequence[str]) -> list[Path]:
 
 def _globs(glob: str | Sequence[str] | None) -> list[str]:
     return [glob] if isinstance(glob, str) else list(glob or [])
-
-
-def _globbed(file: Path, globs: list[str]) -> bool:
-    """True when there is no glob, or one matches the path or the file name."""
-    return not globs or any(
-        fnmatch.fnmatch(str(file), value) or fnmatch.fnmatch(file.name, value)
-        for value in globs
-    )
-
-
-def _name_matcher(pattern: str | None) -> Callable[[str], bool]:
-    """A pattern with *, ? or [ is a glob over the file name (or the whole path
-    when it has a /); anything else matches as case-insensitive text anywhere
-    in the path, so "*.md" and "readme" both mean what they look like."""
-    if not pattern:
-        return lambda _path: True
-    folded = pattern.lower().removeprefix("./")
-    if any(char in pattern for char in "*?["):
-        return lambda path: fnmatch.fnmatch(
-            (path if "/" in pattern else Path(path).name).lower(), folded
-        )
-    return lambda path: folded in path.lower()
-
-
-def _fallback_paths(
-    pattern, targets: list[Path], globs: list[str], max_results, hidden
-) -> Rows:
-    matches = _name_matcher(pattern)
-    found = [
-        str(file)
-        for target in targets
-        for file in _walk(target, hidden)
-        if _globbed(file, globs) and matches(str(file))
-    ]
-    return Rows(found[:max_results], truncated=len(found) > max_results)
-
-
-def _walk(path: Path, hidden: bool):
-    if path.is_file():
-        yield path
-        return
-    for root, directories, names in os.walk(path):
-        if not hidden:
-            directories[:] = [name for name in directories if not name.startswith(".")]
-            names = [name for name in names if not name.startswith(".")]
-        for name in sorted(names):
-            yield Path(root) / name
 
 
 def _snapshot(target: Path) -> tuple[bytes, tuple[int, int, int, int, int]]:
@@ -959,4 +998,5 @@ def _missing(target: Path, original: str) -> str:
 
 
 def setup(api: PythonApi) -> dict[str, object]:
+    api.on_shutdown(_fff.close)
     return {"files": Files()}

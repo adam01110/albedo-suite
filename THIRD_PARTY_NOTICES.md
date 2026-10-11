@@ -10,8 +10,8 @@ not a blanket relicensing of upstream material.
 
 Modifications add opt-in lazy MCP lifecycle/bindings, the managed pre-final
 acceptance hook and local deferred formatter, isolated local LSP compatibility
-tools, and optional default CLI diff
-visibility. `upstream/pin.json` inventories server replacements; the client
+tools, durable user questions, mandatory RTK command filtering and FFF search,
+and optional default CLI diff visibility. `upstream/pin.json` inventories server replacements; the client
 replacements live under `src/client/cli/internal/tui/`.
 
 Upstream's complete third-party notices are preserved in
