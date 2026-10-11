@@ -24,6 +24,7 @@ import albedo/harness/extensions/openai/extension as openai
 import albedo/harness/extensions/paperclips/extension as paperclips
 import albedo/harness/extensions/proxy/extension as proxy
 import albedo/harness/extensions/python/extension as python
+import albedo/harness/extensions/questions/extension as questions
 import albedo/harness/extensions/remote/extension as remote
 import albedo/harness/extensions/rolling/extension as rolling
 import albedo/harness/extensions/run/extension as run
@@ -55,6 +56,7 @@ fn installed() -> Config {
       agents.extension(),
       schedule.extension(),
       paperclips.extension(),
+      questions.extension(),
       files.extension(),
       // Diagnostics inspect published formatter output, not unfinished edits.
       formatter.extension(),
@@ -99,7 +101,7 @@ fn installed() -> Config {
       "links", "instructions", "commands", "skills", "paperclips", "models",
       "openai", "codex", "antigravity", "alibaba", "bedrock", "claude", "vertex",
       "rolling", "snapcompact-memory", "lcm-memory", "notes", "remote",
-      "browser", "warm", "exa", "web-search",
+      "browser", "warm", "exa", "web-search", "questions",
     ],
   )
 }

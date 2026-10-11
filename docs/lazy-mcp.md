@@ -31,12 +31,22 @@ capability selection cannot load.
 
 ## Connections and failures
 
-A loaded server stays connected until explicitly unloaded or the session
-composition closes. Unload it when finished. A new session or reload starts
-with no loaded servers.
+Home Manager defaults `programs.albedo.mcp.idleTimeoutMs` to 60000 (60 seconds).
+In lazy mode, idle transports close automatically while their schemas remain
+loaded. `mcp.servers()` reports `loaded` and `connected` separately. Reading
+catalogues does not keep a connection alive. Explicit load or call reconnects
+an idle transport before use, without replaying the operation. If rediscovery
+changes the catalogue, that first use is refused before dispatch; read the new
+schemas explicitly before calling again. Unexpected transport death reports
+`connected = false` and requires unload/load, rather than hidden reconnection.
+
+Set the timeout to zero to disable cleanup. Without Home Manager, configure
+`mcp.idleTimeoutMs` in `extensions.json`; it defaults to zero. The timeout is
+lazy-mode-only and accepts integer milliseconds from zero to 3600000.
+Unload discards both connection and catalogue. A session reload starts empty.
 
 Lazy mode does not probe or reconnect servers in the background. Retry a failed
-load explicitly. If a loaded connection drops, unload and load it again.
+load explicitly. If a connection drops unexpectedly (rather than idle cleanup), unload and load it again.
 Albedo never replays failed or interrupted calls. Check their effects before
 retrying.
 

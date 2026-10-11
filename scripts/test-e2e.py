@@ -9,7 +9,12 @@ import subprocess
 import sys
 import tempfile
 
-SUITE_CASES = ("formatter_e2e_test.py", "lazy_mcp_test.py", "lsp_e2e_test.py")
+SUITE_CASES = (
+    "formatter_e2e_test.py",
+    "lazy_mcp_test.py",
+    "lsp_e2e_test.py",
+    "questions_e2e_test.py",
+)
 UPSTREAM_CASES = (
     "mcp_test.py",
     "operations_lifecycle_test.py",

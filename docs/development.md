@@ -31,7 +31,7 @@ nix fmt
 ```
 
 The checks exercise Home Manager options, source checksums, package contents,
-Python formatter, LSP and MCP bindings, native MCP lifecycle, and the shell helpers.
+Python formatter, LSP, MCP and question bindings, native MCP lifecycle, and the shell helpers.
 The files under `src/` keep upstream formatting and are excluded from the suite's
 treefmt run.
 
@@ -46,7 +46,7 @@ python3 scripts/test-e2e.py \
 The package exposes its pinned source through `.src`. The runner copies that
 source into a writable temporary directory and uses the supplied binaries.
 It runs formatter, LSP, lazy and eager MCP, operation lifecycle, and streaming replay
-cases.
+and user-question cases.
 
 The tests use fake providers, temporary homes and local stdio servers. They do
 not activate your configuration, read your credentials or contact live

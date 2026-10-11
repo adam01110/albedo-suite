@@ -31,6 +31,11 @@ in {
       default = true;
       description = "Discover and connect only explicitly selected MCP servers.";
     };
+    idleTimeoutMs = mkOption {
+      type = types.ints.between 0 3600000;
+      default = 60000;
+      description = "Lazy MCP transport idle timeout in milliseconds; zero disables cleanup. Schemas remain loaded.";
+    };
     servers = mkOption {
       default = {};
       description = "Managed stdio servers. Removal does not delete previously merged runtime entries.";

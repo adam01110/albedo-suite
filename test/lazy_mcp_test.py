@@ -65,6 +65,11 @@ class LazyMcpTests(unittest.TestCase):
             servers["broken"]["startupTimeoutMs"] = 1000
             (self.markers / "broken" / "delay").write_text("5")
             settings = {"mcp": {"servers": servers, "retryMs": 1}}
+            if (
+                self._testMethodName
+                == "test_idle_cleanup_retains_schemas_and_reconnects_once"
+            ):
+                settings["mcp"]["idleTimeoutMs"] = 200
             if self.lazy:
                 settings["mcp"]["lazy"] = True
             app.write_extensions(settings)
@@ -239,6 +244,27 @@ assert await mcp.tools() == []
         self.reload()
         self.turn("assert await mcp.tools() == []")
         self.assertEqual(len(self.starts("broken")), 2)
+
+    def test_idle_cleanup_retains_schemas_and_reconnects_once(self):
+        self.turn("""
+import asyncio
+schemas = await mcp.load('fake')
+await asyncio.sleep(0.4)
+servers = await mcp.servers()
+fake = next(s for s in servers if s.name == 'fake')
+assert fake.loaded and not fake.connected
+assert await mcp.tools()
+""")
+        old = self.starts("fake")
+        self.assertEqual(len(old), 1)
+        self.stopped(old)
+        self.turn("""
+assert schemas == await mcp.load('fake')
+result = await mcp.call('fake/echo', message='after idle')
+assert 'after idle' in result.content[0].text
+""")
+        self.assertEqual(len(self.starts("fake")), 2)
+        self.assertFalse(self.starts("other"))
 
     def test_eager_default_is_unchanged(self):
         request = self.turn()

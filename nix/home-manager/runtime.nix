@@ -58,6 +58,7 @@
     lsp = cfg.lsp.settings;
     mcp = {
       lazy = cfg.mcp.lazy;
+      idleTimeoutMs = cfg.mcp.idleTimeoutMs;
       servers = mapAttrs mkServer cfg.mcp.servers;
     };
   };

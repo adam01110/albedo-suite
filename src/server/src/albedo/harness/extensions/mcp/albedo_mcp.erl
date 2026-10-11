@@ -38,6 +38,7 @@ prepare(ConfigJson, Ledger, Session, Lookup, Save) ->
 prepare_lazy(ConfigJson, Ledger, Session, _Lookup, _Save) ->
     try
         Config = json:decode(ConfigJson),
+        Idle = idle_ms(maps:get(<<"idleTimeoutMs">>, Config, 0)),
         Candidates = lists:sort(maps:to_list(maps:get(<<"servers">>, Config, #{}))),
         lists:foreach(fun({Name, ServerConfig}) ->
             {ok, nil} = validate_settings(Name, {some, json_binary(ServerConfig)}, <<"{}">>),
@@ -50,7 +51,7 @@ prepare_lazy(ConfigJson, Ledger, Session, _Lookup, _Save) ->
                     {ok, Enabled} = 'albedo@harness@capabilities':enabled(Preferences, <<"mcp">>, Name),
                     maps:get(<<"enabled">>, ServerConfig, true) andalso Enabled
                 end, Candidates),
-                Manager = spawn(fun() -> lazy_loop(maps:from_list(Eligible), #{}) end),
+                Manager = spawn(fun() -> lazy_loop(maps:from_list(Eligible), #{}, Idle) end),
                 {ok, #{lazy_manager => Manager}};
             Error -> Error
         end
@@ -94,26 +95,79 @@ lazy_operations(Loaded) ->
 
 %% Serialize state transitions, including concurrent loads of the same server.
 %% Calls are serialized too, so unload cannot race a dispatched operation.
-lazy_loop(Configured, Loaded) ->
+lazy_loop(Configured, Loaded0, Idle) ->
+    Loaded = expire_idle(Loaded0, Idle),
     receive
         {lazy_request, Alias, close} ->
-            close_servers([S || {S, _} <- maps:values(Loaded)]),
+            close_servers(lazy_clients(Loaded)),
             Alias ! {Alias, {ok, nil}};
         {lazy_request, Alias, Request} ->
-            {Answer, Next} = lazy_execute(Request, Configured, Loaded),
+            {Answer, Next0} = lazy_execute(Request, Configured, Loaded),
+            Next = touch_request(Request, Next0),
             Alias ! {Alias, Answer},
-            lazy_loop(Configured, Next)
+            lazy_loop(Configured, Next, Idle)
+    after idle_wait(Loaded, Idle) ->
+        lazy_loop(Configured, Loaded, Idle)
+    end.
+
+lazy_connected(Server) ->
+    not maps:get(idle, Server, false) andalso is_process_alive(maps:get(pid, Server)).
+
+lazy_clients(Loaded) ->
+    [S || {S, _} <- maps:values(Loaded), not maps:get(idle, S, false)].
+
+%% Idle cleanup keeps schemas; only a new explicit use reconnects the transport.
+expire_idle(Loaded, 0) -> Loaded;
+expire_idle(Loaded, Idle) ->
+    Now = now_ms(),
+    maps:map(fun(_, {Server, Ops}) ->
+        case not maps:get(idle, Server, false) andalso
+             Now - maps:get(last_used, Server) >= Idle of
+            true -> close_servers([Server]), {Server#{idle => true}, Ops};
+            false -> {Server, Ops}
+        end
+    end, Loaded).
+
+idle_wait(_, 0) -> infinity;
+idle_wait(Loaded, Idle) ->
+    Deadlines = [maps:get(last_used, S) + Idle || S <- lazy_clients(Loaded)],
+    case Deadlines of
+        [] -> infinity;
+        _ -> max(0, lists:min(Deadlines) - now_ms())
+    end.
+
+touch_request({load, Name}, Loaded) -> touch_server(Name, Loaded);
+touch_request({call, Name, _}, Loaded) ->
+    case [maps:get(server, O) || O <- lazy_operations(Loaded), maps:get(advertised, O) =:= Name] of
+        [Server] -> touch_server(Server, Loaded);
+        _ -> Loaded
+    end;
+touch_request(_, Loaded) -> Loaded.
+
+touch_server(Name, Loaded) ->
+    case maps:find(Name, Loaded) of
+        {ok, {Server, Ops}} -> Loaded#{Name => {Server#{last_used => now_ms()}, Ops}};
+        error -> Loaded
     end.
 
 lazy_execute(servers, Configured, Loaded) ->
-    {{ok, json_binary([#{<<"name">> => N, <<"loaded">> => maps:is_key(N, Loaded)}
+    {{ok, json_binary([#{<<"name">> => N, <<"loaded">> => maps:is_key(N, Loaded),
+                            <<"connected">> => case maps:find(N, Loaded) of
+                                {ok, {S, _}} -> lazy_connected(S);
+                                error -> false
+                            end}
                        || N <- lists:sort(maps:keys(Configured))])}, Loaded};
 lazy_execute(definitions, _, Loaded) ->
     {{ok, definitions(#{operations => lazy_operations(Loaded)})}, Loaded};
 lazy_execute({load, Name}, Configured, Loaded) ->
     case {maps:find(Name, Configured), maps:find(Name, Loaded)} of
         {error, _} -> {{error, <<"MCP server is unavailable or disabled">>}, Loaded};
-        {_, {ok, {_, Ops}}} -> {{ok, definitions(#{operations => Ops})}, Loaded};
+        {_, {ok, {#{idle := true}, _}}} -> lazy_load(Name, maps:get(Name, Configured), Loaded);
+        {_, {ok, {Server, Ops}}} ->
+            case lazy_connected(Server) of
+                true -> {{ok, definitions(#{operations => Ops})}, Loaded};
+                false -> {{error, <<"MCP connection dropped; unload and load it before retrying. Inspect effects of earlier calls.">>}, Loaded}
+            end;
         {{ok, Config}, error} -> lazy_load(Name, Config, Loaded)
     end;
 lazy_execute({unload, Name}, Configured, Loaded) ->
@@ -122,13 +176,22 @@ lazy_execute({unload, Name}, Configured, Loaded) ->
         true ->
             case maps:take(Name, Loaded) of
                 error -> {{ok, nil}, Loaded};
-                {{Server, _}, Next} -> close_servers([Server]), {{ok, nil}, Next}
+                {{Server, _}, Next} ->
+                    case maps:get(idle, Server, false) of false -> close_servers([Server]); true -> ok end,
+                    {{ok, nil}, Next}
             end
     end;
-lazy_execute({call, Advertised, Arguments}, _, Loaded) ->
-    Handle = #{servers => [S || {S, _} <- maps:values(Loaded)],
-               operations => lazy_operations(Loaded)},
-    {call(Handle, Advertised, Arguments), Loaded}.
+lazy_execute({call, Advertised, Arguments}, Configured, Loaded) ->
+    case [maps:get(server, O) || O <- lazy_operations(Loaded), maps:get(advertised, O) =:= Advertised] of
+        [Name] ->
+            case lazy_execute({load, Name}, Configured, Loaded) of
+                {{ok, _}, Next} ->
+                    Handle = #{servers => lazy_clients(Next), operations => lazy_operations(Next)},
+                    {call(Handle, Advertised, Arguments), Next};
+                {Error, Next} -> {Error, Next}
+            end;
+        _ -> {{error, <<"MCP operation is unavailable">>}, Loaded}
+    end.
 
 lazy_load(Name, Config, Loaded) ->
     %% Credentials are read only here; failed calls never reconnect implicitly.
@@ -137,12 +200,16 @@ lazy_load(Name, Config, Loaded) ->
             case connect(Name, Config#{lazy_owner => self()}, Secrets) of
                 {ok, Server, {Ops, _}} ->
                     try
-                        Next = Loaded#{Name => {Server, Ops}},
+                        Next = Loaded#{Name => {Server#{last_used => now_ms()}, Ops}},
                         All = lazy_operations(Next),
                         Names = [maps:get(advertised, O) || O <- All],
                         case length(All) =< 512 andalso length(Names) =:= length(lists:usort(Names)) of
                             true ->
-                                {{ok, definitions(#{operations => Ops})}, Next};
+                                case maps:find(Name, Loaded) of
+                                    {ok, {_, OldOps}} when OldOps =/= Ops ->
+                                        {{error, <<"MCP catalogue changed after reconnect; inspect mcp.load/server schemas before calling. No operation was dispatched.">>}, Next};
+                                    _ -> {{ok, definitions(#{operations => Ops})}, Next}
+                                end;
                             false ->
                                 close_servers([Server]),
                                 {{error, <<"MCP catalogue is too large or ambiguous">>}, Loaded}
@@ -753,6 +820,9 @@ valid_name(Name) ->
 
 positive_ms(Value) when is_integer(Value), Value > 0, Value =< 3600000 -> Value;
 positive_ms(_) -> erlang:error(invalid_timeout).
+
+idle_ms(Value) when is_integer(Value), Value >= 0, Value =< 3600000 -> Value;
+idle_ms(_) -> erlang:error(invalid_idle_timeout).
 
 string_list(Value) when is_list(Value) ->
     true = lists:all(fun is_binary/1, Value), Value;

@@ -25,6 +25,7 @@ providers, skills and SOPS declarations stay in Infra.
 | [Lazy MCP](docs/lazy-mcp.md) | Connect to a server when explicitly requested, rather than at session startup. |
 | [Deferred formatting](docs/formatter.md) | Format tracked files before accepting a final reply, rather than after each edit. |
 | [Local LSP](docs/lsp.md) | Start a language server on an explicit diagnostics or navigation call. |
+| [User questions](docs/questions.md) | Record questions, answer in `/questions`, and resume the asking session. |
 | CLI diffs | Show diffs by default when enabled. The existing toggle still works. |
 | Home Manager | Install Albedo and merge settings while preserving runtime authentication. |
 

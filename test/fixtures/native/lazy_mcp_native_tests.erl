@@ -24,6 +24,8 @@ run() ->
     assert_close_stops_loading(Manager),
     assert_manager_death_closes_client(Config, Cache, Save),
     assert_eager_compatibility(),
+    assert_idle_cleanup(Config, Cache, Save),
+    assert_dead_client_and_catalogue_drift(Config, Cache, Save),
     io:format("lazy native tests passed~n"),
     ok.
 
@@ -99,6 +101,76 @@ assert_eager_compatibility() ->
     [#{<<"name">> := <<"eager">>, <<"loaded">> := true}] = json:decode(albedo_mcp:servers(Eager)),
     {ok, <<"[]">>} = albedo_mcp:load(Eager, <<"eager">>),
     {error, _} = albedo_mcp:unload(Eager, <<"eager">>).
+
+assert_idle_cleanup(Config, Cache, Save) ->
+    ets:insert(lazy_mcp_test, {tools, 1}),
+    C = #{<<"idleTimeoutMs">> => 40, <<"servers">> => #{<<"idle">> => Config}},
+    {ok, Manager} = albedo_mcp:prepare_lazy(enc(C), nil, nil, Cache, Save),
+    {ok, Definitions} = albedo_mcp:load(Manager, <<"idle">>),
+    [#{<<"name">> := Tool}] = json:decode(Definitions),
+    [{last_client, Client}] = ets:lookup(lazy_mcp_test, last_client),
+    M = monitor(process, Client),
+    receive {'DOWN', M, process, Client, _} -> ok after 5000 -> error(idle_client_leaked) end,
+    %% Catalogue reads are passive and retain discovered schemas.
+    Definitions = albedo_mcp:definitions(Manager),
+    [#{<<"loaded">> := true, <<"connected">> := false}] = json:decode(albedo_mcp:servers(Manager)),
+    Before = count(starts),
+    BeforeCalls = count(calls),
+    {ok, _} = albedo_mcp:call(Manager, Tool, <<"{}">>),
+    After = Before + 1, After = count(starts),
+    AfterCalls = BeforeCalls + 1, AfterCalls = count(calls),
+    assert_idle_does_not_interrupt_call(Manager, Tool),
+    nil = albedo_mcp:close(Manager),
+    {error, _} = albedo_mcp:prepare_lazy(enc(C#{<<"idleTimeoutMs">> => -1}), nil, nil, Cache, Save),
+    {error, _} = albedo_mcp:prepare_lazy(enc(C#{<<"idleTimeoutMs">> => 1.5}), nil, nil, Cache, Save).
+
+assert_dead_client_and_catalogue_drift(Config, Cache, Save) ->
+    ets:insert(lazy_mcp_test, {tools, 1}),
+    C = #{<<"idleTimeoutMs">> => 40, <<"servers">> => #{<<"drift">> => Config}},
+    {ok, Manager} = albedo_mcp:prepare_lazy(enc(C), nil, nil, Cache, Save),
+    {ok, Definitions} = albedo_mcp:load(Manager, <<"drift">>),
+    [#{<<"name">> := Tool}] = json:decode(Definitions),
+    [{last_client, Client}] = ets:lookup(lazy_mcp_test, last_client),
+    M = monitor(process, Client),
+    receive {'DOWN', M, process, Client, _} -> ok after 5000 -> error(idle_client_leaked) end,
+    ets:insert(lazy_mcp_test, {tools, 2}),
+    Calls = count(calls),
+    {error, Reason} = albedo_mcp:call(Manager, Tool, <<"{}">>),
+    true = binary:match(Reason, <<"catalogue changed">>) =/= nomatch,
+    Calls = count(calls),
+    [_, _] = json:decode(albedo_mcp:definitions(Manager)),
+    nil = albedo_mcp:close(Manager),
+    ets:insert(lazy_mcp_test, {tools, 1}),
+    {ok, Dead} = albedo_mcp:prepare_lazy(enc(C#{<<"idleTimeoutMs">> => 0}), nil, nil, Cache, Save),
+    {ok, D} = albedo_mcp:load(Dead, <<"drift">>),
+    [#{<<"name">> := DeadTool}] = json:decode(D),
+    [{last_client, DeadClient}] = ets:lookup(lazy_mcp_test, last_client),
+    DM = monitor(process, DeadClient),
+    exit(DeadClient, kill),
+    receive {'DOWN', DM, process, DeadClient, _} -> ok after 5000 -> error(client_not_dead) end,
+    Starts = count(starts),
+    [#{<<"connected">> := false}] = json:decode(albedo_mcp:servers(Dead)),
+    {error, _} = albedo_mcp:load(Dead, <<"drift">>),
+    {error, _} = albedo_mcp:call(Dead, DeadTool, <<"{}">>),
+    Starts = count(starts),
+    Calls = count(calls),
+    nil = albedo_mcp:close(Dead).
+
+assert_idle_does_not_interrupt_call(Manager, Tool) ->
+    ets:insert(lazy_mcp_test, {call_pause, self()}),
+    Parent = self(),
+    spawn(fun() -> Parent ! {called, albedo_mcp:call(Manager, Tool, <<"{}">>)} end),
+    receive {call_started, Worker} ->
+        [{last_client, Client}] = ets:lookup(lazy_mcp_test, last_client),
+        M = monitor(process, Client),
+        receive {'DOWN', M, process, Client, _} -> error(in_flight_call_closed)
+        after 100 -> ok end,
+        Worker ! resume_call,
+        receive {called, {ok, _}} -> ok after 5000 -> error(call_did_not_finish) end,
+        receive {'DOWN', M, process, Client, _} -> ok
+        after 5000 -> error(idle_after_call_leaked) end
+    after 5000 -> error(call_not_started) end,
+    ets:delete(lazy_mcp_test, call_pause).
 
 enc(Value) -> iolist_to_binary(json:encode(Value)).
 count(Key) -> ets:lookup_element(lazy_mcp_test, Key, 2).

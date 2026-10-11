@@ -43,6 +43,7 @@
         test -f ${runtime}/lib/albedo/albedo/priv/python/albedo_formatter.py
         test -f ${runtime}/lib/albedo/albedo/priv/python/albedo_lsp.py
         test -f ${runtime}/lib/albedo/albedo/priv/python/albedo_plugins/lsp.py
+        test -f ${runtime}/lib/albedo/albedo/priv/python/albedo_plugins/questions.py
         touch $out
       '';
 
@@ -51,9 +52,11 @@
       export PYTHONPATH=${runtime}/lib/albedo/albedo/priv/python
       export ALBEDO_FORMATTER_SOURCE=$PYTHONPATH
       export ALBEDO_LSP_SOURCE=$PYTHONPATH
+      export ALBEDO_QUESTIONS_SOURCE=$PYTHONPATH
       python3 -m unittest discover -s ${../test} -p formatter_python_test.py -v
       python3 -m unittest discover -s ${../test} -p lazy_mcp_python_test.py -v
       python3 ${../test}/lsp_test.py -v
+      python3 -m unittest discover -s ${../test} -p questions_python_test.py -v
       touch $out
     '';
   };

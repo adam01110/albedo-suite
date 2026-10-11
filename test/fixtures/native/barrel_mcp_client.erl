@@ -20,6 +20,12 @@ list_tools(_, _) ->
 
 call_tool(_, _, _, _) ->
     ets:update_counter(lazy_mcp_test, calls, 1),
+    case ets:lookup(lazy_mcp_test, call_pause) of
+        [{call_pause, Parent}] ->
+            Parent ! {call_started, self()},
+            receive resume_call -> ok after 5000 -> error(call_not_resumed) end;
+        [] -> ok
+    end,
     case ets:lookup(lazy_mcp_test, fail_call) of
         [] -> {ok, #{}};
         _ -> {error, transport_lost}

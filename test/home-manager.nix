@@ -88,6 +88,11 @@
     (builtins.tryEval (builtins.deepSeq home.config.programs.albedo.mcp.servers true)).success;
 in
   lib.runTests {
+    testMcpIdleCleanupDefaultsToOneMinute = {
+      expr = minimal.config.programs.albedo.mcp.idleTimeoutMs;
+      expected = 60000;
+    };
+
     # keep-sorted start block=yes newline_separated=yes
     testConfiguredConfigurationIsValid = {
       expr = assertionsPass configured;
