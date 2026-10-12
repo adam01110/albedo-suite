@@ -2,7 +2,9 @@
 
 Images returned to the agent by `show_image()`, browser screenshots and other
 image-returning tools appear in their tool-result block, even with verbose tool
-output hidden. Each block shows image dimensions and a compact inline preview.
+output hidden. Pasted attachments also keep an inline preview under the sent user
+message after the composer clears, including after reopening the session. Each
+block shows image dimensions and a compact inline preview.
 Click **enlarge images** to expand it; click **show less** to restore its size.
 Image rows are excluded from text selection and copying.
 

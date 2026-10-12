@@ -174,7 +174,7 @@ func (t *transcriptState) apply(evt daemon.StreamEvent, agentName string) []Hist
 			entries = append(entries, t.closeTurn(false)...)
 		}
 		entries = append(entries, HistoryEntry{
-			Kind: EntryUser, ID: evt.EntryID, Seq: evt.Position, Source: evt.Source, MailKind: evt.MailKind, SenderSessionID: evt.SenderSessionID, Speaker: speaker, Text: evt.Text,
+			Kind: EntryUser, ID: evt.EntryID, Seq: evt.Position, Source: evt.Source, MailKind: evt.MailKind, SenderSessionID: evt.SenderSessionID, Speaker: speaker, Text: evt.Text, Images: evt.Images,
 			Timestamp: ts,
 		})
 		if opens {

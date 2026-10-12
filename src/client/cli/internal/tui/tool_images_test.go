@@ -151,7 +151,11 @@ func TestToolImagesFetchSeriallyCacheBoundReplayAndStaleResults(t *testing.T) {
 	t.Cleanup(m.Close)
 	m.SetSize(90, 40)
 	for i := 0; i < 30; i++ {
-		m.appendSettledEntry(HistoryEntry{Kind: EntryTool, ID: fmt.Sprint(i), Timestamp: int64(i + 1), ToolName: "python", Images: []daemon.ImageMetadata{{Reference: fmt.Sprintf("/sessions/s/history/%d/image-0", i), Bytes: len(data), Width: 120, Height: 80, MimeType: daemon.ImagePNG}}})
+		kind := EntryTool
+		if i%2 == 0 {
+			kind = EntryUser
+		}
+		m.appendSettledEntry(HistoryEntry{Kind: kind, ID: fmt.Sprint(i), Timestamp: int64(i + 1), ToolName: "python", Images: []daemon.ImageMetadata{{Reference: fmt.Sprintf("/sessions/s/history/%d/image-0", i), Bytes: len(data), Width: 120, Height: 80, MimeType: daemon.ImagePNG}}})
 	}
 	queue := []tea.Cmd{m.loadToolImage()}
 	steps := 0
@@ -257,5 +261,49 @@ func TestToolImagesCloseFreesPlacementsBeforeQuit(t *testing.T) {
 	_, cmd = app.Chat.acceptToolImage(late)
 	if cmd != nil {
 		t.Fatal("closed session accepted late image upload")
+	}
+}
+
+func TestToolImagesSentUserAttachmentsKeepLiveReplayAndFoldPreview(t *testing.T) {
+	mockToolGraphics(t, true)
+	m := newTestChatModel(t, &daemon.Session{ID: "s"})
+	m.SetSize(90, 40)
+	ref := "/sessions/s/history/42/image-0"
+	preview, _ := prepareToolPreview(toolPreviewPNG(t), graphics{supported: true}, 72)
+	event := daemon.StreamEvent{Type: daemon.EventUser, EntryID: "42", Source: "chat", Text: "Inspect this [Image #1]",
+		Images: []daemon.ImageMetadata{{Reference: ref, Width: 120, Height: 80, MimeType: daemon.ImagePNG}}}
+	m.handleStreamEvent(event)
+	if m.History.Len() != 1 || len(m.History.Entries()[0].Images) != 1 {
+		t.Fatal("sent image metadata lost")
+	}
+	m.Renderer.ToolImages = map[string]toolImagePreview{ref: preview}
+	// Sending clears the composer's strip; the admitted message must retain its own preview.
+	m.Images.restore(nil)
+	m.rebuildSettledLines()
+	m.refreshViewportContent()
+	if !strings.ContainsRune(m.View(), kitty.Placeholder) {
+		t.Fatal("sent image disappeared with composer")
+	}
+	entry := m.History.Entries()[0]
+	row := rowWith(t, m.frameLines, "click to expand")
+	m.actAt(row)
+	if !m.Renderer.Open[entryKey(entry)] {
+		t.Fatal("sent image cannot expand")
+	}
+	row = rowWith(t, m.frameLines, "show less")
+	m.actAt(row)
+	if m.Renderer.Open[entryKey(entry)] {
+		t.Fatal("sent image cannot collapse")
+	}
+	event.Replayed = true
+	m.handleStreamEvent(event)
+	m.refreshViewportContent()
+	if m.History.Len() != 1 || len(m.History.Entries()[0].Images) != 1 || !strings.ContainsRune(m.View(), kitty.Placeholder) {
+		t.Fatal("replayed sent image lost its preview")
+	}
+	event.Images = append(event.Images, daemon.ImageMetadata{Reference: "/sessions/s/history/42/image-1", Width: 12, Height: 8})
+	m.handleStreamEvent(event)
+	if len(m.History.Entries()[0].Images) != 2 {
+		t.Fatal("user entry replacement dropped new attachment metadata")
 	}
 }

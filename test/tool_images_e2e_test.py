@@ -7,7 +7,7 @@ import unittest
 import zlib
 from urllib.error import HTTPError
 
-from harness import Albedo, Provider, exclusive, python, text
+from harness import Albedo, Provider, exclusive, operation_id, python, text
 
 
 def image_bytes():
@@ -56,6 +56,36 @@ class ToolImagesTests(unittest.TestCase):
             failure.exception.close()
             app.restart()
             replay = [entry for entry in app.history(session)["items"] if entry["kind"] == "tool_result"][-1]
+            self.assertEqual([part["image"] for part in replay["content"] if part["kind"] == "image"], images)
+            with app.api(images[0]["reference"]["url"]) as response:
+                self.assertEqual(response.read(), data)
+
+    def test_pasted_images_keep_live_and_replayed_resource_metadata(self):
+        data = image_bytes()
+        encoded = base64.b64encode(data).decode()
+        provider = Provider(lambda _request: text("I see the pasted image"))
+        self.addCleanup(provider.close)
+        with Albedo(provider, protocol="responses") as app:
+            session = app.session()
+            cursor = app.stream_page(session)
+            with app.api(
+                f"/sessions/{session}/inputs/{operation_id()}",
+                {"kind": "message", "text": "Inspect this [Image #1]", "images": [{"mime_type": "image/png", "data": encoded}]},
+                method="PUT",
+            ):
+                pass
+            app.idle(session)
+            streamed = app.stream_page(session, cursor)
+            live = [event["data"]["entry"] for event in streamed["events"] if event["type"] == "message" and event["data"]["entry"]["kind"] == "user"]
+            self.assertEqual(len(live), 1, streamed)
+            images = [part["image"] for part in live[0]["content"] if part["kind"] == "image"]
+            self.assertEqual(len(images), 1)
+            entry = [item for item in app.history(session)["items"] if item["kind"] == "user"][-1]
+            self.assertEqual([part["image"] for part in entry["content"] if part["kind"] == "image"], images)
+            with app.api(images[0]["reference"]["url"]) as response:
+                self.assertEqual(response.read(), data)
+            app.restart()
+            replay = [item for item in app.history(session)["items"] if item["kind"] == "user"][-1]
             self.assertEqual([part["image"] for part in replay["content"] if part["kind"] == "image"], images)
             with app.api(images[0]["reference"]["url"]) as response:
                 self.assertEqual(response.read(), data)

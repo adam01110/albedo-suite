@@ -38,6 +38,7 @@ func nextThumbnailID() int { return 256 + int(toolImageIDs.Add(1)-1)%0xffff00 }
 
 // Image rows use the same fold action as pastes. They remain separate from
 // compact tool bursts even when code and textual tool output are hidden.
+// Sent user attachments use the same durable references and previews.
 func (r TranscriptRenderer) renderToolImages(entry HistoryEntry, width int) []string {
 	if len(entry.Images) == 0 {
 		return nil
@@ -93,7 +94,7 @@ func (m *ChatModel) loadToolImage() tea.Cmd {
 	var order []string
 	entries := m.History.Entries()
 	add := func(entry HistoryEntry) {
-		if entry.Kind != EntryTool {
+		if entry.Kind != EntryTool && entry.Kind != EntryUser {
 			return
 		}
 		for _, attachment := range entry.Images {

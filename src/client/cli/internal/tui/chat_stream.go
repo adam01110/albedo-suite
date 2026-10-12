@@ -93,6 +93,7 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 			case daemon.EventUser:
 				entry.Speaker, entry.Source = inputSpeaker(evt), evt.Source
 				entry.MailKind, entry.SenderSessionID = evt.MailKind, evt.SenderSessionID
+				entry.Images = evt.Images
 				entry.Text = evt.Text
 			case daemon.EventMessage, daemon.EventThinking:
 				entry.Text = evt.Text

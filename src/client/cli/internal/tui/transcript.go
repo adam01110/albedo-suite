@@ -537,6 +537,9 @@ func (r TranscriptRenderer) RenderAfter(before prior, entry HistoryEntry, flags 
 			body = r.foldTall(entry, body)
 		}
 		rows = append(rows, body)
+		if entry.Kind == EntryUser {
+			rows = append(rows, r.renderToolImages(entry, width)...)
+		}
 	case EntryThinking:
 		rows = []string{markChrome + DefaultStyles.Faint.Render("thinking")}
 		if flags.Thinking {
