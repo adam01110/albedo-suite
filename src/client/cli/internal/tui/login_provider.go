@@ -67,7 +67,7 @@ var customProviders = []customProvider{
 	},
 	{
 		ID:            "add-opencode-go",
-		Label:         "OpenCode Go",
+		Label:         "add or update OpenCode Go",
 		Detail:        "Go subscription · model-specific API routing",
 		Extension:     "opencode-go",
 		DefaultName:   "opencode-go",

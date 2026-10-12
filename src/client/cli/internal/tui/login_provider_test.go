@@ -30,6 +30,9 @@ func TestOpenCodeGoPicker(t *testing.T) {
 	found := false
 	for _, item := range m.ChoosePicker.items {
 		if item.ID == "add-opencode-go" {
+			if item.Label != "add or update OpenCode Go" {
+				t.Fatalf("unexpected Go action label: %q", item.Label)
+			}
 			found = true
 		}
 	}
@@ -84,7 +87,7 @@ func TestOpenCodeGoFirstRunChooser(t *testing.T) {
 	}
 	for _, size := range [][2]int{{80, 24}, {120, 30}} {
 		m.SetSize(size[0], size[1])
-		if view := ansi.Strip(m.View()); !strings.Contains(view, "OpenCode Go") {
+		if view := ansi.Strip(m.View()); !strings.Contains(view, "add or update OpenCode Go") {
 			t.Fatalf("first-run screen does not show OpenCode Go at %dx%d:\n%s", size[0], size[1], view)
 		}
 	}
