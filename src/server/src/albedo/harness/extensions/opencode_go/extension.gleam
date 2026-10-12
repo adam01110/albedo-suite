@@ -4,6 +4,8 @@ import albedo/harness/extensions/claude/wire as messages_wire
 import albedo/harness/extensions/models/extension as models
 import albedo/harness/settings
 import albedo/openai_api
+import albedo/openai_api/request as request_wire
+import albedo/openai_api/stream as openai_stream
 import albedo/openai_api/types
 import gleam/bool
 import gleam/option.{type Option, None, Some}
@@ -77,6 +79,7 @@ fn resolve(
             "messages" -> {
               use exchange <- result.try(messages_exchange(
                 context.home,
+                context.session,
                 base_url,
                 key,
                 request,
@@ -87,7 +90,18 @@ fn resolve(
                 on_event,
               )
             }
-            _ -> openai_api.stream(client, request, on_event)
+            _ -> {
+              use exchange <- result.try(openai_exchange(
+                client,
+                context.session,
+                request,
+              ))
+              openai_api.exchange(
+                exchange,
+                openai_stream.reducer(protocol),
+                on_event,
+              )
+            }
           }
         },
         explain,
@@ -102,8 +116,32 @@ fn resolve(
   })
 }
 
+fn openai_exchange(
+  client: types.Client,
+  session: String,
+  request: types.Request,
+) -> Result(openai_api.Exchange, types.Error) {
+  use body <- result.map(request_wire.encode(client.protocol, request))
+  let path = case client.protocol {
+    types.Responses -> "/responses"
+    types.ChatCompletions -> "/chat/completions"
+  }
+  openai_api.Exchange(
+    url: string.remove_suffix(client.base_url, "/") <> path,
+    headers: [
+      #("x-opencode-session", session),
+      ..openai_api.headers(client, request.model)
+    ],
+    body: body,
+    timeout_ms: client.timeout_ms,
+    max_event_bytes: client.max_event_bytes,
+    require_event_stream: True,
+  )
+}
+
 pub fn messages_exchange(
   home: String,
+  session: String,
   base_url: String,
   key: String,
   request: types.Request,
@@ -118,6 +156,7 @@ pub fn messages_exchange(
     url: string.remove_suffix(base_url, "/") <> "/messages",
     headers: [
       #("x-api-key", key),
+      #("x-opencode-session", session),
       #("anthropic-version", "2023-06-01"),
       #("content-type", "application/json"),
       #("accept", "text/event-stream"),

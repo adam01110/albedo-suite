@@ -61,6 +61,11 @@ class GoProvider(Provider):
 
     def _post(self, handler):
         self.headers.append(dict(handler.headers))
+        if not handler.headers.get("x-opencode-session"):
+            handler.send_response(400)
+            handler.end_headers()
+            handler.wfile.write(b'{"error":{"type":"MissingSessionID"}}')
+            return
         super()._post(handler)
 
     def _get(self, handler):
@@ -114,6 +119,12 @@ class OpenCodeGoE2ETests(unittest.TestCase):
         self.app.idle(session)
         return json.dumps(self.app.history(session))
 
+    def assert_session_headers(self, session):
+        self.assertTrue(self.provider.headers)
+        for headers in self.provider.headers:
+            headers = {k.lower(): v for k, v in headers.items()}
+            self.assertEqual(headers.get("x-opencode-session"), session)
+
     def test_chat_route(self):
         session = self.start("glm-5.2")
         self.assertIn("go-reply", self.turn(session))
@@ -124,12 +135,16 @@ class OpenCodeGoE2ETests(unittest.TestCase):
             self.provider.requests[-1]["authorization"], "Bearer go-test-key"
         )
 
+        self.assert_session_headers(session)
+
     def test_responses_route(self):
         session = self.start("gpt-5.6-luna")
         self.assertIn("go-reply", self.turn(session))
         self.assertTrue(self.provider.requests[-1]["path"].endswith("/responses"))
         self.assertIn("go-reply", self.turn(session))
         self.assertEqual(len(self.provider.requests), 2)
+
+        self.assert_session_headers(session)
 
     def test_messages_route_and_tool_replay(self):
         replies = iter([messages_reply(tool=True), messages_reply(), messages_reply()])
@@ -156,6 +171,18 @@ class OpenCodeGoE2ETests(unittest.TestCase):
         ]
         self.assertTrue(any(block["type"] == "tool_result" for block in blocks))
         self.assertIn("go-reply", self.turn(session))
+
+        self.assert_session_headers(session)
+
+    def test_distinct_session_headers(self):
+        first = self.start("glm-5.2")
+        self.assertIn("go-reply", self.turn(first))
+        self.assert_session_headers(first)
+        self.provider.headers.clear()
+        second = self.app.session()
+        self.assertNotEqual(first, second)
+        self.assertIn("go-reply", self.turn(second))
+        self.assert_session_headers(second)
 
     def test_switching_routes_in_one_profile(self):
         session = self.start(
