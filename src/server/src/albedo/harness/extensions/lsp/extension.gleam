@@ -31,10 +31,10 @@ pub fn extension() -> extension.Extension {
             python_modules: ["lsp"],
             before_final: Some(check),
             routes: [
-              #("lsp", fn(_, request) {
+              #("lsp", fn(_, method, args) {
                 rpc.serve(
-                  request,
-                  #("invalid", "invalid lsp request"),
+                  method,
+                  args,
                   fn(method, _) {
                     case method {
                       "lsp.config" -> Ok(types.encode_value(config))

@@ -58,10 +58,10 @@ pub fn extension() -> extension.Extension {
       extension.ManagedPlugin(fn(storage, session, _) {
         Ok(
           extension.Managed(..extension.empty(), routes: [
-            #("questions", fn(_, request) {
+            #("questions", fn(_, method, args) {
               rpc.serve(
-                request,
-                "invalid question request",
+                method,
+                args,
                 fn(method, args) { dispatch(storage, session, method, args) },
                 fn(message) { #("question_error", message) },
               )

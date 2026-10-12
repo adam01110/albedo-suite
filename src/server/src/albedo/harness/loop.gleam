@@ -7,6 +7,7 @@ import albedo/daemon/message_content
 import albedo/daemon/requests
 import albedo/daemon/store
 import albedo/daemon/tool_progress
+import albedo/daemon/tool_results
 import albedo/daemon/transcript
 import albedo/daemon/usage
 import albedo/harness/cache_fade
@@ -152,7 +153,7 @@ fn run_checked(
       call_context(state),
       requests.Turn,
       request,
-      request_prefix(request, history, original, prepared.observation),
+      request_prefix(request, original, prepared.observation),
       state.publish,
       fn(event) {
         case gated, event {
@@ -751,14 +752,13 @@ fn fading(state: Loop, sent: extension.SentCall) -> Option(cache_fade.Fade) {
 /// for the history compaction replaced.
 fn request_prefix(
   request: types.Request,
-  history: List(types.Input),
   original: List(types.Input),
   observation: Option(compaction.Observation),
 ) -> requests.Prefix {
   requests.prefix(
     option.unwrap(request.instructions, ""),
     request.tools,
-    history,
+    request.input,
     original,
     option.map(observation, fn(observation) { observation.strategy }),
   )
@@ -836,7 +836,7 @@ fn request_for(
   types.Request(
     model,
     Some(instructions),
-    history,
+    tool_results.pair(history),
     runtime.tools(kernel),
     None,
     types.Options(..types.defaults, effort: effort),
@@ -931,7 +931,7 @@ pub fn rebuild(
   let history = prepared.inputs
   let instructions = instructions_for(settled(pin, original, history), kernel)
   let request = request_for(model, effort, kernel, instructions, history)
-  #(request, request_prefix(request, history, original, prepared.observation))
+  #(request, request_prefix(request, original, prepared.observation))
 }
 
 fn describe(upstream: extension.Upstream, error: types.Error) -> String {

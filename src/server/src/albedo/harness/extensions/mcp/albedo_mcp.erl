@@ -41,7 +41,7 @@ prepare_lazy(ConfigJson, Ledger, Session, _Lookup, _Save) ->
         Idle = idle_ms(maps:get(<<"idleTimeoutMs">>, Config, 0)),
         Candidates = lists:sort(maps:to_list(maps:get(<<"servers">>, Config, #{}))),
         lists:foreach(fun({Name, ServerConfig}) ->
-            {ok, nil} = validate_settings(Name, {some, json_binary(ServerConfig)}, <<"{}">>),
+            {ok, nil} = validate_settings(Name, {some, ServerConfig}, #{}),
             _ = optional_binary(maps:get(<<"cwd">>, ServerConfig, null))
         end, Candidates),
         Selection = case Candidates of [] -> none; _ -> {some, {Ledger, Session}} end,
@@ -913,13 +913,12 @@ now_ms() -> erlang:monotonic_time(millisecond).
 
 %% Validate persisted transport references and secret patches without resolving
 %% environment variables or starting a client.
-validate_settings(Name, Server, SecretsJSON) ->
+validate_settings(Name, Server, Secret) ->
     try
         true = valid_name(Name),
         case Server of
             none -> ok;
-            {some, JSON} ->
-                Config = json:decode(JSON),
+            {some, Config} when is_map(Config) ->
                 true = is_boolean(maps:get(<<"enabled">>, Config, true)),
                 lists:foreach(fun(Field) -> _ = positive_ms(maps:get(Field, Config, ?DEFAULT_CALL_MS)) end,
                               [<<"startupTimeoutMs">>, <<"callTimeoutMs">>]),
@@ -942,7 +941,7 @@ validate_settings(Name, Server, SecretsJSON) ->
                 end, [<<"headers">>, <<"env">>]),
                 case maps:get(<<"bearerTokenEnvVar">>, Config, null) of null -> ok; RefName -> true = valid_env_name(RefName) end
         end,
-        Patch = json:decode(SecretsJSON), true = is_map(Patch),
+        true = is_map(Secret),
         maps:foreach(fun
             (<<"bearerToken">>, null) -> ok;
             (<<"bearerToken">>, Token) when is_binary(Token) -> false = contains_newline(Token);
@@ -953,6 +952,6 @@ validate_settings(Name, Server, SecretsJSON) ->
                     true = V =:= null orelse is_binary(V),
                     case {Field, V} of {<<"headers">>, Text} when is_binary(Text) -> false = contains_newline(Text); _ -> ok end
                 end, Changes)
-        end, Patch),
+        end, Secret),
         {ok, nil}
     catch _:_ -> {error, <<"invalid MCP name, transport references, or credentials">>} end.

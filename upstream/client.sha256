@@ -1,3 +1,5 @@
-dba0ed651b298af51ed6559411de5c6aee6db40808a33b23eb208efc0a45fba6  cli/internal/tui/chat.go
-6453e712c6f255fe034bb439370caadb642c457416429be5d12a29e5fd5ef0af  cli/internal/tui/login.go
+4617294d926e311538494f6473dd8bb5687abf1ab73df216f5dfba2451584353  cli/internal/tui/chat.go
+4267849a73906545a0055619c4f7f3527042ede88e312ba0340644d292081fb6  cli/internal/tui/login.go
 25c6c13d106a458e03fbf9cfd46029f103e517bbaee5a27e4ee6364f2a0b3ce6  cli/internal/tui/login_provider.go
+d77c496a443d0fed54215594c7c63212d4338b5efdacddc8e35e6a870cbb6a4e  cli/internal/app/service.go
+f4c49906a9da531ea963fac46e9cf20a0e080f51974215f4a799fa41b7e533d2  cli/internal/cli/root.go

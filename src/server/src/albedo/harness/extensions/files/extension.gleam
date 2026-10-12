@@ -27,10 +27,10 @@ pub fn extension() -> extension.Extension {
       }
       Ok(
         extension.Managed(..extension.empty(), routes: [
-          #("files", fn(_, request) {
+          #("files", fn(_, method, args) {
             rpc.serve(
-              request,
-              "invalid FFF request",
+              method,
+              args,
               fn(method, args) {
                 case method {
                   "files.fff" -> search(target, args)

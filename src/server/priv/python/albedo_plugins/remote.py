@@ -24,9 +24,10 @@ import json
 import os
 import shlex
 import struct
+import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 from albedo_protocol import RemoteCall, RemoteMessage, parse_remote
 
@@ -54,21 +55,55 @@ capture_factory: Any
 send_frame: Any
 attach_image: Any
 session_modules: list[str] = []
-_fallback_live: set[str] = set()  # degraded-mode jobs still running over ssh
+
+
+class LiveJob(TypedDict):
+    """A job still running over ssh, as the supervisor lists it."""
+
+    id: str
+    command: str
+    service: bool  # nothing waits on its end
+    started: int  # wall-clock milliseconds
+
+
+MAX_LISTED_JOBS = 100  # as many rows as the supervisor lists for local jobs
+COMMAND_SCALARS = 4096  # a command's preview, as local jobs report it
+
+_fallback_live: dict[str, LiveJob] = {}  # degraded-mode jobs still running over ssh
+_fallback_jobs: dict[str, FallbackJob] = {}
+
+
+def _live_job(id: str, command: str, service: bool) -> LiveJob:
+    return {
+        "id": id,
+        "command": command[:COMMAND_SCALARS],
+        "service": service,
+        "started": time.time_ns() // 1_000_000,
+    }
 
 
 def _report_live() -> None:
-    """Tell the local supervisor how many remote jobs are still live, and how
-    many of them will wake the session: every one not started as a service.
+    """Tell the local supervisor which remote jobs are still live, so it lists
+    them beside its own and knows which will wake the session: every one not
+    started as a service.
 
     Releasing the kernel would kill every ssh client and with them the remote
     kernels, so the idle sweep keeps a kernel alive while remote work runs,
     and the cache warmer keeps an idle session warm while one it awaits does.
     """
     try:
-        live = len(_fallback_live) + sum(len(c._live) for c in connections)
-        awaited = len(_fallback_live) + sum(sum(c._live.values()) for c in connections)
-        send_frame({"type": "jobs", "live": live, "awaited": awaited})
+        live = [
+            *_fallback_live.values(),
+            *(job for c in connections for job in c._live.values()),
+        ]
+        send_frame(
+            {
+                "type": "jobs",
+                "live": len(live),
+                "awaited": sum(not job["service"] for job in live),
+                "items": live[:MAX_LISTED_JOBS],
+            }
+        )
     except Exception:
         pass  # no channel or shutdown; the supervisor keeps the last count
 
@@ -202,7 +237,7 @@ async def ssh_run(
         else asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        env=ssh_env(),
+        env=ssh_env(target),
     )
     try:
         stdout, stderr = await asyncio.wait_for(process.communicate(stdin), timeout)
@@ -541,7 +576,7 @@ class RemoteConnection:
         self._refs: dict[str, RemoteRef] = {}
         self._mirrors: dict[str, dict[str, Any]] = {}
         self._handshake: asyncio.Future[dict[str, Any]] | None = None
-        self._live: dict[str, bool] = {}  # job id: whether it is awaited
+        self._live: dict[str, LiveJob] = {}
         self._stderr_tail = bytearray()
         self._reader: asyncio.Task[None] | None = None
         self._drain: asyncio.Task[None] | None = None
@@ -585,7 +620,7 @@ class RemoteConnection:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env=ssh_env(),
+            env=ssh_env(self.host),
         )
         self._stdin, self._stdout = self._process.stdin, self._process.stdout
         self._drain = loop.create_task(self._drain_stderr())
@@ -628,7 +663,11 @@ class RemoteConnection:
             self._lost()
 
     def _dispatch(self, frame: RemoteMessage) -> None:
-        if frame["type"] == "invoked" or frame["type"] == "introspected":
+        if (
+            frame["type"] == "invoked"
+            or frame["type"] == "introspected"
+            or frame["type"] == "job_stop"
+        ):
             future = self._pending.get(frame["id"])
             if future is not None and not future.done():
                 future.set_result(dict(frame))
@@ -640,7 +679,11 @@ class RemoteConnection:
         elif frame["type"] == "mirror":
             self._mirrors[frame["handle"]] = dict(frame)
         elif frame["type"] == "job_start":
-            self._live[frame["id"]] = frame.get("service") is not True
+            self._live[frame["id"]] = _live_job(
+                frame["id"],
+                str(frame.get("command", "")),
+                frame.get("service") is True,
+            )
             _report_live()
         elif frame["type"] == "job":
             self._live.pop(frame["id"], None)
@@ -866,6 +909,35 @@ class RemoteConnection:
         finally:
             self._pending.pop(call_id, None)
         return {"names": frame.get("names", []), "handles": frame.get("handles", [])}
+
+    async def stop_job(self, job_id: str) -> dict[str, object]:
+        """Stop a background job running on the remote kernel."""
+        if self.closed or self.degraded is not None:
+            return {
+                "ok": False,
+                "error": "the remote kernel is closed or degraded",
+            }
+        future: asyncio.Future[dict[str, Any]] = loop.create_future()
+        self._pending[job_id] = future
+        try:
+            await self._send({"type": "job_stop", "id": job_id})
+            reply = await asyncio.wait_for(future, 15.0)
+            return {
+                "ok": reply.get("ok") is True,
+                **({"error": reply["error"]} if "error" in reply else {}),
+            }
+        except asyncio.TimeoutError:
+            return {
+                "ok": False,
+                "error": "remote job stop was not confirmed after 15s",
+            }
+        except Exception as error:
+            return {
+                "ok": False,
+                "error": str(error).lower() or "could not stop remote job",
+            }
+        finally:
+            self._pending.pop(job_id, None)
 
     # --- ssh conveniences, both modes ---
 
@@ -1131,7 +1203,8 @@ class FallbackJob(JobOutput):
         self._read = False
         self._announcer: asyncio.Task[None] | None = None
         self._connection = connection
-        _fallback_live.add(self.id)
+        _fallback_live[self.id] = _live_job(self.id, self.command, False)
+        _fallback_jobs[self.id] = self
         _report_live()
         # the remote login shell reads this line; everything in it is quoted
         steps = [
@@ -1162,7 +1235,7 @@ class FallbackJob(JobOutput):
             else asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
-            env=ssh_env(),
+            env=ssh_env(host),
         )
         self._process = process
         if stdin is not None and process.stdin is not None:
@@ -1185,7 +1258,8 @@ class FallbackJob(JobOutput):
             copying.cancel()
             self.capture.end_spill()
             self.duration = loop.time() - self.started
-            _fallback_live.discard(self.id)
+            _fallback_live.pop(self.id, None)
+            _fallback_jobs.pop(self.id, None)
             _report_live()
             self._owe_unread()
         return self
@@ -1283,6 +1357,12 @@ class FallbackJob(JobOutput):
     async def stop(self) -> None:
         """End the ssh client; the remote command's fate is reported, not assumed."""
         self._read = True  # an explicit stop is its own report; no wake is owed
+        # A stop can arrive before the spawn produced a process, but a spawn
+        # that never does must not spin here forever.
+        for _ in range(500):
+            if getattr(self, "_process", None) is not None or self._task.done():
+                break
+            await asyncio.sleep(0.01)
         process = getattr(self, "_process", None)
         if process is not None and process.returncode is None:
             process.terminate()
@@ -1293,6 +1373,9 @@ class FallbackJob(JobOutput):
             self.capture.write(
                 "\n[stopped locally; the remote command may still be running]"
             )
+        if hasattr(self, "_task"):
+            with contextlib.suppress(Exception):
+                await self._task
 
     def __repr__(self) -> str:
         return (
@@ -1391,6 +1474,18 @@ class Remote:
 remote = Remote()
 
 
+async def stop_remote_job(job_id: str) -> dict[str, object] | None:
+    """Stop a remote background job across open remote connections and fallbacks."""
+    fallback = _fallback_jobs.get(job_id)
+    if fallback is not None:
+        await fallback.stop()
+        return {"ok": True}
+    for connection in connections:
+        if job_id in connection._live:
+            return await connection.stop_job(job_id)
+    return None
+
+
 def setup(api: PythonApi) -> dict[str, object]:
     global loop, host_call, HostErrorType, capture_factory, send_frame
     global attach_image, session_modules
@@ -1400,4 +1495,6 @@ def setup(api: PythonApi) -> dict[str, object]:
     attach_image = api.attach_image
     session_modules = list(api.modules)
     api.on_shutdown(Remote.close_all)
+    if api.on_stop_job is not None:
+        api.on_stop_job(stop_remote_job)
     return {"remote": remote, "RemoteError": RemoteError}

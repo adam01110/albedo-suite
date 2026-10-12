@@ -27,6 +27,7 @@ providers, skills and SOPS declarations stay in Infra.
 | [Local LSP](docs/lsp.md) | Start a language server on an explicit diagnostics or navigation call. |
 | [User questions](docs/questions.md) | Record questions, answer in `/questions`, and resume the asking session. |
 | [RTK and FFF](docs/tool-parity.md) | Filter supported commands through RTK and replace file search with FFF. |
+| CLI resume | `albedo resume` without an ID reopens the newest non-archived session in the current directory. |
 | CLI diffs | Show diffs by default when enabled. The existing toggle still works. |
 | Home Manager | Install Albedo and merge settings while preserving runtime authentication. |
 

@@ -30,10 +30,10 @@ pub fn extension() -> extension.Extension {
             instructions: "Files edited with files.write() or files.edit() are tracked for deferred formatting. Do not run formatters on unfinished edits: the harness checks formatting before accepting your final reply. If it reports formatter changes or errors, review the changes, repair errors, and regenerate your final report. Shell/remote writes are not automatically tracked; format those explicitly when the work is complete. Unrelated dirty files are not formatted.",
             python_modules: ["formatter"],
             routes: [
-              #("formatter", fn(_, request) {
+              #("formatter", fn(_, method, args) {
                 rpc.serve(
-                  request,
-                  #("invalid", "invalid formatter request"),
+                  method,
+                  args,
                   fn(method, _) {
                     case method {
                       "formatter.config" -> Ok(types.encode_value(config))

@@ -69,6 +69,7 @@
         postCheck =
           (old.postCheck or "")
           + ''
+            go test ./internal/app ./internal/cli -count=1
             go test ./internal/tui -run '^TestOpenCodeGo' -count=1 -v
             ${pkgs.lib.optionalString showDiffs "go test ./internal/tui -run '^TestDefaultDiffVisibility$' -count=1 -v"}
           '';
