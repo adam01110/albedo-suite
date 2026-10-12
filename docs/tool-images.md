@@ -1,4 +1,4 @@
-# Inline tool images
+# Inline image previews
 
 Images returned to the agent by `show_image()`, browser screenshots and other
 image-returning tools appear in their tool-result block, even with verbose tool
@@ -20,9 +20,9 @@ Resizing invalidates cached placements; old resources are freed on eviction or
 leaving the session. Live output and history replay use the same durable image
 URLs, not local filesystem paths or base64 in transcript rows.
 
-Previews show the tool-returned image. Provider-specific fitting can subsequently
-resize the image sent to the model; this UI does not display a separate fitted
-version.
+Previews show the original attachment or tool-returned image. Provider-specific
+fitting can subsequently resize the image sent to the model; this UI does not
+display a separate fitted version.
 
 To try the build from this checkout without changing system configuration:
 
@@ -30,8 +30,8 @@ To try the build from this checkout without changing system configuration:
 nix run .#albedo-defaults
 ```
 
-The new daemon and client must be used together for live previews. History
-previews remain compatible with the pinned upstream daemon.
+Live tool-result previews require the new daemon and client together. Sent
+attachment previews and history previews work with the pinned upstream daemon.
 
 Checks:
 

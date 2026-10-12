@@ -1,7 +1,6 @@
 """Tool images carry durable resource metadata through the real daemon stream."""
 
 import base64
-import json
 import struct
 import unittest
 import zlib
