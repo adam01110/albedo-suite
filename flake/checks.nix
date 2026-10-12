@@ -35,6 +35,12 @@
       touch $out
     '';
 
+    checks.tool-images = runCommand "albedo-tool-image-tests" {nativeBuildInputs = [pkgs.python311];} ''
+      export ERL_AFLAGS="-public_key cacerts_path '\"${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt\"'"
+      python3 ${../scripts/test-e2e.py} --source ${runtime.server.src} --suite ${../.} --package ${runtime} --case tool_images_e2e_test.py
+      touch $out
+    '';
+
     checks.native-mcp = runCommand "albedo-native-mcp-tests" {nativeBuildInputs = [pkgs.beam29Packages.erlang];} ''
       cp ${../src/server/src/albedo/harness/extensions/mcp/albedo_mcp.erl} albedo_mcp.erl
       cp -r ${../test/fixtures/native}/. .

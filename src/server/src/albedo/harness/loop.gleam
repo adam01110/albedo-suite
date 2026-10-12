@@ -494,7 +494,7 @@ fn run_tool(
             Error(error) -> Error(error)
             Ok(_) -> {
               let _ = case output {
-                types.ToolOutput(_, body, _) -> {
+                types.ToolOutput(_, body, images) -> {
                   let trace =
                     json.parse(
                       body,
@@ -513,12 +513,13 @@ fn run_tool(
                     )
                   {
                     Ok(Some(position)) ->
-                      state.publish(view.Tool(
+                      state.publish(view.ToolWithImages(
                         call,
                         body,
                         trace,
                         progress_id,
                         position,
+                        images,
                       ))
                     _ ->
                       state.publish(view.Failure(

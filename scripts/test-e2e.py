@@ -16,6 +16,7 @@ SUITE_CASES = (
     "questions_e2e_test.py",
     "opencode_go_e2e_test.py",
     "tool_backends_e2e_test.py",
+    "tool_images_e2e_test.py",
 )
 UPSTREAM_CASES = (
     "mcp_test.py",

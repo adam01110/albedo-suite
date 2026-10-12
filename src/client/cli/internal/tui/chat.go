@@ -315,9 +315,14 @@ func (m *ChatModel) ClearNotices() {
 // Update handles msg, then fetches older history when it left you at the top.
 func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 	if loaded, ok := msg.(ChatOlderLoadedMsg); ok {
-		return m.showOlder(loaded), nil
+		m = m.showOlder(loaded)
+		return m, m.loadToolImage()
+	}
+	if loaded, ok := msg.(toolImageLoadedMsg); ok {
+		return m.acceptToolImage(loaded)
 	}
 	m, cmd := m.update(msg)
+	cmd = tea.Batch(cmd, m.loadToolImage())
 	if older := m.loadOlder(); older != nil {
 		return m, tea.Batch(cmd, older)
 	}

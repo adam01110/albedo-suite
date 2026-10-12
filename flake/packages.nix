@@ -56,7 +56,7 @@
     withClientSources = showDiffs: package: let
       clientSources = builtins.path {
         path = ../src/client;
-        filter = path: _: showDiffs || !(builtins.elem (baseNameOf path) ["chat.go" "chat_test.go"]);
+        filter = path: _: showDiffs || !(builtins.elem (baseNameOf path) ["default_diffs_test.go" "chat_test.go"]);
       };
     in
       package.overrideAttrs (old: {
@@ -64,6 +64,7 @@
           ''
             sha256sum --check ${../upstream/client.sha256}
             cp -r --no-preserve=mode ${clientSources}/. .
+            ${pkgs.lib.optionalString (!showDiffs) ''substituteInPlace cli/internal/tui/chat.go --replace-fail "DisplayFlags{Diffs: true}" "DisplayFlags{}"''}
           ''
           + (old.postPatch or "");
         postCheck =
@@ -71,6 +72,7 @@
           + ''
             go test ./internal/app ./internal/cli -count=1
             go test ./internal/tui -run '^TestOpenCodeGo' -count=1 -v
+            go test ./internal/tui ./internal/daemon -run '^TestToolImages' -count=1 -v
             ${pkgs.lib.optionalString showDiffs "go test ./internal/tui -run '^TestDefaultDiffVisibility$' -count=1 -v"}
           '';
       });
