@@ -1,11 +1,13 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 
 	"albedo/cli/internal/config"
 	"albedo/cli/internal/daemon"
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func newGoLogin(t *testing.T, hint string) LoginModel {
@@ -74,16 +76,36 @@ func TestOpenCodeGoHint(t *testing.T) {
 	assertGoDraft(t, m)
 }
 
-func TestOpenCodeGoFirstRunName(t *testing.T) {
+func TestOpenCodeGoFirstRunChooser(t *testing.T) {
 	m := newGoLogin(t, "")
-	m, _ = m.Update(signInsLoadedMsg{Gen: m.Generation, Listed: daemon.SignIns{}, Profiles: &config.Profiles{}})
-	if m.Step != StepName {
-		t.Fatalf("first run did not ask for a name: %v", m.Step)
+	m, cmd := m.Update(signInsLoadedMsg{Gen: m.Generation, Listed: daemon.SignIns{}, Profiles: &config.Profiles{}})
+	if m.Step != StepChoose || cmd == nil {
+		t.Fatalf("first run did not show the provider chooser: %v", m.Step)
 	}
-	m.TextInput.SetValue("opencode-go")
+	for _, size := range [][2]int{{80, 24}, {120, 30}} {
+		m.SetSize(size[0], size[1])
+		if view := ansi.Strip(m.View()); !strings.Contains(view, "OpenCode Go") {
+			t.Fatalf("first-run screen does not show OpenCode Go at %dx%d:\n%s", size[0], size[1], view)
+		}
+	}
+	m, _ = m.Update(PickerSelectMsg{ID: "add-opencode-go"})
+	if m.Step != StepName || m.Name != "opencode-go" {
+		t.Fatalf("Go selection did not ask for its profile name: %v %q", m.Step, m.Name)
+	}
+	assertGoDraft(t, m)
+	m.TextInput.SetValue("go-work")
 	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.Step != StepBaseURL {
 		t.Fatalf("Go name did not ask for endpoint: %v", m.Step)
+	}
+	assertGoDraft(t, m)
+}
+
+func TestOpenCodeGoFirstRunHint(t *testing.T) {
+	m := newGoLogin(t, "opencode-go")
+	m, _ = m.Update(signInsLoadedMsg{Gen: m.Generation, Listed: daemon.SignIns{}, Profiles: &config.Profiles{}})
+	if m.Step != StepBaseURL || m.Name != "opencode-go" {
+		t.Fatalf("first-run hint did not start Go setup: %v %q", m.Step, m.Name)
 	}
 	assertGoDraft(t, m)
 }

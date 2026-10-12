@@ -24,7 +24,8 @@ you declare profiles, `activeProvider` must name one of them.
 
 ### OpenCode Go
 
-Select **OpenCode Go** in `/login`, or use `/login opencode-go`, and enter your
+Select **OpenCode Go** in the first-startup or `/login` provider chooser, or use
+`/login opencode-go`, and enter your
 OpenCode API key. The default base URL is `https://opencode.ai/zen/go/v1`, not
 the pay-as-you-go Zen URL. `OPENCODE_API_KEY` is also supported when the profile
 has no saved key.

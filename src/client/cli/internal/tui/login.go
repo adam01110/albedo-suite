@@ -144,11 +144,6 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 		if m.Step != StepChoose {
 			return m, nil
 		}
-		if len(m.Profiles.Providers) == 0 && len(m.Accounts) == 0 {
-			m.Step = StepName
-			m.TextInput.Placeholder = ""
-			return m, m.promptInput("", false)
-		}
 		return m, m.ChoosePicker.Init()
 
 	case signInStartedMsg:
