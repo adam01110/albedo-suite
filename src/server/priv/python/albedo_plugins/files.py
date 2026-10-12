@@ -1,7 +1,6 @@
 """Bounded reads, exact edits, and FFF-backed search over workspace files.
 
-Every external command runs through the supervised `run` job plugin, so this
-module never spawns a process of its own and every child stays in a job's group.
+Production searches use the daemon-owned FFF worker shared by host sessions.
 """
 
 from __future__ import annotations
@@ -151,7 +150,10 @@ class Search(Generic[Result]):
 class _FFF:
     """Private supervised RPC worker; no native search fallback."""
 
-    def __init__(self):
+    def __init__(self, host=None):
+        self.host = host
+        self.target = os.environ.get("ALBEDO_REMOTE_TARGET")
+        self.worker_pid = None
         self.job = None
         self.directory = None
         self.lock = asyncio.Lock()
@@ -170,6 +172,12 @@ class _FFF:
             self.directory = None
 
     async def request(self, payload):
+        if self.host is not None:
+            if self.target:
+                payload = {**payload, "_fff_target": self.target}
+            result = await self.host("files.fff", payload)
+            self.worker_pid = result.pop("workerPid", None)
+            return result
         async with self.lock:
             try:
                 return await asyncio.wait_for(self._request(payload), SEARCH_TIMEOUT)
@@ -188,7 +196,9 @@ class _FFF:
             raise RuntimeError(f"FFF worker died: {detail}")
         if self.job is None:
             command = os.environ.get("ALBEDO_FFF_COMMAND")
-            argv = shlex.split(command) if command else [shutil.which("albedo-fff")]
+            argv = shlex.split(command) if command else []
+            if not command and (executable := shutil.which("albedo-fff")):
+                argv = [executable]
             if not argv or not argv[0]:
                 raise RuntimeError(
                     "FFF runtime missing on this host: install albedo-fff or set ALBEDO_FFF_COMMAND"
@@ -998,5 +1008,7 @@ def _missing(target: Path, original: str) -> str:
 
 
 def setup(api: PythonApi) -> dict[str, object]:
+    global _fff
+    _fff = _FFF(api.host)
     api.on_shutdown(_fff.close)
     return {"files": Files()}

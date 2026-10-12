@@ -24,6 +24,10 @@ baseline checksum. The whole-source hash still pins their upstream base.
 
 ## Checks
 
+Run `nix develop` before using Python tooling. The shell exposes the pinned
+upstream Python modules and E2E harness under `.direnv/albedo-upstream`, which
+`ty.toml` uses to resolve dependencies absent from the source overlays.
+
 ```console
 nix build .#albedo-defaults .#albedo-patched
 nix flake check
@@ -51,6 +55,12 @@ and user-question cases plus OpenCode Go routing/discovery and RTK/FFF daemon
 checks. Additional supervised
 RTK and FFF integration tests run in the
 flake Python check against the packaged runtime.
+
+FFF searches share one daemon-owned worker for local sessions and one per SSH
+target for remote sessions. Workers start on demand, retain at most four root
+indexes, and exit after 60 seconds without a search. Search requests, including
+queue time, have a 30-second worker deadline. Closing a session does not stop
+another session's search worker. FFF is not listed as a session background job.
 
 The tests use fake providers, temporary homes and local stdio servers. They do
 not activate your configuration, read your credentials or contact live

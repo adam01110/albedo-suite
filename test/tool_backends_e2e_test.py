@@ -1,12 +1,23 @@
 """Verify replacement backends through a real packaged daemon kernel."""
 
 import json
+import os
+import signal
 import sys
 import tempfile
 from pathlib import Path
 import unittest
 
-from harness import Albedo, Provider, exclusive, python, text
+from harness import (
+    Albedo,
+    Provider,
+    exclusive,
+    python,
+    text,
+    wait_until,
+    _LOOPBACK_SSH,
+    _LOOPBACK_LOGIN,
+)
 
 
 @exclusive
@@ -36,7 +47,7 @@ class ToolBackendsTests(unittest.TestCase):
     def execute(self, code):
         self.code = code
         self.app.prompt(self.session, "Check replacement tool backends").close()
-        self.app.idle(self.session, timeout=30)
+        settled = self.app.idle(self.session, timeout=30)
         history = self.app.history(self.session)
         results = [
             json.loads(part["value"])
@@ -47,7 +58,9 @@ class ToolBackendsTests(unittest.TestCase):
         ]
         self.assertTrue(results)
         self.assertEqual(results[-1]["status"], "ok", results[-1])
-        self.assertIn("BACKEND_VERIFIED", results[-1]["output"])
+        self.last_output = results[-1]["output"]
+        self.assertIn("BACKEND_VERIFIED", self.last_output)
+        return settled
 
     def test_rtk_runs_supported_terminal_command(self):
         self.execute(
@@ -97,7 +110,7 @@ class ToolBackendsTests(unittest.TestCase):
         )
 
     def test_fff_searches_and_observes_file_edit(self):
-        self.execute(
+        settled = self.execute(
             f"root = {str(self.root)!r}\n"
             "rows = await files.find('BACKEND_NEEDLE', root, literal=True, context=1)\n"
             "assert len(rows) == 3 and sum(not row.context for row in rows) == 1\n"
@@ -107,6 +120,95 @@ class ToolBackendsTests(unittest.TestCase):
             "assert len(await files.find('UPDATED_NEEDLE', root, literal=True)) == 1\n"
             "print('BACKEND_VERIFIED')"
         )
+
+        self.assertEqual(settled["kernel"]["live_job_count"], 0)
+        self.assertEqual(settled["kernel"]["running_jobs"], [])
+        with self.app.api(f"/extensions/run/sessions/{self.session}/jobs") as response:
+            supervised = json.load(response)
+        self.assertEqual(supervised["live_job_count"], 0)
+        self.assertEqual(supervised["items"], [])
+
+    def test_fff_does_not_hide_real_background_job(self):
+        settled = self.execute(
+            f"await files.paths(path={str(self.root)!r})\n"
+            "job = run(sys.executable, '-c', 'import time; time.sleep(60)')\n"
+            "await asyncio.sleep(0.1)\n"
+            "print('BACKEND_VERIFIED')"
+        )
+        self.assertEqual(settled["kernel"]["live_job_count"], 1)
+        self.assertEqual(len(settled["kernel"]["running_jobs"]), 1)
+        self.assertIn("time.sleep(60)", settled["kernel"]["running_jobs"][0]["command"])
+        settled = self.execute("await job.stop()\nprint('BACKEND_VERIFIED')")
+        self.assertEqual(settled["kernel"]["live_job_count"], 0)
+        self.assertEqual(settled["kernel"]["running_jobs"], [])
+
+    def test_fff_worker_is_shared_between_sessions_and_survives_client_close(self):
+        first = self.session
+        code = (
+            f"assert len(await files.find('BACKEND_NEEDLE', {str(self.root)!r})) == 1\n"
+            f"parallel = await asyncio.gather(*(files.paths(path={str(self.root)!r}) for _ in range(8)))\n"
+            "assert all(parallel)\n"
+            "fff = sys.modules['albedo_plugins.files']._fff\n"
+            "assert fff.job is None\n"
+            "print('BACKEND_VERIFIED', fff.worker_pid)"
+        )
+        self.execute(code)
+        pid = self.last_output.split("BACKEND_VERIFIED ")[1].strip()
+        self.execute("await files.close()\nprint('BACKEND_VERIFIED')")
+        self.code = "os._exit(0)"
+        self.app.prompt(first, "Release first kernel").close()
+        self.app.idle(first)
+        self.session = self.app.session()
+        self.execute(code)
+        self.assertEqual(self.last_output.split("BACKEND_VERIFIED ")[1].strip(), pid)
+        self.session = first
+        self.execute(code)
+        self.assertEqual(self.last_output.split("BACKEND_VERIFIED ")[1].strip(), pid)
+
+    def test_fff_worker_recovers_after_crash(self):
+        code = (
+            f"await files.paths(path={str(self.root)!r})\n"
+            "print('BACKEND_VERIFIED', sys.modules['albedo_plugins.files']._fff.worker_pid)"
+        )
+        self.execute(code)
+        old_pid = int(self.last_output.split("BACKEND_VERIFIED ")[1].strip())
+        os.kill(old_pid, signal.SIGKILL)
+        wait_until(
+            lambda: not Path(f"/proc/{old_pid}").exists(), 5, "FFF worker not reaped"
+        )
+        self.execute(code)
+        self.assertNotEqual(
+            int(self.last_output.split("BACKEND_VERIFIED ")[1].strip()), old_pid
+        )
+
+    def test_fff_remote_worker_is_shared(self):
+        binaries = self.root / "bin"
+        binaries.mkdir()
+        ssh = binaries / "ssh"
+        ssh.write_text(_LOOPBACK_SSH)
+        ssh.chmod(0o755)
+        login = binaries / "loginsh"
+        login.write_text(_LOOPBACK_LOGIN)
+        login.chmod(0o755)
+        self.app.env["SHELL"] = str(login)
+        self.app.env["PATH"] = str(binaries) + os.pathsep + os.environ["PATH"]
+        self.app.restart()
+        code = (
+            f"await files.paths(path={str(self.root)!r})\n"
+            "local_pid = sys.modules['albedo_plugins.files']._fff.worker_pid\n"
+            "rem = await remote.connect('local')\n"
+            f"assert len(await rem.files.find('BACKEND_NEEDLE', {str(self.root)!r})) == 1\n"
+            "plugin = sys.modules['albedo_plugins.files']\n"
+            f"payload = {{**plugin._fff_scope(Path({str(self.root)!r}), None, False, 10), 'op': 'paths', 'query': '', 'name': None, '_fff_target': 'local'}}\n"
+            "result = await plugin._fff.host('files.fff', payload)\n"
+            "assert result['workerPid'] != local_pid\n"
+            "print('BACKEND_VERIFIED', result['workerPid'])"
+        )
+        self.execute(code)
+        pid = self.last_output.split("BACKEND_VERIFIED ")[1].strip()
+        self.session = self.app.session()
+        self.execute(code)
+        self.assertEqual(self.last_output.split("BACKEND_VERIFIED ")[1].strip(), pid)
 
 
 if __name__ == "__main__":

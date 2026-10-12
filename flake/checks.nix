@@ -56,25 +56,35 @@
         touch $out
       '';
 
-    checks.python = runCommand "albedo-python-tests" {nativeBuildInputs = [pkgs.python311];} ''
-      export PYTHONDONTWRITEBYTECODE=1
-      export PYTHONPATH=${runtime}/lib/albedo/albedo/priv/python
-      export ALBEDO_FORMATTER_SOURCE=$PYTHONPATH
-      export ALBEDO_LSP_SOURCE=$PYTHONPATH
-      export ALBEDO_QUESTIONS_SOURCE=$PYTHONPATH
-      export ALBEDO_RTK_SOURCE=$PYTHONPATH
-      export ALBEDO_FFF_SOURCE=$PYTHONPATH
-      export ALBEDO_FFF_COMMAND=${suitePackages.albedo-fff}/bin/albedo-fff
-      export PATH=${pkgs.rtk}/bin:${pkgs.ripgrep}/bin:${pkgs.python311Packages.pytest}/bin:$PATH
-      export ALBEDO_PYTHON_SOURCE=$PYTHONPATH
-      python3 -m unittest discover -s ${../test} -p formatter_python_test.py -v
-      python3 -m unittest discover -s ${../test} -p lazy_mcp_python_test.py -v
-      python3 ${../test}/lsp_test.py -v
-      python3 -m unittest discover -s ${../test} -p questions_python_test.py -v
-      python3 -m unittest discover -s ${../test} -p rtk_python_test.py -v
-      python3 -m unittest discover -s ${../test} -p rtk_e2e_test.py -v
-      python3 ${../test}/fff_test.py -v
-      touch $out
-    '';
+    checks.python =
+      runCommand "albedo-python-tests" {
+        nativeBuildInputs = [
+          # keep-sorted start
+          pkgs.nodejs
+          pkgs.python311
+          # keep-sorted end
+        ];
+      } ''
+        export PYTHONDONTWRITEBYTECODE=1
+        export PYTHONPATH=${runtime}/lib/albedo/albedo/priv/python
+        export ALBEDO_FORMATTER_SOURCE=$PYTHONPATH
+        export ALBEDO_LSP_SOURCE=$PYTHONPATH
+        export ALBEDO_QUESTIONS_SOURCE=$PYTHONPATH
+        export ALBEDO_RTK_SOURCE=$PYTHONPATH
+        export ALBEDO_FFF_SOURCE=$PYTHONPATH
+        export ALBEDO_FFF_COMMAND=${suitePackages.albedo-fff}/bin/albedo-fff
+        export PATH=${pkgs.rtk}/bin:${pkgs.ripgrep}/bin:${pkgs.python311Packages.pytest}/bin:$PATH
+        export ALBEDO_PYTHON_SOURCE=$PYTHONPATH
+        python3 -m unittest discover -s ${../test} -p formatter_python_test.py -v
+        python3 -m unittest discover -s ${../test} -p lazy_mcp_python_test.py -v
+        python3 ${../test}/lsp_test.py -v
+        python3 -m unittest discover -s ${../test} -p questions_python_test.py -v
+        python3 -m unittest discover -s ${../test} -p rtk_python_test.py -v
+        python3 -m unittest discover -s ${../test} -p rtk_e2e_test.py -v
+        python3 ${../test}/fff_test.py -v
+        export ALBEDO_FFF_SCRIPT=$PYTHONPATH/albedo_fff.mjs
+        python3 ${../test}/fff_stdio_test.py -v
+        touch $out
+      '';
   };
 }

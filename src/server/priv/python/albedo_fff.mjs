@@ -1,10 +1,15 @@
 import net from "node:net";
 import fs from "node:fs";
 import { createRequire } from "node:module";
+import readline from "node:readline";
+import { Worker } from "node:worker_threads";
 const { FileFinder } = createRequire(import.meta.url)("@ff-labs/fff-node");
-const [socketPath, secret] = process.argv.slice(2);
-if (!socketPath || !secret) throw new Error("socket path and secret required");
+const stdio = process.argv[2] === "--stdio";
+const [socketPath, secret] = stdio ? [null, null] : process.argv.slice(2);
+if (!stdio && (!socketPath || !secret))
+  throw new Error("socket path and secret required");
 const roots = new Map();
+let watchdogDeadline = null;
 const unwrap = (r) => {
   if (!r.ok) throw new Error(r.error);
   return r.value;
@@ -39,7 +44,7 @@ async function finder(root) {
   return f;
 }
 async function request(q) {
-  if (q.secret !== secret) throw new Error("unauthorized");
+  if (!stdio && q.secret !== secret) throw new Error("unauthorized");
   if (q.protocol !== 1)
     throw new Error("FFF protocol mismatch: expected version 1");
   if (!["find", "paths", "fuzzy", "close"].includes(q.op))
@@ -147,6 +152,7 @@ async function request(q) {
     } while (count === 1000 && total <= q.limit);
   }
   return {
+    workerPid: process.pid,
     items,
     total,
     searched,
@@ -186,22 +192,75 @@ const server = net.createServer((socket) => {
   });
 });
 function shutdown() {
+  if (watchdogDeadline)
+    Atomics.store(watchdogDeadline, 0, BigInt(Date.now() + 2000));
   for (const f of roots.values()) f.destroy();
   roots.clear();
   server.close();
-  try {
-    fs.unlinkSync(socketPath);
-  } catch {}
+  if (socketPath) {
+    try {
+      fs.unlinkSync(socketPath);
+    } catch {}
+  }
   process.exit(0);
 }
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);
-server.listen(socketPath, () => {
-  fs.chmodSync(socketPath, 0o600);
-  console.log("FFF_READY");
-});
-// Exit orphan workers when the supervising kernel disappears.
-const owner = process.ppid;
-setInterval(() => {
-  if (process.ppid !== owner) shutdown();
-}, 1000).unref();
+if (stdio) {
+  // A separate thread bounds native calls even while the main event loop is blocked.
+  const deadline = (watchdogDeadline = new BigInt64Array(
+    new SharedArrayBuffer(8),
+  ));
+  new Worker(
+    `
+    const { workerData } = require('node:worker_threads');
+    const deadline = new BigInt64Array(workerData);
+    setInterval(() => {
+      const until = Atomics.load(deadline, 0);
+      if (until && BigInt(Date.now()) >= until) process.kill(process.pid, 'SIGKILL');
+    }, 100).unref();
+    require('node:worker_threads').parentPort.on('message', () => {});
+  `,
+    { eval: true, workerData: deadline.buffer },
+  ).unref();
+  let idle = setTimeout(shutdown, 60000);
+  const input = readline.createInterface({ input: process.stdin });
+  input.on("line", (line) => {
+    clearTimeout(idle);
+    queue = queue.then(async () => {
+      Atomics.store(deadline, 0, BigInt(Date.now() + 30000));
+      try {
+        if (Buffer.byteLength(line) > 1048576)
+          throw new Error("FFF request exceeds 1 MiB bound");
+        const reply = JSON.stringify({
+          protocol: 1,
+          ok: true,
+          value: await request(JSON.parse(line)),
+        });
+        if (Buffer.byteLength(reply) > 8 * 1024 * 1024)
+          throw new Error(
+            "FFF response exceeds 8 MiB bound; narrow the search",
+          );
+        process.stdout.write(reply + "\n");
+      } catch (e) {
+        process.stdout.write(
+          JSON.stringify({ protocol: 1, ok: false, error: String(e.message) }) +
+            "\n",
+        );
+      } finally {
+        Atomics.store(deadline, 0, 0n);
+        idle = setTimeout(shutdown, 60000);
+      }
+    });
+  });
+  input.on("close", shutdown);
+} else {
+  server.listen(socketPath, () => {
+    fs.chmodSync(socketPath, 0o600);
+    console.log("FFF_READY");
+  });
+  const owner = process.ppid;
+  setInterval(() => {
+    if (process.ppid !== owner) shutdown();
+  }, 1000).unref();
+}
