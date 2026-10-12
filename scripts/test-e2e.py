@@ -14,6 +14,7 @@ SUITE_CASES = (
     "lazy_mcp_test.py",
     "lsp_e2e_test.py",
     "questions_e2e_test.py",
+    "opencode_go_e2e_test.py",
     "tool_backends_e2e_test.py",
 )
 UPSTREAM_CASES = (
@@ -42,12 +43,19 @@ def prepare_source(upstream, destination, suite):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, required=True)
+    parser.add_argument(
+        "--suite", type=Path, default=Path(__file__).resolve().parents[1]
+    )
     parser.add_argument("--package", type=Path, required=True)
+    parser.add_argument(
+        "--case", choices=(*SUITE_CASES, *UPSTREAM_CASES), action="append"
+    )
     args = parser.parse_args()
-    suite = Path(__file__).resolve().parents[1]
+    suite = args.suite
     environment = dict(
         os.environ,
         PYTHONDONTWRITEBYTECODE="1",
+        OPENCODE_API_KEY="",
         ALBEDO_TEST_DAEMON=str(args.package / "bin/albedo-daemon"),
         ALBEDO_TEST_CLI=str(args.package / "bin/albedo"),
     )
@@ -55,7 +63,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="albedo-suite-e2e-") as directory:
         source = Path(directory) / "source"
         prepare_source(args.source, source, suite)
-        for case in (*SUITE_CASES, *UPSTREAM_CASES):
+        for case in args.case or (*SUITE_CASES, *UPSTREAM_CASES):
             subprocess.run(
                 [sys.executable, "-B", "test/e2e/run.py", case, "-x", "1"],
                 cwd=source,

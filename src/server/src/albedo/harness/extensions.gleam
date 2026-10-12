@@ -21,6 +21,7 @@ import albedo/harness/extensions/memory/extension as memory
 import albedo/harness/extensions/models/extension as models
 import albedo/harness/extensions/notes/extension as notes
 import albedo/harness/extensions/openai/extension as openai
+import albedo/harness/extensions/opencode_go/extension as opencode_go
 import albedo/harness/extensions/paperclips/extension as paperclips
 import albedo/harness/extensions/proxy/extension as proxy
 import albedo/harness/extensions/python/extension as python
@@ -78,6 +79,7 @@ fn installed() -> Config {
       // gets models.dev's full catalog.
       codex.extension(),
       openai.extension(),
+      opencode_go.extension(),
       models.extension(),
       snapcompact.extension(),
       rolling.extension(),
@@ -101,7 +103,7 @@ fn installed() -> Config {
       "links", "instructions", "commands", "skills", "paperclips", "models",
       "openai", "codex", "antigravity", "alibaba", "bedrock", "claude", "vertex",
       "rolling", "snapcompact-memory", "lcm-memory", "notes", "remote",
-      "browser", "warm", "exa", "web-search", "questions",
+      "browser", "warm", "exa", "web-search", "questions", "opencode-go",
     ],
   )
 }

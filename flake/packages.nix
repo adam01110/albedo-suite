@@ -53,18 +53,24 @@
           '';
       });
 
-    withClientSources = package:
+    withClientSources = showDiffs: package: let
+      clientSources = builtins.path {
+        path = ../src/client;
+        filter = path: _: showDiffs || !(builtins.elem (baseNameOf path) ["chat.go" "chat_test.go"]);
+      };
+    in
       package.overrideAttrs (old: {
         postPatch =
           ''
             sha256sum --check ${../upstream/client.sha256}
-            cp -r --no-preserve=mode ${../src/client}/. .
+            cp -r --no-preserve=mode ${clientSources}/. .
           ''
           + (old.postPatch or "");
         postCheck =
           (old.postCheck or "")
           + ''
-            go test ./internal/tui -run '^TestDefaultDiffVisibility$' -count=1 -v
+            go test ./internal/tui -run '^TestOpenCodeGo' -count=1 -v
+            ${pkgs.lib.optionalString showDiffs "go test ./internal/tui -run '^TestDefaultDiffVisibility$' -count=1 -v"}
           '';
       });
 
@@ -77,8 +83,8 @@
           in
             if name == "server.nix"
             then withServerSources package
-            else if showDiffs && name == "client.nix"
-            then withClientSources package
+            else if name == "client.nix"
+            then withClientSources showDiffs package
             else package;
         };
   in {

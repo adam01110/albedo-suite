@@ -22,6 +22,40 @@ authentication at runtime. Do not put tokens in these profiles.
 The module leaves `config.json` untouched when no profiles are declared. When
 you declare profiles, `activeProvider` must name one of them.
 
+### OpenCode Go
+
+Select **OpenCode Go** in `/login`, or use `/login opencode-go`, and enter your
+OpenCode API key. The default base URL is `https://opencode.ai/zen/go/v1`, not
+the pay-as-you-go Zen URL. `OPENCODE_API_KEY` is also supported when the profile
+has no saved key.
+
+```nix
+programs.albedo = {
+  activeProvider = "go";
+  providers.go = {
+    extension = "opencode-go";
+    baseUrl = "https://opencode.ai/zen/go/v1";
+    protocol = "chat_completions";
+    model = "glm-5.2";
+  };
+};
+```
+
+Use bare API model IDs, not OpenCode's `opencode-go/` prefix. The saved protocol
+is a compatibility field; the server selects the wire format per model:
+Chat Completions for GLM/Kimi/MiMo/DeepSeek, Messages for MiniMax/Claude and newer
+Qwen models, and Responses for GPT/Grok/Muse Spark. Cached models.dev per-model
+SDK metadata takes precedence over the documented routing defaults. `/model`
+can switch between these formats within one profile.
+
+The picker discovers IDs from Go's `/models` endpoint and uses models.dev for
+limits and modalities. Discovery caches are endpoint-specific, refresh after an
+hour, and survive failed fetches. `/reload models` forces discovery refresh and
+reports failures. Authentication stays in runtime credentials, not Nix.
+Claude-only beta headers and context-management fields are not sent to Go's
+Messages endpoint; its non-Claude models do not receive Claude adaptive-effort
+settings. Go subscription limits are reported without rotating to paid Zen.
+
 ## MCP servers
 
 ```nix
