@@ -13,8 +13,8 @@
         # keep-sorted end
       ];
       text =
-        pkgs.lib.replaceStrings ["@mergeSettings@"] ["${../scripts/merge-settings.jq}"]
-        (builtins.readFile ../scripts/configure.sh);
+        pkgs.lib.replaceStrings ["@mergeSettings@"] ["${../../scripts/merge-settings.jq}"]
+        (builtins.readFile ../../scripts/configure.sh);
     };
   };
 }

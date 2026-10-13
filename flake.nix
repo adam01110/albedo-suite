@@ -44,6 +44,6 @@
         "x86_64-linux"
         # keep-sorted end
       ];
-      imports = [(import-tree ./flake)];
+      imports = [(import-tree ./nix/modules)];
     };
 }

@@ -6,7 +6,7 @@
 files the suite replaces and the files it adds. Edit them as ordinary Gleam,
 Erlang, Python and Go source.
 
-`flake/packages.nix` uses the locked NUR package definitions. It checks the
+`nix/modules/packages.nix` uses the locked NUR package definitions. It checks the
 source hash in `upstream/pin.json` and the original files in
 `upstream/*.sha256`. It then copies the suite files before NUR's existing
 post-patch hooks run. Upstream dependencies, patches and build checks remain

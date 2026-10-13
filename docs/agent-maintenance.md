@@ -49,7 +49,7 @@ accident. Flag intentional behavior changes for the user.
 
 `src/server/` and `src/client/` are sparse replacements and additions using
 upstream-relative paths. They are not complete, independently buildable checkouts.
-`flake/packages.nix` obtains `albedo-git` from the locked NUR input, verifies its
+`nix/modules/packages.nix` obtains `albedo-git` from the locked NUR input, verifies its
 source hash and original-file checksums, copies suite sources, then runs NUR's
 post-patch hooks. Preserve upstream dependencies and build hooks.
 
@@ -93,7 +93,7 @@ history onto an unrelated upstream repository.
    checksum manifests from the selected pristine source. Remove obsolete entries
    and add baselines for newly replaced upstream files. Never regenerate hashes
    from suite files, bless drift merely to unblock a build, or disable the guards.
-7. Reconcile NUR hook changes with `flake/packages.nix`; keep applicable upstream
+7. Reconcile NUR hook changes with `nix/modules/packages.nix`; keep applicable upstream
    checks as well as suite checks. Update tests, feature docs and source
    attribution in `THIRD_PARTY_NOTICES.md` when affected. Remove retired settings,
    registration and tests together; coordinate any Infra configuration changes
@@ -126,7 +126,7 @@ regressions; the E2E runner additionally exercises isolated daemon behavior with
 fake providers, temporary homes and local servers. Run its full default case set
 for upstream updates, not just one affected feature. Where Erlang needs explicit
 CA roots, use the `ERL_AFLAGS` public-key `cacerts_path` setup in
-`flake/checks.nix`; `SSL_CERT_FILE` alone is insufficient.
+`nix/modules/checks.nix`; `SSL_CERT_FILE` alone is insufficient.
 
 For documentation-only changes, validate relative links and command/path claims
 against the current tree and run formatting; runtime builds are not required.

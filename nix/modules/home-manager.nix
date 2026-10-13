@@ -2,7 +2,7 @@
   flake.homeManagerModules = {
     default = {pkgs, ...}: {
       imports = [
-        (import ../nix/home-manager.nix {
+        (import ../home-manager.nix {
           suitePackages = self.packages.${pkgs.stdenv.hostPlatform.system};
         })
       ];

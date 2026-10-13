@@ -28,7 +28,7 @@
       inherit pkgs;
       nurpkgs = pkgs;
     };
-    pin = fromJSON (readFile ../upstream/pin.json);
+    pin = fromJSON (readFile ../../upstream/pin.json);
 
     toolPath = makeBinPath [
       # keep-sorted start
@@ -42,14 +42,14 @@
         # Fail on upstream drift before installing editable source files.
         postPatch =
           ''
-            sha256sum --check ${../upstream/server.sha256}
-            cp -r --no-preserve=mode ${../src/server}/. .
+            sha256sum --check ${../../upstream/server.sha256}
+            cp -r --no-preserve=mode ${../../src/server}/. .
           ''
           + (old.postPatch or "");
         doCheck = true;
         checkPhase = ''
           runHook preCheck
-          cp ${../test/suite_codex_error_test.gleam} test/suite_codex_error_test.gleam
+          cp ${../../test/suite_codex_error_test.gleam} test/suite_codex_error_test.gleam
           gleam run -m suite_codex_error_test
           runHook postCheck
         '';
@@ -62,14 +62,14 @@
 
     withClientSources = showDiffs: package: let
       clientSources = builtins.path {
-        path = ../src/client;
+        path = ../../src/client;
         filter = path: _: showDiffs || !(builtins.elem (baseNameOf path) ["default_diffs_test.go" "chat_test.go"]);
       };
     in
       package.overrideAttrs (old: {
         postPatch =
           ''
-            sha256sum --check ${../upstream/client.sha256}
+            sha256sum --check ${../../upstream/client.sha256}
             cp -r --no-preserve=mode ${clientSources}/. .
             ${pkgs.lib.optionalString (!showDiffs) ''substituteInPlace cli/internal/tui/chat.go --replace-fail "DisplayFlags{Diffs: true}" "DisplayFlags{}"''}
           ''
@@ -108,8 +108,8 @@
 
     checks.source-baseline = runCommand "albedo-source-baseline" {} ''
       cd ${albedo-git.src}
-      sha256sum --check ${../upstream/server.sha256}
-      sha256sum --check ${../upstream/client.sha256}
+      sha256sum --check ${../../upstream/server.sha256}
+      sha256sum --check ${../../upstream/client.sha256}
       touch $out
     '';
   };

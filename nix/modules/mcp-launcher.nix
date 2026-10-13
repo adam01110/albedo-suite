@@ -8,8 +8,8 @@ _: {
       text =
         pkgs.lib.replaceStrings
         ["@env@" "@launchConfig@"]
-        ["${pkgs.coreutils}/bin/env" "${../scripts/validate-launch.jq}"]
-        (builtins.readFile ../scripts/mcp-launcher.sh);
+        ["${pkgs.coreutils}/bin/env" "${../../scripts/validate-launch.jq}"]
+        (builtins.readFile ../../scripts/mcp-launcher.sh);
     };
   };
 }
