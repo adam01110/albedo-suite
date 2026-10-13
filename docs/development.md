@@ -66,6 +66,19 @@ The tests use fake providers, temporary homes and local stdio servers. They do
 not activate your configuration, read your credentials or contact live
 providers.
 
+## Temporary Codex error decoding
+
+`src/server/src/albedo/openai_api/responses.gleam` temporarily accepts nested
+`error.message`, string `error`, and code-only error events in addition to the
+standard top-level `message`. Messages take precedence over codes. Unknown or
+non-string shapes retain typed malformed-error diagnostics without dumping raw
+payloads. This exposes provider failures; it does not retry or suppress them.
+The original failing payload was not captured, so its exact shape is unverified.
+
+The server package runs `test/suite_codex_error_test.gleam` during its check phase.
+Remove this source replacement, its baseline checksum and inventory entry, and
+its package check when upstream handles these envelopes.
+
 ## Temporary compatibility layers
 
 Formatter and LSP support are local stopgaps for the pinned upstream version.

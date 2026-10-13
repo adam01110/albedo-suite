@@ -46,6 +46,13 @@
             cp -r --no-preserve=mode ${../src/server}/. .
           ''
           + (old.postPatch or "");
+        doCheck = true;
+        checkPhase = ''
+          runHook preCheck
+          cp ${../test/suite_codex_error_test.gleam} test/suite_codex_error_test.gleam
+          gleam run -m suite_codex_error_test
+          runHook postCheck
+        '';
         postInstall =
           (old.postInstall or "")
           + ''

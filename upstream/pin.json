@@ -35,6 +35,7 @@
     "src/albedo/harness/extensions/questions/service.gleam",
     "src/albedo/harness/extensions/run/extension.gleam",
     "src/albedo/harness/loop.gleam",
-    "src/albedo/harness/runtime.gleam"
+    "src/albedo/harness/runtime.gleam",
+    "src/albedo/openai_api/responses.gleam"
   ]
 }
