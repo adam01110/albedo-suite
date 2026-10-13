@@ -46,6 +46,7 @@ await lsp.definition("module.nix", 0, 4)
 await lsp.references("module.nix", 0, 4, include_declaration=True)
 await lsp.symbols("module.nix")
 await lsp.close()
+await lsp.close("nix")
 ```
 
 Positions use zero-based lines and UTF-16 character offsets, as required by
