@@ -34,12 +34,14 @@ while True:
             break
         if line.lower().startswith(b"content-length:"):
             length = int(line.split(b":", 1)[1])
+    assert length is not None
     message = json.loads(sys.stdin.buffer.read(length))
     method = message.get("method")
     params = message.get("params", {})
     log(method or "response", params=params, message=message)
     if method == "initialize":
         if args.mode == "death":
+            print("fixture startup failed", file=sys.stderr, flush=True)
             sys.exit(2)
         if args.mode == "oversized":
             sys.stdout.buffer.write(b"Content-Length: 999999999\r\n\r\n")

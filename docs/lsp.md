@@ -73,7 +73,10 @@ are not tracked. Checks wait until background work is idle. Nonempty diagnostics
 are returned as untrusted feedback and reject the candidate reply once per edit,
 so the model can review them and regenerate its report. Failed checks retain
 pending files and reject acceptance until repaired; failed servers still require
-an explicit close before retry. Explicit LSP calls remain immediate.
+an explicit close before retry. Failure reports identify the server and file,
+include bounded startup stderr when available, and give the explicit close call.
+Repeated checks preserve the original cause without accumulating wrappers or
+restarting the process. Explicit LSP calls remain immediate.
 
 Failures are explicit; there is no automatic reconnect or replay. Close a
 failed server before an intentional retry. At most four calls may run or wait

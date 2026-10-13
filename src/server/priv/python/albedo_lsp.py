@@ -150,9 +150,12 @@ class _Client:
         if self.failure:
             raise LspError(self.failure)
         data = _json({"jsonrpc": "2.0", **value}, MAX_BYTES)
-        self.proc.stdin.write(f"Content-Length: {len(data)}\r\n\r\n".encode() + data)
+        if self.proc is None or self.proc.stdin is None:
+            raise LspError("LSP stdin is not available")
+        stdin = self.proc.stdin
+        stdin.write(f"Content-Length: {len(data)}\r\n\r\n".encode() + data)
         async with asyncio.timeout(REQUEST_SECONDS):
-            await self.proc.stdin.drain()
+            await stdin.drain()
 
     async def request(self, method, params, timeout=REQUEST_SECONDS):
         self.next_id += 1
@@ -215,11 +218,13 @@ class _Client:
         )
 
     async def drain_stderr(self):
+        assert self.proc is not None and self.proc.stderr is not None
         while data := await self.proc.stderr.read(4096):
             self.stderr.extend(data)
             del self.stderr[:-16384]
 
     async def read(self):
+        assert self.proc is not None and self.proc.stdout is not None
         try:
             while True:
                 length = None
@@ -227,8 +232,10 @@ class _Client:
                 while True:
                     line = await self.proc.stdout.readline()
                     total += len(line)
-                    if not line or total > 16384:
-                        raise LspError("LSP EOF or oversized header")
+                    if not line:
+                        raise LspError("LSP stdout closed (EOF)")
+                    if total > 16384:
+                        raise LspError("LSP header exceeds 16 KiB")
                     if line == b"\r\n":
                         break
                     key, sep, value = line.partition(b":")
@@ -290,7 +297,8 @@ class _Client:
         except asyncio.CancelledError:
             raise
         except Exception as error:
-            self.failure = f"LSP transport failed: {error}"
+            if self.failure is None:
+                self.failure = f"LSP transport failed: {error}"
             for future in self.pending.values():
                 if not future.done():
                     future.set_exception(LspError(self.failure))
@@ -632,11 +640,13 @@ class Lsp:
         self.snapshot(path, method, line, character)
         client = await self.client(config, path)
         async with client.lock:
+            if client.failure:
+                raise LspError(
+                    f"LSP server {config['id']!r} for {path}: {client.failure}; "
+                    f"close explicitly with await lsp.close({config['id']!r}) "
+                    "before restarting"
+                )
             try:
-                if client.failure:
-                    raise LspError(
-                        client.failure + "; close explicitly before restarting"
-                    )
                 if client.proc is None:
                     await client.start()
                 capability = {
@@ -686,8 +696,18 @@ class Lsp:
                 }
             except BaseException as error:
                 # Failure is terminal: there is no implicit reconnect or replay.
-                client.failure = f"{type(error).__name__}: {error}"
+                if client.failure is None:
+                    client.failure = f"{type(error).__name__}: {error}"
                 await client.stop()
+                if isinstance(error, Exception):
+                    stderr = client.stderr.decode("utf-8", errors="replace")[-4096:]
+                    detail = f"\nServer stderr (untrusted): {stderr}" if stderr else ""
+                    raise LspError(
+                        f"LSP server {config['id']!r} for {path}: "
+                        f"{client.failure}{detail}; "
+                        f"close explicitly with await lsp.close({config['id']!r}) "
+                        "before restarting"
+                    ) from error
                 raise
 
     async def diagnostics(self, path, server=None):

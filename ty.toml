@@ -1,2 +1,2 @@
 [environment]
-extra-paths = [".direnv/albedo-upstream/priv/python", ".direnv/albedo-upstream/test/e2e"]
+extra-paths = ["src/server/priv/python", ".direnv/albedo-upstream/priv/python", ".direnv/albedo-upstream/test/e2e"]

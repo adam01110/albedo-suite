@@ -101,6 +101,28 @@ class LspTests(unittest.IsolatedAsyncioTestCase):
         manager.config[0]["args"][2] = "normal"
         self.assertTrue((await manager.finish())["ok"])
 
+    async def test_failed_retries_preserve_cause_and_do_not_replay(self):
+        manager = self.manager("death")
+        manager.record(self.path)
+        first = await manager.finish()
+        self.assertFalse(first["ok"])
+        self.assertIn("fixture", first["error"])
+        self.assertIn(str(self.path), first["error"])
+        self.assertIn("stdout closed (EOF)", first["error"])
+        self.assertIn("fixture startup failed", first["error"])
+        cause = manager.clients["fixture"].failure
+        log_count = len(self.logs())
+        reports = [(await manager.finish())["error"] for _ in range(10)]
+        self.assertEqual(len(set(reports)), 1)
+        self.assertEqual(reports[0].count("close explicitly"), 1)
+        self.assertIn("await lsp.close('fixture')", reports[0])
+        self.assertEqual(manager.clients["fixture"].failure, cause)
+        self.assertEqual(len(self.logs()), log_count)
+        self.assertIn(self.path, manager.pending)
+        await manager.close("fixture")
+        manager.config[0]["args"][2] = "normal"
+        self.assertTrue((await manager.finish())["ok"])
+
     async def test_deferred_busy_and_concurrent_edit(self):
         import types
 
@@ -422,19 +444,20 @@ class LspTests(unittest.IsolatedAsyncioTestCase):
         spec = importlib.util.spec_from_file_location(
             "temporary_lsp_plugin", SOURCE / "albedo_plugins/lsp.py"
         )
+        assert spec is not None and spec.loader is not None
         plugin = importlib.util.module_from_spec(spec)
         # This source overlay may not contain the upstream API; supply only its interface.
         import types
 
         stub = types.ModuleType("albedo_api")
-        stub.PythonApi = object
+        setattr(stub, "PythonApi", object)
         with patch.dict(sys.modules, {"albedo_api": stub}):
             spec.loader.exec_module(plugin)
 
         class Api:
             callbacks = []
 
-            async def host(self, name, params):
+            async def host(self, name, _params):
                 self.name = name
                 return {}
 
