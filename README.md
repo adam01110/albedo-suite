@@ -91,3 +91,9 @@ the suite copies its replacements into that build.
 
 [Development details](docs/development.md) cover upstream updates and daemon
 tests. [Third-party notices](THIRD_PARTY_NOTICES.md) record source attribution.
+
+## License
+
+Suite-authored material uses [WTFPL v2](LICENSE), matching Albedo. Upstream and
+third-party attributions and license exceptions are retained in
+[the source notices](THIRD_PARTY_NOTICES.md) and `LICENSES/`.

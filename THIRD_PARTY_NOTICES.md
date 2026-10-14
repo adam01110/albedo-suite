@@ -5,9 +5,8 @@ revision `28c0a7596ed0a378351a09aaf9525c2e3e1bfc1a`,
 <https://tangled.org/okami.mom/albedo>. Albedo is copyright 2026 albedo contributors
 (okami.mom & ptr.pet), licensed under WTFPL v2; the original license is retained
 in `LICENSES/albedo-WTFPL.txt`. Source replacements and their extension-local
-additions use WTFPL v2;
-the root GPL-3.0 license covers the suite's original packaging/module/helper code,
-not a blanket relicensing of upstream material.
+additions use WTFPL v2. Suite-authored material, including packaging, modules,
+helpers and tests, also uses WTFPL v2 under the root `LICENSE`.
 
 Modifications add opt-in lazy MCP lifecycle/bindings, the managed pre-final
 acceptance hook and local deferred formatter, isolated local LSP compatibility
