@@ -20,6 +20,9 @@ SUITE_CASES = (
     "tool_images_e2e_test.py",
 )
 UPSTREAM_CASES = (
+    "cache_miss_test.py",
+    "provider_timeout_test.py",
+    "speechless_test.py",
     "mcp_test.py",
     "operations_lifecycle_test.py",
     "stream_replay_test.py",

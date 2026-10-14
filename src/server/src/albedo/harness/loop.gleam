@@ -6,6 +6,7 @@ import albedo/daemon/image_fit
 import albedo/daemon/message_content
 import albedo/daemon/requests
 import albedo/daemon/store
+import albedo/daemon/stream_trace
 import albedo/daemon/tool_progress
 import albedo/daemon/tool_results
 import albedo/daemon/transcript
@@ -148,7 +149,7 @@ fn run_checked(
   let current_instructions = request_instructions(state)
   let request = request(state, current_instructions, history)
   state.record_context(request, prepared.observation, prepared.compacted)
-  use #(row, turn, sent, attempt) <- result.try(
+  let answer = fn(request: types.Request, original: List(types.Input)) {
     call(
       call_context(state),
       requests.Turn,
@@ -193,9 +194,37 @@ fn run_checked(
       },
       state.progress_reset,
     )
-    |> result.map_error(describe(state.upstream, _)),
-  )
+    |> result.map_error(describe(state.upstream, state.model, _))
+  }
+  use answered <- result.try(answer(request, original))
+  // A turn that ends with neither a reply nor a call left the user nothing.
+  // Sending the same request again buys another full reasoning pass that
+  // likely ends the same way, so the one retry says what went wrong.
+  use #(row, turn, sent, attempt) <- result.try(case speechless(answered.1) {
+    False -> Ok(answered)
+    True -> {
+      let nudge = types.User(speechless_nudge)
+      case state.publish(view.Retry(state.run_id, 2, speechless_retry, 0)) {
+        False -> Error("cancelled")
+        True ->
+          answer(
+            types.Request(..request, input: list.append(request.input, [nudge])),
+            list.append(original, [nudge]),
+          )
+      }
+    }
+  })
   let cache = fading(state, sent)
+  let cache_miss = case row {
+    Some(id) ->
+      requests.cache_miss(
+        runtime.ledger(state.host),
+        state.session,
+        id,
+        option.then(cache, cache_fade.whole_for_ms),
+      )
+    None -> None
+  }
   // The successful attempt's span, as its request row records it. A clock
   // that steps back reads as zero.
   let completed_usage =
@@ -205,6 +234,7 @@ fn run_checked(
       usage.now(),
       cache,
       Some(int.max(0, sent.finished_ms - sent.started_ms)),
+      cache_miss,
     )
   let replay = list.map(turn.output, types.Replay)
   case gated, turn.tool_calls, turn.finish {
@@ -319,9 +349,12 @@ fn finish_turn(
     True -> Ok(Nil)
     False -> state.record_usage(completed_usage)
   })
+  let speechless_turn = speechless(turn)
   case turn.tool_calls {
     [] ->
       case turn.finish {
+        types.Complete if speechless_turn ->
+          Error(speechless_message(state.model))
         types.Complete -> {
           use steering <- result.try(state.drain_steering())
           case steering {
@@ -361,6 +394,31 @@ fn finish_turn(
       )
     }
   }
+}
+
+/// What the model is told when its turn ended with only reasoning, or
+/// nothing at all: gemini-cli nudges the same way.
+const speechless_nudge =
+  "[albedo: your previous response ended with no reply and no tool call, so the user saw nothing. Give your answer now, or call a tool.]"
+
+const speechless_retry = "model ended its turn without a reply"
+
+fn speechless_message(model: String) -> String {
+  model
+  <> " ended its turn without a reply or a tool call, even when asked again; send a message to continue"
+}
+
+/// Whether a completed turn said nothing the user can read and called no
+/// tool: Gemini routes sometimes stop after thinking alone.
+fn speechless(turn: types.Turn) -> Bool {
+  turn.tool_calls == []
+  && turn.finish == types.Complete
+  && list.all(turn.output, fn(item) {
+    case message_content.visible_assistant_text(types.Replay(item)) {
+      Some(text) -> string.trim(text) == ""
+      None -> True
+    }
+  })
 }
 
 /// `inputs`, newest first, with the images the provider would refuse swapped
@@ -458,7 +516,7 @@ pub fn background(
     fn(_attempt) { Nil },
   )
   |> result.map(fn(attempt) { attempt.1.usage })
-  |> result.map_error(describe(state.upstream, _))
+  |> result.map_error(describe(state.upstream, request.model, _))
 }
 
 /// Start a tool only after its running projection is acknowledged. Remove
@@ -621,6 +679,12 @@ fn call(
   progress_event: fn(Int, types.Event) -> types.Control,
   reset_progress: fn(Int) -> Nil,
 ) -> Result(#(Option(Int), types.Turn, extension.SentCall, Int), types.Error) {
+  let input_chain =
+    requests.input_chain(
+      option.unwrap(request.instructions, ""),
+      request.tools,
+      request.input,
+    )
   retry_stream(
     fn(attempt) {
       use _ <- result.try(case publish(view.ProviderStarted) {
@@ -628,17 +692,21 @@ fn call(
         False -> Error(types.Cancelled)
       })
       let started = requests.now()
+      let trace = stream_trace.new(started)
       let outcome =
         state.upstream.stream(request, fn(event) {
+          stream_trace.observe(trace, event, requests.now())
           case on_event(event) {
             types.Continue -> progress_event(attempt, event)
             types.Stop -> types.Stop
           }
         })
       let finished = requests.now()
+      let reported = stream_trace.reported(trace)
+      // A failed call costs what its stream last metered.
       let usage = case outcome {
         Ok(turn) -> turn.usage
-        Error(_) -> None
+        Error(_) -> reported.usage
       }
       let marks = state.upstream.cache_marks(request)
       // The account label is read after the attempt: rotation records which
@@ -662,6 +730,9 @@ fn call(
             prefix,
             marks,
             state.run_id,
+            input_chain,
+            stream_trace.streamed(trace),
+            reported,
           ),
         )
       let row = case row {
@@ -706,6 +777,7 @@ fn call(
     state.run_id,
     reset_progress,
     1,
+    0,
   )
 }
 
@@ -770,6 +842,11 @@ fn request_prefix(
 /// handoff or a host whose ephemeral ports sit in TIME_WAIT.
 const attempts = 8
 
+/// Retries for a call that timed out after the provider accepted it. The
+/// provider was generating, and billing, the whole time, and the identical
+/// request most likely thinks just as long again, so it gets one more go.
+const accepted_timeout_retries = 1
+
 /// Reissue transient transport and gateway failures. A failed attempt has no committed output
 /// or tool effects; discard its live previews before forwarding the next attempt.
 fn retry_stream(
@@ -778,17 +855,30 @@ fn retry_stream(
   run_id: String,
   reset_progress: fn(Int) -> Nil,
   attempt: Int,
+  accepted_timeouts: Int,
 ) -> Result(a, types.Error) {
   case run(attempt) {
-    Error(error) ->
-      case attempt < attempts && retryable(error) {
+    Error(error) -> {
+      let accepted = accepted_timeout(error)
+      let accepted_timeouts = case accepted {
+        True -> accepted_timeouts + 1
+        False -> accepted_timeouts
+      }
+      case
+        attempt < attempts
+        && retryable(error)
+        && accepted_timeouts <= accepted_timeout_retries
+      {
         False -> Error(error)
         True ->
           case
             publish(view.Retry(
               run_id,
               attempt + 1,
-              "transient provider request failure",
+              case accepted {
+                True -> "provider went silent after accepting the request"
+                False -> "transient provider request failure"
+              },
               int.bitwise_shift_left(250, attempt - 1),
             ))
           {
@@ -796,11 +886,26 @@ fn retry_stream(
             True -> {
               reset_progress(attempt)
               process.sleep(int.bitwise_shift_left(250, attempt - 1))
-              retry_stream(run, publish, run_id, reset_progress, attempt + 1)
+              retry_stream(
+                run,
+                publish,
+                run_id,
+                reset_progress,
+                attempt + 1,
+                accepted_timeouts,
+              )
             }
           }
       }
+    }
     outcome -> outcome
+  }
+}
+
+fn accepted_timeout(error: types.Error) -> Bool {
+  case error {
+    types.Timeout(phase, _) -> types.accepted(phase)
+    _ -> False
   }
 }
 
@@ -935,13 +1040,49 @@ pub fn rebuild(
   #(request, request_prefix(request, original, prepared.observation))
 }
 
-fn describe(upstream: extension.Upstream, error: types.Error) -> String {
-  upstream.explain(error) |> option.lazy_unwrap(fn() { string.inspect(error) })
+fn describe(
+  upstream: extension.Upstream,
+  model: String,
+  error: types.Error,
+) -> String {
+  case error {
+    types.Timeout(phase, waited_ms) -> timeout_message(model, phase, waited_ms)
+    _ ->
+      upstream.explain(error)
+      |> option.lazy_unwrap(fn() { string.inspect(error) })
+  }
+}
+
+/// A call that timed out on every attempt it was allowed.
+fn timeout_message(
+  model: String,
+  phase: types.TimeoutPhase,
+  waited_ms: Int,
+) -> String {
+  let seconds = int.to_string(waited_ms / 1000) <> " s"
+  case phase {
+    types.AwaitingFirstEvent ->
+      model
+      <> " produced no output for "
+      <> seconds
+      <> " after the provider accepted the request; it may be thinking past the timeout. Try a lower effort, or retry"
+    types.Streaming ->
+      model
+      <> " stopped streaming for "
+      <> seconds
+      <> "; try a lower effort, or retry"
+    types.Connecting | types.AwaitingHeaders ->
+      "the provider request timed out "
+      <> types.phase_name(phase)
+      <> " ("
+      <> seconds
+      <> ") on every attempt"
+  }
 }
 
 fn retryable(error: types.Error) -> Bool {
   case error {
-    types.ConnectionError(_) | types.Timeout | types.UnexpectedEnd -> True
+    types.ConnectionError(_) | types.Timeout(..) | types.UnexpectedEnd -> True
     types.HttpError(status, _) ->
       list.contains([502, 503, 504, 520, 521, 522, 523, 524, 529], status)
     types.ProviderError("Overloaded") -> True
@@ -995,7 +1136,8 @@ fn summarize(
       fn(_) { Nil },
     )
     |> result.map_error(fn(error) {
-      "summarizer provider request failed: " <> describe(state.upstream, error)
+      "summarizer provider request failed: "
+      <> describe(state.upstream, model, error)
     }),
   )
   let text =

@@ -96,7 +96,11 @@ pub fn stream_event(
       ))
     types.ThinkingDelta(value) ->
       Some(Thinking(run_id, message_id <> ":thinking", value, None))
-    types.ArgumentsDelta(_, _, _) | types.Started(_) -> None
+    types.ArgumentsDelta(_, _, _)
+    | types.Started(_)
+    | types.Responded(_)
+    | types.Metered(..)
+    | types.Served(..) -> None
   }
 }
 
@@ -528,6 +532,13 @@ pub fn usage(metadata: Option(usage.Metadata)) -> json.Json {
     #(
       "tokens_per_second",
       json.nullable(option.then(metadata, usage.tokens_per_second), json.float),
+    ),
+    #(
+      "cache_miss_tokens",
+      json.nullable(
+        option.then(metadata, fn(value) { value.cache_miss }),
+        json.int,
+      ),
     ),
     #("context_window_tokens", json.null()),
     #("cache_ttl_seconds", json.null()),

@@ -14,6 +14,7 @@ import albedo/daemon/session
 import albedo/daemon/session_activity
 import albedo/daemon/session_configuration
 import albedo/daemon/session_namespace
+import albedo/daemon/stream_trace
 import albedo/daemon/tool_progress
 import albedo/daemon/usage
 import albedo/harness/extensions/python/kernel as python
@@ -335,6 +336,22 @@ pub fn request(row: requests.Row) -> json.Json {
         ])
       }),
     ),
+    #("input_chain", json.nullable(row.input_chain, json.string)),
+    #("stream", json.nullable(row.streamed, streamed)),
+    #("first_byte_ms", json.nullable(row.first_byte_ms, json.int)),
+    #("total_tokens", token_observation(row.total_tokens)),
+    #("response_id", json.nullable(row.response_id, json.string)),
+    #("model_version", json.nullable(row.model_version, json.string)),
+    #("trace_id", json.nullable(row.trace_id, json.string)),
+  ])
+}
+
+fn streamed(streamed: stream_trace.Streamed) -> json.Json {
+  json.object([
+    #("first_event_ms", json.nullable(streamed.first_event_ms, json.int)),
+    #("events", json.int(streamed.events)),
+    #("thinking_bytes", json.int(streamed.thinking_bytes)),
+    #("output_bytes", json.int(streamed.output_bytes)),
   ])
 }
 

@@ -2900,6 +2900,7 @@ fn finish_turn(
               Some(usage.Tokens(tokens, 0, None, None, None, None, None)),
               None,
               None,
+              None,
             )
           session_state.emit(
             session_state.State(..state, latest_usage: Some(metadata)),

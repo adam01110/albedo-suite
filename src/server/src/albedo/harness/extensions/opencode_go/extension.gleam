@@ -134,6 +134,7 @@ fn openai_exchange(
     ],
     body: body,
     timeout_ms: client.timeout_ms,
+    first_event_timeout_ms: None,
     max_event_bytes: client.max_event_bytes,
     require_event_stream: True,
   )

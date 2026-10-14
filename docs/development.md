@@ -52,7 +52,8 @@ The package exposes its pinned source through `.src`. The runner copies that
 source into a writable temporary directory and uses the supplied binaries.
 It runs formatter, LSP, lazy and eager MCP, operation lifecycle, and streaming replay
 and user-question cases plus OpenCode Go routing/discovery and RTK/FFF daemon
-checks. Additional supervised
+checks, plus upstream cache-miss, provider-timeout and speechless-response
+regressions. Additional supervised
 RTK and FFF integration tests run in the
 flake Python check against the packaged runtime.
 
