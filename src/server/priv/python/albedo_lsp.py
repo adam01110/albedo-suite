@@ -18,6 +18,7 @@ MAX_BYTES = 8 * 1024 * 1024
 MAX_RESULT = 1024 * 1024
 REQUEST_SECONDS = 30
 MAX_OPERATIONS = 4
+IDLE_SECONDS = 60
 _PROCESSES: set[int] = set()
 
 
@@ -422,6 +423,35 @@ class Lsp:
         self.edit_version = 0
         self.overflow = False
         self.finish_lock = asyncio.Lock()
+        self.idle_timer = None
+        self.idle_tasks = set()
+
+    def cancel_idle(self):
+        if self.idle_timer is not None:
+            self.idle_timer.cancel()
+            self.idle_timer = None
+
+    def arm_idle(self):
+        self.cancel_idle()
+        if not self.active_operations and any(
+            not client.failure for client in self.clients.values()
+        ):
+            self.idle_timer = asyncio.get_running_loop().call_later(
+                IDLE_SECONDS, self.expire_idle
+            )
+
+    def expire_idle(self):
+        self.idle_timer = None
+        task = asyncio.create_task(self._close(None, idle=True))
+        self.idle_tasks.add(task)
+        task.add_done_callback(self.idle_done)
+
+    def idle_done(self, task):
+        self.idle_tasks.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            asyncio.get_running_loop().call_exception_handler(
+                {"message": "LSP idle shutdown failed", "exception": task.exception()}
+            )
 
     def record(self, path):
         """Queue an edit without reading text or starting servers."""
@@ -508,11 +538,11 @@ class Lsp:
             {
                 "id": c["id"],
                 "enabled": c["enabled"],
-                "state": "failed"
-                if c["id"] in self.clients and self.clients[c["id"]].failure
-                else "loaded"
-                if c["id"] in self.clients
-                else "unloaded",
+                "state": (
+                    "failed"
+                    if c["id"] in self.clients and self.clients[c["id"]].failure
+                    else "loaded" if c["id"] in self.clients else "unloaded"
+                ),
             }
             for c in self.config
         ]
@@ -618,6 +648,7 @@ class Lsp:
     ):
         if self.active_operations >= MAX_OPERATIONS:
             raise LspError("LSP operation limit (4); await pending calls first")
+        self.cancel_idle()
         self.active_operations += 1
         try:
             return await self._operation(
@@ -625,6 +656,7 @@ class Lsp:
             )
         finally:
             self.active_operations -= 1
+            self.arm_idle()
 
     async def _operation(
         self,
@@ -730,15 +762,23 @@ class Lsp:
         return await self.operation(path, "documentSymbol", server)
 
     async def close(self, server=None):
+        self.cancel_idle()
         await _finish_cleanup(self._close(server))
+        if self.idle_tasks:
+            await asyncio.gather(*self.idle_tasks)
+        self.arm_idle()
 
-    async def _close(self, server):
+    async def _close(self, server, *, idle=False):
         async with self.guard:
+            if idle and (self.active_operations or self.idle_timer is not None):
+                return
             if server is not None and not any(c["id"] == server for c in self.config):
                 raise LspError("unknown LSP server")
             for ident in list(self.clients):
                 if server is None or ident == server:
                     client = self.clients[ident]
+                    if idle and client.failure:
+                        continue
                     # An idle healthy client receives bounded graceful shutdown.
                     if client.proc and not client.lock.locked() and not client.failure:
                         async with client.lock:

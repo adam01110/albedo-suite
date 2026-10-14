@@ -159,11 +159,7 @@ class LspTests(unittest.IsolatedAsyncioTestCase):
             sys.modules,
             {
                 "albedo_plugins.run": types.SimpleNamespace(
-                    jobs={
-                        "busy": types.SimpleNamespace(
-                            service=False, exit_code=None
-                        )
-                    }
+                    jobs={"busy": types.SimpleNamespace(service=False, exit_code=None)}
                 )
             },
         ):
@@ -253,6 +249,81 @@ class LspTests(unittest.IsolatedAsyncioTestCase):
             if not closing.done():
                 closing.cancel()
                 await asyncio.gather(closing, return_exceptions=True)
+
+    async def test_idle_shutdown_and_lazy_restart_with_fresh_documents(self):
+        manager = self.manager()
+        with patch.object(albedo_lsp, "IDLE_SECONDS", 0.05):
+            first = await manager.diagnostics("test.nix")
+            client = manager.clients["fixture"]
+            proc = client.proc
+            manager.record(self.path)
+            await asyncio.wait_for(proc.wait(), 3)
+            await asyncio.gather(*manager.idle_tasks)
+            self.assertEqual(manager.servers()[0]["state"], "unloaded")
+            self.assertNotIn(proc.pid, albedo_lsp._PROCESSES)
+            self.assertIn(self.path, manager.pending)
+            self.assertEqual(client.docs, {})
+            self.path.write_text("clean")
+            checked = await manager.finish()
+            self.assertTrue(checked["ok"], checked)
+            self.assertEqual(checked["feedback"], "")
+            second = manager.clients["fixture"].proc
+            self.assertNotEqual(second.pid, proc.pid)
+            self.assertEqual(first["version"], 1)
+            self.assertEqual(len([e for e in self.logs() if e["event"] == "START"]), 2)
+            opened = [e for e in self.logs() if e["event"] == "textDocument/didOpen"]
+            self.assertEqual(
+                [e["params"]["textDocument"]["version"] for e in opened], [1, 1]
+            )
+
+    async def test_idle_shutdown_does_not_interrupt_active_or_queued_requests(self):
+        manager = self.manager()
+        await manager.diagnostics("test.nix")
+        client = manager.clients["fixture"]
+        timer = manager.idle_timer
+        async with client.lock:
+            task = asyncio.create_task(manager.hover("test.nix", 0, 0))
+            await asyncio.sleep(0)
+            self.assertTrue(timer.cancelled())
+            self.assertEqual(manager.active_operations, 1)
+            await manager._close(None, idle=True)
+            self.assertIsNone(client.proc.returncode)
+        await task
+        self.assertIsNotNone(manager.idle_timer)
+        # An expiry queued before newer activity must not consume its new grace.
+        await manager._close(None, idle=True)
+        self.assertIsNone(client.proc.returncode)
+
+    async def test_idle_shutdown_preserves_failed_server_until_explicit_close(self):
+        manager = self.manager("death")
+        with self.assertRaises(LspError):
+            await manager.diagnostics("test.nix")
+        cause = manager.clients["fixture"].failure
+        self.assertIsNone(manager.idle_timer)
+        await manager._close(None, idle=True)
+        self.assertEqual(manager.clients["fixture"].failure, cause)
+        before = len(self.logs())
+        with self.assertRaisesRegex(LspError, "close explicitly"):
+            await manager.diagnostics("test.nix")
+        self.assertEqual(len(self.logs()), before)
+
+    async def test_idle_shutdown_kills_unresponsive_server_and_close_cancels_timer(
+        self,
+    ):
+        manager = self.manager("shutdown-timeout")
+        with patch.object(albedo_lsp, "IDLE_SECONDS", 0.05):
+            await manager.diagnostics("test.nix")
+            proc = manager.clients["fixture"].proc
+            await asyncio.wait_for(proc.wait(), 3)
+            await asyncio.gather(*manager.idle_tasks)
+        self.assertEqual(manager.clients, {})
+        manager.config[0]["args"][2] = "normal"
+        await manager.diagnostics("test.nix")
+        timer = manager.idle_timer
+        await manager.close()
+        self.assertTrue(timer.cancelled())
+        self.assertIsNone(manager.idle_timer)
+        self.assertEqual(manager.idle_tasks, set())
 
     async def test_lazy_refresh_and_navigation(self):
         manager = self.manager()

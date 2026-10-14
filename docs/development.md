@@ -107,6 +107,12 @@ Remove each layer when upstream covers its useful behavior and the native path
 passes the relevant lifecycle tests. Disabling one must leave ordinary files,
 Python, MCP and streaming behavior intact.
 
+LSP servers shut down after 60 seconds without an LSP operation, including
+deferred diagnostics. Active requests are never interrupted by idle cleanup.
+Healthy servers restart lazily on the next operation with fresh document state;
+failed servers still require explicit `lsp.close()` before retrying. Idle cleanup
+does not discard pending edit checks or run as a session background job.
+
 LSP owns `albedo_lsp.py`, `albedo_plugins/lsp.py`,
 `harness/extensions/lsp/extension.gleam` and `nix/home-manager/lsp.nix`.
 Retirement also removes its file-write tracking in `albedo_plugins/files.py`,

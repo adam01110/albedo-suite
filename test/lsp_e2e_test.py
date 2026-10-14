@@ -15,11 +15,13 @@ from harness import LOOPBACK_REMOTE, Albedo, Provider, alive, exclusive, python,
 
 @exclusive
 class LspE2ETests(unittest.TestCase):
+    control: Path
+
     def setUp(self):
         self.code = None
         self.replies = []
 
-        def script(request):
+        def script(_request):
             if self.replies:
                 return self.replies.pop(0)
             if self.code is not None:
@@ -52,14 +54,16 @@ class LspE2ETests(unittest.TestCase):
                             str(control / "events.jsonl"),
                         ],
                         "enabled": name != "disabled",
-                        "include": ["**/*.nix"]
-                        if name in ("fake", "disabled")
-                        or (
-                            name in ("timeout", "death")
-                            and self._testMethodName
-                            == "test_server_death_and_startup_timeout_fail_without_reconnect_or_leak"
-                        )
-                        else [f"**/*.{name}.nix"],
+                        "include": (
+                            ["**/*.nix"]
+                            if name in ("fake", "disabled")
+                            or (
+                                name in ("timeout", "death")
+                                and self._testMethodName
+                                == "test_server_death_and_startup_timeout_fail_without_reconnect_or_leak"
+                            )
+                            else [f"**/*.{name}.nix"]
+                        ),
                         "languageIdByExtension": {".nix": "nix"},
                         "cwd": "{root}",
                         "rootMarkers": [".git"],
@@ -150,6 +154,24 @@ class LspE2ETests(unittest.TestCase):
             method="PATCH",
             headers={"If-Match": etag},
         ).close()
+
+    def test_idle_servers_stop_and_restart_without_a_session_job(self):
+        self.turn("""
+import albedo_lsp
+albedo_lsp.IDLE_SECONDS = 0.1
+await lsp.diagnostics('note.nix', server='fake')
+proc = lsp.clients['fake'].proc
+await asyncio.wait_for(proc.wait(), 5)
+await asyncio.gather(*lsp.idle_tasks)
+assert next(s for s in lsp.servers() if s['id'] == 'fake')['state'] == 'unloaded'
+assert not any(job.exit_code is None for job in jobs.values())
+await lsp.diagnostics('note.nix', server='fake')
+assert lsp.clients['fake'].proc.pid != proc.pid
+await lsp.close()
+""")
+        starts = self.starts("fake")
+        self.assertEqual(len(starts), 2)
+        self.stopped(starts)
 
     def test_setup_listing_and_unmatched_edits_never_launch(self):
         self.assert_no_starts()
@@ -401,9 +423,7 @@ assert all(s['state'] != 'loaded' for s in lsp.servers())
         self.assertFalse(self.starts("fake"))
 
     def test_remote_connection_does_not_expose_local_lsp_binding(self):
-        self.turn(
-            LOOPBACK_REMOTE
-            + """
+        self.turn(LOOPBACK_REMOTE + """
 try:
     assert 'lsp' in globals()
     tools = await rem.tools()
@@ -411,6 +431,5 @@ try:
     assert 'lsp' not in tools['names'], tools
 finally:
     await rem.close()
-"""
-        )
+""")
         self.assert_no_starts()
