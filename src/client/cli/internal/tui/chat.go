@@ -166,6 +166,7 @@ type ChatModel struct {
 	Viewport      pane
 
 	transcript         transcriptState
+	vim                vimState
 	TextArea           textarea.Model
 	burstRowsKey       burstRowsKey
 	dragHead           Point

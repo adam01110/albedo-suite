@@ -28,6 +28,7 @@ providers, skills and SOPS declarations stay in Infra.
 | [User questions](docs/questions.md) | Record questions, answer in `/questions`, and resume the asking session. |
 | [RTK and FFF](docs/tool-parity.md) | Filter supported commands through RTK and replace file search with FFF. |
 | CLI resume | `albedo resume` without an ID reopens the newest non-archived session in the current directory. |
+| [Vim editing](docs/vim.md) | Modal composer motions and edits, with the current mode in the footer. |
 | CLI diffs | Show diffs by default when enabled. The existing toggle still works. |
 | Home Manager | Install Albedo and merge settings while preserving runtime authentication. |
 
