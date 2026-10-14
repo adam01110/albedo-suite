@@ -18,6 +18,7 @@
     "src/albedo/daemon/http_wire.gleam",
     "src/albedo/daemon/session.gleam",
     "src/albedo/daemon/session_provider.gleam",
+    "src/albedo/daemon/session_state.gleam",
     "src/albedo/harness/extension.gleam",
     "src/albedo/harness/extension/composition.gleam",
     "src/albedo/harness/extensions.gleam",

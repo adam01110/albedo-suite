@@ -11,6 +11,7 @@ import tempfile
 
 SUITE_CASES = (
     "formatter_e2e_test.py",
+    "kernel_workspace_e2e_test.py",
     "lazy_mcp_test.py",
     "lsp_e2e_test.py",
     "questions_e2e_test.py",

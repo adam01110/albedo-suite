@@ -13,6 +13,7 @@ Modifications add opt-in lazy MCP lifecycle/bindings, the managed pre-final
 acceptance hook and local deferred formatter, isolated local LSP compatibility
 tools, durable user questions, mandatory RTK command filtering and FFF search,
 OpenCode Go authentication, model discovery and per-model protocol routing,
+recoverable kernel startup failures with workspace validation,
 and optional default CLI diff visibility. `upstream/pin.json` inventories server
 replacements; the client
 replacements live under `src/client/cli/internal/tui/`.

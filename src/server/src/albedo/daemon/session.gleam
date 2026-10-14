@@ -371,6 +371,7 @@ pub fn start(
         last_touch: clock.monotonic_ms(),
         booting: None,
         blocked_until: 0,
+        kernel_blocked: False,
         generation: generation,
         tool_progress: tool_progress_state.new(),
         progress_timer_token: 0,
@@ -2323,7 +2324,13 @@ fn kernel_opened(
         session_state.State(..state, booting: None),
         fn(state, work) {
           case work {
-            StartQueued -> failed_queued(state, why)
+            StartQueued ->
+              blocked_queued(
+                state,
+                why
+                  <> "; queued inputs are retained. Fix the startup problem and send another message, or use /cd to change workspace",
+                None,
+              )
             Resume ->
               session_state.State(..state, activity: turn.Resting)
               |> session_state.emit(view.error(why))
@@ -2340,15 +2347,23 @@ fn kernel_opened(
 }
 
 fn failed_queued(state: State, error: String) -> State {
+  let _ = process.send_after(state.self, 15_000, StartQueued)
+  blocked_queued(state, error, Some(clock.monotonic_ms() + 15_000))
+}
+
+fn blocked_queued(state: State, error: String, retry_at: Option(Int)) -> State {
   let _ =
     operations.block(
       runtime.ledger(state.host),
       turn.operations(state.steering),
       error,
     )
-  let _ = process.send_after(state.self, 15_000, StartQueued)
   session_state.emit(
-    session_state.State(..state, blocked_until: clock.monotonic_ms() + 15_000),
+    session_state.State(
+      ..state,
+      blocked_until: option.unwrap(retry_at, 0),
+      kernel_blocked: retry_at == None,
+    ),
     view.error("waiting inputs are blocked: " <> error),
   )
   |> session_submission.refresh_ids(turn.operations(state.steering))
@@ -2793,6 +2808,7 @@ fn prepare_turn_pipeline(
         steering: [],
         active_submissions: submissions,
         blocked_until: 0,
+        kernel_blocked: False,
       )
     }
   Ok(#(state, kernel, client, history, run_id))
@@ -3139,7 +3155,11 @@ fn start_queued(state: State) -> State {
     Some(_) -> state
     None ->
       case
-        session_state.retry_pending(state.blocked_until, clock.monotonic_ms())
+        state.kernel_blocked
+        || session_state.retry_pending(
+          state.blocked_until,
+          clock.monotonic_ms(),
+        )
       {
         True -> state
         False -> start_waiting(state)
@@ -3179,21 +3199,27 @@ fn start_waiting_in_workspace(state: State) -> State {
   case turn.starts_turn(state.steering) {
     False -> state
     True ->
-      case kernel_or_park(state, StartQueued) {
-        Error(state) -> state
-        Ok(state) ->
-          case prepare_turn_pipeline(state, state.steering) {
-            Error(#(state, err)) -> failed_queued(state, submission_error(err))
-            Ok(#(state, kernel, client, history, run_id)) ->
-              start_worker(
-                state,
-                kernel,
-                client,
-                history,
-                turn.Turn(None),
-                run_id,
-              )
-          }
+      case workspace_ready(state) {
+        Error(error) ->
+          blocked_queued(
+            state,
+            submission_error(error)
+              <> "; queued inputs are retained. Restore the workspace or use /cd to select an existing directory, then send another message to retry",
+            None,
+          )
+        Ok(Nil) -> start_waiting_with_kernel(state)
+      }
+  }
+}
+
+fn start_waiting_with_kernel(state: State) -> State {
+  case kernel_or_park(state, StartQueued) {
+    Error(state) -> state
+    Ok(state) ->
+      case prepare_turn_pipeline(state, state.steering) {
+        Error(#(state, err)) -> failed_queued(state, submission_error(err))
+        Ok(#(state, kernel, client, history, run_id)) ->
+          start_worker(state, kernel, client, history, turn.Turn(None), run_id)
       }
   }
 }
@@ -3338,8 +3364,11 @@ fn apply_workspace_state(state: State) -> Result(State, #(State, String)) {
             session_state.State(
               ..state,
               info: conversation.Info(..state.info, cwd: pending.desired),
+              blocked_until: 0,
+              kernel_blocked: False,
             )
             |> workspace_changed
+          process.send(state.self, StartQueued)
           Ok(case reset_namespace {
             False -> state
             True ->
@@ -3457,6 +3486,10 @@ fn admit_operation(
               let state =
                 session_state.State(
                   ..state,
+                  kernel_blocked: case submission.source {
+                    turn.Chat | turn.Continue -> False
+                    _ -> state.kernel_blocked
+                  },
                   steering: list.append(state.steering, [submission]),
                 )
               process.send(state.self, StartQueued)
@@ -3490,6 +3523,7 @@ fn interrupt_waiting(
           steering: [],
           active_submissions: [],
           blocked_until: 0,
+          kernel_blocked: False,
           booting: option.map(state.booting, fn(boot) {
             #(
               boot.0,
@@ -3514,6 +3548,7 @@ fn interrupt_waiting(
           ..state,
           steering: [],
           blocked_until: 0,
+          kernel_blocked: False,
           activity: turn.cancel(state.activity),
         )
           |> session_state.announce,

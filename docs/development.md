@@ -66,6 +66,25 @@ The tests use fake providers, temporary homes and local stdio servers. They do
 not activate your configuration, read your credentials or contact live
 providers.
 
+## Kernel startup recovery
+
+Fresh local kernels validate the working directory before launching Python.
+A missing directory, unavailable mount, or file in place of the directory
+produces an error naming the path and suggesting restoration or `/cd`.
+Albedo never creates an empty substitute or silently moves the session.
+The check is in the queued-turn owner, before kernel creation, so a failed
+preflight cannot leave an unverified kernel record that blocks `/cd`.
+
+Kernel startup failures retain queued inputs and pause automatic retries.
+After fixing startup, send another message to retry; replaying the same input
+ID does not retry. Applying a workspace move resumes the retained queue.
+A daemon restart makes one new attempt. Other transient preparation failures
+keep the upstream 15-second retry.
+
+The `kernel-workspace` flake check runs the real-daemon regression cases in
+`test/kernel_workspace_e2e_test.py`, including the former retry deadline and
+recovery after restoring or moving a workspace.
+
 ## Temporary Codex error decoding
 
 `src/server/src/albedo/openai_api/responses.gleam` temporarily accepts nested
