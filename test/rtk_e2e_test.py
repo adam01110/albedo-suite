@@ -15,6 +15,7 @@ import shutil
 import sys
 import tempfile
 import time
+from typing import Any
 import unittest
 from unittest.mock import patch
 
@@ -32,7 +33,8 @@ import albedo_capture
 spec = importlib.util.spec_from_file_location(
     "rtk_run_under_test", SOURCE / "albedo_plugins/run.py"
 )
-plugin = importlib.util.module_from_spec(spec)
+assert spec is not None and spec.loader is not None
+plugin: Any = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = plugin
 spec.loader.exec_module(plugin)
 
@@ -138,6 +140,27 @@ sys.exit(int(os.environ.get('FAIL', '0')))
         )
         self.assertFalse((self.root / "PWN").exists())
         self.assertIn("error", job.tail())
+
+    async def test_hook_rewrite_is_routed_before_dispatch(self):
+        self.fixture()
+        hooked = plugin.hook.Call("run", {"command": "cargo check"})
+        with patch.object(plugin.hook, "before", return_value=hooked):
+            job = plugin.run("true", env=self.env)
+        await job
+        self.assertEqual(job.exit_code, 0, job.tail())
+        self.assertTrue(job.routed)
+        self.assertEqual(job.requested_argv, ["cargo", "check"])
+        self.assertEqual([call["argv"] for call in self.calls()], [["check"]])
+
+    async def test_hook_block_prevents_dispatch(self):
+        self.fixture()
+        with patch.object(
+            plugin.hook, "before", side_effect=PermissionError("blocked by a hook")
+        ):
+            with self.assertRaisesRegex(PermissionError, "blocked by a hook"):
+                plugin.run("cargo", "check", env=self.env)
+        self.assertFalse(self.log.exists())
+        self.assertFalse(plugin.active)
 
     async def test_success_and_explicit_rtk_not_double_wrapped(self):
         self.fixture()
@@ -265,10 +288,11 @@ sys.exit(int(os.environ.get('FAIL', '0')))
         spec = importlib.util.spec_from_file_location(
             "rtk_remote_under_test", SOURCE / "albedo_plugins/remote.py"
         )
-        remote = importlib.util.module_from_spec(spec)
+        assert spec is not None and spec.loader is not None
+        remote: Any = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = remote
         spec.loader.exec_module(remote)
-        connection = remote.RemoteConnection.__new__(remote.RemoteConnection)
+        connection = remote.RemoteConnection({"host": "fixture", "remote_cwd": None})
         connection.degraded = "fixture no Python"
         with patch.object(remote, "FallbackJob") as fallback:
             with self.assertRaisesRegex(remote.RemoteError, "no native fallback"):
@@ -276,6 +300,12 @@ sys.exit(int(os.environ.get('FAIL', '0')))
             fallback.assert_not_called()
             connection.run("echo", "literal ; *")
             fallback.assert_called_once()
+            fallback.reset_mock()
+            hooked = remote.hook.Call("run", {"command": "ls"})
+            with patch.object(remote.hook, "before", return_value=hooked):
+                with self.assertRaisesRegex(remote.RemoteError, "no native fallback"):
+                    connection.run("echo", "rewritten")
+            fallback.assert_not_called()
 
     async def test_real_pytest_success_and_failure(self):
         if shutil.which("pytest") is None:

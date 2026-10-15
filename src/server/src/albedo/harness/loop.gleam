@@ -4,6 +4,7 @@ import albedo/daemon/conversation
 import albedo/daemon/events as view
 import albedo/daemon/image_fit
 import albedo/daemon/message_content
+import albedo/daemon/projection
 import albedo/daemon/requests
 import albedo/daemon/store
 import albedo/daemon/stream_trace
@@ -16,6 +17,7 @@ import albedo/harness/cache_ttl
 import albedo/harness/compaction
 import albedo/harness/extension
 import albedo/harness/extensions/python/cells as journal
+import albedo/harness/hook
 import albedo/harness/runtime
 import albedo/openai_api/types
 import gleam/dynamic/decode
@@ -65,6 +67,17 @@ pub type Loop {
     /// The saved profile those calls went through.
     profile: String,
     run_id: String,
+    /// The input and output tokens the provider reported for this run's
+    /// previous request; `None` before its first.
+    reported: Option(Int),
+    /// Tells the session a compaction started ahead of a request; the
+    /// request's recorded context ends it.
+    report_compacting: fn() -> Nil,
+    /// Whether this run already told the session its window is too small
+    /// for compaction to make room.
+    warned_small: Bool,
+    /// How often a `Stopping` hook already kept this turn going.
+    held: Int,
   )
 }
 
@@ -134,6 +147,20 @@ fn run_checked(
   final_failures: Int,
 ) -> Result(Nil, String) {
   use _ <- result.try(checkpoint(state))
+  use prompted <- result.try(prompted(state, inputs, step))
+  case prompted {
+    None -> Ok(Nil)
+    Some(inputs) -> converse(state, id, inputs, step, final_failures)
+  }
+}
+
+fn converse(
+  state: Loop,
+  id: String,
+  inputs: List(types.Input),
+  step: Int,
+  final_failures: Int,
+) -> Result(Nil, String) {
   let gated = runtime.has_before_final(state.kernel)
   use inputs <- result.try(fit_history(state, inputs))
   let original = list.reverse(inputs)
@@ -146,6 +173,7 @@ fn run_checked(
       ))
     Pinned(..) -> Nil
   }
+  let state = warn_small(state, prepared.observation)
   let current_instructions = request_instructions(state)
   let request = request(state, current_instructions, history)
   state.record_context(request, prepared.observation, prepared.compacted)
@@ -215,9 +243,9 @@ fn run_checked(
     }
   })
   let cache = fading(state, sent)
-  let cache_miss = case row {
+  let cache_loss = case row {
     Some(id) ->
-      requests.cache_miss(
+      requests.cache_loss(
         runtime.ledger(state.host),
         state.session,
         id,
@@ -234,7 +262,14 @@ fn run_checked(
       usage.now(),
       cache,
       Some(int.max(0, sent.finished_ms - sent.started_ms)),
-      cache_miss,
+      cache_loss,
+    )
+  let state =
+    Loop(
+      ..state,
+      reported: option.map(turn.usage, fn(usage) {
+        usage.input_tokens + usage.output_tokens
+      }),
     )
   let replay = list.map(turn.output, types.Replay)
   case gated, turn.tool_calls, turn.finish {
@@ -356,23 +391,29 @@ fn finish_turn(
         types.Complete if speechless_turn ->
           Error(speechless_message(state.model))
         types.Complete -> {
+          use held <- result.try(stopping(state, turn.output))
           use steering <- result.try(state.drain_steering())
-          case steering {
-            [] -> Ok(Nil)
-            _ ->
+          case held, steering {
+            [], [] -> Ok(Nil)
+            _, _ -> {
+              let state = case held {
+                [] -> state
+                _ -> Loop(..state, held: state.held + 1)
+              }
               run_checked(
                 state,
                 id,
-                unshift(inputs, [replay, steering]),
+                unshift(inputs, [replay, held, steering]),
                 step + 1,
                 final_failures,
               )
+            }
           }
         }
         _ -> Error(stopped_message(turn.finish, turn.output))
       }
     calls -> {
-      use results <- result.try(
+      use ran <- result.try(
         list.try_map(calls, fn(call) {
           let output_index =
             list.find(turn.call_indices, fn(binding) { binding.0 == call.id })
@@ -383,12 +424,15 @@ fn finish_turn(
           }
         }),
       )
+      let results = list.map(ran, fn(item) { item.0 })
+      let added = list.flat_map(ran, fn(item) { item.1 })
+      use _ <- result.try(commit_hooked(state, added, conversation.Tool))
       use steering <- result.try(state.drain_steering())
       use _ <- result.try(state.commit([], conversation.Model, None))
       run_checked(
         state,
         id,
-        unshift(inputs, [replay, results, steering]),
+        unshift(inputs, [replay, results, added, steering]),
         step + 1,
         final_failures,
       )
@@ -495,6 +539,31 @@ pub fn compact(state: Loop, inputs: List(types.Input)) -> Result(Nil, String) {
   Ok(Nil)
 }
 
+/// The summary of `inputs`, newest first like the other entry points, which a
+/// rewind removes. `extra` is the user's own wish for what it should keep.
+pub fn summarize_branch(
+  state: Loop,
+  inputs: List(types.Input),
+  extra: Option(String),
+) -> Result(String, String) {
+  summarize(
+    state,
+    compaction.SummaryRequest(
+      state.model,
+      None,
+      list.reverse(inputs),
+      4096,
+      case extra {
+        Some(wish) ->
+          compaction.branch_summary_instructions
+          <> " The user also asks: "
+          <> wish
+        None -> compaction.branch_summary_instructions
+      },
+    ),
+  )
+}
+
 /// One background call: `request` sent exactly as given — never rebuilt
 /// through `prepare`, which could compact or call the summarizer — and
 /// recorded under `prefix`. It commits nothing and publishes nothing; it
@@ -520,7 +589,9 @@ pub fn background(
 }
 
 /// Start a tool only after its running projection is acknowledged. Remove
-/// that projection before committing and publishing the tool result.
+/// that projection before committing and publishing the tool result. Hooks
+/// may refuse the call or rewrite its arguments; what they add for the model
+/// comes back beside the result.
 fn run_tool(
   state: Loop,
   run_id: String,
@@ -528,7 +599,7 @@ fn run_tool(
   attempt: Int,
   output_index: Int,
   call: types.ToolCall,
-) -> Result(types.Input, String) {
+) -> Result(#(types.Input, List(types.Input)), String) {
   let progress_id =
     tool_progress.progress_id(
       generation: state.generation,
@@ -540,66 +611,233 @@ fn run_tool(
   case state.progress_running(step, attempt, output_index, call.id, call.name) {
     False -> Error("cancelled before tool execution")
     True -> {
-      let invoked =
-        runtime.invoke(state.host, state.kernel, call, state.upstream.images)
+      let invoked = invoke(state, call)
       // Drop the running projection before committing the result. A reset
       // racing with that commit must not snapshot the just-finished call.
       state.progress_finish(progress_id)
-      case invoked {
-        Error(error) -> Error(error)
-        Ok(output) ->
-          case state.commit([output], conversation.Tool, None) {
-            Error(error) -> Error(error)
-            Ok(_) -> {
-              let _ = case output {
-                types.ToolOutput(_, body, images) -> {
-                  let trace =
-                    json.parse(
-                      body,
-                      decode.field("cell_id", decode.string, decode.success),
-                    )
-                    |> result.map(fn(cell) {
-                      journal.trace(runtime.ledger(state.host), cell)
-                    })
-                    |> result.unwrap(None)
-                  case
-                    conversation.tool_result_position(
-                      runtime.ledger(state.host),
-                      state.session,
-                      state.run_id,
-                      call.id,
-                    )
-                  {
-                    Ok(Some(position)) ->
-                      state.publish(view.ToolWithImages(
-                        call,
-                        body,
-                        trace,
-                        progress_id,
-                        position,
-                        images,
-                      ))
-                    _ ->
-                      state.publish(view.Failure(
-                        Some(state.run_id),
-                        "tool_publication_failed",
-                        "committed tool result identity could not be observed",
-                      ))
-                  }
-                }
-                _ -> True
-              }
-              Ok(output)
-            }
+      use Invoked(call, output, added, halt) <- result.try(invoked)
+      use _ <- result.try(state.commit([output], conversation.Tool, None))
+      let _ = case output {
+        types.ToolOutput(_, body, images) -> {
+          let trace =
+            json.parse(
+              body,
+              decode.field("cell_id", decode.string, decode.success),
+            )
+            |> result.map(fn(cell) {
+              journal.trace(runtime.ledger(state.host), cell)
+            })
+            |> result.unwrap(None)
+          case
+            conversation.tool_result_position(
+              runtime.ledger(state.host),
+              state.session,
+              state.run_id,
+              call.id,
+            )
+          {
+            Ok(Some(position)) ->
+              state.publish(view.ToolWithImages(
+                call,
+                body,
+                trace,
+                progress_id,
+                position,
+                images,
+              ))
+            _ ->
+              state.publish(view.Failure(
+                Some(state.run_id),
+                "tool_publication_failed",
+                "committed tool result identity could not be observed",
+              ))
           }
+        }
+        _ -> True
+      }
+      case halt {
+        Some(reason) -> Error("stopped by a hook: " <> reason)
+        None -> Ok(#(output, added))
       }
     }
   }
 }
 
+/// A tool call as its hooks left it: the call that ran (or was refused), its
+/// output, what the hooks added for the model, and a hook's request to end
+/// the turn once the result is committed.
+type Invoked {
+  Invoked(
+    call: types.ToolCall,
+    output: types.Input,
+    added: List(types.Input),
+    halt: Option(String),
+  )
+}
+
+fn invoke(state: Loop, call: types.ToolCall) -> Result(Invoked, String) {
+  let asked = hook.Call(call.id, call.name, call.arguments, None)
+  let started = requests.now()
+  use hook.Answer(calling, _) <- result.try(hooked(state, hook.Calling(asked)))
+  let call =
+    types.ToolCall(
+      ..call,
+      arguments: option.unwrap(calling.arguments, call.arguments),
+    )
+  use output <- result.try(case calling.block {
+    Some(reason) ->
+      Ok(
+        types.ToolOutput(
+          call.id,
+          json.to_string(
+            json.object([
+              #("error", json.string("blocked by a hook: " <> reason)),
+            ]),
+          ),
+          [],
+        ),
+      )
+    None ->
+      runtime.invoke(state.host, state.kernel, call, state.upstream.images)
+  })
+  let body = case output {
+    types.ToolOutput(_, body, _) -> body
+    _ -> ""
+  }
+  let hook.Answer(called, by) =
+    runtime.hook(
+      state.kernel,
+      hook.Called(
+        hook.Call(..asked, arguments: call.arguments),
+        body,
+        started,
+        requests.now(),
+      ),
+    )
+  note(state, called)
+  // A block after the call cannot undo it: its reason is context.
+  let added =
+    list.flatten([
+      calling.context,
+      option.values([option.map(called.block, hook.input(by, _))]),
+      called.context,
+    ])
+  Ok(Invoked(call, output, list.map(added, types.User), called.halt))
+}
+
+/// Asks the session's hooks, shows the user their notes, and ends the turn
+/// if one of them asked to.
+fn hooked(state: Loop, event: hook.Event) -> Result(hook.Answer, String) {
+  let answer = runtime.hook(state.kernel, event)
+  note(state, answer.verdict)
+  case answer.verdict.halt {
+    Some(reason) -> Error("stopped by a hook: " <> reason)
+    None -> Ok(answer)
+  }
+}
+
+fn note(state: Loop, verdict: hook.Verdict) -> Nil {
+  list.each(verdict.notes, fn(text) { state.publish(view.note("hook", text)) })
+}
+
+fn commit_hooked(
+  state: Loop,
+  inputs: List(types.Input),
+  stage: conversation.Stage,
+) -> Result(Nil, String) {
+  case inputs {
+    [] -> Ok(Nil)
+    _ -> state.commit(inputs, stage, None) |> result.replace(Nil)
+  }
+}
+
+/// Asks the hooks about a turn's newest user message before its first model
+/// call. Their context goes ahead of that call; a block (`None`) ends the
+/// turn after telling the user why. The message was committed before any
+/// hook saw it, so it stays in the transcript.
+fn prompted(
+  state: Loop,
+  inputs: List(types.Input),
+  step: Int,
+) -> Result(Option(List(types.Input)), String) {
+  case step, inputs {
+    0, [types.User(text), ..] | 0, [types.UserImage(text, _), ..] -> {
+      use hook.Answer(verdict, _) <- result.try(hooked(
+        state,
+        hook.Prompted(text),
+      ))
+      case verdict.block {
+        Some(reason) -> {
+          state.publish(view.note(
+            "hook",
+            "prompt blocked by a hook: " <> reason,
+          ))
+          Ok(None)
+        }
+        None -> {
+          let added = list.map(verdict.context, types.User)
+          use _ <- result.try(commit_hooked(state, added, conversation.Model))
+          Ok(Some(unshift(inputs, [added])))
+        }
+      }
+    }
+    _, _ -> Ok(Some(inputs))
+  }
+}
+
+/// Asks the hooks when the model ends its turn without a tool call. A block
+/// or context becomes the next input and the turn goes on, at most
+/// `max_held` times.
+fn stopping(
+  state: Loop,
+  output: List(types.ReplayItem),
+) -> Result(List(types.Input), String) {
+  case state.held >= max_held {
+    True -> Ok([])
+    False -> {
+      let reply =
+        output
+        |> list.map(message_content.output_text)
+        |> list.filter(fn(text) { text != "" })
+        |> string.join("\n\n")
+      use hook.Answer(verdict, by) <- result.try(hooked(
+        state,
+        hook.Stopping(reply, state.held),
+      ))
+      let block = option.map(verdict.block, hook.input(by, _))
+      let held =
+        list.map(
+          list.append(option.values([block]), verdict.context),
+          types.User,
+        )
+      use _ <- result.try(commit_hooked(state, held, conversation.Model))
+      Ok(held)
+    }
+  }
+}
+
+const max_held = 8
+
 /// A checkpoint event a client may refuse; a refusal ends the turn cancelled.
 fn checkpoint(state: Loop) -> Result(Nil, String) {
   compaction.require(state.publish(view.Checkpoint), "cancelled")
+}
+
+/// Tells the session once per run that its strategy sends requests over the
+/// trigger because a fold cannot make room, so the cause is seen rather than
+/// guessed from a growing context.
+fn warn_small(
+  state: Loop,
+  observation: Option(compaction.Observation),
+) -> Loop {
+  case observation, state.warned_small {
+    Some(compaction.Observation(status: "window_too_small", source:, ..)), False
+    -> {
+      let _ = state.publish(view.note("compaction", source))
+      Loop(..state, warned_small: True)
+    }
+    _, _ -> state
+  }
 }
 
 /// The request this turn or a forced compaction prepares: its scoped strategy
@@ -620,6 +858,16 @@ fn prepare(
     original,
     force,
     state.upstream.images,
+    state.reported,
+    state.report_compacting,
+    fn(rows) {
+      rows
+      |> list.reverse
+      |> list.map(fn(row) { transcript.Entry(row.1, None, row.0, None, None) })
+      |> projection.for_model(state.profile, state.upstream.protocol)
+      // The projection answers newest first, as the session keeps history.
+      |> result.map(list.reverse)
+    },
   )
 }
 
@@ -650,10 +898,6 @@ fn display_text(items: List(types.Input)) -> String {
   })
   |> string.join("\n\n")
   |> bounded(20_000, "\n[remainder omitted]")
-}
-
-fn bounded_summary_text(text: String) -> String {
-  bounded(text, 16_000, "\n[remainder omitted from compaction summary input]")
 }
 
 /// Truncated views of oversized text: `limit` graphemes, then why it ends.
@@ -723,6 +967,7 @@ fn call(
               <> state.upstream.endpoint,
             state.upstream.account(),
             request.model,
+            request.options.effort,
             started,
             finished,
             requests.outcome(outcome),
@@ -929,7 +1174,42 @@ fn request(
   instructions: String,
   history: List(types.Input),
 ) -> types.Request {
-  request_for(state.model, state.effort, state.kernel, instructions, history)
+  request_for(
+    state.model,
+    state.effort,
+    state.kernel,
+    instructions,
+    readable(state.upstream.images, history),
+  )
+}
+
+/// `history` as a model that takes no images can read it: each image becomes
+/// a note in its message. Only the request changes; the transcript keeps the
+/// images for a model that reads them.
+fn readable(
+  images: types.ImageLimits,
+  history: List(types.Input),
+) -> List(types.Input) {
+  case images.max_images {
+    Some(0) -> list.map(history, without_images)
+    _ -> history
+  }
+}
+
+fn without_images(input: types.Input) -> types.Input {
+  case input {
+    types.UserImage(text, [_, ..] as images) ->
+      types.User(text <> omitted_images(images))
+    types.ToolOutput(id, output, [_, ..] as images) ->
+      types.ToolOutput(id, output <> omitted_images(images), [])
+    _ -> input
+  }
+}
+
+fn omitted_images(images: List(types.Image)) -> String {
+  "\n["
+  <> int.to_string(list.length(images))
+  <> " image(s) omitted: this model reads text only]"
 }
 
 fn request_for(
@@ -1101,27 +1381,42 @@ fn summarize(
     max_output_tokens,
     instructions,
   ) = request
-  let previous = option.unwrap(previous, "(none)")
-  let transcript =
-    evicted
-    |> compaction.without_superseded
-    |> list.map(render_summary_input)
-    |> list.filter(fn(line) { line != "" })
-    |> string.join("\n")
-  let prompt =
-    "<previous-summary>\n"
-    <> previous
-    <> "\n</previous-summary>\n<newly-evicted-history>\n"
-    <> transcript
-    <> "\n</newly-evicted-history>"
+  // The evicted history goes out as the conversation it was, so a provider
+  // reads its own signed or encrypted reasoning the way a turn would, and a
+  // foreign model's turns replay as that model's wire replays them. The
+  // session's tools ride along because a provider may refuse tool calls in
+  // a request that defines none; the summary asks for none.
+  let opening = case previous {
+    Some(previous) -> [
+      types.User("<previous-summary>\n" <> previous <> "\n</previous-summary>"),
+    ]
+    None -> []
+  }
+  let history =
+    list.flatten([
+      opening,
+      compaction.without_superseded(evicted),
+      [types.User(summary_close)],
+    ])
+  let base =
+    request_for(
+      model,
+      state.effort,
+      state.kernel,
+      instructions,
+      readable(state.upstream.images, history),
+    )
   let summary_request =
     types.Request(
-      model,
-      Some(instructions),
-      [types.User(prompt)],
-      [],
-      Some(max_output_tokens),
-      types.defaults,
+      ..base,
+      max_output_tokens: Some(max_output_tokens),
+      // Nothing sends this prefix again, so a cache write would be paid for
+      // and never read.
+      options: types.Options(
+        ..base.options,
+        tool_choice: Some(types.NoTool),
+        cache: False,
+      ),
     )
   use #(_, turn, _, _) <- result.try(
     call(
@@ -1129,7 +1424,11 @@ fn summarize(
       requests.Summarizer,
       summary_request,
       // The summarizer's history is exactly what it says; nothing replaced.
-      requests.direct_prefix(instructions, [], [types.User(prompt)]),
+      requests.direct_prefix(
+        instructions,
+        summary_request.tools,
+        summary_request.input,
+      ),
       state.publish,
       fn(_) { types.Continue },
       fn(_, _) { types.Continue },
@@ -1149,73 +1448,15 @@ fn summarize(
     |> string.join("")
     |> string.trim
   case text {
-    "" -> Error("summarizer provider returned no text")
+    "" -> Error(compaction.empty_summary)
     value -> Ok(value)
   }
 }
 
-/// One evicted item as the summarizer reads it: image payloads never reach it.
-fn render_summary_input(input: types.Input) -> String {
-  case input {
-    types.User(text) -> "[user]\n" <> bounded_summary_text(text)
-    types.UserImage(text, images) ->
-      "[user with "
-      <> string.join(list.map(images, describe_image), ", ")
-      <> "; binary omitted]\n"
-      <> bounded_summary_text(text)
-    types.Assistant(text) -> "[assistant]\n" <> bounded_summary_text(text)
-    types.ToolOutput(id, output, images) ->
-      "[tool output "
-      <> id
-      <> "]\n"
-      <> bounded_summary_text(output)
-      <> string.concat(
-        list.map(images, fn(image) {
-          "\n[" <> describe_image(image) <> "; binary omitted]"
-        }),
-      )
-    types.Replay(item) -> render_replay(item)
-  }
-}
-
-/// A provider item as the text it said and the calls it made. An item with
-/// neither, such as encrypted reasoning, contributes nothing; a shape this
-/// does not read is shown as its JSON, so no call is lost.
-fn render_replay(item: types.ReplayItem) -> String {
-  case compaction.assistant_parts(item) {
-    Ok(#(text, calls)) ->
-      [
-        case text {
-          "" -> []
-          _ -> ["[assistant]\n" <> bounded_summary_text(text)]
-        },
-        list.map(calls, fn(call) {
-          "[assistant call "
-          <> call.name
-          <> "]\n"
-          <> bounded_summary_text(call.arguments)
-        }),
-      ]
-      |> list.flatten
-      |> string.join("\n")
-    Error(_) ->
-      "[assistant provider item]\n"
-      <> bounded_summary_text(json.to_string(types.replay_json(item)))
-  }
-}
-
-fn describe_image(image: types.Image) -> String {
-  let #(mime, width, height, bytes) = types.image_meta(image)
-  "image "
-  <> mime
-  <> " "
-  <> int.to_string(width)
-  <> "x"
-  <> int.to_string(height)
-  <> ", "
-  <> int.to_string(bytes)
-  <> " bytes"
-}
+/// The turn that closes a summarizer request: everything before it is the
+/// history being folded.
+const summary_close =
+  "<newly-evicted-history>\nEverything above, after any previous summary, is newly evicted history. Write the summary of it now as your instructions describe. Do not call tools.\n</newly-evicted-history>"
 
 fn request_source(upstream: extension.Upstream, model: String) -> String {
   string.join(

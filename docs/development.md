@@ -52,10 +52,10 @@ The package exposes its pinned source through `.src`. The runner copies that
 source into a writable temporary directory and uses the supplied binaries.
 It runs formatter, LSP, lazy and eager MCP, operation lifecycle, and streaming replay
 and user-question cases plus OpenCode Go routing/discovery and RTK/FFF daemon
-checks, plus upstream cache-miss, provider-timeout and speechless-response
-regressions. Additional supervised
-RTK and FFF integration tests run in the
-flake Python check against the packaged runtime.
+checks, plus upstream cache-miss, provider-timeout, speechless-response,
+context-window, hooks, rewind and trace regressions. Additional supervised RTK
+and FFF integration tests run in the flake Python check against the packaged
+runtime.
 
 FFF searches share one daemon-owned worker for local sessions and one per SSH
 target for remote sessions. Workers start on demand, retain at most four root
@@ -88,24 +88,27 @@ recovery after restoring or moving a workspace.
 
 ## Temporary Codex error decoding
 
-`src/server/src/albedo/openai_api/responses.gleam` temporarily accepts nested
-`error.message`, string `error`, and code-only error events in addition to the
-standard top-level `message`. Messages take precedence over codes. Unknown or
-non-string shapes retain typed malformed-error diagnostics without dumping raw
+`src/server/src/albedo/openai_api/responses.gleam` retains upstream support for
+nested `error.message` and top-level `message`, and temporarily adds string
+`error` and code-only error events. Messages take precedence over codes. Unknown
+or non-string shapes retain typed malformed-error diagnostics without dumping raw
 payloads. This exposes provider failures; it does not retry or suppress them.
 The original failing payload was not captured, so its exact shape is unverified.
 
 The server package runs `test/suite_codex_error_test.gleam` during its check phase.
 Remove this source replacement, its baseline checksum and inventory entry, and
-its package check when upstream handles these envelopes.
+its package check when upstream handles these envelopes without dumping raw
+payloads.
 
 ## Temporary compatibility layers
 
 Formatter and LSP support are local stopgaps for the pinned upstream version.
 Do not add unrelated editor features or make other extensions depend on them.
 Remove each layer when upstream covers its useful behavior and the native path
-passes the relevant lifecycle tests. Disabling one must leave ordinary files,
-Python, MCP and streaming behavior intact.
+passes the relevant lifecycle tests. Native Stop hooks run after the assistant
+response is committed and streamed, and fail open on hook crashes; they do not
+replace the formatter's pre-final acceptance gate. Disabling one must leave
+ordinary files, Python, MCP and streaming behavior intact.
 
 LSP servers shut down after 60 seconds without an LSP operation, including
 deferred diagnostics. Active requests are never interrupted by idle cleanup.

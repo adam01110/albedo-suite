@@ -406,6 +406,8 @@ fn failed(value: dynamic.Dynamic) -> Result(a, types.Error) {
   )
 }
 
+/// An `error` event carries its message at the top, as the Responses stream
+/// documents, or nested under `error` the way an error body nests it.
 fn provider_error(value: dynamic.Dynamic) -> Result(a, types.Error) {
   let decoder =
     decode.one_of(decode.at(["message"], decode.string), or: [

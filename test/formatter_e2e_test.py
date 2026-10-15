@@ -5,6 +5,7 @@ into the pinned upstream test tree and uses the supplied runtime binaries.
 """
 
 import json
+import shlex
 from pathlib import Path
 import sys
 import threading
@@ -16,6 +17,9 @@ from harness import Albedo, Provider, alive, exclusive, operation_id, python, te
 
 @exclusive
 class FormatterE2ETests(unittest.TestCase):
+    control: Path
+    log: Path
+
     def setUp(self):
         self.replies = []
         self.seen = []
@@ -36,7 +40,10 @@ class FormatterE2ETests(unittest.TestCase):
             enabled = self._testMethodName != "test_disabled_keeps_streamed_final"
             app.write_extensions(
                 {
-                    "enabled": {"formatter": enabled},
+                    "enabled": {
+                        "formatter": enabled,
+                        "hooks": "stop_hook" in self._testMethodName,
+                    },
                     "formatter": {
                         "formatters": {
                             "fake": {
@@ -187,6 +194,98 @@ class FormatterE2ETests(unittest.TestCase):
         self.assertIn("FORMATTER_FIXTURE_BAD", json.dumps(self.seen[2]))
         self.assertEqual([r["input"] for r in self.runs()], ["BAD", "fixed\n"])
         self.assertEqual((self.app.workspace / "note.txt").read_text(), "fixed\n")
+
+    def configure_stop_hook(self, continue_once=False):
+        log = self.control / "stop-inputs.jsonl"
+        script = self.control / "stop.py"
+        script.write_text(
+            "import json, pathlib, sys\n"
+            f"log = pathlib.Path({str(log)!r})\n"
+            "first = not log.exists()\n"
+            "event = json.load(sys.stdin)\n"
+            "event['file_text'] = pathlib.Path('note.txt').read_text()\n"
+            "with log.open('a') as output:\n"
+            "    output.write(json.dumps(event) + '\\n')\n"
+            f"if first and {continue_once!r}:\n"
+            "    print('STOP_CONTINUE', file=sys.stderr)\n"
+            "    sys.exit(2)\n"
+        )
+        (self.app.home / "hooks.json").write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "Stop": [
+                            {
+                                "matcher": "",
+                                "hooks": [
+                                    {
+                                        "type": "command",
+                                        "command": shlex.join(
+                                            [sys.executable, str(script)]
+                                        ),
+                                        "timeout": 5,
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                }
+            )
+        )
+        return log
+
+    def test_stop_hook_sees_only_repaired_accepted_final(self):
+        log = self.configure_stop_hook()
+        self.replies = [
+            python("files.write('note.txt', 'BAD')"),
+            text("STOP_HOOK_REJECTED_CANDIDATE"),
+            python("files.edit('note.txt', 'BAD', 'fixed\\n')"),
+            text("STOP_HOOK_ACCEPTED_FINAL"),
+        ]
+        wire = self.finish(capture=True)
+        self.assert_final("STOP_HOOK_ACCEPTED_FINAL", ["STOP_HOOK_REJECTED_CANDIDATE"])
+        self.assertNotIn("STOP_HOOK_REJECTED_CANDIDATE", wire)
+        self.assertIn("STOP_HOOK_ACCEPTED_FINAL", wire)
+        self.assertEqual(len(self.seen), 4)
+        self.assertEqual([r["input"] for r in self.runs()], ["BAD", "fixed\n"])
+        stops = [json.loads(line) for line in log.read_text().splitlines()]
+        self.assertEqual(len(stops), 1, stops)
+        self.assertEqual(stops[0]["last_assistant_message"], "STOP_HOOK_ACCEPTED_FINAL")
+        self.assertEqual(stops[0]["file_text"], "fixed\n")
+        self.assertFalse(stops[0]["stop_hook_active"])
+
+    def test_stop_hook_continuation_preserves_three_check_cap(self):
+        log = self.configure_stop_hook(continue_once=True)
+        self.replies = [
+            python("files.write('note.txt', ' first  ')"),
+            text("STOP_CAP_REJECTED_FIRST"),
+            text("STOP_CAP_ACCEPTED_INTERIM"),
+            python("files.write('note.txt', ' second  ')"),
+            text("STOP_CAP_REJECTED_SECOND"),
+            python("files.write('note.txt', ' third  ')"),
+            text("STOP_CAP_REJECTED_THIRD"),
+        ]
+        self.finish()
+        self.assert_final(
+            "STOP_CAP_ACCEPTED_INTERIM",
+            [
+                "STOP_CAP_REJECTED_FIRST",
+                "STOP_CAP_REJECTED_SECOND",
+                "STOP_CAP_REJECTED_THIRD",
+            ],
+        )
+        self.assertEqual(len(self.seen), 7)
+        self.assertIn("STOP_CONTINUE", json.dumps(self.seen[3]))
+        self.assertEqual(
+            [r["input"] for r in self.runs()], [" first  ", " second  ", " third  "]
+        )
+        stops = [json.loads(line) for line in log.read_text().splitlines()]
+        self.assertEqual(len(stops), 1, stops)
+        self.assertEqual(
+            stops[0]["last_assistant_message"], "STOP_CAP_ACCEPTED_INTERIM"
+        )
+        self.assertEqual(stops[0]["file_text"], "first\n")
+        self.assertEqual((self.app.workspace / "note.txt").read_text(), "third\n")
 
     def test_repeated_failure_hits_three_check_cap_without_clean_final(self):
         self.replies = [

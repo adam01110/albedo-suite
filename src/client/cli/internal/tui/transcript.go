@@ -6,6 +6,7 @@ import (
 	"cmp"
 	"encoding/json"
 	"fmt"
+	"github.com/alecthomas/chroma/v2"
 	"github.com/alecthomas/chroma/v2/lexers"
 	"github.com/charmbracelet/x/ansi"
 	"os"
@@ -33,6 +34,8 @@ type TranscriptRenderer struct {
 	// Workspace roots the paths trace rows name.
 	Workspace string
 	BodyWidth int
+	// highlights keeps the chat's colored diff lines; nil keeps none.
+	highlights *highlightCache
 }
 
 func NewTranscriptRenderer() TranscriptRenderer {
@@ -160,6 +163,9 @@ func (r TranscriptRenderer) signoff(entry HistoryEntry) string {
 	if entry.CacheMissTokens > 0 {
 		meta = append(meta, formatCount(entry.CacheMissTokens)+" miss")
 	}
+	if entry.CacheDriftTokens > 0 {
+		meta = append(meta, formatCount(entry.CacheDriftTokens)+" drift")
+	}
 	row := markChrome + rowAction{verbCopy, entryKey(entry)}.mark() + style.Render(entry.Mood.face(entry.Timestamp))
 	if len(meta) > 0 {
 		row += " " + DefaultStyles.Faint.Render(strings.Join(meta, " · "))
@@ -173,9 +179,6 @@ func (r TranscriptRenderer) renderDiffPath(diff, path string, width int) string 
 	if width < 8 {
 		return "…"
 	}
-	var rows []string
-	oldLine, newLine := 0, 0
-	lexer := lexers.Match(filepath.Base(path))
 	clean := func(text string) string {
 		return strings.Map(func(ch rune) rune {
 			if ch == '\t' || ch < 32 || ch == 127 {
@@ -184,25 +187,16 @@ func (r TranscriptRenderer) renderDiffPath(diff, path string, width int) string 
 			return ch
 		}, text)
 	}
-	row := func(gutter, content, bg string, syntax bool) {
-		body := keepBackground(DefaultStyles.Faint.Render(content))
-		if syntax {
-			body = keepBackground(HighlightCode(content, lexer))
-		}
-		for i, part := range strings.Split(ansi.Hardwrap(body, max(1, width-ansi.StringWidth(gutter)), true), "\n") {
-			prefix := gutter
-			if i > 0 {
-				prefix = strings.Repeat(" ", ansi.StringWidth(gutter))
-			}
-			cell := prefix + part
-			rows = append(rows, bg+cell+strings.Repeat(" ", max(0, width-ansi.StringWidth(cell)))+ansiReset)
-		}
+	type diffRow struct {
+		gutter, content, bg string
+		syntax              bool
 	}
 	panel, add, remove := diffPanel(), diffAdded(), diffRemoved()
 	gutter := func(style lipgloss.Style, n int, sign string) string {
 		return keepBackground(style.Render(fmt.Sprintf("%4d %s ", n, sign)))
 	}
-	row(" ", clean(r.named(path)), panel, false)
+	parsed := []diffRow{{" ", clean(r.named(path)), panel, false}}
+	oldLine, newLine := 0, 0
 	for line := range strings.SplitSeq(diff, "\n") {
 		if line == "" || strings.HasPrefix(line, "--- ") || strings.HasPrefix(line, "+++ ") {
 			continue
@@ -210,25 +204,64 @@ func (r TranscriptRenderer) renderDiffPath(diff, path string, width int) string 
 		if hunk := diffHunk.FindStringSubmatch(line); hunk != nil {
 			oldLine, _ = strconv.Atoi(hunk[1])
 			newLine, _ = strconv.Atoi(hunk[2])
-			row(" ⋮ ", clean(line), panel, false)
+			parsed = append(parsed, diffRow{" ⋮ ", clean(line), panel, false})
 			continue
 		}
 		switch line[0] {
 		case '+':
-			row(gutter(DefaultStyles.Success, newLine, "+"), clean(line[1:]), add, true)
+			parsed = append(parsed, diffRow{gutter(DefaultStyles.Success, newLine, "+"), clean(line[1:]), add, true})
 			newLine++
 		case '-':
-			row(gutter(DefaultStyles.Error, oldLine, "-"), clean(line[1:]), remove, true)
+			parsed = append(parsed, diffRow{gutter(DefaultStyles.Error, oldLine, "-"), clean(line[1:]), remove, true})
 			oldLine++
 		case ' ':
-			row(gutter(DefaultStyles.Decor, newLine, " "), clean(line[1:]), panel, true)
+			parsed = append(parsed, diffRow{gutter(DefaultStyles.Decor, newLine, " "), clean(line[1:]), panel, true})
 			newLine++
 			oldLine++
 		default:
-			row(" ⋮ ", clean(line), panel, false)
+			parsed = append(parsed, diffRow{" ⋮ ", clean(line), panel, false})
+		}
+	}
+	// One highlighting pass for the whole diff: chroma rebuilds its theme
+	// table on every call.
+	var code []string
+	for _, row := range parsed {
+		if row.syntax {
+			code = append(code, row.content)
+		}
+	}
+	code = HighlightLines(code, lexerFor(path), r.highlights)
+	var rows []string
+	for _, row := range parsed {
+		body := keepBackground(DefaultStyles.Faint.Render(row.content))
+		if row.syntax {
+			body, code = keepBackground(code[0]), code[1:]
+		}
+		for i, part := range strings.Split(ansi.Hardwrap(body, max(1, width-ansi.StringWidth(row.gutter)), true), "\n") {
+			prefix := row.gutter
+			if i > 0 {
+				prefix = strings.Repeat(" ", ansi.StringWidth(row.gutter))
+			}
+			cell := prefix + part
+			rows = append(rows, row.bg+cell+strings.Repeat(" ", max(0, width-ansi.StringWidth(cell)))+ansiReset)
 		}
 	}
 	return strings.Join(rows, "\n")
+}
+
+// lexersByName holds the lexer chroma matched to each file name: matching tries
+// every lexer's patterns, and a transcript names the same files many times.
+var lexersByName sync.Map
+
+func lexerFor(path string) chroma.Lexer {
+	name := filepath.Base(path)
+	if cached, ok := lexersByName.Load(name); ok {
+		lexer, _ := cached.(chroma.Lexer) // nil when no lexer claims the name
+		return lexer
+	}
+	lexer := lexers.Match(name)
+	lexersByName.Store(name, lexer)
+	return lexer
 }
 
 func lineUnit(n int) string {
@@ -439,11 +472,13 @@ func (r TranscriptRenderer) diffCounts(change daemon.FileChange) string {
 	return DefaultStyles.Success.Render(fmt.Sprintf("+%d", change.Added)) + " " + DefaultStyles.Error.Render(fmt.Sprintf("−%d", change.Removed))
 }
 
+// RenderToolTrace is a call's glance in normal mode: what it read, ran and
+// searched, then what it changed, with the read of an edited file folded
+// into its edit row. Verbose mode draws the call as a card instead.
 func (r TranscriptRenderer) RenderToolTrace(trace *daemon.ToolTrace, flags DisplayFlags, width int) string {
 	if trace == nil {
 		return ""
 	}
-	// Normal mode folds the read of an edited file into its edit row.
 	reads := func(path string) bool {
 		return slices.ContainsFunc(trace.Activities, func(a daemon.ToolActivity) bool { return a.Kind == "read" && a.Target == path })
 	}
@@ -451,31 +486,18 @@ func (r TranscriptRenderer) RenderToolTrace(trace *daemon.ToolTrace, flags Displ
 		return slices.ContainsFunc(trace.Changes, func(c daemon.FileChange) bool { return c.Path == path })
 	}
 	var rows []string
-	if flags.Tools && len(trace.Activities) > 0 {
-		verb := "explored"
-		if slices.ContainsFunc(trace.Activities, func(a daemon.ToolActivity) bool { return a.Kind == "run" }) {
-			verb = "executed"
-		}
-		rows = append(rows, DefaultStyles.Bold.Render(verb))
-	}
 	for _, act := range trace.Activities {
-		if !flags.Tools && act.Kind == "read" && edits(act.Target) {
+		if act.Kind == "read" && edits(act.Target) {
 			continue
 		}
-		label, style := act.Kind, DefaultStyles.Faint
-		if flags.Tools {
-			rows = append(rows, "  "+r.traceLine(style.Render(label), act.Target, isPath(act), width-2))
-		} else {
-			rows = append(rows, style.Render(r.traceLine(label, act.Target, isPath(act), width)))
+		rows = append(rows, DefaultStyles.Faint.Render(r.traceLine(act.Kind, act.Target, isPath(act), width)))
+		if act.Kind == "display" && act.Detail != "" {
+			rows = append(rows, r.renderDisplayRows(act.Target, act.Detail, width)...)
 		}
-	}
-	changeStyle := DefaultStyles.Faint
-	if flags.Tools {
-		changeStyle = DefaultStyles.Bold
 	}
 	for _, change := range trace.Changes {
 		label := "edited"
-		if !flags.Tools && reads(change.Path) {
+		if reads(change.Path) {
 			label = "read + edited"
 		}
 		counts := ""
@@ -483,7 +505,7 @@ func (r TranscriptRenderer) RenderToolTrace(trace *daemon.ToolTrace, flags Displ
 			counts = "  " + r.diffCounts(change)
 		}
 		line := r.traceLine(label, change.Path, true, width-ansi.StringWidth(counts))
-		rows = append(rows, fit(changeStyle.Render(line), counts, width))
+		rows = append(rows, fit(DefaultStyles.Faint.Render(line), counts, width))
 		if flags.Diffs {
 			if change.Kind == "diff" {
 				rows = append(rows, r.renderDiffPath(change.Diff, change.Path, width))
@@ -493,11 +515,7 @@ func (r TranscriptRenderer) RenderToolTrace(trace *daemon.ToolTrace, flags Displ
 		}
 	}
 	if trace.Truncated {
-		notice := "Some activity was not captured · /v shows what is available"
-		if flags.Tools {
-			notice = "Some activity was not captured; this list is incomplete"
-		}
-		rows = append(rows, DefaultStyles.Faint.Render(notice))
+		rows = append(rows, DefaultStyles.Faint.Render("Some activity was not captured · /v shows what is available"))
 	}
 	return strings.Join(rows, "\n")
 }
@@ -575,35 +593,24 @@ func (r TranscriptRenderer) RenderAfter(before prior, entry HistoryEntry, flags 
 			rows = append(rows, r.faintRows(render(entry.Text, width), width)...)
 		}
 	case EntryTool:
+		if flags.Tools {
+			rows = r.toolCard(entry, flags, width)
+			rows = append(rows, r.renderToolImages(entry, width)...)
+			break
+		}
+		// a glance: the trace when the harness recorded one, else the call
 		trace := entry.ToolTrace
 		hasTrace := trace != nil && (len(trace.Activities) > 0 || len(trace.Changes) > 0)
 		failed := toolFailed(entry)
-		if !hasTrace || flags.Tools || failed {
-			// a glance in normal mode, read in full in verbose mode
+		if !hasTrace || failed {
 			style := DefaultStyles.Faint
-			clock := ""
-			if flags.Tools {
-				style = lipgloss.NewStyle()
-				clock = formatClock(entry.Timestamp)
-			}
 			if failed {
 				style = DefaultStyles.Error
 			}
-			rows = append(rows, markChrome+style.Render(toolRow(entry, failed, clock, width)))
+			rows = append(rows, markChrome+style.Render(toolRow(entry, failed, "", width)))
 		}
 		if hasTrace {
 			rows = append(rows, chrome(r.RenderToolTrace(trace, flags, width)))
-			if !flags.Tools && !failed && len(entry.Images) == 0 {
-				break
-			}
-		}
-		if flags.Tools {
-			if entry.ToolName == "python" {
-				if code, ok := entry.ToolArgs["code"].(string); ok {
-					rows = append(rows, renderCopyable("```python\n"+code+"\n```", width))
-				}
-			}
-			rows = append(rows, strings.Split(cmp.Or(toolOutput(entry), "(no output)"), "\n")...)
 		}
 		rows = append(rows, r.renderToolImages(entry, width)...)
 	case EntryTurnEnd:

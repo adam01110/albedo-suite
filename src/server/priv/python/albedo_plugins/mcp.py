@@ -15,6 +15,7 @@ import re
 
 from albedo_api import Host, PythonApi, Record
 import albedo_trace
+from albedo_plugins import hook
 
 Operation = dict[str, object]
 
@@ -58,7 +59,9 @@ class Mcp:
 
     async def load(self, server: str) -> list[Record]:
         """Explicitly start and discover one server; return its schemas as data."""
-        return cast(list[Record], _record(await self._host("mcp.load", {"server": server})))
+        return cast(
+            list[Record], _record(await self._host("mcp.load", {"server": server}))
+        )
 
     async def unload(self, server: str) -> None:
         """Stop one server and discard its session catalogue."""
@@ -66,7 +69,9 @@ class Mcp:
 
     async def tools(self, server: str | None = None) -> list[Record]:
         """Every operation (name, server, kind, tool, description), or one server's."""
-        operations = await self.load(server) if server is not None else await self._operations()
+        operations = (
+            await self.load(server) if server is not None else await self._operations()
+        )
         return [
             Record(
                 {
@@ -95,9 +100,18 @@ class Mcp:
         if "/" in name:
             await self.load(name.split("/", 1)[0])
         merged = {**(arguments or {}), **kwargs}
-        albedo_trace.note("mcp", name, str(merged)[:512])
-        result = await self._host("mcp.call", {"name": name, "arguments": merged})
-        return cast(Record, _record(result))
+
+        async def call(given: dict[str, object]) -> Record:
+            result = await self._host("mcp.call", given)
+            return cast(Record, _record(result))
+
+        return await albedo_trace.noted(
+            "mcp",
+            name,
+            hook.around("mcp.call", {"name": name, "arguments": merged}, call),
+            lambda result: (not getattr(result, "isError", False), ""),
+            str(merged)[:512],
+        )
 
 
 def _identifier(value: str) -> str:

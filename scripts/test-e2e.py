@@ -21,6 +21,10 @@ SUITE_CASES = (
 )
 UPSTREAM_CASES = (
     "cache_miss_test.py",
+    "context_test.py",
+    "hooks_test.py",
+    "rewind_test.py",
+    "traces_test.py",
     "provider_timeout_test.py",
     "speechless_test.py",
     "mcp_test.py",

@@ -26,6 +26,7 @@ from typing import Generic, Iterable, Sequence, TypeVar
 
 from albedo_api import PythonApi, ReadyList, Text
 import albedo_trace
+from albedo_plugins import hook
 from albedo_plugins import run as jobs
 
 
@@ -560,16 +561,20 @@ class Files:
             raise ValueError("0 <= context <= 50")
         return Search(
             "files.find",
-            lambda: self._find(
+            lambda: albedo_trace.noted(
+                "search",
                 pattern,
-                path,
-                glob,
-                context,
-                max_results,
-                literal,
-                case_sensitive,
-                hidden,
-                ignored,
+                self._find(
+                    pattern,
+                    path,
+                    glob,
+                    context,
+                    max_results,
+                    literal,
+                    case_sensitive,
+                    hidden,
+                    ignored,
+                ),
             ),
         )
 
@@ -585,7 +590,6 @@ class Files:
         hidden: bool,
         ignored: bool,
     ) -> Rows:
-        albedo_trace.note("search", pattern)
         if ignored:
             raise ValueError(
                 "ignored=True is unsupported by FFF 0.11: its index excludes ignored files"
@@ -719,6 +723,10 @@ class Files:
         """Destroy FFF indexes and stop the supervised worker."""
         await _fff.close()
 
+    @hook.reported(
+        "files.edit",
+        {"path": "file_path", "old_str": "old_string", "new_str": "new_string"},
+    )
     def edit(
         self, path: str, old_str: str, new_str: str, line_hint: int | None = None
     ) -> Text:
@@ -758,6 +766,7 @@ class Files:
         _record_edit(Path(path).expanduser())
         return Text(f"Edited {target}")
 
+    @hook.reported("files.write", {"path": "file_path", "content": "content"})
     def write(self, path: str, content: str) -> Text:
         """Create or replace a whole file. Use `edit` to change part of one."""
         target = Path(path).expanduser()

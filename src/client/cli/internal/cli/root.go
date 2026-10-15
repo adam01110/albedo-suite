@@ -101,7 +101,7 @@ func preserveFile(writer *checkedWriter) io.Writer {
 }
 
 func NewRoot(deps Dependencies) *cobra.Command {
-	var prompt, session, model string
+	var prompt, session, model, rawWindow string
 	var timeout time.Duration
 	root := &cobra.Command{Use: "albedo", Short: "persistent coding sessions", Args: cobra.NoArgs, SilenceErrors: true, SilenceUsage: true}
 	root.CompletionOptions.DisableDefaultCmd = true
@@ -109,9 +109,10 @@ func NewRoot(deps Dependencies) *cobra.Command {
 	root.Flags().StringVarP(&session, "session", "s", "", "send the prompt to an existing session")
 	root.Flags().StringVarP(&model, "model", "m", "", "model id or provider/model; requires --prompt")
 	root.Flags().DurationVar(&timeout, "timeout", 0, "stop the turn after this long (90s, 10m); unlimited when omitted")
+	root.Flags().StringVarP(&rawWindow, "context-window", "c", "", "tokens the session compacts against instead of the model's window (100k, 150000); requires --prompt")
 	root.RunE = func(cmd *cobra.Command, _ []string) error {
 		if !cmd.Flags().Changed("prompt") {
-			for _, name := range []string{"session", "model", "timeout"} {
+			for _, name := range []string{"session", "model", "timeout", "context-window"} {
 				if cmd.Flags().Changed(name) {
 					return fmt.Errorf("--%s requires --prompt", name)
 				}
@@ -121,9 +122,17 @@ func NewRoot(deps Dependencies) *cobra.Command {
 		if cmd.Flags().Changed("timeout") && timeout <= 0 {
 			return errors.New("--timeout must be positive, such as 90s or 10m")
 		}
+		var window int64
+		if cmd.Flags().Changed("context-window") {
+			parsed, err := daemon.ParseTokenWindow(rawWindow)
+			if err != nil {
+				return errors.New("--context-window must be a positive token count, such as 100k or 150000")
+			}
+			window = parsed
+		}
 		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		result, err := deps.Application.RunPrompt(ctx, app.PromptOptions{Prompt: prompt, SessionID: session, Workspace: deps.Workspace, Model: model, Timeout: timeout})
+		result, err := deps.Application.RunPrompt(ctx, app.PromptOptions{Prompt: prompt, SessionID: session, Workspace: deps.Workspace, Model: model, Timeout: timeout, ContextWindow: window})
 		if err != nil {
 			return err
 		}

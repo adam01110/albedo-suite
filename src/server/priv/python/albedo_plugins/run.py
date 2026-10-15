@@ -35,6 +35,7 @@ from albedo_api import (
 import albedo_proc
 import albedo_rtk
 import albedo_shell
+from albedo_plugins import hook
 import albedo_shims
 import albedo_trace
 import asyncio
@@ -286,6 +287,7 @@ class Job(JobOutput):
         self.group: albedo_proc.Group | None = None
         self.exit_code: int | None = None
         self.timed_out: bool = False
+        self._hooked: hook.Call | None = None  # set by run()
         self.started: float = loop.time()
         self.duration: float | None = None  # seconds it ran, once it ended
         self.termination: albedo_proc.Termination | None = None
@@ -300,8 +302,7 @@ class Job(JobOutput):
         )
         if watch_output is not None:
             watch_output(self.id, self._mark_read)
-        if traced:
-            albedo_trace.note("run", self.command)
+        self._done = albedo_trace.note("run", self.command) if traced else None
         data = None if isinstance(stdin, Job) else stdin
         with albedo_trace.unobserved():  # the cell ran argv, not the wrapper around it
             self.spawning = loop.create_task(self._launch(cwd, env, data, self.feed))
@@ -423,6 +424,12 @@ class Job(JobOutput):
                 )
             elif not ending.gone:
                 self.capture.write(f"\n[cleanup failed: {ending.report()}]\n")
+            if self._done is not None:
+                self._done(ok=self.exit_code == 0 and not self.timed_out)
+            if self._hooked is not None:
+                self.capture.write(
+                    await hook.job_ended(self._hooked, self.exit_code, self.timed_out)
+                )
             send(
                 {
                     "type": "job",
@@ -767,8 +774,13 @@ def run(
                     "a whole command line as the program", script=argv[0]
                 )
             raise FileNotFoundError(f"{argv[0]}: no such program on PATH")
+    line = shlex.join(argv)
+    hooked = hook.before("run", {"command": line})
+    command = hooked.arguments.get("command")
+    if isinstance(command, str) and command != line:
+        argv = shlex.split(command)
     executed = albedo_rtk.route(argv, environment, stdin=stdin is not None)
-    return start(
+    job = start(
         executed,
         timeout,
         cwd=directory,
@@ -777,6 +789,8 @@ def run(
         service=service,
         requested_argv=argv,
     )
+    job._hooked = hooked
+    return job
 
 
 def start(

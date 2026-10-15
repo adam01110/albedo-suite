@@ -2,6 +2,7 @@
 
 import albedo/actor_call
 import albedo/daemon/configuration
+import albedo/daemon/session_configuration
 import albedo/daemon/store
 import albedo/harness/command
 import albedo/harness/compaction
@@ -12,6 +13,7 @@ import albedo/harness/extensions
 import albedo/harness/extensions/python/cells as journal
 import albedo/harness/extensions/python/kernel as python
 import albedo/harness/extensions/python/link
+import albedo/harness/hook
 import albedo/harness/oauth
 import albedo/harness/protect
 import albedo/harness/runtime/boot
@@ -1069,6 +1071,11 @@ pub fn instructions(session: Session) -> String {
   session.instructions
 }
 
+/// Asks every hook this session composed about one step of its turn.
+pub fn hook(session: Session, event: hook.Event) -> hook.Answer {
+  hook.ask(composition.hooks(session.composition), event)
+}
+
 /// Tells every extension this session composed about one of its events.
 pub fn observe(
   session: Session,
@@ -1106,8 +1113,27 @@ pub fn prepare_history_with(
     history,
     False,
     types.any_images,
+    None,
+    fn() { Nil },
+    compaction.unprojected,
   )
   |> result.map(fn(prepared) { prepared.inputs })
+}
+
+/// Whether the provider's catalog, or models.dev behind it, says the model
+/// takes no images. A model no catalog describes is given the benefit of the
+/// doubt, as it was before any catalog knew of it.
+fn reads_text_only(
+  enabled: List(extension.Extension),
+  model: String,
+  endpoint: Option(String),
+) -> Bool {
+  case extension.model_info(enabled, model, endpoint) {
+    Some(info) ->
+      info.input_modalities != []
+      && !list.contains(info.input_modalities, "image")
+    None -> False
+  }
 }
 
 /// Only a catalog answer becomes a capacity; an unknown model stays unknown.
@@ -1251,6 +1277,20 @@ pub fn upstream(
       effort,
     ),
   ))
+  let upstream = case
+    reads_text_only(
+      selected,
+      model,
+      extension.clean_endpoint(upstream.endpoint),
+    )
+  {
+    True ->
+      extension.Upstream(
+        ..upstream,
+        images: types.ImageLimits(..upstream.images, max_images: Some(0)),
+      )
+    False -> upstream
+  }
   case edge {
     None -> upstream
     Some(edge) ->
@@ -1306,6 +1346,9 @@ pub fn compact_history_scoped(
     history,
     True,
     types.any_images,
+    None,
+    fn() { Nil },
+    compaction.unprojected,
   )
   |> result.map(fn(prepared) { prepared.inputs })
 }
@@ -1322,6 +1365,9 @@ pub fn prepare_view_scoped(
   history: List(types.Input),
   force: Bool,
   images: types.ImageLimits,
+  reported: Option(Int),
+  compacting: fn() -> Nil,
+  project: compaction.Project,
 ) -> Result(compaction.Prepared, String) {
   view_scoped(
     runtime,
@@ -1334,6 +1380,9 @@ pub fn prepare_view_scoped(
     history,
     force,
     images,
+    reported,
+    compacting,
+    project,
     compaction.prepare,
   )
 }
@@ -1362,6 +1411,9 @@ pub fn project_view_scoped(
     history,
     False,
     images,
+    None,
+    fn() { Nil },
+    compaction.unprojected,
     compaction.project,
   )
 }
@@ -1377,6 +1429,9 @@ fn view_scoped(
   history: List(types.Input),
   force: Bool,
   images: types.ImageLimits,
+  reported: Option(Int),
+  compacting: fn() -> Nil,
+  project: compaction.Project,
   view: fn(compaction.Strategy, compaction.Context, List(types.Input)) ->
     Result(compaction.Prepared, String),
 ) -> Result(compaction.Prepared, String) {
@@ -1384,6 +1439,10 @@ fn view_scoped(
   let pinned_tokens = compaction.estimate_pinned(instructions, tools(session))
   let enabled = composition.extensions(session.composition)
   let info = model_info(session, model, endpoint)
+  use window <- result.try(session_configuration.context_window(
+    runtime.ledger,
+    session.id,
+  ))
   case extension.compaction(enabled) {
     None if force -> Error("no compaction strategy is enabled")
     None -> Ok(compaction.Prepared(history, None, False))
@@ -1397,6 +1456,7 @@ fn view_scoped(
           source,
           pinned_tokens,
           capacity(info),
+          window,
           force,
           summarize,
           compaction.compose_prior(
@@ -1405,9 +1465,13 @@ fn view_scoped(
             }),
             runtime.ledger,
             session.id,
+            project,
           ),
           reader(info),
           images,
+          reported,
+          compacting,
+          project,
         )
       // A strategy that raises fails the turn the way one returning an error
       // does, naming itself, rather than killing the turn's process.

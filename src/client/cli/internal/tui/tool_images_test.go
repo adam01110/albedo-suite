@@ -123,6 +123,35 @@ func TestToolImagesInlineFoldWidthAndCopy(t *testing.T) {
 	}
 }
 
+func TestToolImagesSurviveTraceAndFoldedCard(t *testing.T) {
+	mockToolGraphics(t, true)
+	preview, _ := prepareToolPreview(toolPreviewPNG(t), graphics{supported: true}, 72)
+	entry := HistoryEntry{Kind: EntryTool, ID: "42", ToolName: "python", Timestamp: 42,
+		ToolResult: strings.Repeat("output line\n", 30),
+		ToolTrace:  &daemon.ToolTrace{Activities: []daemon.ToolActivity{{Kind: "read", Target: "example.go"}}},
+		Images:     []daemon.ImageMetadata{{Reference: "/sessions/s/history/42/image-0", Width: 120, Height: 80, MimeType: daemon.ImagePNG}}}
+	for _, flags := range []DisplayFlags{{}, {Tools: true}} {
+		m := newTestChatModel(t, &daemon.Session{ID: "s"})
+		m.SetSize(90, 40)
+		m.Flags = flags
+		m.Renderer.ToolImages = map[string]toolImagePreview{entry.Images[0].Reference: preview}
+		m.appendSettledEntry(entry)
+		m.appendSettledEntry(HistoryEntry{Kind: EntryAssistant, Text: "Image received.", Timestamp: 43})
+		m.refreshViewportContent()
+		before := len(m.frameLines)
+		for _, label := range []string{"enlarge images", "show less"} {
+			row := rowWith(t, m.frameLines, label)
+			m.actAt(row)
+			if !strings.ContainsRune(strings.Join(m.frameLines, "\n"), kitty.Placeholder) {
+				t.Fatal("trace or card toggle hid image preview")
+			}
+		}
+		if m.Renderer.Open[entryKey(entry)] || len(m.frameLines) != before {
+			t.Fatal("card and image folds did not restore original block")
+		}
+	}
+}
+
 func TestToolImagesUnsupportedTerminalShowsMetadataWithoutFetch(t *testing.T) {
 	mockToolGraphics(t, false)
 	m := newTestChatModel(t, &daemon.Session{ID: "s"})
