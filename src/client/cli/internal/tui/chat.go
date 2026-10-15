@@ -271,6 +271,7 @@ func NewChatModel(session *daemon.Session, client *daemon.ChatClient) ChatModel 
 		Renderer:     TranscriptRenderer{Workspace: session.Workspace, highlights: &highlightCache{}},
 		Viewport:     vp,
 		TextArea:     ta,
+		vim:          vimState{normal: true},
 		CommandMenu:  NewCommandMenuModel(),
 		Flags:        DisplayFlags{Diffs: true},
 		Follow:       true,

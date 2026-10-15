@@ -19,6 +19,9 @@ type vimState struct {
 	insert        *vimSnapshot
 	register      string
 	linewise      bool
+	argument      *vimInput
+	lastFind      string
+	lastChar      rune
 }
 
 func (m ChatModel) vimMode() string {
@@ -98,6 +101,7 @@ type vimInput struct {
 
 func (v *vimState) resetInput() {
 	v.pending, v.count, v.operatorCount = "", 0, 0
+	v.argument = nil
 }
 
 func (v *vimState) accumulateCount(key string) bool {
@@ -150,10 +154,22 @@ func (m *ChatModel) handleVim(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		m.vim.resetInput()
 		return nil, false
 	}
+	if m.vim.argument != nil {
+		input := *m.vim.argument
+		m.vim.argument = nil
+		if len([]rune(msg.Text)) == 1 {
+			key = msg.Text
+		}
+		m.vimArgument(input, key)
+		return nil, true
+	}
 	if m.vim.accumulateCount(key) {
 		return nil, true
 	}
 	input := m.vim.takeInput(key)
+	if m.vimAwaitArgument(input) {
+		return nil, true
+	}
 	if m.vimPending(input) {
 		return nil, true
 	}

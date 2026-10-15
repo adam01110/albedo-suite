@@ -515,7 +515,7 @@ func (m *ChatModel) vimComposerEdited(before vimSnapshot) {
 
 func (m *ChatModel) vimSubmitted() {
 	m.vim.undo, m.vim.redo, m.vim.insert = nil, nil, nil
-	m.vim.pending, m.vim.count, m.vim.operatorCount = "", 0, 0
+	m.vim.resetInput()
 	// Attachment numbers are reused after submission, so the register expires.
 	m.vim.register, m.vim.linewise = "", false
 }

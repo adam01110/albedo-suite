@@ -28,10 +28,10 @@ func vimKeys(m *ChatModel, keys ...string) {
 func TestVimModesAndUndo(t *testing.T) {
 	m := newTestChatModel(t, &daemon.Session{ID: "s"})
 	m.SetSize(80, 24)
-	if m.vimMode() != "INSERT" {
+	if m.vimMode() != "NORMAL" {
 		t.Fatal(m.vimMode())
 	}
-	vimKeys(&m, "a", "b", "c", "esc", "0", "x")
+	vimKeys(&m, "i", "a", "b", "c", "esc", "0", "x")
 	if m.TextArea.Value() != "bc" || m.vimMode() != "NORMAL" {
 		t.Fatal(m.TextArea.Value(), m.vimMode())
 	}
@@ -140,6 +140,7 @@ func TestVimFooter(t *testing.T) {
 func TestVimEscapePreservesStoppingAndMenus(t *testing.T) {
 	m := newTestChatModel(t, &daemon.Session{ID: "s"})
 	m.SetSize(80, 24)
+	vimKeys(&m, "i")
 	m.Status.Running = true
 	vimKeys(&m, "esc")
 	if !m.Stopping || m.vim.normal {
@@ -227,11 +228,11 @@ func TestVimFooterExpandedUsage(t *testing.T) {
 		m.windowModel = &m.Model
 		footer := ansi.Strip(m.renderFooter())
 		t.Logf("width=%d expanded=%q", width, footer)
-		if !strings.Contains(footer, "INSERT") || ansi.StringWidth(footer) > m.chatWidth() {
+		if !strings.Contains(footer, "NORMAL") || ansi.StringWidth(footer) > m.chatWidth() {
 			t.Fatal(footer)
 		}
 		if width >= 80 {
-			a, b, c := strings.Index(footer, "sessions"), strings.Index(footer, "INSERT"), strings.Index(footer, "commands")
+			a, b, c := strings.Index(footer, "sessions"), strings.Index(footer, "NORMAL"), strings.Index(footer, "commands")
 			if !(a >= 0 && a < b && b < c) {
 				t.Fatal(footer)
 			}

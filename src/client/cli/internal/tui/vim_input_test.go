@@ -10,7 +10,7 @@ import (
 func TestVimInputShiftEnter(t *testing.T) {
 	m := newTestChatModel(t, &daemon.Session{ID: "s"})
 	m.SetSize(80, 24)
-	vimKeys(&m, "a", "b", "c", "esc")
+	vimKeys(&m, "i", "a", "b", "c", "esc")
 	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModShift})
 	if !strings.Contains(m.TextArea.Value(), "\n") {
 		t.Fatalf("Esc Shift+Enter: want newline, got %q normal=%v", m.TextArea.Value(), m.vim.normal)
@@ -28,7 +28,7 @@ func TestVimInputCollapsedPasteUndo(t *testing.T) {
 func TestVimInputMenuSubmissionHistory(t *testing.T) {
 	m := newTestChatModel(t, &daemon.Session{ID: "s"})
 	m.SetSize(80, 24)
-	vimKeys(&m, "a", "b", "c", "esc", "0", "x", "i")
+	vimKeys(&m, "i", "a", "b", "c", "esc", "0", "x", "i")
 	m.TextArea.SetValue("/t")
 	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	vimKeys(&m, "esc", "u")
