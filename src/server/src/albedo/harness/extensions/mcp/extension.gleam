@@ -61,28 +61,48 @@ type Definition {
   )
 }
 
-const default_retry_ms = 30_000
-
-fn default_config() -> Config {
-  Config(dict.new(), default_retry_ms, 0)
+fn retry() -> settings.Setting(Int) {
+  settings.whole(
+    "retryMs",
+    "Retry",
+    "Milliseconds after a session prepares before it first probes a server that was down; later probes double, up to twenty times this. Sessions prepared after a change use it.",
+    30_000,
+    1,
+    3_600_000,
+  )
 }
 
-fn config_decoder() -> decode.Decoder(Config) {
-  use servers <- decode.optional_field(
-    "servers",
-    dict.new(),
-    decode.dict(decode.string, server_decoder()),
+fn idle_timeout() -> settings.Setting(Int) {
+  settings.whole(
+    "idleTimeoutMs",
+    "Idle timeout",
+    "Close idle lazy MCP transports after this many milliseconds, retaining their schemas; zero disables cleanup. New sessions use changes.",
+    0,
+    0,
+    3_600_000,
   )
-  use retry_ms <- decode.optional_field("retryMs", default_retry_ms, decode.int)
-  use idle <- decode.optional_field("idleTimeoutMs", 0, decode.int)
-  case idle >= 0 && idle <= 3_600_000 {
-    True -> decode.success(Config(servers, retry_ms, idle))
-    False ->
-      decode.failure(
-        Config(servers, retry_ms, 0),
-        "non-negative MCP idle timeout up to one hour",
+}
+
+/// Servers are saved through the MCP settings group; lazy mode remains an
+/// undeclared boolean until native settings support boolean fields.
+fn config_section() -> settings.Section(Config) {
+  settings.section(
+    "mcp",
+    "MCP servers",
+    settings.Tools,
+    [settings.field(retry()), settings.field(idle_timeout())],
+    {
+      use servers <- decode.optional_field(
+        "servers",
+        dict.new(),
+        decode.dict(decode.string, server_decoder()),
       )
-  }
+      use retry_ms <- settings.value(retry())
+      use idle <- settings.value(idle_timeout())
+      decode.success(Config(servers, retry_ms, idle))
+    },
+    Ok,
+  )
 }
 
 fn server_decoder() -> decode.Decoder(Server) {
@@ -146,22 +166,15 @@ fn env_ref_decoder() -> decode.Decoder(EnvRef) {
   decode.map(decode.field("env", decode.string, decode.success), EnvRef)
 }
 
-fn load_config() -> Result(Config, String) {
-  settings.load("mcp", config_decoder(), default_config())
-}
-
 pub fn configured_extension() -> extension.Extension {
-  bundle(load_config)
-}
-
-fn bundle(resolve: fn() -> Result(Config, String)) -> extension.Extension {
   extension.Extension(
     "mcp",
     "Model Context Protocol servers with session-owned connections",
     ["python"],
     [
+      extension.SettingsPlugin(settings.declaration(config_section())),
       extension.ManagedPlugin(fn(ledger, session, workspace) {
-        use config <- result.try(resolve())
+        use config <- result.try(settings.load_section(config_section()))
         use lazy <- result.try(settings.load(
           "mcp",
           decode.optional_field("lazy", False, decode.bool, decode.success),

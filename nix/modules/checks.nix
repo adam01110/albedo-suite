@@ -47,6 +47,12 @@
       touch $out
     '';
 
+    checks.web = runCommand "albedo-web-tests" {nativeBuildInputs = [pkgs.python311];} ''
+      export ERL_AFLAGS="-public_key cacerts_path '\"${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt\"'"
+      python3 ${../../scripts/test-e2e.py} --source ${runtime.server.src} --suite ${../..} --package ${runtime} --case web_e2e_test.py
+      touch $out
+    '';
+
     checks.native-mcp = runCommand "albedo-native-mcp-tests" {nativeBuildInputs = [pkgs.beam29Packages.erlang];} ''
       cp ${../../src/server/src/albedo/harness/extensions/mcp/albedo_mcp.erl} albedo_mcp.erl
       cp -r ${../../test/fixtures/native}/. .
@@ -65,6 +71,7 @@
         test -f ${runtime}/lib/albedo/albedo/priv/python/albedo_rtk.py
         test -f ${runtime}/lib/albedo/albedo/priv/python/albedo_fff.mjs
         test -x ${suitePackages.albedo-fff}/bin/albedo-fff
+        test -f ${runtime.web}/index.html
         touch $out
       '';
 

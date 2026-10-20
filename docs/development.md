@@ -53,7 +53,8 @@ source into a writable temporary directory and uses the supplied binaries.
 It runs formatter, LSP, lazy and eager MCP, operation lifecycle, and streaming replay
 and user-question cases plus OpenCode Go routing/discovery and RTK/FFF daemon
 checks, plus upstream cache-miss, provider-timeout, speechless-response,
-context-window, hooks, rewind and trace regressions. Additional supervised RTK
+context-window, hooks, rewind, trace and provider-catalog regressions.
+Additional supervised RTK
 and FFF integration tests run in the flake Python check against the packaged
 runtime.
 
@@ -136,3 +137,18 @@ Remove retired cases from the flake checks and E2E runner, update documentation
 and source inventories, and rerun disabled-feature, ordinary streaming and MCP
 regressions against the native implementation. No runtime data migration is
 required by either layer; their settings are additive public configuration.
+
+## Native provider and web integration
+
+The current base includes native OpenCode Go OAuth, account rotation, portable
+cross-protocol replay, Gemini routing, OpenCode Zen, Discord and `/config`.
+Go's provider extension uses pristine upstream code; the suite no longer
+replaces the daemon's profile protocol selection. Narrow Go wire/catalog
+additions preserve SDK-metadata
+routing and endpoint-scoped one-hour discovery caches. Package checks exercise
+native Go rotation, OAuth organization headers and all four wire routes.
+
+NUR does not yet bundle the native web assets. `nix/modules/web.nix` builds the
+pinned upstream web client with upstream's dependency hash; both suite packages
+set `ALBEDO_WEB_DIST` on the CLI wrapper. Retire that packaging bridge when NUR
+supplies its own web derivation and wrapper. No web source is replaced.

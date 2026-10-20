@@ -38,7 +38,7 @@ import albedo_shell
 import albedo_rtk
 import albedo_ssh
 from albedo_plugins import hook
-from albedo_plugins.run import notice
+from albedo_plugins.run import NOTICE_RETRY, notice
 
 CONNECT_TIMEOUT = 60  # seconds before an unreachable target gives up
 HANDSHAKE_TIMEOUT = 60  # seconds for the remote kernel to say ready
@@ -95,7 +95,7 @@ def _report_live() -> None:
     try:
         live = [
             *_fallback_live.values(),
-            *(job for c in connections for job in c._live.values()),
+            *(job for c in connections if not c.closed for job in c._live.values()),
         ]
         send_frame(
             {
@@ -162,7 +162,8 @@ def parse_target(arg: str) -> dict[str, str | None]:
 
 
 def _settings() -> dict[str, str]:
-    """The `remote` section of extensions.json, falling back to `ssh`; errors raise."""
+    """The `remote` section of extensions.json, each key missing from it taken
+    from the older `ssh` section; errors raise."""
     home = os.environ.get("ALBEDO_HOME") or os.path.expanduser("~/.albedo")
     try:
         with open(os.path.join(home, "extensions.json"), "rb") as handle:
@@ -171,16 +172,23 @@ def _settings() -> dict[str, str]:
         return {}
     if not isinstance(sections, dict):
         raise RemoteError("extensions.json must hold an object")
-    section = sections.get("remote", sections.get("ssh"))
-    if section is None:
-        return {}
-    if not isinstance(section, dict):
-        raise RemoteError("extensions.json remote section must be an object")
-    keys = ("host", "remoteCwd", "python")
-    for key in keys:
-        if key in section and not isinstance(section[key], str):
+    section: dict[str, object] = {}
+    for name in ("ssh", "remote"):
+        part = sections.get(name)
+        if part is None:
+            continue
+        if not isinstance(part, dict):
+            raise RemoteError(f"extensions.json {name} section must be an object")
+        section.update(part)
+    result: dict[str, str] = {}
+    for key in ("host", "remoteCwd", "python"):
+        if key not in section:
+            continue
+        value = section[key]
+        if not isinstance(value, str):
             raise RemoteError(f"extensions.json remote.{key} must be a string")
-    return {key: section[key] for key in keys if key in section}
+        result[key] = value
+    return result
 
 
 def resolve(
@@ -334,8 +342,13 @@ class RemoteRef:
         return result
 
     def poll(self) -> int | None:
-        """The remote job's exit status so far, from the mirrored stream."""
+        """The remote job's exit status so far, from the mirrored stream. A job
+        whose connection died says so instead of running forever."""
         state = self._mirror()
+        if state is None or state.get("exit_code") is None:
+            lost = self._connection.lost
+            if lost:
+                raise RemoteLost(lost)
         return state.get("exit_code") if state else None
 
     @property
@@ -582,6 +595,9 @@ class RemoteConnection:
         self._reader: asyncio.Task[None] | None = None
         self._drain: asyncio.Task[None] | None = None
         self.closed = False
+        # Why the channel is gone, once it is: a dead connection's references
+        # say so rather than reporting a job that never ended.
+        self.lost: str | None = None
         self.degraded: RemoteBootError | None = None
 
     # --- boot ---
@@ -746,7 +762,9 @@ class RemoteConnection:
             await self._stdin.drain()
 
     def _lost(self) -> None:
-        """The channel died: every pending call and reference learns it once."""
+        """The channel died: every pending call and reference learns it once,
+        and the jobs nobody here claimed wake the session instead of running
+        forever in a supervisor that no longer has a connection."""
         if self._handshake is not None and not self._handshake.done():
             self._handshake.set_exception(
                 RemoteBootError(
@@ -760,6 +778,43 @@ class RemoteConnection:
                     RemoteLost(f"the connection to {self.host} was lost")
                 )
         self.closed = True
+        self.lost = self.lost or f"the connection to {self.host} was lost"
+        orphaned = [job for id, job in self._live.items() if not self._claimed_here(id)]
+        if self._live:
+            self._live.clear()
+            _report_live()
+        if orphaned:
+            try:
+                loop.create_task(self._announce_lost(orphaned))
+            except RuntimeError:
+                pass  # the loop is closing; no turn is left to wake
+
+    async def _announce_lost(self, jobs: list[LiveJob]) -> None:
+        """Wake the session for the jobs a dead connection took with it; their
+        results are no longer readable, so this notice is all there is."""
+        facts = [
+            {
+                "id": job["id"],
+                "command": job["command"],
+                "where": f" on {self.host}",
+                "summary": "connection lost, exit status unknown",
+                "exit_code": None,
+                "timed_out": False,
+                "duration": None,
+                "host": self.host,
+            }
+            for job in jobs
+        ]
+        while True:
+            try:
+                await self._wake({"jobs": facts})
+                return
+            except Exception as error:
+                # A busy session refuses rather than queueing, as it does for a
+                # local job's wake, so this retries until the run ends.
+                if getattr(error, "code", "") != "busy":
+                    return  # the daemon is gone, or the session is shutting down
+                await asyncio.sleep(NOTICE_RETRY)
 
     # --- calls ---
 
@@ -1130,6 +1185,7 @@ class RemoteConnection:
                 except asyncio.TimeoutError:
                     self._process.kill()
         self.closed = True
+        self.lost = self.lost or f"the connection to {self.host} was closed"
         self._live.clear()
         _report_live()
         for future in self._pending.values():
@@ -1490,7 +1546,7 @@ class Remote:
     @staticmethod
     def connections() -> ReadyList:
         """Every open connection, kernel or degraded."""
-        return ReadyList(connections)
+        return ReadyList([c for c in connections if not c.closed])
 
     @staticmethod
     async def close_all() -> None:
@@ -1509,7 +1565,7 @@ async def stop_remote_job(job_id: str) -> dict[str, object] | None:
         await fallback.stop()
         return {"ok": True}
     for connection in connections:
-        if job_id in connection._live:
+        if not connection.closed and job_id in connection._live:
             return await connection.stop_job(job_id)
     return None
 

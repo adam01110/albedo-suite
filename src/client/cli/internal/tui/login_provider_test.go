@@ -20,7 +20,7 @@ func newGoLogin(t *testing.T, hint string) LoginModel {
 
 func assertGoDraft(t *testing.T, m LoginModel) {
 	t.Helper()
-	if m.Draft.Extension != "opencode-go" || m.Draft.BaseURL != "https://opencode.ai/zen/go/v1" || m.Draft.Protocol != "chat_completions" {
+	if m.Draft.Extension != "opencode-go" || m.Draft.BaseURL != "https://opencode.ai/inference/go/v1" || m.Draft.Protocol != "chat_completions" {
 		t.Fatalf("unexpected Go draft: %+v", m.Draft)
 	}
 }
@@ -30,7 +30,7 @@ func TestOpenCodeGoPicker(t *testing.T) {
 	found := false
 	for _, item := range m.ChoosePicker.items {
 		if item.ID == "add-opencode-go" {
-			if item.Label != "add or update OpenCode Go" {
+			if item.Label != "OpenCode Go" {
 				t.Fatalf("unexpected Go action label: %q", item.Label)
 			}
 			found = true
@@ -87,7 +87,7 @@ func TestOpenCodeGoFirstRunChooser(t *testing.T) {
 	}
 	for _, size := range [][2]int{{80, 24}, {120, 30}} {
 		m.SetSize(size[0], size[1])
-		if view := ansi.Strip(m.View()); !strings.Contains(view, "add or update OpenCode Go") {
+		if view := ansi.Strip(m.View()); !strings.Contains(view, "OpenCode Go") {
 			t.Fatalf("first-run screen does not show OpenCode Go at %dx%d:\n%s", size[0], size[1], view)
 		}
 	}

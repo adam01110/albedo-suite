@@ -5,7 +5,7 @@ import time
 import unittest
 from urllib.parse import quote
 
-from harness import Albedo, Provider, Reply, error, exclusive, text  # ty: ignore[unresolved-import]
+from harness import Albedo, Provider, Reply, error, exclusive, text
 
 
 def messages_reply(tool=False):
@@ -57,29 +57,33 @@ class GoProvider(Provider):
         )
         self.headers = []
         self.gets = []
+        self.get_headers = []
         self.fail_catalog = False
 
-    def _post(self, handler):
-        self.headers.append(dict(handler.headers))
-        if not handler.headers.get("x-opencode-session"):
-            handler.send_response(400)
-            handler.end_headers()
-            handler.wfile.write(b'{"error":{"type":"MissingSessionID"}}')
+    def _post(owner, self):
+        owner.headers.append(dict(self.headers))
+        if not self.headers.get("x-opencode-session"):
+            self.send_response(400)
+            self.end_headers()
+            self.wfile.write(b'{"error":{"type":"MissingSessionID"}}')
             return
-        super()._post(handler)
+        super()._post(self)
 
-    def _get(self, handler):
-        self.gets.append(handler.path)
-        if self.fail_catalog:
-            handler.send_response(503)
-            handler.end_headers()
+    def _get(owner, self):
+        owner.gets.append(self.path)
+        owner.get_headers.append(dict(self.headers))
+        if owner.fail_catalog:
+            self.send_response(503)
+            self.end_headers()
         else:
-            super()._get(handler)
+            super()._get(self)
 
 
 @exclusive
 class OpenCodeGoE2ETests(unittest.TestCase):
-    def start(self, model, script=None, key="go-test-key", metadata=None):
+    def start(
+        self, model, script=None, key="go-test-key", metadata=None, providers=None
+    ):
         provider = GoProvider(
             script
             or (
@@ -106,7 +110,8 @@ class OpenCodeGoE2ETests(unittest.TestCase):
                     "apiKey": key,
                     "model": model,
                     "protocol": "chat_completions",
-                }
+                },
+                **(providers or {}),
             },
         )
         app.__enter__()
@@ -259,12 +264,87 @@ class OpenCodeGoE2ETests(unittest.TestCase):
         self.assertIn("go-reply", self.turn(session))
         self.assertTrue(self.provider.requests[-1]["path"].endswith("/messages"))
 
+    def test_provider_sdk_default_and_unknown_sdk_fallback(self):
+        for sdk, model, suffix, reply in [
+            ("@ai-sdk/anthropic", "fixture-model", "/messages", messages_reply()),
+            ("unknown-sdk", "gpt-fixture", "/responses", text("go-reply")),
+        ]:
+            with self.subTest(sdk=sdk):
+                session = self.start(
+                    model,
+                    lambda _, reply=reply: reply,
+                    metadata={"opencode-go": {"npm": sdk, "models": {}}},
+                )
+                self.assertIn("go-reply", self.turn(session))
+                self.assertTrue(self.provider.requests[-1]["path"].endswith(suffix))
+
+    def test_catalog_caches_and_credentials_are_endpoint_scoped(self):
+        self.start("glm-5.2")
+        other = GoProvider(lambda _: text("go-reply"))
+        self.addCleanup(other.close)
+        other.catalog = {"data": [{"id": "other-model"}]}
+        path = "/models?provider=opencode-go&endpoint="
+        with self.app.api(path + quote(self.provider.url, safe="")) as response:
+            first = json.load(response)["items"]
+        with self.app.api(path + quote(other.url, safe="")) as response:
+            second = json.load(response)["items"]
+        self.assertEqual({item["id"] for item in second}, {"other-model"})
+        self.assertNotEqual(first, second)
+        self.assertEqual(len(list(self.app.home.glob("opencode-go-models-*.json"))), 2)
+        self.assertEqual(len(other.gets), 1)
+        self.assertNotIn(
+            "authorization",
+            {key.lower(): value for key, value in other.get_headers[0].items()},
+        )
+        other.fail_catalog = True
+        for cache in self.app.home.glob("opencode-go-models-*.json"):
+            contents = json.loads(cache.read_text())
+            contents["time"] = 0
+            cache.write_text(json.dumps(contents))
+        with self.app.api(path + quote(other.url, safe="")) as response:
+            self.assertEqual(json.load(response)["items"], second)
+        self.assertEqual(len(other.gets), 2)
+
+    def test_same_key_at_two_configured_endpoints_keeps_catalog_auth(self):
+        other = GoProvider(lambda _: text("go-reply"))
+        self.addCleanup(other.close)
+        other.catalog = {"data": [{"id": "custom-model"}]}
+        self.start(
+            "glm-5.2",
+            metadata={
+                "opencode-go": {
+                    "models": {"custom-model": {"limit": {"context": 12345}}}
+                }
+            },
+            providers={
+                "other": {
+                    "extension": "opencode-go",
+                    "baseUrl": other.url,
+                    "apiKey": "go-test-key",
+                    "model": "custom-model",
+                    "protocol": "chat_completions",
+                }
+            },
+        )
+        path = "/models?provider=opencode-go&endpoint="
+        for provider in (self.provider, other):
+            with self.app.api(path + quote(provider.url, safe="")) as response:
+                items = json.load(response)["items"]
+            headers = {
+                key.lower(): value for key, value in provider.get_headers[0].items()
+            }
+            self.assertEqual(headers.get("authorization"), "Bearer go-test-key")
+            if provider is other:
+                self.assertEqual(items[0]["id"], "custom-model")
+                self.assertEqual(items[0]["default_context_tokens"], 12345)
+        self.assertEqual(len(list(self.app.home.glob("opencode-go-models-*.json"))), 2)
+
     def test_rejected_key_is_explained(self):
         session = self.start("glm-5.2", lambda _: error(401, "bad key"))
         self.app.prompt(session, "reply").close()
         snapshot = self.app.idle(session)
         self.assertIn(
-            "OpenCode Go rejected the API key", json.dumps(snapshot["activity"])
+            "OpenCode Go rejected the credential", json.dumps(snapshot["activity"])
         )
 
     def test_missing_key_stops_before_provider_request(self):
@@ -278,7 +358,7 @@ class OpenCodeGoE2ETests(unittest.TestCase):
                 break
             time.sleep(0.05)
         self.assertIn(
-            "OpenCode Go needs a valid",
+            "OpenCode Go is not authenticated",
             json.dumps(snapshot["status"]["blocking_reason"]),
         )
         self.assertTrue(snapshot["pending_inputs"])

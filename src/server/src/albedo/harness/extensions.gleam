@@ -9,6 +9,7 @@ import albedo/harness/extensions/codex/extension as codex
 import albedo/harness/extensions/colab/extension as colab
 import albedo/harness/extensions/commands/extension as commands
 import albedo/harness/extensions/cua/extension as cua
+import albedo/harness/extensions/discord/extension as discord
 import albedo/harness/extensions/exa/extension as exa
 import albedo/harness/extensions/files/extension as files
 import albedo/harness/extensions/formatter/extension as formatter
@@ -25,6 +26,7 @@ import albedo/harness/extensions/models/extension as models
 import albedo/harness/extensions/notes/extension as notes
 import albedo/harness/extensions/openai/extension as openai
 import albedo/harness/extensions/opencode_go/extension as opencode_go
+import albedo/harness/extensions/opencode_zen/extension as opencode_zen
 import albedo/harness/extensions/paperclips/extension as paperclips
 import albedo/harness/extensions/proxy/extension as proxy
 import albedo/harness/extensions/python/extension as python
@@ -74,6 +76,8 @@ fn installed() -> Config {
       // shared id such as claude-sonnet-4-6 has Antigravity's limits.
       antigravity.extension(),
       alibaba.extension(),
+      opencode_go.extension(),
+      opencode_zen.extension(),
       bedrock.extension(),
       claude.extension(),
       vertex.extension(),
@@ -82,7 +86,6 @@ fn installed() -> Config {
       // gets models.dev's full catalog.
       codex.extension(),
       openai.extension(),
-      opencode_go.extension(),
       models.extension(),
       snapcompact.extension(),
       rolling.extension(),
@@ -99,6 +102,7 @@ fn installed() -> Config {
       view.extension(),
       proxy.extension(),
       webhooks.extension(),
+      discord.extension(),
       hooks.extension(),
       warm.extension(),
       exa.extension(),
@@ -107,9 +111,10 @@ fn installed() -> Config {
     [
       "python", "run", "work", "mail", "agents", "schedule", "files", "memory",
       "links", "instructions", "commands", "skills", "paperclips", "models",
-      "openai", "codex", "antigravity", "alibaba", "bedrock", "claude", "vertex",
-      "rolling", "snapcompact-memory", "lcm-memory", "notes", "remote",
-      "browser", "warm", "exa", "web-search", "questions", "opencode-go",
+      "openai", "codex", "antigravity", "alibaba", "opencode-go", "opencode-zen",
+      "bedrock", "claude", "vertex", "rolling", "snapcompact-memory",
+      "lcm-memory", "notes", "remote", "browser", "warm", "exa", "web-search",
+      "questions",
     ],
   )
 }

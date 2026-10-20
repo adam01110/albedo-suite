@@ -99,13 +99,13 @@ class KernelWorkspaceTests(unittest.TestCase):
         self.workspace.rename(moved)
         self.block()
         with self.app.api(f"/sessions/{self.session}?view=configuration") as response:
-            configuration = json.load(response)
+            response.read()
             etag = response.headers["ETag"]
         moved_response = self.api(
             f"/sessions/{self.session}?view=configuration",
             {
                 "workspace": str(moved),
-                "family_revision": configuration["family_revision"],
+                "family_revision": self.snapshot()["family_revision"],
             },
             method="PATCH",
             headers={"If-Match": etag},

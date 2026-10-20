@@ -1,7 +1,7 @@
 {
   "project": "https://tangled.org/okami.mom/albedo",
-  "rev": "6fc606cbf9ea1f07a3a7acbd8534521b64b47f7b",
-  "narHash": "sha256-V3bPUWXl6tFYwgckona4Do8h1VI7LFesce9yr6g6VeM=",
+  "rev": "e8e3b4e7da34ad5d38d21c276621c508c055edb8",
+  "narHash": "sha256-iasIGa3iQ50iut+ybdTxLZnkzATNpwEGmvg/BQPn/3w=",
   "sourceFiles": [
     "priv/python/albedo_fff.mjs",
     "priv/python/albedo_formatter.py",
@@ -17,7 +17,6 @@
     "src/albedo/daemon/events.gleam",
     "src/albedo/daemon/http_wire.gleam",
     "src/albedo/daemon/session.gleam",
-    "src/albedo/daemon/session_provider.gleam",
     "src/albedo/daemon/session_state.gleam",
     "src/albedo/harness/extension.gleam",
     "src/albedo/harness/extension/composition.gleam",
@@ -30,7 +29,9 @@
     "src/albedo/harness/extensions/mcp/extension.gleam",
     "src/albedo/harness/extensions/models/albedo_models.erl",
     "src/albedo/harness/extensions/opencode_go/albedo_opencode_go.erl",
+    "src/albedo/harness/extensions/opencode_go/catalog.gleam",
     "src/albedo/harness/extensions/opencode_go/extension.gleam",
+    "src/albedo/harness/extensions/opencode_go/wire.gleam",
     "src/albedo/harness/extensions/questions/extension.gleam",
     "src/albedo/harness/extensions/questions/ledger.gleam",
     "src/albedo/harness/extensions/questions/service.gleam",

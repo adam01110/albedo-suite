@@ -47,12 +47,14 @@
           ''
           + (old.postPatch or "");
         doCheck = true;
-        checkPhase = ''
-          runHook preCheck
-          cp ${../../test/suite_codex_error_test.gleam} test/suite_codex_error_test.gleam
-          gleam run -m suite_codex_error_test
-          runHook postCheck
-        '';
+        postCheck =
+          (old.postCheck or "")
+          + ''
+            cp ${../../test/suite_codex_error_test.gleam} test/suite_codex_error_test.gleam
+            cp ${../../test/suite_opencode_go_test.gleam} test/suite_opencode_go_test.gleam
+            gleam run -m suite_codex_error_test
+            gleam run -m suite_opencode_go_test
+          '';
         postInstall =
           (old.postInstall or "")
           + ''
@@ -77,7 +79,7 @@
         postCheck =
           (old.postCheck or "")
           + ''
-            go test ./internal/app ./internal/cli -count=1
+            go test ./internal/app ./internal/cli ./internal/webui -count=1
             go test ./internal/tui -run '^TestVim' -count=1 -v
             go test ./internal/tui -run '^TestOpenCodeGo' -count=1 -v
             go test ./internal/tui ./internal/daemon -run '^TestToolImages' -count=1 -v
@@ -87,7 +89,7 @@
 
     suiteAlbedo = showDiffs:
       assert albedo-git.src.outputHash == pin.narHash;
-        albedo-git.override {
+        (albedo-git.override {
           callPackage = path: args: let
             package = callPackage path args;
             name = baseNameOf path;
@@ -97,7 +99,14 @@
             else if name == "client.nix"
             then withClientSources showDiffs package
             else package;
-        };
+        }).overrideAttrs (old: {
+          passthru = (old.passthru or {}) // {web = self.packages.${pkgs.stdenv.hostPlatform.system}.albedo-web;};
+          buildCommand =
+            old.buildCommand
+            + ''
+              wrapProgram $out/bin/albedo --set-default ALBEDO_WEB_DIST ${self.packages.${pkgs.stdenv.hostPlatform.system}.albedo-web}
+            '';
+        });
   in {
     packages = {
       # keep-sorted start

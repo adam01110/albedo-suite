@@ -27,6 +27,8 @@ const (
 	AppStateLogin
 	AppStateCapabilityPage
 	AppStateWebhooksPage
+	AppStateDiscordPage
+	AppStateConfigPage
 	AppStateAgents
 	AppStateFolderPicker
 	AppStateQuota
@@ -56,6 +58,8 @@ type AppModel struct {
 	ExtensionPicker  ExtensionPickerModel
 	CapabilityPage   CapabilityPageModel
 	WebhooksPage     WebhooksPageModel
+	DiscordPage      DiscordPageModel
+	ConfigPage       ConfigPageModel
 	TreePicker       TreePickerModel
 	SessionPicker    SessionViewer
 	PageView         PageViewModel
@@ -84,6 +88,12 @@ type AppModel struct {
 	StandaloneLogin bool
 	// listingSessions says a session listing is in flight.
 	listingSessions bool
+	// refreshingSession says a session read is in flight, and SessionFactsGen
+	// dates the reply. A read asked for meanwhile is read once more when the
+	// answer arrives.
+	refreshingSession     bool
+	sessionRefreshPending bool
+	SessionFactsGen       int
 
 	// Graphemes says the terminal measures grapheme clusters; see ChatModel.
 	Graphemes bool
@@ -227,6 +237,8 @@ func (m *AppModel) Update(msg tea.Msg) (model tea.Model, resultCmd tea.Cmd) {
 		m.PageView.SetSize(msg.Width, msg.Height)
 		m.CapabilityPage.SetSize(msg.Width, msg.Height)
 		m.WebhooksPage.SetSize(msg.Width, msg.Height)
+		m.DiscordPage.SetSize(msg.Width, msg.Height)
+		m.ConfigPage.SetSize(msg.Width, msg.Height)
 		m.Agents.SetSize(msg.Width, msg.Height)
 		m.FolderPicker.SetSize(msg.Width, msg.Height)
 		m.Login.SetSize(msg.Width, msg.Height)
@@ -293,6 +305,14 @@ func (m *AppModel) Update(msg tea.Msg) (model tea.Model, resultCmd tea.Cmd) {
 			return m, m.openScreen(AppStateWebhooksPage, &m.WebhooksPage)
 		}
 
+	case ChatOpenDiscordPageMsg:
+		if m.ActiveSession != nil {
+			m.DiscordPage = NewDiscordPageModel(m.Conn, m.ActiveSession.ID)
+			return m, m.openScreen(AppStateDiscordPage, &m.DiscordPage)
+		}
+	case ChatOpenConfigPageMsg:
+		return m, m.openConfigPage()
+
 	case ChatOpenAgentsMsg:
 		if m.ActiveSession != nil {
 			m.Agents.Close()
@@ -351,9 +371,9 @@ func (m *AppModel) Update(msg tea.Msg) (model tea.Model, resultCmd tea.Cmd) {
 		m.State = AppStateChat
 		return m, nil
 
-	case WebhooksPageDoneMsg, ExtensionPickerDoneMsg,
+	case WebhooksPageDoneMsg, DiscordPageDoneMsg, ExtensionPickerDoneMsg,
 		TreeCancelMsg, ContextDoneMsg, CapabilityPageDoneMsg, PageCancelMsg,
-		QuotaCancelMsg:
+		QuotaCancelMsg, ConfigPageDoneMsg:
 		m.State = AppStateChat
 		return m, nil
 
@@ -536,6 +556,10 @@ func (m *AppModel) Update(msg tea.Msg) (model tea.Model, resultCmd tea.Cmd) {
 		m.CapabilityPage, cmd = m.CapabilityPage.Update(msg)
 	case AppStateWebhooksPage:
 		m.WebhooksPage, cmd = m.WebhooksPage.Update(msg)
+	case AppStateDiscordPage:
+		m.DiscordPage, cmd = m.DiscordPage.Update(msg)
+	case AppStateConfigPage:
+		m.ConfigPage, cmd = m.ConfigPage.Update(msg)
 	case AppStateAgents:
 		m.Agents, cmd = m.Agents.Update(msg)
 	case AppStateFolderPicker:

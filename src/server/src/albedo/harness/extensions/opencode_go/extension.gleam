@@ -1,33 +1,34 @@
+//// OpenCode Go subscription provider over Chat Completions, Responses,
+//// Anthropic Messages, and Gemini wire formats.
+
 import albedo/harness/extension
-import albedo/harness/extensions/claude/stream as messages_stream
-import albedo/harness/extensions/claude/wire as messages_wire
-import albedo/harness/extensions/models/extension as models
-import albedo/harness/settings
+import albedo/harness/extensions/claude/stream as claude_stream
+import albedo/harness/extensions/opencode_go/catalog
+import albedo/harness/extensions/opencode_go/wire
+import albedo/harness/extensions/vertex/stream as vertex_stream
+import albedo/harness/oauth
+import albedo/harness/rotation
 import albedo/openai_api
-import albedo/openai_api/request as request_wire
-import albedo/openai_api/stream as openai_stream
 import albedo/openai_api/types
-import gleam/bool
+import gleam/dict.{type Dict}
+import gleam/dynamic.{type Dynamic}
+import gleam/int
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-import gleam/string_tree
 
-const endpoint = "https://opencode.ai/zen/go/v1"
+const provider_name = "opencode-go"
 
 pub fn extension() -> extension.Extension {
   extension.Extension(
-    "opencode-go",
-    "OpenCode Go API-key provider with per-model OpenAI and Anthropic routing",
+    provider_name,
+    "OpenCode Go subscription provider via OpenCode Console OAuth or API key for Qwen, GLM, Kimi, DeepSeek, MiMo, MiniMax, Claude, GPT, Grok, and Gemini models; a rate-limited key hands off to sibling accounts and keys",
     ["models"],
     [
-      extension.ModelsPlugin(extension.ModelCatalog(
-        lookup,
-        list_models,
-        Some(fn() { reload(settings.home()) }),
-      )),
+      extension.LoginPlugin(login()),
+      extension.ModelsPlugin(catalog.catalog()),
       extension.ModelProviderPlugin(extension.ModelProvider(
-        "opencode-go",
+        provider_name,
         resolve,
       )),
     ],
@@ -35,166 +36,192 @@ pub fn extension() -> extension.Extension {
   )
 }
 
-fn lookup(id: String, at: Option(String)) -> Option(extension.ModelInfo) {
-  use <- bool.guard(
-    !owns_endpoint(settings.home(), option.unwrap(at, "")),
-    None,
+pub fn login() -> oauth.Login {
+  oauth.Login(
+    provider_name,
+    "add opencode go account",
+    "oauth · qwen, glm, kimi, deepseek, mimo, minimax",
+    oauth.Model,
+    provider_name,
+    oauth.Device(native_device_start),
+    fn(_) { "" },
+    fn(_, _, _) { Error("OpenCode Go uses device authorization") },
+    native_account,
   )
-  models.lookup_provider("opencode-go", id)
-  |> option.map(fn(info) {
-    extension.ModelInfo(
-      ..info,
-      provider: "opencode-go",
-      endpoint: Some(option.unwrap(at, endpoint)),
-    )
-  })
-}
-
-fn list_models(provider: String, at: Option(String)) -> List(String) {
-  use <- bool.guard(provider != "opencode-go", [])
-  case native_models(settings.home(), option.unwrap(at, endpoint)) {
-    Ok(ids) -> ids
-    Error(_) -> models.list("opencode-go", Some(endpoint))
-  }
 }
 
 fn resolve(
   context: extension.ModelContext,
 ) -> Option(Result(extension.Upstream, String)) {
-  use <- bool.guard(context.provider != "opencode-go", None)
-  Some({
-    use #(base_url, key) <- result.try(access(context.home, context.profile))
-    let route = route(context.home, context.model)
-    let protocol = case route {
-      "responses" -> types.Responses
-      _ -> types.ChatCompletions
-    }
-    let client = openai_api.client(protocol, base_url, key)
-    Ok(
-      extension.Upstream(
-        base_url,
-        protocol,
-        fn(request, on_event) {
-          case route {
-            "messages" -> {
-              use exchange <- result.try(messages_exchange(
-                context.home,
-                context.session,
-                base_url,
-                key,
-                request,
-              ))
-              openai_api.exchange(
-                exchange,
-                messages_stream.reducer(request.model, request.tools),
-                on_event,
-              )
-            }
-            _ -> {
-              use exchange <- result.try(openai_exchange(
-                client,
-                context.session,
-                request,
-              ))
-              openai_api.exchange(
-                exchange,
-                openai_stream.reducer(protocol),
-                on_event,
-              )
-            }
-          }
-        },
-        explain,
-        fn() { None },
-        fn(_) { [] },
-        case route {
-          "messages" -> types.ImageLimits(2000, Some(100))
-          _ -> types.any_images
-        },
-      ),
-    )
-  })
-}
-
-fn openai_exchange(
-  client: types.Client,
-  session: String,
-  request: types.Request,
-) -> Result(openai_api.Exchange, types.Error) {
-  use body <- result.map(request_wire.encode(client.protocol, request))
-  let path = case client.protocol {
-    types.Responses -> "/responses"
-    types.ChatCompletions -> "/chat/completions"
-  }
-  openai_api.Exchange(
-    url: string.remove_suffix(client.base_url, "/") <> path,
-    headers: [
-      #("x-opencode-session", session),
-      ..openai_api.headers(client, request.model)
-    ],
-    body: body,
-    timeout_ms: client.timeout_ms,
-    first_event_timeout_ms: None,
-    max_event_bytes: client.max_event_bytes,
-    require_event_stream: True,
+  use <- rotation.require_provider(
+    context,
+    provider_name,
+    "OpenCode Go",
+    types.ChatCompletions,
+  )
+  let pool = pool(context.home, context.profile, context.session)
+  use client <- result.map(pool.current())
+  rotation.client_upstream(
+    pool,
+    client,
+    fn(client, error) {
+      explain_key(context.home, context.profile, client, error)
+    },
+    fn(client) { rotation.key_label(client.api_key) },
   )
 }
 
-pub fn messages_exchange(
+/// Every OpenCode Go credential albedo can see, as a rotation pool: the profile's
+/// own key or selected OAuth account first, then sibling opencode-go profiles,
+/// creds.json's accounts, and the environment.
+pub fn pool(
   home: String,
+  profile: String,
   session: String,
-  base_url: String,
-  key: String,
-  request: types.Request,
-) -> Result(openai_api.Exchange, types.Error) {
-  use exchange <- result.map(messages_wire.encode(
-    home,
-    messages_wire.ApiKey(key),
-    request,
-  ))
-  openai_api.Exchange(
-    ..exchange,
-    url: string.remove_suffix(base_url, "/") <> "/messages",
-    headers: [
-      #("x-api-key", key),
-      #("x-opencode-session", session),
-      #("anthropic-version", "2023-06-01"),
-      #("content-type", "application/json"),
-      #("accept", "text/event-stream"),
-    ],
-    body: exchange.body
-      |> string_tree.to_string
-      |> compatible_body
-      |> string_tree.from_string,
+) -> rotation.Pool(types.Client) {
+  rotation.Pool(
+    current: fn() { connect(home, profile, session) },
+    mark: fn(client, body) {
+      limited(home, profile, client, body) |> rotation.mark_limit
+    },
+    same: rotation.same_client,
+    stream: stream,
+    reject: fn(client) { native_expire(home, client.api_key) },
   )
+}
+
+pub fn stream(
+  client: types.Client,
+  request: types.Request,
+  on_event: fn(types.Event) -> types.Control,
+) -> Result(types.Turn, types.Error) {
+  case wire.route(request.model) {
+    wire.ChatRoute -> openai_api.stream(client, request, on_event)
+    wire.ResponsesRoute -> {
+      use exchange <- result.try(wire.encode_responses(client, request))
+      openai_api.exchange(exchange, wire.responses_reducer(), on_event)
+    }
+    wire.MessagesRoute -> {
+      use exchange <- result.try(wire.encode_messages(client, request))
+      openai_api.exchange(
+        exchange,
+        claude_stream.reducer(request.model, request.tools),
+        on_event,
+      )
+    }
+    wire.GeminiRoute -> {
+      use exchange <- result.try(wire.encode_gemini(client, request))
+      openai_api.exchange(exchange, vertex_stream.reducer(), on_event)
+    }
+  }
+}
+
+fn connect(
+  home: String,
+  profile: String,
+  session: String,
+) -> Result(types.Client, String) {
+  use #(base_url, api_key, org_id) <- result.try(native_access(
+    home,
+    profile,
+    session,
+  ))
+  case base_url {
+    "" -> Error("OpenCode Go base URL is invalid")
+    _ -> {
+      let session_id = case string.trim(session) {
+        "" -> "opencode-go"
+        id -> id
+      }
+      Ok(openai_api.opencode_go_client(base_url, api_key, session_id, org_id))
+    }
+  }
+}
+
+fn limited(
+  home: String,
+  profile: String,
+  client: types.Client,
+  body: String,
+) -> Result(rotation.Limited, Nil) {
+  native_limited(home, profile, client.api_key, body)
+  |> result.replace_error(Nil)
+}
+
+/// A 429 reaching here has already been tried on every sibling key with room.
+pub fn explain_key(
+  home: String,
+  profile: String,
+  client: types.Client,
+  error: types.Error,
+) -> Option(String) {
+  case error {
+    types.HttpError(429, body) ->
+      case limited(home, profile, client, body) {
+        Ok(limit) if limit.next != "" ->
+          Some(rotation.next_turn_message(
+            "OpenCode Go limit reached until " <> limit.until,
+            limit.next,
+          ))
+        _ -> explain(error)
+      }
+    _ -> explain(error)
+  }
 }
 
 fn explain(error: types.Error) -> Option(String) {
   case error {
     types.HttpError(401, _) ->
       Some(
-        "OpenCode Go rejected the API key; run /login or check OPENCODE_API_KEY",
+        "OpenCode Go rejected the credential; run /login to reconnect your OpenCode Go account or check OPENCODE_API_KEY",
       )
-    types.HttpError(429, _) ->
-      Some("OpenCode Go usage limit reached; check your Go subscription usage")
+    types.HttpError(403, body) ->
+      Some(with_detail("OpenCode Go access refused", body))
+    types.HttpError(429, body) ->
+      Some(with_detail("OpenCode Go request limit reached", body))
+    types.HttpError(status, body) ->
+      Some(with_detail(
+        "OpenCode Go error (" <> int.to_string(status) <> ")",
+        body,
+      ))
     _ -> None
   }
 }
 
-@external(erlang, "albedo_opencode_go", "owns_endpoint")
-fn owns_endpoint(home: String, endpoint: String) -> Bool
+fn with_detail(prefix: String, body: String) -> String {
+  case string.trim(rotation.error_message(body)) {
+    "" -> prefix
+    detail -> prefix <> ": " <> detail
+  }
+}
+
+@external(erlang, "albedo_opencode_go", "device_start")
+fn native_device_start() -> Result(
+  #(
+    String,
+    String,
+    fn(fn(String) -> Nil) -> Result(Dict(String, Dynamic), String),
+  ),
+  String,
+)
+
+@external(erlang, "albedo_opencode_go", "account")
+fn native_account(credential: Dynamic) -> oauth.Account
+
+@external(erlang, "albedo_opencode_go", "expire")
+fn native_expire(home: String, access: String) -> Nil
 
 @external(erlang, "albedo_opencode_go", "access")
-fn access(home: String, profile: String) -> Result(#(String, String), String)
+fn native_access(
+  home: String,
+  profile: String,
+  session: String,
+) -> Result(#(String, String, String), String)
 
-@external(erlang, "albedo_opencode_go", "route")
-fn route(home: String, model: String) -> String
-
-@external(erlang, "albedo_opencode_go", "models")
-fn native_models(home: String, endpoint: String) -> Result(List(String), String)
-
-@external(erlang, "albedo_opencode_go", "reload")
-fn reload(home: String) -> Result(Nil, String)
-
-@external(erlang, "albedo_opencode_go", "compatible_body")
-fn compatible_body(body: String) -> String
+@external(erlang, "albedo_opencode_go", "limited")
+fn native_limited(
+  home: String,
+  profile: String,
+  api_key: String,
+  body: String,
+) -> Result(rotation.Limited, String)

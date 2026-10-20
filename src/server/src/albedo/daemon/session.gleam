@@ -1650,11 +1650,16 @@ fn handle(
           }
         None -> answer(state, reply, Error("stale run"))
       }
+    // Inputs that wait for the turn to end stay queued; the run's end starts
+    // the next turn with them.
     DrainSteering(id, reply) ->
-      case turn.live(state.activity, id), state.steering {
+      case
+        turn.live(state.activity, id),
+        list.partition(state.steering, turn.steers)
+      {
         False, _ -> answer(state, reply, Error("cancelled"))
-        True, [] -> answer(state, reply, Ok([]))
-        True, queued -> {
+        True, #([], _) -> answer(state, reply, Ok([]))
+        True, #(queued, held) -> {
           let inputs = session_submission.inputs(queued)
           case
             conversation.commit_operations(
@@ -1680,7 +1685,7 @@ fn handle(
               answer(
                 session_state.State(
                   ..state,
-                  steering: [],
+                  steering: held,
                   active_submissions: list.append(
                     state.active_submissions,
                     queued,
@@ -2552,26 +2557,17 @@ fn blocked_queued(state: State, error: String, retry_at: Option(Int)) -> State {
   |> fn(state) { session_state.State(..state, active_submissions: []) }
 }
 
-/// A child whose run ends without having answered its parent's latest task or
-/// message sends its last words, marked unreviewed, so nothing it found is
-/// lost. Letters already queued here mean the child is not done yet.
+/// A session that ends still owing replies sends each requester its last words,
+/// marked unreviewed. Letters already queued here mean it is not done yet.
 fn answer_parent(state: State, outcome: Result(Nil, String)) -> State {
   let db = runtime.ledger(state.host)
   let owed = case turn.starts_turn(state.steering) {
-    True -> Error(Nil)
-    False ->
-      case family.get(db, state.info.id) {
-        Ok(Some(member)) ->
-          case mail.owes_reply(db, state.info.id, member.parent) {
-            Ok(True) -> Ok(member)
-            _ -> Error(Nil)
-          }
-        _ -> Error(Nil)
-      }
+    True -> []
+    False -> mail.owed_requesters(db, state.info.id) |> result.unwrap([])
   }
   case owed {
-    Error(_) -> state
-    Ok(member) -> {
+    [] -> state
+    requesters -> {
       let #(state, words) = last_words(state)
       let body = case outcome, words {
         Ok(_), Some(text) -> text
@@ -2579,28 +2575,29 @@ fn answer_parent(state: State, outcome: Result(Nil, String)) -> State {
         Error(error), Some(text) -> "run failed: " <> error <> "\n\n" <> text
         Error(error), None -> "run failed: " <> error
       }
-      case
-        mail.post(
-          db,
-          mail.new_id(),
-          member.parent,
-          Some(state.info.id),
-          member.name,
-          mail.Answer(unreviewed: True),
-          body,
-        )
-      {
-        // Off the actor: the parent's actor may be the one calling into us.
-        Ok(letter) -> {
-          process.spawn_unlinked(fn() { mail.deliver(letter) })
-          state
-        }
-        Error(error) ->
-          session_state.emit(
-            state,
-            view.error("could not answer the parent: " <> error),
+      list.fold(requesters, state, fn(state, requester) {
+        case
+          mail.post(
+            db,
+            mail.new_id(),
+            requester,
+            Some(state.info.id),
+            family.name_of(db, state.info.id),
+            mail.Answer(unreviewed: True),
+            body,
           )
-      }
+        {
+          Ok(letter) -> {
+            let _ = process.spawn_unlinked(fn() { mail.deliver(letter) })
+            state
+          }
+          Error(error) ->
+            session_state.emit(
+              state,
+              view.error("could not answer requester: " <> error),
+            )
+        }
+      })
     }
   }
 }
@@ -2623,11 +2620,7 @@ fn last_words(state: State) -> #(State, Option(String)) {
 
 /// Whether this session's durable family member has been closed.
 fn family_closed(state: State) -> Result(Bool, String) {
-  case family.get(runtime.ledger(state.host), state.info.id) {
-    Ok(Some(member)) -> Ok(member.closed)
-    Ok(None) -> Ok(False)
-    Error(error) -> Error(error)
-  }
+  family.closed(runtime.ledger(state.host), state.info.id)
 }
 
 /// Whether a queued submission includes a durable agent letter.

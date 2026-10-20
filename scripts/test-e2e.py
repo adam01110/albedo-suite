@@ -3,21 +3,23 @@
 
 import argparse
 import os
-from pathlib import Path
 import shutil
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
 
 SUITE_CASES = (
     "formatter_e2e_test.py",
     "kernel_workspace_e2e_test.py",
     "lazy_mcp_test.py",
     "lsp_e2e_test.py",
+    "model_catalogs_test.py",
     "questions_e2e_test.py",
     "opencode_go_e2e_test.py",
     "tool_backends_e2e_test.py",
     "tool_images_e2e_test.py",
+    "web_e2e_test.py",
 )
 UPSTREAM_CASES = (
     "cache_miss_test.py",
