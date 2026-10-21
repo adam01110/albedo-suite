@@ -8,6 +8,7 @@ import importlib
 import json
 import os
 import signal
+import shutil
 import sys
 import tempfile
 import types
@@ -58,6 +59,7 @@ class FormatterTest(unittest.IsolatedAsyncioTestCase):
         formatter.record(path)
         self.assertEqual(path.read_text(), "lower\n")
         result = await formatter.finish()
+        self.assertTrue(result["ok"], result["error"])
         self.assertEqual(result, {"ok": True, "changed": True, "error": ""})
         self.assertEqual(path.read_text(), "LOWER\n")
         self.assertEqual(path.stat().st_mode & 0o777, 0o751)
@@ -191,15 +193,196 @@ class FormatterTest(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("--", argv)
                 staged = Path(argv[-1])
                 self.assertEqual(staged.name, path.name)
-                self.assertEqual(staged.parent.parent, path.parent)
-                self.assertFalse(staged.parent.name.startswith("."))
+                self.assertEqual(staged.parent.name, "workspace")
                 self.assertNotEqual(staged, path)
                 if project == "flake.nix":
                     self.assertEqual(argv[:2], ["fmt", "--"])
                 else:
                     self.assertIn("--no-cache", argv)
-                    self.assertIn(str(marker), argv)
+                    self.assertIn(str(staged.parent / project), argv)
                 marker.unlink()
+
+    @unittest.skipUnless(shutil.which("treefmt"), "standalone test requires treefmt")
+    async def test_real_treefmt_exact_paths_and_config_context(self):
+        self.config["treefmt"] = [shutil.which("treefmt")]
+        (self.root / "src").mkdir()
+        (self.root / "src" / "style.txt").write_text("context-formatted\n")
+        (self.root / "config").mkdir()
+        (self.root / "config" / "style.txt").write_text("context-formatted\n")
+        script = self.root / "config" / "format.py"
+        script.write_text(
+            "import pathlib, sys\n"
+            "for name in sys.argv[1:]:\n"
+            " p = pathlib.Path(name)\n"
+            " assert (p.parent / 'style.txt').read_text() == 'context-formatted\\n'\n"
+            " p.write_text(pathlib.Path('config/style.txt').read_text())\n"
+        )
+        (self.root / "treefmt.toml").write_text(
+            "[formatter.exact]\n"
+            f"command = {json.dumps(sys.executable)}\n"
+            'options = ["config/format.py"]\n'
+            'includes = ["src/example.py", "src/excluded.py"]\n'
+            'excludes = ["src/excluded.py"]\n'
+        )
+        # Unrelated development/dependency trees must not be traversed.
+        (self.root / ".direnv").symlink_to("/nix/store", target_is_directory=True)
+        (self.root / "node_modules").mkdir()
+        (self.root / "node_modules" / "cycle").symlink_to(".", target_is_directory=True)
+        path = self.write("src/example.py")
+        excluded = self.write("src/excluded.py")
+        unrelated = self.root / "src" / "dirty.py"
+        unrelated.write_text("unrelated dirty\n")
+        result = await formatter.finish()
+        self.assertEqual(result, {"ok": True, "changed": True, "error": ""})
+        self.assertEqual(path.read_text(), "context-formatted\n")
+        self.assertEqual(excluded.read_text(), "lower\n")
+        self.assertEqual(unrelated.read_text(), "unrelated dirty\n")
+        self.assertFalse(formatter._pending)
+        # A successful no-op for an already formatted file is accepted.
+        formatter.record(path)
+        self.assertFalse((await formatter.finish())["changed"])
+        config = self.root / "treefmt.toml"
+        config.rename(self.root / "shared.toml")
+        config.symlink_to("shared.toml")
+        self.fs.write(str(path), "lower again\n")
+        self.assertTrue((await formatter.finish())["changed"])
+        self.assertEqual(path.read_text(), "context-formatted\n")
+
+    @unittest.skipUnless(
+        shutil.which("nix") and shutil.which("treefmt") and shutil.which("git"),
+        "standalone Nix smoke requires nix, treefmt and git",
+    )
+    async def test_real_nix_fmt_treefmt_exact_path(self):
+        async def command(*argv):
+            child = await asyncio.create_subprocess_exec(
+                *argv,
+                cwd=self.root,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            output, _ = await asyncio.wait_for(child.communicate(), 30)
+            self.assertEqual(child.returncode, 0, output.decode())
+            return output.decode().strip()
+
+        system = await command(
+            "nix", "eval", "--impure", "--raw", "--expr", "builtins.currentSystem"
+        )
+        treefmt_root = str(Path(shutil.which("treefmt")).resolve().parent.parent)
+        for root_flags in ([], ["--tree-root-file", "flake.nix"]):
+            wrapper = (
+                f"#!{sys.executable}\n"
+                "import os, sys\n"
+                f"os.execv({treefmt_root + '/bin/treefmt'!r}, "
+                f"[{treefmt_root + '/bin/treefmt'!r}, '--no-cache', "
+                f"'--config-file', 'project.toml', *{root_flags!r}, *sys.argv[1:]])\n"
+            )
+            builder = (
+                "import os, pathlib\n"
+                "p = pathlib.Path(os.environ['out']) / 'bin' / 'formatter'\n"
+                "p.parent.mkdir(parents=True)\n"
+                f"p.write_text({wrapper!r})\n"
+                "p.chmod(0o755)\n"
+            )
+            (self.root / "flake.nix").write_text(
+                "{ outputs = _: { formatter." + system + " = builtins.derivation { "
+                'name = "formatter-shadow-smoke"; system = ' + json.dumps(system) + "; "
+                'builder = "${builtins.storePath '
+                + json.dumps(str(Path(sys.executable).resolve().parent.parent))
+                + '}/bin/python3"; '
+                'args = [ "-c" ' + json.dumps(builder) + " ]; "
+                "treefmt = builtins.storePath " + json.dumps(treefmt_root) + "; "
+                '} // { meta.mainProgram = "formatter"; }; }; }'
+            )
+            (self.root / "project.toml").write_text(
+                "[formatter.exact]\n"
+                f"command = {json.dumps(sys.executable)}\n"
+                'options = ["-c", "import pathlib,sys; p=pathlib.Path(sys.argv[1]); p.write_text(p.read_text().upper())"]\n'
+                'includes = ["src/example.py"]\n'
+            )
+            (self.root / "src").mkdir(exist_ok=True)
+            path = self.write("src/example.py")
+            await command("git", "init", "--quiet")
+            await command("git", "add", "flake.nix", "project.toml", "src/example.py")
+            self.config["nix"] = [
+                shutil.which("nix"),
+                "--offline",
+                "--option",
+                "pure-eval",
+                "false",
+            ]
+            self.config["timeoutMs"] = 30000
+            result = await formatter.finish()
+            self.assertTrue(result["ok"], result["error"])
+            self.assertEqual(result, {"ok": True, "changed": True, "error": ""})
+            self.assertEqual(path.read_text(), "LOWER\n")
+
+    async def test_project_snapshot_reused_and_publish_guards(self):
+        (self.root / "treefmt.toml").write_text("")
+        first = self.write()
+        second = self.write("second.py")
+        with patch.object(
+            formatter, "_snapshot", wraps=formatter._snapshot
+        ) as snapshot:
+            self.assertTrue((await formatter.finish())["ok"])
+            self.assertEqual(snapshot.call_count, 1)
+        self.assertEqual(first.read_text(), "LOWER\n")
+        self.assertEqual(second.read_text(), "LOWER\n")
+        self.fs.write(str(first), "lower again")
+        self.set_fixture("concurrent_change", original=str(first))
+        result = await formatter.finish()
+        self.assertFalse(result["ok"])
+        self.assertIn("concurrent", result["error"])
+        self.assertEqual(first.read_text(), "user change")
+        self.assertIn(first, formatter._pending)
+
+    async def test_project_cannot_redirect_later_target_reset(self):
+        (self.root / "treefmt.toml").write_text("")
+        first = self.write()
+        second = self.write("second.py")
+
+        async def redirect_later_target(argv, cwd, **kwargs):
+            staged_second = Path(argv[-1]).parent / second.name
+            staged_second.unlink()
+            staged_second.symlink_to(second)
+
+        with patch.object(formatter, "_run", side_effect=redirect_later_target):
+            result = await formatter.finish()
+        self.assertFalse(result["ok"])
+        self.assertIn("symlink", result["error"])
+        self.assertEqual(first.read_text(), "lower\n")
+        self.assertEqual(second.read_text(), "lower\n")
+        self.assertIn(second, formatter._pending)
+
+    async def test_project_staged_symlink_is_never_published(self):
+        (self.root / "treefmt.toml").write_text("")
+        path = self.write()
+
+        async def replace_with_symlink(argv, cwd, **kwargs):
+            staged = Path(argv[-1])
+            staged.unlink()
+            staged.symlink_to(path)
+
+        with patch.object(formatter, "_run", side_effect=replace_with_symlink):
+            result = await formatter.finish()
+        self.assertFalse(result["ok"])
+        self.assertIn("symlink", result["error"])
+        self.assertEqual(path.read_text(), "lower\n")
+        self.assertIn(path, formatter._pending)
+
+    async def test_project_snapshot_limits_and_config_symlink_escape(self):
+        (self.root / "treefmt.toml").write_text("")
+        path = self.write()
+        with patch.object(formatter, "MAX_CONTEXT_FILES", 1):
+            self.assertIn("context exceeds", (await formatter.finish())["error"])
+        self.assertEqual(path.read_text(), "lower\n")
+        self.assertIn(path, formatter._pending)
+        with tempfile.TemporaryDirectory() as outside:
+            external = Path(outside) / "treefmt.toml"
+            external.write_text("")
+            (self.root / "treefmt.toml").unlink()
+            (self.root / "treefmt.toml").symlink_to(external)
+            self.assertIn("outside workspace", (await formatter.finish())["error"])
+        self.assertEqual(path.read_text(), "lower\n")
 
     async def test_busy_skips_without_losing_pending(self):
         path = self.write()
