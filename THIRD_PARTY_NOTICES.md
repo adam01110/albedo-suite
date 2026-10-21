@@ -21,6 +21,9 @@ replacements live under `src/client/cli/`.
 `test/model_catalogs_test.py` adapts upstream
 `test/e2e/model_catalogs_test.py` at the same revision for endpoint-scoped cache
 fixtures; its provider catalog assertions are retained.
+`scripts/test-e2e.py` adds a kernel-reattachment readiness barrier to upstream
+`test/e2e/kernel_upgrade_test.py` at that revision; its forced-swap assertions
+are retained.
 
 Upstream's complete third-party notices are preserved in
 `LICENSES/albedo-THIRD_PARTY_NOTICES.md`. Dependencies and packaged runtime

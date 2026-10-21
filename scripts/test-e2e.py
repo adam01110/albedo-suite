@@ -2,6 +2,7 @@
 """Run isolated pinned upstream E2E tests against an explicitly supplied build."""
 
 import argparse
+import hashlib
 import os
 import shutil
 import subprocess
@@ -38,6 +39,26 @@ UPSTREAM_CASES = (
 )
 
 
+def synchronize_kernel_upgrade_fixture(
+    path,
+    *,
+    expected_sha256="5fa6d9069aad0f26c1a615f33a5e98213978932bc0687dbec9ad912ce3e3dab4",
+):
+    """Listener readiness precedes asynchronous kernel reattachment after restart."""
+    original = "    def test_kernel_upgrade_forces_the_swap_past_a_live_job(self):\n        self.cell(\"import os\\nsurvivor = 41\\nj = run('sleep', '60')\\nos.getpid()\")\n        self.edit_bundle()\n        self.app.restart()\n"
+    barrier = '\n        def reattached():\n            with self.app.api(f"/sessions/{self.session}?tail=0") as response:\n                view = json.load(response)\n            return (\n                view["status"]["phase"] == "idle"\n                and view["pending_inputs"] == []\n                and view["kernel"]["state"] == "attached"\n            )\n\n        harness.wait_until(reattached, 10, "kernel did not finish reattaching after restart")\n        kernel = self.kernel()\n        self.assertTrue(kernel["stale"], kernel)\n        self.assertEqual(kernel["live_job_count"], 1, kernel)\n'
+    source_bytes = path.read_bytes()
+    source = source_bytes.decode()
+    if (
+        hashlib.sha256(source_bytes).hexdigest() != expected_sha256
+        or source.count(original) != 1
+    ):
+        raise RuntimeError(
+            "kernel-upgrade fixture changed; review its restart readiness barrier"
+        )
+    path.write_text(source.replace(original, original + barrier))
+
+
 def prepare_source(upstream, destination, suite):
     shutil.copytree(upstream, destination)
     for entry in destination.rglob("*"):
@@ -47,6 +68,7 @@ def prepare_source(upstream, destination, suite):
     destination.chmod(0o700)
 
     cases_directory = destination / "test/e2e"
+    synchronize_kernel_upgrade_fixture(cases_directory / "kernel_upgrade_test.py")
     for name in SUITE_CASES:
         shutil.copyfile(suite / "test" / name, cases_directory / name)
     shutil.copytree(

@@ -110,6 +110,13 @@ Remove this source replacement, its baseline checksum and inventory entry, and
 its package check when upstream handles these envelopes without dumping raw
 payloads.
 
+The offline runner adds one readiness barrier to the pinned forced-kernel-upgrade
+fixture: daemon listener readiness does not imply asynchronous kernel reattachment
+has finished. It waits for an idle session, no pending inputs and an attached
+kernel, then asserts the stale bundle and single live job before the original
+single upgrade request. It does not retry a 409, change product admission rules
+or weaken the forced-swap assertions. A changed fixture fails closed for review.
+
 ## Temporary compatibility layers
 
 Formatter and LSP support are local stopgaps for the pinned upstream version.

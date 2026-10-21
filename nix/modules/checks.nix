@@ -89,6 +89,7 @@
       } ''
         export PYTHONDONTWRITEBYTECODE=1
         export PYTHONPATH=${runtime}/lib/albedo/albedo/priv/python
+        export ALBEDO_E2E_RUNNER=${../../scripts/test-e2e.py}
         export ALBEDO_FORMATTER_SOURCE=$PYTHONPATH
         export ALBEDO_LSP_SOURCE=$PYTHONPATH
         export ALBEDO_QUESTIONS_SOURCE=$PYTHONPATH
@@ -100,6 +101,7 @@
         export ALBEDO_PYTHON_SOURCE=$PYTHONPATH
         python3 -m unittest discover -s ${../../test} -p formatter_python_test.py -v
         python3 -m unittest discover -s ${../../test} -p files_check_test.py -v
+        python3 ${../../test}/e2e_runner_test.py -v
         python3 -m unittest discover -s ${../../test} -p lazy_mcp_python_test.py -v
         python3 ${../../test}/lsp_test.py -v
         python3 -m unittest discover -s ${../../test} -p questions_python_test.py -v
