@@ -46,7 +46,8 @@ lazy-mode-only and accepts integer milliseconds from zero to 3600000.
 Unload discards both connection and catalogue. A session reload starts empty.
 
 Lazy mode does not probe or reconnect servers in the background. Retry a failed
-load explicitly. If a connection drops unexpectedly (rather than idle cleanup), unload and load it again.
+load explicitly. If a connection drops unexpectedly (rather than idle cleanup),
+unload and load it again.
 Albedo never replays failed or interrupted calls. Check their effects before
 retrying.
 
@@ -54,6 +55,15 @@ One manager runs load, call and unload operations sequentially within a session.
 Concurrent first loads start one client. Unload cannot interrupt a dispatched
 call, but MCP calls in that session do not run in parallel. The limit is 512
 loaded operations across servers.
+
+Queued requests belong to their requesting Erlang process. If it dies before
+execution, the manager discards the request without loading, calling or unloading
+a server. Calls also check ownership immediately before transport dispatch, so
+caller death during an idle reconnect prevents the pending operation. Reconnection
+already in progress may finish and retain its catalogue. Closing the session is
+cleanup and still runs if its requester dies. Once dispatched, caller death does
+not undo or replay an operation; its effects may be unknown. Inspect effects
+before retrying.
 
 ## Tests and configuration validation
 

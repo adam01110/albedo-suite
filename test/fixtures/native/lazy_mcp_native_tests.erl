@@ -35,7 +35,11 @@ run() ->
     assert_eager_compatibility(),
     assert_idle_cleanup(Config, Cache, Save),
     assert_dead_client_and_catalogue_drift(Config, Cache, Save),
-    io:format("lazy native tests passed~n"),
+    assert_abandoned_queue(Config, Cache, Save),
+    assert_abandoned_reconnect(Config, Cache, Save),
+    assert_dispatched_caller_death(Config, Cache, Save),
+    assert_dispatched_manager_death(Config, Cache, Save),
+    io:format("lazy native tests passed (14 lifecycle groups)~n"),
     ok.
 
 assert_startup_has_no_effects(Manager) ->
@@ -180,6 +184,109 @@ assert_idle_does_not_interrupt_call(Manager, Tool) ->
         after 5000 -> error(idle_after_call_leaked) end
     after 5000 -> error(call_not_started) end,
     ets:delete(lazy_mcp_test, call_pause).
+
+assert_abandoned_queue(Config, Cache, Save) ->
+    {ok, Handle} = albedo_mcp:prepare_lazy(enc(#{<<"servers">> => #{<<"a">> => Config}}), nil, nil, Cache, Save),
+    Manager = maps:get(lazy_manager, Handle),
+    Starts = count(starts),
+    Credentials = count(credentials),
+    true = erlang:suspend_process(Manager),
+    Load = queued(Manager, fun() -> albedo_mcp:load(Handle, <<"a">>) end),
+    kill_and_wait(Load),
+    true = erlang:resume_process(Manager),
+    <<"[]">> = albedo_mcp:definitions(Handle),
+    Starts = count(starts),
+    Credentials = count(credentials),
+    {ok, Definitions} = albedo_mcp:load(Handle, <<"a">>),
+    [#{<<"name">> := Tool}] = json:decode(Definitions),
+    Calls = count(calls),
+    true = erlang:suspend_process(Manager),
+    Call = queued(Manager, fun() -> albedo_mcp:call(Handle, Tool, <<"{}">>) end),
+    Unload = queued(Manager, fun() -> albedo_mcp:unload(Handle, <<"a">>) end),
+    kill_and_wait(Call),
+    kill_and_wait(Unload),
+    true = erlang:resume_process(Manager),
+    Definitions = albedo_mcp:definitions(Handle),
+    Calls = count(calls),
+    %% Close is session cleanup, not an operation that may be abandoned.
+    true = erlang:suspend_process(Manager),
+    Closer = queued(Manager, fun() -> albedo_mcp:close(Handle) end),
+    kill_and_wait(Closer),
+    M = monitor(process, Manager),
+    true = erlang:resume_process(Manager),
+    receive {'DOWN', M, process, Manager, normal} -> ok
+    after 5000 -> error(abandoned_close_leaked) end.
+
+assert_abandoned_reconnect(Config, Cache, Save) ->
+    C = #{<<"idleTimeoutMs">> => 40, <<"servers">> => #{<<"a">> => Config}},
+    {ok, Handle} = albedo_mcp:prepare_lazy(enc(C), nil, nil, Cache, Save),
+    {ok, Definitions} = albedo_mcp:load(Handle, <<"a">>),
+    [#{<<"name">> := Tool}] = json:decode(Definitions),
+    [{last_client, Client}] = ets:lookup(lazy_mcp_test, last_client),
+    M = monitor(process, Client),
+    receive {'DOWN', M, process, Client, _} -> ok after 5000 -> error(idle_client_leaked) end,
+    Calls = count(calls),
+    ets:insert(lazy_mcp_test, {discovery_pause, self()}),
+    Caller = spawn(fun() -> albedo_mcp:call(Handle, Tool, <<"{}">>) end),
+    receive {discovery_started, Worker} ->
+        kill_and_wait(Caller),
+        Worker ! resume_discovery
+    after 5000 -> error(reconnect_not_started) end,
+    Definitions = albedo_mcp:definitions(Handle),
+    Calls = count(calls),
+    ets:delete(lazy_mcp_test, discovery_pause),
+    nil = albedo_mcp:close(Handle).
+
+assert_dispatched_caller_death(Config, Cache, Save) ->
+    {ok, Handle} = albedo_mcp:prepare_lazy(enc(#{<<"servers">> => #{<<"a">> => Config}}), nil, nil, Cache, Save),
+    {ok, Definitions} = albedo_mcp:load(Handle, <<"a">>),
+    [#{<<"name">> := Tool}] = json:decode(Definitions),
+    Calls = count(calls),
+    ets:insert(lazy_mcp_test, {call_pause, self()}),
+    Caller = spawn(fun() -> albedo_mcp:call(Handle, Tool, <<"{}">>) end),
+    receive {call_started, Worker} ->
+        kill_and_wait(Caller),
+        Worker ! resume_call
+    after 5000 -> error(call_not_started) end,
+    %% A barrier proves the manager finished without replaying the dispatch.
+    Definitions = albedo_mcp:definitions(Handle),
+    After = Calls + 1,
+    After = count(calls),
+    ets:delete(lazy_mcp_test, call_pause),
+    nil = albedo_mcp:close(Handle).
+
+assert_dispatched_manager_death(Config, Cache, Save) ->
+    {ok, Handle} = albedo_mcp:prepare_lazy(enc(#{<<"servers">> => #{<<"a">> => Config}}), nil, nil, Cache, Save),
+    {ok, Definitions} = albedo_mcp:load(Handle, <<"a">>),
+    [#{<<"name">> := Tool}] = json:decode(Definitions),
+    ets:insert(lazy_mcp_test, {call_pause, self()}),
+    Parent = self(),
+    spawn(fun() -> Parent ! {outcome, albedo_mcp:call(Handle, Tool, <<"{}">>)} end),
+    receive {call_started, Worker} ->
+        kill_and_wait(maps:get(lazy_manager, Handle)),
+        receive {outcome, {error, Reason}} ->
+            true = binary:match(Reason, <<"outcome unknown">>) =/= nomatch
+        after 5000 -> error(missing_unknown_outcome) end,
+        W = monitor(process, Worker),
+        Worker ! resume_call,
+        receive {'DOWN', W, process, Worker, _} -> ok after 5000 -> error(dispatch_worker_leaked) end
+    after 5000 -> error(call_not_started) end,
+    ets:delete(lazy_mcp_test, call_pause).
+
+%% Trace delivery is the queue barrier; no timing-based mailbox polling.
+queued(Manager, Operation) ->
+    Caller = spawn(fun() -> receive go -> Operation() end end),
+    1 = erlang:trace(Caller, true, [send]),
+    Caller ! go,
+    receive {trace, Caller, send, _, Manager} -> ok
+    after 5000 -> error(request_not_queued) end,
+    1 = erlang:trace(Caller, false, [send]),
+    Caller.
+
+kill_and_wait(Pid) ->
+    M = monitor(process, Pid),
+    exit(Pid, kill),
+    receive {'DOWN', M, process, Pid, _} -> ok after 5000 -> error(process_not_dead) end.
 
 enc(Value) -> iolist_to_binary(json:encode(Value)).
 count(Key) -> ets:lookup_element(lazy_mcp_test, Key, 2).

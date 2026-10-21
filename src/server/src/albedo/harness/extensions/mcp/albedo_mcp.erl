@@ -80,7 +80,7 @@ unload(_, _) -> {error, <<"MCP lazy loading is not enabled">>}.
 %% Transport startup/discovery/calls have their existing bounded timeouts.
 lazy_request(#{lazy_manager := Manager}, Request) ->
     Alias = erlang:monitor(process, Manager, [{alias, reply_demonitor}]),
-    Manager ! {lazy_request, Alias, Request},
+    Manager ! {lazy_request, self(), Alias, Request},
     receive
         {Alias, Answer} -> Answer;
         {'DOWN', Alias, process, Manager, _} ->
@@ -98,14 +98,18 @@ lazy_operations(Loaded) ->
 lazy_loop(Configured, Loaded0, Idle) ->
     Loaded = expire_idle(Loaded0, Idle),
     receive
-        {lazy_request, Alias, close} ->
+        {lazy_request, _Owner, Alias, close} ->
             close_servers(lazy_clients(Loaded)),
             Alias ! {Alias, {ok, nil}};
-        {lazy_request, Alias, Request} ->
-            {Answer, Next0} = lazy_execute(Request, Configured, Loaded),
-            Next = touch_request(Request, Next0),
-            Alias ! {Alias, Answer},
-            lazy_loop(Configured, Next, Idle)
+        {lazy_request, Owner, Alias, Request} ->
+            case is_process_alive(Owner) of
+                false -> lazy_loop(Configured, Loaded, Idle);
+                true ->
+                    {Answer, Next0} = lazy_execute(Request, Configured, Loaded, Owner),
+                    Next = touch_request(Request, Next0),
+                    Alias ! {Alias, Answer},
+                    lazy_loop(Configured, Next, Idle)
+            end
     after idle_wait(Loaded, Idle) ->
         lazy_loop(Configured, Loaded, Idle)
     end.
@@ -150,16 +154,16 @@ touch_server(Name, Loaded) ->
         error -> Loaded
     end.
 
-lazy_execute(servers, Configured, Loaded) ->
+lazy_execute(servers, Configured, Loaded, _Owner) ->
     {{ok, json_binary([#{<<"name">> => N, <<"loaded">> => maps:is_key(N, Loaded),
                             <<"connected">> => case maps:find(N, Loaded) of
                                 {ok, {S, _}} -> lazy_connected(S);
                                 error -> false
                             end}
                        || N <- lists:sort(maps:keys(Configured))])}, Loaded};
-lazy_execute(definitions, _, Loaded) ->
+lazy_execute(definitions, _, Loaded, _Owner) ->
     {{ok, definitions(#{operations => lazy_operations(Loaded)})}, Loaded};
-lazy_execute({load, Name}, Configured, Loaded) ->
+lazy_execute({load, Name}, Configured, Loaded, _Owner) ->
     case {maps:find(Name, Configured), maps:find(Name, Loaded)} of
         {error, _} -> {{error, <<"MCP server is unavailable or disabled">>}, Loaded};
         {_, {ok, {#{idle := true}, _}}} -> lazy_load(Name, maps:get(Name, Configured), Loaded);
@@ -170,7 +174,7 @@ lazy_execute({load, Name}, Configured, Loaded) ->
             end;
         {{ok, Config}, error} -> lazy_load(Name, Config, Loaded)
     end;
-lazy_execute({unload, Name}, Configured, Loaded) ->
+lazy_execute({unload, Name}, Configured, Loaded, _Owner) ->
     case maps:is_key(Name, Configured) of
         false -> {{error, <<"MCP server is unavailable or disabled">>}, Loaded};
         true ->
@@ -181,13 +185,13 @@ lazy_execute({unload, Name}, Configured, Loaded) ->
                     {{ok, nil}, Next}
             end
     end;
-lazy_execute({call, Advertised, Arguments}, Configured, Loaded) ->
+lazy_execute({call, Advertised, Arguments}, Configured, Loaded, Owner) ->
     case [maps:get(server, O) || O <- lazy_operations(Loaded), maps:get(advertised, O) =:= Advertised] of
         [Name] ->
-            case lazy_execute({load, Name}, Configured, Loaded) of
+            case lazy_execute({load, Name}, Configured, Loaded, Owner) of
                 {{ok, _}, Next} ->
                     Handle = #{servers => lazy_clients(Next), operations => lazy_operations(Next)},
-                    {call(Handle, Advertised, Arguments), Next};
+                    {call_owned(Handle, Advertised, Arguments, Owner), Next};
                 {Error, Next} -> {Error, Next}
             end;
         _ -> {{error, <<"MCP operation is unavailable">>}, Loaded}
@@ -655,7 +659,10 @@ closer(#{servers := Servers, watcher := Watcher}) -> #{servers => Servers, watch
 
 call(#{lazy_manager := _} = Handle, Advertised, ArgumentsJson) ->
     lazy_request(Handle, {call, Advertised, ArgumentsJson});
-call(#{servers := Servers, operations := Operations}, Advertised, ArgumentsJson) ->
+call(Handle, Advertised, ArgumentsJson) ->
+    call_owned(Handle, Advertised, ArgumentsJson, self()).
+
+call_owned(#{servers := Servers, operations := Operations}, Advertised, ArgumentsJson, Owner) ->
     try
         Operation = find(advertised, Advertised, Operations),
         Link = find(name, maps:get(server, Operation), Servers),
@@ -663,7 +670,7 @@ call(#{servers := Servers, operations := Operations}, Advertised, ArgumentsJson)
         true = is_map(Arguments),
         case client(Link) of
             {ok, Server} ->
-                case timed_dispatch(Operation, Server, Arguments) of
+                case timed_dispatch(Operation, Server, Arguments, Owner) of
                     {ok, Value} -> encode_result(Value);
                     {error, timeout} -> {error, <<"MCP request timed out; outcome unknown. Inspect effects before any retry.">>};
                     {error, cancelled} -> {error, <<"MCP request cancelled; outcome unknown. Inspect effects before any retry.">>};
@@ -683,12 +690,17 @@ encode_result(Value) ->
         false -> {error, <<"MCP result exceeded the safe output limit">>}
     end.
 
-timed_dispatch(#{timeout := Timeout} = Operation, #{pid := Pid} = Server, Arguments) ->
+timed_dispatch(#{timeout := Timeout} = Operation, #{pid := Pid} = Server, Arguments, Owner) ->
     Parent = self(),
     {Worker, Monitor} = spawn_monitor(fun() ->
-        Result = try dispatch(Operation, Server, Arguments)
-                 catch _:_ -> {error, transport_lost}
-                 end,
+        %% Reconnection and scheduling may outlive the original requester.
+        %% After dispatch, caller death cannot establish whether effects occurred.
+        Result = case is_process_alive(Owner) of
+            false -> {error, cancelled};
+            true -> try dispatch(Operation, Server, Arguments)
+                    catch _:_ -> {error, transport_lost}
+                    end
+        end,
         Parent ! {mcp_dispatch, self(), Result}
     end),
     receive
