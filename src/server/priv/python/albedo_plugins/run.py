@@ -20,11 +20,11 @@ still owed when the retry lands share one notice, and so one turn.
 
 from __future__ import annotations
 
-from albedo_output import JobOutput
+from albedo_output import JobOutput, read_window
 
 from collections import OrderedDict
 from collections.abc import Callable, Generator
-from typing import cast
+from typing import NoReturn, cast
 from albedo_api import (
     Host,
     PythonApi,
@@ -43,6 +43,7 @@ import os
 import shlex
 import shutil
 import sys
+import time
 import uuid
 
 loop: asyncio.AbstractEventLoop
@@ -59,6 +60,7 @@ watch_output: Callable[[str, Callable[[], None]], None] | None = None
 forget_output: Callable[[str], None] | None = None
 
 ACTIVE_LIMIT = 64  # active jobs in one kernel
+MAX_LISTED = 100  # jobs one `job_list` names, newest first
 RETAINED_LIMIT = 64  # finished handles still addressable through `jobs`
 COMPLETION_GRACE = 0.1  # seconds to keep reading after the command exits
 SHUTDOWN_TERM = 0.25  # shared by every live group at shutdown
@@ -272,6 +274,7 @@ class Job(JobOutput):
         requested_argv: list[str] | None = None,
     ) -> None:
         self.service = service  # expected to run on; its end is not what we wait for
+        self.traced = traced  # a plugin's own job is not the session's to list
         self.source: Job | None = (
             stdin if isinstance(stdin, Job) else None
         )  # whose output is our stdin
@@ -586,6 +589,72 @@ class Job(JobOutput):
             f"bytes={self.capture.seen})"
         )
 
+    def __reduce__(self):
+        # Saved kernel state keeps a variable holding a job: in this kernel it
+        # resolves to the live handle, after a restart to how the job ended.
+        return _revive, (
+            self.id,
+            self.pipeline,
+            self.exit_code,
+            self.timed_out,
+            self.duration,
+        )
+
+
+def _revive(
+    id: str,
+    command: str,
+    exit_code: int | None,
+    timed_out: bool,
+    duration: float | None,
+) -> Job | EndedJob:
+    job = jobs.get(id)
+    return (
+        job
+        if job is not None
+        else EndedJob(id, command, exit_code, timed_out, duration)
+    )
+
+
+class EndedJob:
+    """A job handle restored after the kernel restarted: what ran and how it
+    ended. The process and its output went with the old kernel."""
+
+    def __init__(
+        self,
+        id: str,
+        command: str,
+        exit_code: int | None,
+        timed_out: bool,
+        duration: float | None,
+    ) -> None:
+        self.id = id
+        self.command = command
+        self.exit_code = exit_code
+        self.timed_out = timed_out
+        self.duration = duration
+
+    def poll(self) -> int | None:
+        return self.exit_code
+
+    @property
+    def returncode(self) -> int | None:
+        return self.exit_code
+
+    def _gone(self, *_args: object, **_kwargs: object) -> NoReturn:
+        raise LookupError(
+            f"job {self.id} ran in a kernel that has since restarted; its output went "
+            f"with it (exit_code={self.exit_code!r}). Run it again to read output."
+        )
+
+    tail = head = read = save = _gone
+
+    def __repr__(self) -> str:
+        return (
+            f"EndedJob(id={self.id!r}, exit_code={self.exit_code!r}, "
+            f"timed_out={self.timed_out!r}, duration={self.duration!r})"
+        )
+
 
 async def _unstarted() -> albedo_proc.Termination:
     return albedo_proc.Termination(None, (), True, ("process never started",))
@@ -605,6 +674,48 @@ def release(job: Job) -> None:
         _, evicted = retained.popitem(last=False)
         if jobs.get(evicted.id) is evicted:
             del jobs[evicted.id]
+
+
+def job_record(job: Job) -> dict[str, object]:
+    """What the daemon lists of one job, with wall-clock times in milliseconds."""
+    begun = (time.time() - loop.time() + job.started) * 1000
+    return {
+        "id": job.id,
+        "command": job.command[:4096],
+        "state": "running" if job.duration is None else "exited",
+        "exit_code": job.exit_code,
+        "timed_out": job.timed_out,
+        "service": job.service,
+        "started_at": int(begun),
+        "ended_at": None if job.duration is None else int(begun + job.duration * 1000),
+        "bytes": job.capture.seen,
+    }
+
+
+async def view_jobs(request: dict[str, object]) -> dict[str, object] | None:
+    """The daemon's `job_list` and `job_read`. Reading here is not reading the job:
+    watching a job's output must not withdraw the wake its result is owed."""
+    if request["type"] == "job_list":
+        shown = sorted(
+            (job for job in jobs.values() if job.traced),
+            key=lambda job: job.started,
+            reverse=True,
+        )
+        return {"ok": True, "jobs": [job_record(job) for job in shown[:MAX_LISTED]]}
+    job = jobs.get(cast(str, request["job"]))
+    if job is None or not job.traced:
+        return None
+    offset, limit = request.get("offset"), cast(int, request["limit"])
+    start, end, text = read_window(
+        job.capture, cast("int | None", offset), limit, job.duration is not None
+    )
+    return {
+        "ok": True,
+        "job": job_record(job),
+        "offset": start,
+        "next_offset": end,
+        "text": text,
+    }
 
 
 def forget(job: Job) -> None:
@@ -867,4 +978,6 @@ def setup(api: PythonApi) -> dict[str, object]:
     api.on_shutdown(close)
     if api.on_stop_job is not None:
         api.on_stop_job(stop_local_job)
+    if api.on_job_view is not None:
+        api.on_job_view(view_jobs)
     return {"run": run, "jobs": jobs}

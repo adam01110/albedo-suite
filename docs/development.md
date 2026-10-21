@@ -53,7 +53,8 @@ source into a writable temporary directory and uses the supplied binaries.
 It runs formatter, LSP, lazy and eager MCP, operation lifecycle, and streaming replay
 and user-question cases plus OpenCode Go routing/discovery and RTK/FFF daemon
 checks, plus upstream cache-miss, provider-timeout, speechless-response,
-context-window, hooks, rewind, trace and provider-catalog regressions.
+context-window, hooks, rewind, trace, job output, kernel restoration/upgrade
+and provider-catalog regressions.
 Additional supervised RTK
 and FFF integration tests run in the flake Python check against the packaged
 runtime.

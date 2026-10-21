@@ -25,6 +25,9 @@ UPSTREAM_CASES = (
     "cache_miss_test.py",
     "context_test.py",
     "hooks_test.py",
+    "idle_reap_test.py",
+    "job_wake_test.py",
+    "kernel_upgrade_test.py",
     "rewind_test.py",
     "traces_test.py",
     "provider_timeout_test.py",
@@ -67,11 +70,30 @@ def main():
         os.environ,
         PYTHONDONTWRITEBYTECODE="1",
         OPENCODE_API_KEY="",
-        ALBEDO_TEST_DAEMON=str(args.package / "bin/albedo-daemon"),
         ALBEDO_TEST_CLI=str(args.package / "bin/albedo"),
     )
 
     with tempfile.TemporaryDirectory(prefix="albedo-suite-e2e-") as directory:
+        # Kernel-upgrade fixtures expect a writable shipment beside the launcher.
+        shipment = Path(directory) / "daemon"
+        shipment.mkdir()
+        for entry in (args.package / "lib/albedo").iterdir():
+            target = shipment / entry.name
+            if entry.name == "albedo":
+                shutil.copytree(
+                    entry,
+                    target,
+                    ignore=shutil.ignore_patterns("__pycache__"),
+                )
+                for path in (target, *target.rglob("*")):
+                    if not path.is_symlink():
+                        path.chmod(path.stat().st_mode | 0o200)
+            else:
+                target.symlink_to(entry)
+        launcher = shipment / "albedo-daemon"
+        launcher.symlink_to(args.package / "bin/albedo-daemon")
+        environment["ALBEDO_TEST_DAEMON"] = str(launcher)
+
         source = Path(directory) / "source"
         prepare_source(args.source, source, suite)
         for case in args.case or (*SUITE_CASES, *UPSTREAM_CASES):
