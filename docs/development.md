@@ -36,7 +36,9 @@ nix fmt
 
 The checks exercise Home Manager options, source checksums, package contents,
 Python formatter, LSP, MCP and question bindings, RTK routing and FFF search,
-native MCP lifecycle, and the shell helpers.
+native MCP lifecycle, and the shell helpers. The server check phase exercises
+question answer/cancel writes through the store writer, including in-memory,
+file-backed and restarted databases; revision checks reject stale transitions.
 The files under `src/` keep upstream formatting and are excluded from the suite's
 treefmt run.
 

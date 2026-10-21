@@ -142,19 +142,21 @@ pub fn finish(
         "only a pending question can be answered or cancelled; answer must be nonempty and <=8192 bytes",
       )
     False ->
-      store.read(
-        storage,
-        "UPDATE questions SET status=?,answer=?,revision=revision+1 WHERE session=? AND id=? AND revision=? AND status='pending' RETURNING "
-          <> columns,
-        [
-          sqlight.text(status),
-          sqlight.text(answer),
-          sqlight.text(current.session),
-          sqlight.int(current.id),
-          sqlight.int(current.revision),
-        ],
-        decoder(),
-      )
+      store.query(storage, fn(db) {
+        store.rows(
+          db,
+          "UPDATE questions SET status=?,answer=?,revision=revision+1 WHERE session=? AND id=? AND revision=? AND status='pending' RETURNING "
+            <> columns,
+          [
+            sqlight.text(status),
+            sqlight.text(answer),
+            sqlight.text(current.session),
+            sqlight.int(current.id),
+            sqlight.int(current.revision),
+          ],
+          decoder(),
+        )
+      })
       |> result.try(one)
   }
 }

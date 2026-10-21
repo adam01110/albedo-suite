@@ -80,8 +80,10 @@
       runCommand "albedo-python-tests" {
         nativeBuildInputs = [
           # keep-sorted start
+          pkgs.beam29Packages.erlang
           pkgs.nodejs
           pkgs.python311
+          pkgs.treefmt
           # keep-sorted end
         ];
       } ''
@@ -93,6 +95,7 @@
         export ALBEDO_RTK_SOURCE=$PYTHONPATH
         export ALBEDO_FFF_SOURCE=$PYTHONPATH
         export ALBEDO_FFF_COMMAND=${suitePackages.albedo-fff}/bin/albedo-fff
+        export ALBEDO_FFF_ERLANG=${../../src/server/src/albedo/harness/extensions/files/albedo_fff.erl}
         export PATH=${pkgs.rtk}/bin:${pkgs.ripgrep}/bin:${pkgs.python311Packages.pytest}/bin:$PATH
         export ALBEDO_PYTHON_SOURCE=$PYTHONPATH
         python3 -m unittest discover -s ${../../test} -p formatter_python_test.py -v
