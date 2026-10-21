@@ -7,17 +7,11 @@ import (
 	"strings"
 	"time"
 
+	"charm.land/bubbles/v2/cursor"
 	tea "charm.land/bubbletea/v2"
 )
 
 func (m *ChatModel) handleInput(msg tea.Msg) (tea.Cmd, bool) {
-	before := m.vimSnapshot()
-	recordEdit := true
-	defer func() {
-		if recordEdit {
-			m.vimComposerEdited(before)
-		}
-	}()
 	if cmd, handled := m.handleTerminalClipboard(msg); handled {
 		return cmd, true
 	}
@@ -65,7 +59,6 @@ func (m *ChatModel) handleInput(msg tea.Msg) (tea.Cmd, bool) {
 		}
 
 		if cmd, handled := m.handleVim(msg); handled {
-			recordEdit = false
 			return cmd, true
 		}
 
@@ -74,10 +67,10 @@ func (m *ChatModel) handleInput(msg tea.Msg) (tea.Cmd, bool) {
 			msg,
 			inputVal,
 			func(replacement string) {
+				defer m.trackComposerEdit()()
 				m.TextArea.SetValue(replacement)
 			},
 			func(commandName string) {
-				recordEdit = false
 				m.handleSubmittedCommand(commandName, &cmds)
 			},
 		)
@@ -168,7 +161,6 @@ func (m *ChatModel) handleInput(msg tea.Msg) (tea.Cmd, bool) {
 				return nil, true
 			}
 			if trimmed != "" {
-				recordEdit = false
 				m.TextArea.Reset()
 				m.vimSubmitted()
 				m.syncLayout()
@@ -240,6 +232,7 @@ func (m *ChatModel) handleInput(msg tea.Msg) (tea.Cmd, bool) {
 		if !collapses(text) {
 			return nil, false
 		}
+		defer m.trackComposerEdit()()
 		m.TextArea.InsertString(m.Pastes.add(text))
 		m.syncLayout()
 		return nil, true
@@ -254,6 +247,7 @@ func (m *ChatModel) handleInput(msg tea.Msg) (tea.Cmd, bool) {
 		case len(m.Images.referenced(m.TextArea.Value())) >= MaxPromptImages:
 			m.AddError(fmt.Sprintf("A prompt can attach at most %d images.", MaxPromptImages))
 		default:
+			defer m.trackComposerEdit()()
 			m.TextArea.InsertString(m.Images.add(pastedImage{*msg.Image, msg.thumb}))
 			m.CopyStatus = msg.hint
 			m.syncLayout()
@@ -267,6 +261,7 @@ func (m *ChatModel) handleInput(msg tea.Msg) (tea.Cmd, bool) {
 			return nil, true
 		}
 		if msg.Edited {
+			defer m.trackComposerEdit()()
 			m.TextArea.SetValue(strings.TrimRight(msg.Text, "\r\n"))
 			m.syncLayout()
 		}
@@ -277,13 +272,17 @@ func (m *ChatModel) handleInput(msg tea.Msg) (tea.Cmd, bool) {
 	default:
 		return nil, false
 	}
-	recordEdit = false
 	return m.updateComposer(msg, cmds), true
 }
 
 func (m *ChatModel) updateComposer(msg tea.Msg, cmds []tea.Cmd) tea.Cmd {
-	before := m.vimSnapshot()
-	defer func() { m.vimComposerEdited(before) }()
+	// Keep the fallback for the textarea's private clipboard-result messages.
+	// Cursor and focus updates cannot edit text and need no undo snapshot.
+	switch msg.(type) {
+	case cursor.BlinkMsg, tea.FocusMsg, tea.BlurMsg:
+	default:
+		defer m.trackComposerEdit()()
+	}
 	oldRows := m.inputRows()
 	var taCmd tea.Cmd
 	m.TextArea, taCmd = m.TextArea.Update(msg)
@@ -307,6 +306,7 @@ func (m *ChatModel) deleteMarker(backward bool) bool {
 	if !ok {
 		return false
 	}
+	defer m.trackComposerEdit()()
 	m.TextArea.SetCursorColumn(end)
 	for range end - start {
 		m.TextArea, _ = m.TextArea.Update(tea.KeyPressMsg{Code: tea.KeyBackspace})
@@ -525,4 +525,10 @@ func (m *ChatModel) vimSubmitted() {
 	m.vim.resetInput()
 	// Attachment numbers are reused after submission, so the register expires.
 	m.vim.register, m.vim.linewise = "", false
+}
+
+// trackComposerEdit captures the pre-edit cursor only at a mutation boundary.
+func (m *ChatModel) trackComposerEdit() func() {
+	before := m.vimSnapshot()
+	return func() { m.vimComposerEdited(before) }
 }

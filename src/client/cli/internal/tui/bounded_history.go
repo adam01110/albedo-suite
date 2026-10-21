@@ -104,6 +104,8 @@ func (e *HistoryEntry) ComputeSize() int64 {
 }
 
 type BoundedHistory struct {
+	// revision invalidates derived selections after retained entries change.
+	revision       uint64
 	entries        []HistoryEntry
 	MaxEntries     int
 	MaxBytes       int64
@@ -173,6 +175,7 @@ func (h *BoundedHistory) Replace(entry HistoryEntry) bool {
 	}
 	entry.ComputeSize()
 	h.totalBytes += entry.SizeBytes - h.entries[index].SizeBytes
+	h.revision++
 	h.entries[index] = entry
 	h.enforceBounds()
 	return true
@@ -200,6 +203,9 @@ func (h *BoundedHistory) Prepend(older []HistoryEntry) {
 		}
 		h.totalBytes += entry.ComputeSize()
 		unique = append(unique, entry)
+	}
+	if len(unique) > 0 {
+		h.revision++
 	}
 	h.entries = slices.Concat(unique, h.entries)
 	h.evictedThrough = 0
@@ -236,6 +242,7 @@ func (h *BoundedHistory) enforceBounds() {
 }
 
 func (h *BoundedHistory) evictFirst() {
+	h.revision++
 	removed := h.entries[0]
 	h.entries[0] = HistoryEntry{} // Explicitly zero out evicted slot to drop GC references
 	h.entries = h.entries[1:]
@@ -246,6 +253,7 @@ func (h *BoundedHistory) evictFirst() {
 }
 
 func (h *BoundedHistory) Append(entry HistoryEntry) {
+	h.revision++
 	entry.ComputeSize()
 	h.entries = append(h.entries, entry)
 	h.totalBytes += entry.SizeBytes
@@ -254,7 +262,7 @@ func (h *BoundedHistory) Append(entry HistoryEntry) {
 
 func (h *BoundedHistory) Clear() {
 	clear(h.entries)
-	*h = BoundedHistory{MaxEntries: h.MaxEntries, MaxBytes: h.MaxBytes, entries: h.entries[:0]}
+	*h = BoundedHistory{revision: h.revision + 1, MaxEntries: h.MaxEntries, MaxBytes: h.MaxBytes, entries: h.entries[:0]}
 }
 
 func (h *BoundedHistory) firstLiveIndex(ids []string, all bool) int {
@@ -274,5 +282,8 @@ func (h *BoundedHistory) retireLive(ids []string, all bool) bool {
 		}
 		return retire
 	})
+	if removed {
+		h.revision++
+	}
 	return removed
 }
