@@ -5,16 +5,11 @@ Production searches use the daemon-owned FFF worker shared by host sessions.
 
 from __future__ import annotations
 
-import asyncio
 import codecs
 import difflib
 import fnmatch
-import json
 import os
 import re
-import shlex
-import shutil
-import secrets
 import stat
 import sys
 import tempfile
@@ -27,7 +22,6 @@ from typing import Generic, Iterable, Sequence, TypeVar
 from albedo_api import PythonApi, ReadyList, Text
 import albedo_trace
 from albedo_plugins import hook
-from albedo_plugins import run as jobs
 
 
 def _record_edit(path: Path) -> None:
@@ -45,7 +39,6 @@ READ_LIMIT = 16_000
 READ_CHUNK_BYTES = 64 * 1024
 LINE_SEPARATORS = "\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"
 LINE_BOUNDARIES = re.compile(rf"\r\n|[{re.escape(LINE_SEPARATORS)}]")
-SEARCH_TIMEOUT = 30
 LINE_WIDTH = 160
 CANDIDATES = 4
 LISTED = 10
@@ -149,104 +142,27 @@ class Search(Generic[Result]):
 
 
 class _FFF:
-    """Private supervised RPC worker; no native search fallback."""
+    """Daemon-owned RPC worker; no per-kernel transport or search fallback."""
 
     def __init__(self, host=None):
         self.host = host
         self.target = os.environ.get("ALBEDO_REMOTE_TARGET")
         self.worker_pid = None
-        self.job = None
-        self.directory = None
-        self.lock = asyncio.Lock()
 
     async def close(self):
-        async with self.lock:
-            await self._close()
-
-    async def _close(self):
-        if self.job is not None:
-            await self.job.stop()
-            jobs.forget(self.job)
-            self.job = None
-        if self.directory is not None:
-            self.directory.cleanup()
-            self.directory = None
+        # Session cleanup must not stop another session's host worker.
+        pass
 
     async def request(self, payload):
-        if self.host is not None:
-            if self.target:
-                payload = {**payload, "_fff_target": self.target}
-            result = await self.host("files.fff", payload)
-            self.worker_pid = result.pop("workerPid", None)
-            return result
-        async with self.lock:
-            try:
-                return await asyncio.wait_for(self._request(payload), SEARCH_TIMEOUT)
-            except (OSError, asyncio.TimeoutError, asyncio.CancelledError):
-                await self._close()
-                raise
-
-    async def _request(self, payload):
-        if self.job is not None and (
-            self.job.exit_code is not None
-            or self.job.timed_out
-            or self.job.termination is not None
-        ):
-            detail = self.job.tail(2000)
-            await self._close()
-            raise RuntimeError(f"FFF worker died: {detail}")
-        if self.job is None:
-            command = os.environ.get("ALBEDO_FFF_COMMAND")
-            argv = shlex.split(command) if command else []
-            if not command and (executable := shutil.which("albedo-fff")):
-                argv = [executable]
-            if not argv or not argv[0]:
-                raise RuntimeError(
-                    "FFF runtime missing on this host: install albedo-fff or set ALBEDO_FFF_COMMAND"
-                )
-            self.directory = tempfile.TemporaryDirectory(prefix="albedo-fff-")
-            self.socket = str(Path(self.directory.name) / "rpc.sock")
-            self.secret = secrets.token_hex(32)
-            self.job = jobs.start(
-                [*argv, self.socket, self.secret], 86400, traced=False, service=True
+        if self.host is None:
+            raise RuntimeError(
+                "FFF daemon RPC unavailable: files plugin is not initialized"
             )
-            while not (
-                Path(self.socket).exists() and "FFF_READY" in self.job.tail(2000)
-            ):
-                if self.job.exit_code is not None or self.job.task.done():
-                    detail = self.job.tail(2000)
-                    await self._close()
-                    raise RuntimeError(f"FFF worker failed to start: {detail}")
-                await asyncio.sleep(0.01)
-        reader, writer = await asyncio.open_unix_connection(
-            self.socket, limit=16 * 1024 * 1024
-        )
-        try:
-            writer.write(
-                (
-                    json.dumps({**payload, "secret": self.secret, "protocol": 1}) + "\n"
-                ).encode()
-            )
-            await writer.drain()
-            try:
-                reply = await reader.readline()
-                if not reply:
-                    raise OSError("FFF worker closed its connection")
-                result = json.loads(reply)
-            except ValueError as error:
-                raise OSError(
-                    f"FFF invalid or oversized protocol response: {error}"
-                ) from error
-            if result.get("protocol") != 1:
-                raise OSError(
-                    "FFF protocol mismatch: install matching albedo-fff on this host"
-                )
-            if not result["ok"]:
-                raise ValueError(result["error"])
-            return result["value"]
-        finally:
-            writer.close()
-            await writer.wait_closed()
+        if self.target:
+            payload = {**payload, "_fff_target": self.target}
+        result = await self.host("files.fff", payload)
+        self.worker_pid = result.pop("workerPid", None)
+        return result
 
 
 _fff = _FFF()
@@ -720,7 +636,7 @@ class Files:
         return Rows(rows[:max_results], truncated=total > max_results)
 
     async def close(self):
-        """Destroy FFF indexes and stop the supervised worker."""
+        """Release session access without stopping the daemon-owned shared worker."""
         await _fff.close()
 
     @hook.reported(

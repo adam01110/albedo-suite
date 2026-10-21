@@ -1,4 +1,4 @@
-"""Native FFF integration through the production supervised job boundary.
+"""Native FFF integration through the production daemon RPC and stdin boundary.
 
 Set ALBEDO_PYTHON_SOURCE to upstream's priv/python directory and
 ALBEDO_FFF_COMMAND to a worker launcher when testing outside a packaged kernel.
@@ -7,16 +7,20 @@ ALBEDO_FFF_COMMAND to a worker launcher when testing outside a packaged kernel.
 import asyncio
 import importlib.util
 import os
+import json
+import shlex
+import shutil
+import signal
 from pathlib import Path
 import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+from typing import Any
 
 CORE = os.environ.get("ALBEDO_FFF_SOURCE") or os.environ.get("ALBEDO_PYTHON_SOURCE")
 if CORE:
     sys.path.insert(0, CORE)
-from albedo_plugins import run as jobs
 
 SOURCE = (
     Path(os.environ["ALBEDO_FFF_SOURCE"]) / "albedo_plugins/files.py"
@@ -25,44 +29,112 @@ SOURCE = (
     / "src/server/priv/python/albedo_plugins/files.py"
 )
 spec = importlib.util.spec_from_file_location("fff_files_tested", SOURCE)
-module = importlib.util.module_from_spec(spec)
+assert spec is not None and spec.loader is not None
+module: Any = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 
 
-class Capture:
-    def __init__(self):
-        self.data = bytearray()
-        self.seen = 0
+ERLANG = os.environ.get("ALBEDO_FFF_ERLANG") or str(
+    Path(__file__).resolve().parents[1]
+    / "src/server/src/albedo/harness/extensions/files/albedo_fff.erl"
+)
 
-    @property
-    def retained(self):
-        return len(self.data)
 
-    def write_bytes(self, data):
-        self.data.extend(data)
-        self.seen += len(data)
+class DaemonRpc:
+    """Test host bridge to the unchanged production Erlang registry and worker."""
 
-    def write(self, text):
-        self.write_bytes(text.encode())
+    async def start(self, directory):
+        self.directory = directory
+        self.launcher = directory / "albedo-fff"
+        command = os.environ.get("ALBEDO_FFF_COMMAND") or shutil.which("albedo-fff")
+        if not command:
+            raise RuntimeError("FFF runtime missing for integration tests")
+        self.command = shlex.split(command)
+        self.configure(self.command)
+        stub = directory / "albedo_python.erl"
+        stub.write_text(
+            "-module(albedo_python). -export([clean_environment/0]). "
+            "clean_environment() -> []."
+        )
+        bridge = directory / "bridge.escript"
+        bridge.write_text("""#!/usr/bin/env escript
+%%! +S 2:2
+-mode(compile).
+main([Source, Stub]) ->
+    {ok, albedo_python, StubCode} = compile:file(Stub, [binary]),
+    {module, albedo_python} = code:load_binary(albedo_python, Stub, StubCode),
+    {ok, albedo_fff, Code} = compile:file(Source, [binary]),
+    {module, albedo_fff} = code:load_binary(albedo_fff, Source, Code),
+    loop().
+loop() ->
+    case io:get_line(standard_io, "") of
+        eof -> halt(0);
+        Line ->
+            Args = json:decode(list_to_binary(Line)),
+            Result = case albedo_fff:search(local, [], none, Args) of
+                {ok, Value} -> #{ok => true, value => json:decode(Value)};
+                {error, Why} -> #{ok => false, error => Why}
+            end,
+            io:put_chars([json:encode(Result), "\n"]),
+            loop()
+    end.
+""")
+        escript = shutil.which("escript")
+        if escript is None:
+            raise RuntimeError(
+                "Erlang escript missing for production FFF integration tests"
+            )
+        self.process = await asyncio.create_subprocess_exec(
+            escript,
+            str(bridge),
+            ERLANG,
+            str(stub),
+            env={
+                **os.environ,
+                "PATH": str(directory),
+                "HOME": str(directory),
+                "XDG_CACHE_HOME": str(directory / "cache"),
+            },
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            limit=16 * 1024 * 1024,
+        )
+        assert self.process.stdin is not None
+        assert self.process.stdout is not None
+        assert self.process.stderr is not None
+        self.stdin = self.process.stdin
+        self.stdout = self.process.stdout
+        self.stderr = self.process.stderr
+        self.lock = asyncio.Lock()
 
-    def tail(self, limit=65536):
-        return bytes(self.data[-limit:])
+    def configure(self, command):
+        self.launcher.write_text(
+            f"#!{sys.executable}\nimport os\nos.execv({command[0]!r}, {command!r} + __import__('sys').argv[1:])\n"
+        )
+        self.launcher.chmod(0o700)
 
-    def read_bytes(self, offset, limit):
-        return bytes(self.data[offset : offset + limit])
+    async def __call__(self, method, payload):
+        assert method == "files.fff"
+        async with self.lock:
+            self.stdin.write((json.dumps(payload) + "\n").encode())
+            await self.stdin.drain()
+            line = await asyncio.wait_for(self.stdout.readline(), 35)
+            if not line:
+                raise RuntimeError((await self.stderr.read()).decode())
+            result = json.loads(line)
+            if not result["ok"]:
+                raise ValueError(result["error"])
+            return result["value"]
 
-    def end_spill(self):
-        pass
+    async def close(self):
+        self.stdin.close()
+        await asyncio.wait_for(self.process.wait(), 5)
 
 
 class FffTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        jobs.loop = asyncio.get_running_loop()
-        jobs.capture_factory = lambda _: Capture()
-        jobs.send = lambda _: None
-        jobs.preview_limit = 65536
-        module._fff = module._FFF()
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         (self.root / "src").mkdir()
@@ -76,11 +148,16 @@ class FffTests(unittest.IsolatedAsyncioTestCase):
         )
         (self.root / "src/nested/deep.txt").write_text("needle deep\n")
         (self.root / "root.txt").write_text("other\n")
+        self.rpc_temp = tempfile.TemporaryDirectory()
+        self.rpc = DaemonRpc()
+        await self.rpc.start(Path(self.rpc_temp.name))
+        module._fff = module._FFF(self.rpc)
         self.files = module.Files()
 
     async def asyncTearDown(self):
         await self.files.close()
-        await jobs.close()
+        await self.rpc.close()
+        self.rpc_temp.cleanup()
         self.temp.cleanup()
 
     async def test_content_context_counts_ignore_case_and_truncation(self):
@@ -132,7 +209,7 @@ class FffTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_external_changes_edits_deletion_and_index_reuse(self):
         await self.files.paths(path=str(self.root))
-        job = module._fff.job
+        worker_pid = module._fff.worker_pid
         self.files.write(str(self.root / "new.txt"), "brand new\n")
         self.assertEqual(
             len(await self.files.find("brand new", str(self.root), literal=True)), 1
@@ -148,7 +225,7 @@ class FffTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(
             await self.files.find("external update", str(self.root), literal=True)
         )
-        self.assertIs(module._fff.job, job)
+        self.assertEqual(module._fff.worker_pid, worker_pid)
 
     async def test_unsupported_flags_regex_and_missing_root(self):
         for flag in ("hidden", "ignored"):
@@ -166,34 +243,31 @@ class FffTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_close_death_missing_runtime_and_startup_timeout(self):
         await self.files.paths(path=str(self.root))
-        directory = Path(module._fff.directory.name)
-        job = module._fff.job
+        worker_pid = module._fff.worker_pid
         await self.files.close()
-        self.assertFalse(directory.exists())
-        self.assertNotIn(job.id, jobs.active)
         await self.files.paths(path=str(self.root))
-        await module._fff.job.stop()
-        with self.assertRaisesRegex(RuntimeError, "worker died"):
+        self.assertEqual(module._fff.worker_pid, worker_pid)
+        os.kill(worker_pid, signal.SIGKILL)
+        # The registry may already have consumed the port exit and restarted it.
+        try:
             await self.files.paths(path=str(self.root))
-        with (
-            patch.dict(os.environ, {"ALBEDO_FFF_COMMAND": ""}),
-            patch.object(module.shutil, "which", return_value=None),
-        ):
-            with self.assertRaisesRegex(RuntimeError, "runtime missing"):
-                await self.files.paths(path=str(self.root))
-        with (
-            patch.dict(
-                os.environ,
-                {
-                    "ALBEDO_FFF_COMMAND": f'{sys.executable} -c "import time; time.sleep(10)"'
-                },
-            ),
-            patch.object(module, "SEARCH_TIMEOUT", 0.15),
-        ):
-            with self.assertRaises(asyncio.TimeoutError):
-                await self.files.paths(path=str(self.root))
-        self.assertIsNone(module._fff.job)
-        self.assertIsNone(module._fff.directory)
+        except ValueError as error:
+            self.assertRegex(str(error), "worker died|worker exited")
+            await self.files.paths(path=str(self.root))
+        self.assertNotEqual(module._fff.worker_pid, worker_pid)
+        # A new registry has no live port that could mask a missing executable.
+        await self.rpc.close()
+        await self.rpc.start(Path(self.rpc_temp.name))
+        self.rpc.launcher.unlink()
+        with self.assertRaisesRegex(ValueError, "runtime missing"):
+            await self.files.paths(path=str(self.root))
+        self.rpc.configure(
+            [sys.executable, "-c", "import sys; sys.stdin.buffer.read()"]
+        )
+        with self.assertRaisesRegex(ValueError, "request timed out"):
+            await self.files.paths(path=str(self.root))
+        self.rpc.configure(self.rpc.command)
+        self.assertTrue(await self.files.paths(path=str(self.root)))
 
     async def test_bounded_root_eviction_and_concurrent_requests(self):
         roots = []
@@ -214,21 +288,14 @@ class FffTests(unittest.IsolatedAsyncioTestCase):
             "name": None,
         }
         await module._fff.request(payload)
-        reader, writer = await asyncio.open_unix_connection(module._fff.socket)
-        import json
-
-        writer.write(
-            (
-                json.dumps({**payload, "secret": module._fff.secret, "protocol": 99})
-                + "\n"
-            ).encode()
-        )
-        await writer.drain()
-        reply = json.loads(await reader.readline())
-        writer.close()
-        await writer.wait_closed()
-        self.assertFalse(reply["ok"])
-        self.assertIn("protocol mismatch", reply["error"])
+        worker_pid = module._fff.worker_pid
+        # A second session adapter shares the daemon-owned host worker.
+        second = module._FFF(self.rpc)
+        await second.request(payload)
+        self.assertEqual(second.worker_pid, worker_pid)
+        await second.close()
+        await module._fff.request(payload)
+        self.assertEqual(module._fff.worker_pid, worker_pid)
 
     async def test_large_corpus_native_offset_pagination(self):
         corpus = self.root / "large"
@@ -316,6 +383,31 @@ class FffTests(unittest.IsolatedAsyncioTestCase):
             "phrase with spaces",
             str(self.files.read(str(self.root / "src/main.txt"), limit=1)),
         )
+
+    async def test_requires_daemon_rpc_without_starting_a_kernel_worker(self):
+        with (
+            patch(
+                "albedo_plugins.run.start",
+                side_effect=AssertionError("per-kernel worker started"),
+            ),
+            self.assertRaisesRegex(RuntimeError, "daemon RPC unavailable"),
+        ):
+            await module._FFF().request({"op": "paths"})
+
+    async def test_remote_target_is_forwarded_without_mutating_payload(self):
+        seen = []
+
+        async def host(method, payload):
+            seen.append((method, payload))
+            return {"workerPid": 42, "items": []}
+
+        with patch.dict(os.environ, {"ALBEDO_REMOTE_TARGET": "local"}):
+            adapter = module._FFF(host)
+        payload = {"op": "paths"}
+        self.assertEqual(await adapter.request(payload), {"items": []})
+        self.assertEqual(seen, [("files.fff", {"op": "paths", "_fff_target": "local"})])
+        self.assertEqual(payload, {"op": "paths"})
+        self.assertEqual(adapter.worker_pid, 42)
 
 
 if __name__ == "__main__":

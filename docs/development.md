@@ -64,6 +64,12 @@ target for remote sessions. Workers start on demand, retain at most four root
 indexes, and exit after 60 seconds without a search. Search requests, including
 queue time, have a 30-second worker deadline. Closing a session does not stop
 another session's search worker. FFF is not listed as a session background job.
+The Python adapter only calls the managed `files.fff` RPC; the daemon talks to
+`albedo-fff --stdio` over versioned, newline-delimited JSON. There is no standalone
+Unix-socket or per-kernel worker path. `test/fff_test.py` exercises all search
+semantics through the production Erlang registry and stdin worker using a small
+isolated RPC bridge; `test/fff_stdio_test.py` checks protocol bounds, four-root
+eviction, idle exit and watchdog deadlines with a fake native SDK.
 
 The tests use fake providers, temporary homes and local stdio servers. They do
 not activate your configuration, read your credentials or contact live
