@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"fmt"
 	"image"
+	"maps"
 	"strings"
 	"sync/atomic"
 
@@ -90,33 +91,8 @@ func (m *ChatModel) loadToolImage() tea.Cmd {
 	if m.History == nil || m.client == nil || m.streamCtx == nil || m.streamCtx.Err() != nil || !terminalGraphics().supported {
 		return nil
 	}
-	wanted := make(map[string]daemon.ImageMetadata)
-	var order []string
-	entries := m.History.Entries()
-	add := func(entry HistoryEntry) {
-		if entry.Kind != EntryTool && entry.Kind != EntryUser {
-			return
-		}
-		for _, attachment := range entry.Images {
-			ref := attachment.Reference
-			if ref == "" || len(wanted) >= maxToolImagePreviews {
-				continue
-			}
-			if _, exists := wanted[ref]; exists {
-				continue
-			}
-			wanted[ref] = attachment
-			order = append(order, ref)
-		}
-	}
-	for i := len(entries) - 1; i >= 0; i-- {
-		if m.Renderer.Open[entryKey(entries[i])] {
-			add(entries[i])
-		}
-	}
-	for i := len(entries) - 1; i >= 0; i-- {
-		add(entries[i])
-	}
+	selection := m.selectToolImages()
+	wanted, order := selection.wanted, selection.order
 	if m.Renderer.ToolImages == nil {
 		m.Renderer.ToolImages = make(map[string]toolImagePreview)
 	}
@@ -181,7 +157,7 @@ func (m ChatModel) acceptToolImage(msg toolImageLoadedMsg) (ChatModel, tea.Cmd) 
 	m.refreshViewportContent()
 	next := m.loadToolImage()
 	// Deleted/unretained previews must never be uploaded after cleanup.
-	if _, retained := m.Renderer.ToolImages[msg.Reference]; retained && msg.transmit != "" {
+	if preview, retained := m.Renderer.ToolImages[msg.Reference]; retained && !preview.pending && msg.transmit != "" {
 		return m, tea.Sequence(tea.Raw(msg.transmit), next)
 	}
 	return m, next
@@ -243,4 +219,50 @@ func deleteToolPreview(preview toolImagePreview, g graphics) string {
 		seq.WriteString(delete)
 	}
 	return seq.String()
+}
+
+// Selection is independent of preview completion and width. Keep it until
+// history or fold state changes, including replacement and bounded eviction.
+type toolImageSelection struct {
+	history  *BoundedHistory
+	revision uint64
+	open     map[string]bool
+	wanted   map[string]daemon.ImageMetadata
+	order    []string
+}
+
+func (m *ChatModel) selectToolImages() *toolImageSelection {
+	if cached := m.toolImageSelection; cached != nil && cached.history == m.History && cached.revision == m.History.revision && maps.Equal(cached.open, m.Renderer.Open) {
+		return cached
+	}
+	wanted := make(map[string]daemon.ImageMetadata)
+	var order []string
+	entries := m.History.Entries()
+	add := func(entry HistoryEntry) {
+		if entry.Kind != EntryTool && entry.Kind != EntryUser {
+			return
+		}
+		for _, attachment := range entry.Images {
+			ref := attachment.Reference
+			if ref == "" || len(wanted) >= maxToolImagePreviews {
+				continue
+			}
+			if _, exists := wanted[ref]; exists {
+				continue
+			}
+			wanted[ref] = attachment
+			order = append(order, ref)
+		}
+	}
+	for i := len(entries) - 1; i >= 0 && len(wanted) < maxToolImagePreviews; i-- {
+		if len(entries[i].Images) > 0 && m.Renderer.Open[entryKey(entries[i])] {
+			add(entries[i])
+		}
+	}
+	for i := len(entries) - 1; i >= 0 && len(wanted) < maxToolImagePreviews; i-- {
+		add(entries[i])
+	}
+
+	m.toolImageSelection = &toolImageSelection{history: m.History, revision: m.History.revision, open: maps.Clone(m.Renderer.Open), wanted: wanted, order: order}
+	return m.toolImageSelection
 }

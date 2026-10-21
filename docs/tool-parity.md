@@ -36,15 +36,19 @@ not ripgrep or a Python scan fallback. Ordinary `files.paths(query)` searches
 rank fuzzy filename matches; wildcard patterns and `glob=` retain exact glob
 filtering. No additional public search tool is added. The compatibility layer
 preserves bounded rows, matching-line objects,
-context and exact glob searches. The worker is supervised, uses private local
-IPC and caches a bounded number of root indexes. Search refreshes the index
-before returning results; the worker does not trust watcher updates alone.
+context and exact glob searches. The worker is daemon-owned and shared per host;
+Python sessions call `files.fff` RPC, and the daemon uses the worker's private
+stdin/stdout JSON protocol (`--stdio`). There is no Unix-socket fallback or
+per-kernel worker. Each worker caches at most four root indexes. Search refreshes
+the index before returning results; the worker does not trust watcher updates
+alone.
 
 FFF cannot include hidden or ignored files in its index. `hidden=True` and
 `ignored=True` are explicit errors, not quiet empty results. Unsupported search
-semantics likewise fail visibly. Remote search requires the FFF worker on the remote execution host;
-a missing dependency does not fall back to native search. IPC uses a versioned
-protocol so incompatible remote workers fail explicitly. Search limits are
+semantics likewise fail visibly. Remote search requires the FFF worker on the
+remote execution host; a missing dependency does not fall back to native search.
+IPC uses a versioned protocol so incompatible remote workers fail explicitly.
+Search limits are
 1-10000 matches, up to 50 context lines, with explicit response-size budgets.
 
 ## Packaging and updates

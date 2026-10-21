@@ -16,6 +16,7 @@ from dataclasses import dataclass
 MAX_FILES = 1024
 MAX_BYTES = 16 * 1024 * 1024
 MAX_OUTPUT = 16 * 1024
+MAX_CONTEXT_FILES = 20000
 
 
 @dataclass(frozen=True)
@@ -55,8 +56,11 @@ def _canonical(path: Path) -> Path:
     return resolved
 
 
-def _read(path: Path) -> tuple[bytes, Postimage]:
-    if _canonical(path) != path:
+def _read(path: Path, *, boundary: Path | None = None) -> tuple[bytes, Postimage]:
+    resolved = _canonical(path) if boundary is None else path.resolve(strict=True)
+    if resolved != path or (
+        boundary is not None and not resolved.is_relative_to(boundary)
+    ):
         raise ValueError(f"formatter path changed or became a symlink: {path}")
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     with os.fdopen(descriptor, "rb") as stream:
@@ -116,7 +120,9 @@ def _argv(value: object) -> list[str]:
     return value
 
 
-def _commands(path: Path, staged: Path) -> list[tuple[list[str], Path]]:
+def _commands(
+    path: Path, staged: Path, context: Path | None = None, *, project_only: bool = False
+) -> list[tuple[list[str], Path]]:
     assert _root is not None
     directory = path.parent
     while True:
@@ -131,21 +137,65 @@ def _commands(path: Path, staged: Path) -> list[tuple[list[str], Path]]:
                         + [
                             "--no-cache",
                             "--config-file",
-                            str(config),
+                            str(
+                                context / config.relative_to(_root)
+                                if context
+                                else config
+                            ),
+                            "--tree-root",
+                            str(context or _root),
                             "--",
                             str(staged),
                         ],
-                        directory,
+                        context / directory.relative_to(_root)
+                        if context
+                        else directory,
                     )
                 ]
         if (directory / "flake.nix").is_file():
             _canonical(directory / "flake.nix")
             command = _argv(_config.get("nix"))
-            return [(command + ["fmt", "--", str(staged)], directory)]
+            return [
+                (
+                    command + ["fmt", "--", str(staged)],
+                    directory,
+                )
+            ]
         if directory == _root:
             break
         directory = directory.parent
-    return _file_commands(path, staged)
+    return [] if project_only else _file_commands(path, staged)
+
+
+def _snapshot(destination: Path, paths: list[Path]) -> None:
+    """Stage tracked targets; expose other project context through read-through links."""
+    assert _root is not None
+    directories = {_root}
+    targets = set(paths)
+    for path in paths:
+        directory = path.parent
+        while directory.is_relative_to(_root):
+            directories.add(directory)
+            if directory == _root:
+                break
+            directory = directory.parent
+    count = 0
+    for directory in sorted(directories):
+        target_directory = destination / directory.relative_to(_root)
+        target_directory.mkdir(parents=True, exist_ok=True)
+        for source in directory.iterdir():
+            if source in directories:
+                continue
+            count += 1
+            if count > MAX_CONTEXT_FILES:
+                raise ValueError("formatter project context exceeds 20000 entries")
+            target = target_directory / source.name
+            if source in targets:
+                data, postimage = _read(source)
+                target.write_bytes(data)
+                target.chmod(stat.S_IMODE(postimage.identity[2]))
+            else:
+                target.symlink_to(source)
 
 
 def _file_commands(path: Path, staged: Path) -> list[tuple[list[str], Path]]:
@@ -176,12 +226,19 @@ def _missing_formatter(output: str) -> bool:
     )
 
 
-async def _run(argv: list[str], cwd: Path, *, nix_fmt: bool = False) -> None:
+async def _run(
+    argv: list[str], cwd: Path, *, nix_fmt: bool = False, tree_root: Path | None = None
+) -> None:
     """Drain output in chunks; cancellation kills the complete process group."""
     spawn = asyncio.create_task(
         asyncio.create_subprocess_exec(
             *argv,
             cwd=cwd,
+            env=(
+                {**os.environ, "TREEFMT_WORKING_DIR": str(tree_root)}
+                if tree_root is not None
+                else None
+            ),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             start_new_session=True,
@@ -230,7 +287,7 @@ async def _run(argv: list[str], cwd: Path, *, nix_fmt: bool = False) -> None:
 
 
 def _publish(path: Path, staged: Path, expected: Postimage) -> bool:
-    data, _ = _read(staged)
+    data, _ = _read(staged, boundary=staged.parent)
     if _read(path)[1] != expected:
         raise ValueError(f"formatter refuses concurrent change: {path}")
     if hashlib.sha256(data).digest() == expected.digest:
@@ -279,47 +336,70 @@ async def finish() -> dict:
             ):
                 if _overflow:
                     raise ValueError(_overflow)
-                for path, expected in list(_pending.items()):
-                    if isinstance(expected, str):
-                        raise ValueError(expected)
-                    original, current = _read(path)
-                    if current != expected:
-                        raise ValueError(f"formatter refuses concurrent change: {path}")
-                    with tempfile.TemporaryDirectory(
-                        dir=path.parent, prefix="albedo-format-"
-                    ) as directory:
-                        staged = Path(directory) / path.name
-                        staged.write_bytes(original)
-                        staged.chmod(stat.S_IMODE(expected.identity[2]))
-                        commands = _commands(path, staged)
-                        for argv, cwd in commands:
-                            nix_fmt = argv == _config.get("nix", []) + [
-                                "fmt",
-                                "--",
-                                str(staged),
-                            ]
-                            try:
-                                await _run(argv, cwd, nix_fmt=nix_fmt)
-                            except MissingFormatter:
-                                # An absent flake formatter is not a formatter failure.
-                                staged.write_bytes(original)
-                                for fallback, fallback_cwd in _file_commands(
-                                    path, staged
-                                ):
-                                    await _run(fallback, fallback_cwd)
-                        # A write during the await must not be confused with this snapshot.
-                        if _pending.get(path) != expected:
+                with tempfile.TemporaryDirectory(
+                    prefix="albedo-project-format-"
+                ) as project_directory:
+                    project_context = None
+                    for path, expected in list(_pending.items()):
+                        if isinstance(expected, str):
+                            raise ValueError(expected)
+                        original, current = _read(path)
+                        if current != expected:
                             raise ValueError(
-                                f"formatter file edited during gate: {path}"
+                                f"formatter refuses concurrent change: {path}"
                             )
-                        if commands:
-                            changed = _publish(path, staged, expected) or changed
-                        else:
-                            if _read(path)[1] != expected:
+                        is_project = bool(_commands(path, path, project_only=True))
+                        with tempfile.TemporaryDirectory(
+                            dir=None if is_project else path.parent,
+                            prefix="albedo-format-",
+                        ) as directory:
+                            if is_project and project_context is None:
+                                project_context = Path(project_directory) / "workspace"
+                                _snapshot(project_context, list(_pending))
+                            context = project_context if is_project else None
+                            if context is not None:
+                                staged = context / path.relative_to(_root)
+                            else:
+                                staged = Path(directory) / path.name
+                            if context is not None:
+                                _read(staged, boundary=context)
+                            staged.write_bytes(original)
+                            staged.chmod(stat.S_IMODE(expected.identity[2]))
+                            commands = _commands(path, staged, context)
+                            for argv, cwd in commands:
+                                nix_fmt = argv == _config.get("nix", []) + [
+                                    "fmt",
+                                    "--",
+                                    str(staged),
+                                ]
+                                try:
+                                    await _run(
+                                        argv,
+                                        cwd,
+                                        nix_fmt=nix_fmt,
+                                        tree_root=context if nix_fmt else None,
+                                    )
+                                except MissingFormatter:
+                                    # An absent flake formatter is not a formatter failure.
+                                    _read(staged, boundary=staged.parent)
+                                    staged.write_bytes(original)
+                                    for fallback, fallback_cwd in _file_commands(
+                                        path, staged
+                                    ):
+                                        await _run(fallback, fallback_cwd)
+                            # A write during the await must not be confused with this snapshot.
+                            if _pending.get(path) != expected:
                                 raise ValueError(
-                                    f"formatter refuses concurrent change: {path}"
+                                    f"formatter file edited during gate: {path}"
                                 )
-                        del _pending[path]
+                            if commands:
+                                changed = _publish(path, staged, expected) or changed
+                            else:
+                                if _read(path)[1] != expected:
+                                    raise ValueError(
+                                        f"formatter refuses concurrent change: {path}"
+                                    )
+                            del _pending[path]
             return {"ok": True, "error": "", "changed": changed}
         except (OSError, ValueError, asyncio.TimeoutError) as error:
             message = str(error) or "formatter timed out"

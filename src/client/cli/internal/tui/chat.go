@@ -105,9 +105,10 @@ type ChatModel struct {
 	Pastes promptPastes
 	// window is the context window of windowModel, read once per model so
 	// the footer can say how full the context is.
-	window  *int
-	client  *daemon.ChatClient
-	History *BoundedHistory
+	window             *int
+	client             *daemon.ChatClient
+	History            *BoundedHistory
+	toolImageSelection *toolImageSelection
 
 	// Selection coordinates use frameLines, the whole transcript as last
 	// drawn, so a selection can extend beyond the viewport.

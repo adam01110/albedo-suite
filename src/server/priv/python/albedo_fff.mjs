@@ -1,13 +1,9 @@
-import net from "node:net";
-import fs from "node:fs";
 import { createRequire } from "node:module";
 import readline from "node:readline";
 import { Worker } from "node:worker_threads";
 const { FileFinder } = createRequire(import.meta.url)("@ff-labs/fff-node");
-const stdio = process.argv[2] === "--stdio";
-const [socketPath, secret] = stdio ? [null, null] : process.argv.slice(2);
-if (!stdio && (!socketPath || !secret))
-  throw new Error("socket path and secret required");
+if (process.argv[2] !== "--stdio")
+  throw new Error("FFF requires daemon-owned --stdio transport");
 const roots = new Map();
 let watchdogDeadline = null;
 const unwrap = (r) => {
@@ -44,7 +40,6 @@ async function finder(root) {
   return f;
 }
 async function request(q) {
-  if (!stdio && q.secret !== secret) throw new Error("unauthorized");
   if (q.protocol !== 1)
     throw new Error("FFF protocol mismatch: expected version 1");
   if (!["find", "paths", "fuzzy", "close"].includes(q.op))
@@ -160,59 +155,21 @@ async function request(q) {
   };
 }
 let queue = Promise.resolve();
-const server = net.createServer((socket) => {
-  socket.on("error", () => socket.destroy());
-  let input = "";
-  socket.setTimeout(30000, () => socket.destroy());
-  socket.on("data", (chunk) => {
-    input += chunk;
-    if (input.length > 1048576) return socket.destroy();
-    const end = input.indexOf("\n");
-    if (end < 0) return;
-    socket.pause();
-    queue = queue.then(async () => {
-      try {
-        const reply = JSON.stringify({
-          protocol: 1,
-          ok: true,
-          value: await request(JSON.parse(input.slice(0, end))),
-        });
-        if (Buffer.byteLength(reply) > 8 * 1024 * 1024)
-          throw new Error(
-            "FFF response exceeds 8 MiB bound; narrow the search",
-          );
-        socket.end(reply + "\n");
-      } catch (e) {
-        socket.end(
-          JSON.stringify({ protocol: 1, ok: false, error: String(e.message) }) +
-            "\n",
-        );
-      }
-    });
-  });
-});
 function shutdown() {
   if (watchdogDeadline)
     Atomics.store(watchdogDeadline, 0, BigInt(Date.now() + 2000));
   for (const f of roots.values()) f.destroy();
   roots.clear();
-  server.close();
-  if (socketPath) {
-    try {
-      fs.unlinkSync(socketPath);
-    } catch {}
-  }
   process.exit(0);
 }
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);
-if (stdio) {
-  // A separate thread bounds native calls even while the main event loop is blocked.
-  const deadline = (watchdogDeadline = new BigInt64Array(
-    new SharedArrayBuffer(8),
-  ));
-  new Worker(
-    `
+// A separate thread bounds native calls even while the main event loop is blocked.
+const deadline = (watchdogDeadline = new BigInt64Array(
+  new SharedArrayBuffer(8),
+));
+new Worker(
+  `
     const { workerData } = require('node:worker_threads');
     const deadline = new BigInt64Array(workerData);
     setInterval(() => {
@@ -221,46 +178,34 @@ if (stdio) {
     }, 100).unref();
     require('node:worker_threads').parentPort.on('message', () => {});
   `,
-    { eval: true, workerData: deadline.buffer },
-  ).unref();
-  let idle = setTimeout(shutdown, 60000);
-  const input = readline.createInterface({ input: process.stdin });
-  input.on("line", (line) => {
-    clearTimeout(idle);
-    queue = queue.then(async () => {
-      Atomics.store(deadline, 0, BigInt(Date.now() + 30000));
-      try {
-        if (Buffer.byteLength(line) > 1048576)
-          throw new Error("FFF request exceeds 1 MiB bound");
-        const reply = JSON.stringify({
-          protocol: 1,
-          ok: true,
-          value: await request(JSON.parse(line)),
-        });
-        if (Buffer.byteLength(reply) > 8 * 1024 * 1024)
-          throw new Error(
-            "FFF response exceeds 8 MiB bound; narrow the search",
-          );
-        process.stdout.write(reply + "\n");
-      } catch (e) {
-        process.stdout.write(
-          JSON.stringify({ protocol: 1, ok: false, error: String(e.message) }) +
-            "\n",
-        );
-      } finally {
-        Atomics.store(deadline, 0, 0n);
-        idle = setTimeout(shutdown, 60000);
-      }
-    });
+  { eval: true, workerData: deadline.buffer },
+).unref();
+let idle = setTimeout(shutdown, 60000);
+const input = readline.createInterface({ input: process.stdin });
+input.on("line", (line) => {
+  clearTimeout(idle);
+  queue = queue.then(async () => {
+    Atomics.store(deadline, 0, BigInt(Date.now() + 30000));
+    try {
+      if (Buffer.byteLength(line) > 1048576)
+        throw new Error("FFF request exceeds 1 MiB bound");
+      const reply = JSON.stringify({
+        protocol: 1,
+        ok: true,
+        value: await request(JSON.parse(line)),
+      });
+      if (Buffer.byteLength(reply) > 8 * 1024 * 1024)
+        throw new Error("FFF response exceeds 8 MiB bound; narrow the search");
+      process.stdout.write(reply + "\n");
+    } catch (e) {
+      process.stdout.write(
+        JSON.stringify({ protocol: 1, ok: false, error: String(e.message) }) +
+          "\n",
+      );
+    } finally {
+      Atomics.store(deadline, 0, 0n);
+      idle = setTimeout(shutdown, 60000);
+    }
   });
-  input.on("close", shutdown);
-} else {
-  server.listen(socketPath, () => {
-    fs.chmodSync(socketPath, 0o600);
-    console.log("FFF_READY");
-  });
-  const owner = process.ppid;
-  setInterval(() => {
-    if (process.ppid !== owner) shutdown();
-  }, 1000).unref();
-}
+});
+input.on("close", shutdown);

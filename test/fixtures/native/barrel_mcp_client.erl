@@ -11,6 +11,12 @@ close(Client) -> Client ! stop, ok.
 server_capabilities(_) -> {ok, #{}}.
 
 list_tools(_, _) ->
+    case ets:lookup(lazy_mcp_test, discovery_pause) of
+        [{discovery_pause, Parent}] ->
+            Parent ! {discovery_started, self()},
+            receive resume_discovery -> ok after 5000 -> error(discovery_not_resumed) end;
+        [] -> ok
+    end,
     Count = ets:lookup_element(lazy_mcp_test, tools, 2),
     Tools = [#{
         <<"name">> => integer_to_binary(Index),

@@ -32,12 +32,13 @@ func (m ChatModel) vimMode() string {
 }
 
 func (m ChatModel) vimSnapshot() vimSnapshot {
-	lines := strings.Split(m.TextArea.Value(), "\n")
+	text := m.TextArea.Value()
+	lines := strings.Split(text, "\n")
 	pos := m.TextArea.Column()
 	for _, line := range lines[:m.TextArea.Line()] {
 		pos += len([]rune(line)) + 1
 	}
-	return vimSnapshot{m.TextArea.Value(), pos}
+	return vimSnapshot{text, pos}
 }
 
 func (m *ChatModel) vimPosition(pos int) {
