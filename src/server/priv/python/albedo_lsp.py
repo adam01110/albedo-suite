@@ -464,29 +464,21 @@ class Lsp:
         self.edit_version += 1
         self.pending[path] = self.edit_version
 
-    async def finish(self):
+    async def finish(self, paths=None, *, details=False):
         """Report diagnostics once per edited snapshot, retaining failed checks."""
         result = {"ok": True, "error": "", "feedback": ""}
-        cells = sys.modules.get("albedo_cells")
-        current = asyncio.current_task()
-        if cells is not None and any(
-            task is not current and not task.done()
-            for task in getattr(cells, "CELL_TASKS", {}).values()
-        ):
-            return result
-        jobs = sys.modules.get("albedo_plugins.run")
-        if jobs is not None and any(
-            not job.service and job.exit_code is None
-            for job in getattr(jobs, "jobs", {}).values()
-        ):
-            return result
         feedback = ""
+        checked = []
+        unmatched = []
+        versions = {}
         async with self.finish_lock:
             try:
                 async with asyncio.timeout(45):
                     if self.overflow:
                         raise LspError("LSP tracking exceeds 1024 files")
                     for path, edit in list(self.pending.items()):
+                        if paths is not None and path not in paths:
+                            continue
                         relative = path.relative_to(self.cwd).as_posix()
                         servers = [
                             c
@@ -519,18 +511,22 @@ class Lsp:
                                 or self.snapshot(path, "diagnostics", None, None)[0]
                                 != before
                             ):
-                                raise LspError(
-                                    f"LSP file changed during final check: {path}"
-                                )
+                                raise LspError(f"LSP file changed during check: {path}")
                             feedback = (feedback + reports)[:16384]
+                        (checked if servers else unmatched).append(str(path))
+                        versions[path] = edit
                         del self.pending[path]
             except (OSError, ValueError, LspError, TimeoutError) as error:
                 result["ok"] = False
-                result["error"] = (str(error) or "LSP final check timed out")[:16384]
+                result["error"] = (str(error) or "LSP check timed out")[:16384]
         if feedback:
             result["feedback"] = feedback + (
                 " [truncated]" if len(feedback) == 16384 else ""
             )
+        if details:
+            result["checked"] = checked
+            result["unmatched"] = unmatched
+            result["_versions"] = versions
         return result
 
     def servers(self):
@@ -541,7 +537,9 @@ class Lsp:
                 "state": (
                     "failed"
                     if c["id"] in self.clients and self.clients[c["id"]].failure
-                    else "loaded" if c["id"] in self.clients else "unloaded"
+                    else "loaded"
+                    if c["id"] in self.clients
+                    else "unloaded"
                 ),
             }
             for c in self.config

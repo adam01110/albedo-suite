@@ -8,9 +8,9 @@ in `LICENSES/albedo-WTFPL.txt`. Source replacements and their extension-local
 additions use WTFPL v2. Suite-authored material, including packaging, modules,
 helpers and tests, also uses WTFPL v2 under the root `LICENSE`.
 
-Modifications add opt-in lazy MCP lifecycle/bindings, the managed pre-final
-acceptance hook and local deferred formatter, isolated local LSP compatibility
-tools, durable user questions, mandatory RTK command filtering and FFF search,
+Modifications add opt-in lazy MCP lifecycle/bindings, explicit staged formatting
+and local LSP batch checks, isolated local LSP compatibility tools, durable user
+questions, mandatory RTK command filtering and FFF search,
 OpenCode Go SDK-metadata routing and endpoint-scoped discovery caches on the
 native OAuth, account rotation and portable wire implementation,
 recoverable kernel startup failures with workspace validation,

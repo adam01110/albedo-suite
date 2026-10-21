@@ -5,9 +5,11 @@ Production searches use the daemon-owned FFF worker shared by host sessions.
 
 from __future__ import annotations
 
+import asyncio
 import codecs
 import difflib
 import fnmatch
+import hashlib
 import os
 import re
 import stat
@@ -356,8 +358,245 @@ def _scan_read(
         text = decoder.decode(chunk, final=at_eof)
 
 
+_check_lock = None
+_check_loop = None
+
+
+def _check_image(path: Path):
+    if path.resolve(strict=True) != path:
+        raise ValueError(f"check refuses a symlink: {path}")
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(descriptor, "rb") as stream:
+        before = os.fstat(stream.fileno())
+        if not stat.S_ISREG(before.st_mode) or before.st_size > 16 * 1024 * 1024:
+            raise ValueError(f"check requires a regular file <=16MiB: {path}")
+        data = stream.read(16 * 1024 * 1024 + 1)
+        after = os.fstat(stream.fileno())
+
+    def identity(info):
+        return (
+            info.st_dev,
+            info.st_ino,
+            info.st_mode,
+            info.st_size,
+            info.st_mtime_ns,
+            info.st_ctime_ns,
+        )
+
+    if (
+        len(data) > 16 * 1024 * 1024
+        or identity(before) != identity(after)
+        or identity(after) != identity(path.stat())
+    ):
+        raise ValueError(f"check file changed while reading: {path}")
+    return hashlib.sha256(data).digest(), identity(after)
+
+
 class Files:
     """Workspace file access with the diagnostics an exact edit needs."""
+
+    async def check(self, paths=None) -> dict:
+        """Check current pending files, or enroll/select explicit local paths.
+
+        Formatting precedes LSP in one call. Current bytes are adopted at batch
+        start; changes during the check are conflicts, not silently overwritten.
+        This is explicit verification, never a final-response veto.
+        """
+
+        def inactive(status, reason):
+            return {"status": status, "reason": reason, "checked": []}
+
+        result: dict = {
+            "ok": None,
+            "clean": None,
+            "status": "disabled",
+            "paths": [],
+            "formatting": inactive("disabled", "formatter is not configured"),
+            "diagnostics": inactive("disabled", "LSP is not configured"),
+            "pending": {},
+            "conflicts": [],
+        }
+        if os.environ.get("ALBEDO_REMOTE_TARGET"):
+            result.update(status="unsupported", error="files.check is local-only")
+            return result
+        global _check_lock, _check_loop
+        loop = asyncio.get_running_loop()
+        if _check_loop is not loop:
+            _check_loop, _check_lock = loop, asyncio.Lock()
+        assert _check_lock is not None
+        async with _check_lock:
+            formatter = sys.modules.get("albedo_formatter")
+            if (
+                "albedo_plugins.formatter" not in sys.modules
+                or formatter is None
+                or formatter.workspace() is None
+            ):
+                formatter = None
+            lsp = sys.modules.get("albedo_plugins.lsp")
+            if lsp is not None and lsp.workspace() is None:
+                lsp = None
+            if formatter is None and lsp is None:
+                return result
+            checkers = [stage for stage in (formatter, lsp) if stage is not None]
+            roots = {stage.workspace() for stage in checkers}
+            batch_images = {}
+            format_versions = {}
+            diagnostic_versions = {}
+            completed = False
+            for name, stage in (("formatting", formatter), ("diagnostics", lsp)):
+                if stage is not None:
+                    result[name] = inactive("idle", "no selected pending files")
+            try:
+                if len(roots) != 1:
+                    raise ValueError("configured checkers use different workspaces")
+                root = roots.pop()
+                if paths is None:
+                    selected = set().union(
+                        *(stage.pending_paths() for stage in checkers)
+                    )
+                else:
+                    raw = [paths] if isinstance(paths, (str, Path)) else paths
+                    if not isinstance(raw, Sequence) or len(raw) > 1024:
+                        raise ValueError(
+                            "paths must be a path or sequence of at most 1024 paths"
+                        )
+                    selected = set()
+                    for value in raw:
+                        if not isinstance(value, (str, Path)):
+                            raise ValueError("each check path must be a string or Path")
+                        target = Path(value).expanduser()
+                        selected.add(
+                            Path(
+                                os.path.abspath(
+                                    target if target.is_absolute() else root / target
+                                )
+                            )
+                        )
+                if len(selected) > 1024:
+                    raise ValueError("files.check is limited to 1024 paths")
+                for path in selected:
+                    resolved = path.resolve(strict=True)
+                    if (
+                        resolved != path
+                        or not resolved.is_relative_to(root)
+                        or not path.is_file()
+                        or path.stat().st_size > 16 * 1024 * 1024
+                    ):
+                        raise ValueError(
+                            f"check requires an in-workspace regular file <=16MiB without symlinks: {path}"
+                        )
+                if (
+                    formatter is not None
+                    and len(set(formatter.pending_paths()) | selected) > 1024
+                ):
+                    raise ValueError(
+                        "formatter tracking capacity exceeded; check existing pending paths before enrolling more"
+                    )
+                if lsp is not None and len(set(lsp.pending_paths()) | selected) > 1024:
+                    raise ValueError(
+                        "LSP tracking capacity exceeded; check existing pending paths before enrolling more"
+                    )
+                batch_images = {path: _check_image(path) for path in selected}
+                result["paths"] = sorted(map(str, selected))
+                if not selected:
+                    result.update(ok=True, status="idle")
+                    return result
+                # Enroll LSP before formatting so failed/unprocessed paths remain pending.
+                if lsp is not None:
+                    for path in selected:
+                        lsp.record(path)
+                    diagnostic_versions = lsp.pending_versions()
+                if formatter is not None:
+                    stage = await formatter.finish(selected, adopt=True, details=True)
+                    snapshots = stage.pop("_snapshots", {})
+                    for path, (image, generation) in snapshots.items():
+                        batch_images[path] = (image.digest, image.identity)
+                        format_versions[path] = generation
+                    stage["status"] = (
+                        "failed"
+                        if not stage["ok"]
+                        else "ok"
+                        if stage["checked"]
+                        else "unmatched"
+                    )
+                    result["formatting"] = stage
+                format_ok = result["formatting"].get("ok", True)
+                if lsp is not None:
+                    if format_ok:
+                        stage = await lsp.finish(selected, details=True)
+                        checked_versions = stage.pop("_versions", {})
+                        for path, generation in checked_versions.items():
+                            if diagnostic_versions.get(path) != generation:
+                                result["conflicts"].append(str(path))
+                        stage["status"] = (
+                            "failed"
+                            if not stage["ok"]
+                            else "findings"
+                            if stage["feedback"]
+                            else "ok"
+                            if stage["checked"]
+                            else "unmatched"
+                        )
+                        result["diagnostics"] = stage
+                    else:
+                        result["diagnostics"] = inactive(
+                            "skipped", "formatting failed; diagnostics were not run"
+                        )
+                for path, expected in batch_images.items():
+                    try:
+                        stable = _check_image(path) == expected
+                    except (OSError, ValueError):
+                        stable = False
+                    if path in format_versions:
+                        assert formatter is not None
+                        stable = (
+                            stable
+                            and formatter._versions.get(path) == format_versions[path]
+                        )
+                    if lsp is not None and path in lsp.pending_versions():
+                        stable = stable and lsp.pending_versions()[
+                            path
+                        ] == diagnostic_versions.get(path)
+                    if not stable or str(path) in result["conflicts"]:
+                        if str(path) not in result["conflicts"]:
+                            result["conflicts"].append(str(path))
+                        _record_edit(path)
+                diagnostics_ok = result["diagnostics"].get("ok", True)
+                ok = format_ok and diagnostics_ok and not result["conflicts"]
+                findings = bool(result["diagnostics"].get("feedback"))
+                checked = any(
+                    result[key].get("checked") for key in ("formatting", "diagnostics")
+                )
+                result.update(
+                    ok=ok if checked or not ok else None,
+                    clean=ok and not findings if checked else None,
+                    status="failed"
+                    if not ok
+                    else "findings"
+                    if findings
+                    else "ok"
+                    if checked
+                    else "unmatched",
+                )
+                completed = True
+            except (OSError, ValueError, RuntimeError) as error:
+                result.update(
+                    ok=False, clean=False, status="failed", error=str(error)[:16384]
+                )
+            finally:
+                if not completed:
+                    for path in batch_images:
+                        _record_edit(path)
+                if formatter is not None:
+                    for path in batch_images:
+                        if path not in formatter._pending:
+                            formatter._versions.pop(path, None)
+                result["pending"] = {
+                    name: list(map(str, stage.pending_paths()))
+                    for name, stage in (("formatting", formatter), ("diagnostics", lsp))
+                    if stage is not None
+                }
+            return result
 
     def read(
         self,

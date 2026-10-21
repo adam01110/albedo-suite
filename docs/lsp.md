@@ -61,23 +61,25 @@ Each operation reads the current file from disk and sends full-text `didOpen`
 or `didChange` notifications when needed. Results describe that snapshot, not
 later external edits. Dynamic capability registration is not implemented.
 Tools do not edit files, use unsaved editor buffers, apply server workspace
-edits. Servers start on explicit operations or deferred pre-final checks, never
+edits. Servers start on explicit operations or `files.check()`, never
 on `servers()` or session setup. Paths must stay within the local workspace;
 symlink escapes are rejected. A server is attached to one project root at a
 time; close it before switching roots. Linux file-descriptor checks enforce
 file scope. Remote kernels do not expose this local-only binding.
 
-Successful `files.write()`/`files.edit()` edits queue deferred diagnostics.
-The pre-final phase runs formatting first when enabled, then checks each edited
-file with all matching enabled servers. Unrelated files and shell/remote writes
-are not tracked. Checks wait until background work is idle. Nonempty diagnostics
-are returned as untrusted feedback and reject the candidate reply once per edit,
-so the model can review them and regenerate its report. Failed checks retain
-pending files and reject acceptance until repaired; failed servers still require
-an explicit close before retry. Failure reports identify the server and file,
-include bounded startup stderr when available, and give the explicit close call.
-Repeated checks preserve the original cause without accumulating wrappers or
-restarting the process. Explicit LSP calls remain immediate.
+Successful `files.write()`/`files.edit()` calls queue paths without starting a
+server. After completing edits, `await files.check()` formats pending files when
+configured and diagnoses the published snapshots in the same call. Explicit
+`paths=[...]` enrolls shell-written files or selects a subset. Findings are
+ordinary untrusted tool results, never final-answer rejections. Failed checks
+retain pending paths; failed servers still require explicit `lsp.close(ID)`.
+Unchanged findings are not replayed by an idle batch, but explicitly selecting
+paths requests fresh validation. Direct diagnostics do not consume batch work.
+
+Checks are local-only and optional independently of formatting. Disabled,
+unmatched and skipped stages are distinguished from successful validation.
+Unrelated jobs do not suppress explicit checks; concurrent target edits are
+reported as conflicts and retained. See the [batch workflow](formatter.md).
 
 Failures are explicit; there is no automatic reconnect or replay. Close a
 failed server before an intentional retry. At most four calls may run or wait

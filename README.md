@@ -23,7 +23,7 @@ providers, skills and SOPS declarations stay in Infra.
 | Component | Behavior |
 | --- | --- |
 | [Lazy MCP](docs/lazy-mcp.md) | Connect to a server when explicitly requested, rather than at session startup. |
-| [Deferred formatting](docs/formatter.md) | Format tracked files before accepting a final reply, rather than after each edit. |
+| [Explicit file checks](docs/formatter.md) | Format tracked files and collect diagnostics in one `files.check()` call. |
 | [Local LSP](docs/lsp.md) | Start a language server on an explicit diagnostics or navigation call. |
 | [User questions](docs/questions.md) | Record questions, answer in `/questions`, and resume the asking session. |
 | [RTK and FFF](docs/tool-parity.md) | Filter supported commands through RTK and replace file search with FFF. |

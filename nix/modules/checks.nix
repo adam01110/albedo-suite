@@ -99,6 +99,7 @@
         export PATH=${pkgs.rtk}/bin:${pkgs.ripgrep}/bin:${pkgs.python311Packages.pytest}/bin:$PATH
         export ALBEDO_PYTHON_SOURCE=$PYTHONPATH
         python3 -m unittest discover -s ${../../test} -p formatter_python_test.py -v
+        python3 -m unittest discover -s ${../../test} -p files_check_test.py -v
         python3 -m unittest discover -s ${../../test} -p lazy_mcp_python_test.py -v
         python3 ${../../test}/lsp_test.py -v
         python3 -m unittest discover -s ${../../test} -p questions_python_test.py -v

@@ -17,8 +17,6 @@
     "src/albedo/daemon/events.gleam",
     "src/albedo/daemon/session.gleam",
     "src/albedo/daemon/session_state.gleam",
-    "src/albedo/harness/extension.gleam",
-    "src/albedo/harness/extension/composition.gleam",
     "src/albedo/harness/extensions.gleam",
     "src/albedo/harness/extensions/files/albedo_fff.erl",
     "src/albedo/harness/extensions/files/extension.gleam",
@@ -35,7 +33,6 @@
     "src/albedo/harness/extensions/questions/service.gleam",
     "src/albedo/harness/extensions/run/extension.gleam",
     "src/albedo/harness/loop.gleam",
-    "src/albedo/harness/runtime.gleam",
     "src/albedo/openai_api/responses.gleam"
   ]
 }

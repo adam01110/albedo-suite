@@ -14,10 +14,22 @@ def record(path) -> None:
         _manager.record(path)
 
 
-async def finish() -> dict:
+def workspace():
+    return None if _manager is None else _manager.cwd
+
+
+def pending_paths():
+    return () if _manager is None else tuple(_manager.pending)
+
+
+def pending_versions():
+    return {} if _manager is None else dict(_manager.pending)
+
+
+async def finish(paths=None, *, details=False) -> dict:
     if _manager is None:
         return {"ok": True, "error": "", "feedback": ""}
-    return await _manager.finish()
+    return await _manager.finish(paths, details=details)
 
 
 async def setup(api: PythonApi) -> dict[str, object]:

@@ -1,80 +1,84 @@
-# Deferred formatting
+# Explicit file checks
 
-This is a temporary compatibility layer. Keep it optional and remove it when
-upstream provides a suitable tracked-file formatting lifecycle. See the
-[retirement notes](development.md#temporary-compatibility-layers).
+Formatting is optional and disabled until configured with
+`programs.albedo.formatter.enable` and `programs.albedo.formatter.settings`.
+No formatter commands are supplied by default. This is a temporary compatibility
+layer; see the [retirement notes](development.md#temporary-compatibility-layers).
 
-Enable formatting with `programs.albedo.formatter.enable` and supply commands
-through `programs.albedo.formatter.settings`. The suite supplies no formatter
-commands by default.
+## Workflow
 
-## Before the final reply
+Successful local `files.write()` and `files.edit()` calls track paths without
+running a formatter or starting a language server. After completing edits and
+any manual formatter runs, call:
 
-After a successful local `files.write` or `files.edit` call, the formatter records
-a hash and file identity. It does not run a command yet.
+```python
+result = await files.check()
+```
 
-When the model returns a response without tool calls, Albedo holds the assistant
-text and calls the loaded extensions' `Managed.before_final` hooks. Reasoning
-and tool progress still stream. The assistant text is committed only after the
-hooks accept it. Sessions without a loaded acceptance hook stream as before.
+This formats the pending scope, publishes successful changes, then collects
+configured LSP diagnostics in the **same call**. Formatting changes are ordinary
+results, not rejected final answers. Review changes and findings; after further
+edits, check again. Errors and conflicts are normal tool results with pending
+paths retained. Final text streams normally: no synthetic user messages,
+regeneration loop, hidden checks or retry cap.
 
-The formatter uses project treefmt configuration first, then a configured
-`nix fmt` command, then suffix chains. Project targets use one temporary shadow
-workspace per gate, with tracked files at their original relative paths.
-Directories along tracked paths are real staging directories; other entries are
-read-through symlinks to the original project context. This preserves sibling
-config imports without traversing dependency trees or copying the whole workspace.
-Direct treefmt receives the shadow workspace as its explicit tree root, preserving
-exact includes/excludes without interpreting its glob syntax here. Nix evaluates
-the flake from the original project directory; its formatter receives the shadow
-target and a subprocess-only `TREEFMT_WORKING_DIR` pointing to the shadow root.
-This also supports treefmt-nix wrappers using `--tree-root-file=flake.nix` without
-conflicting root options. Wrappers hardcoding an absolute original tree root or
-ignoring supplied file paths are incompatible with staged project formatting.
-Suffix chains retain
-temporary sibling staging. Commands receive only explicit tracked paths; only
-those files can be published, not every dirty file in version control. Successful
-exclusions and already formatted files are valid no-ops.
+For shell-written files or a selected subset, supply local workspace paths:
 
-Before replacing an original, the formatter checks its contents and identity
-again. Replacement is atomic and preserves file mode. Commands must respect
-the supplied file paths. This mechanism does not sandbox project commands.
+```python
+result = await files.check(paths=["module.nix", "script.py"])
+```
 
-A failed command returns a bounded diagnostic to the model for repair. If a
-command changes a file, Albedo also discards the attempted final reply. The
-model must review the changed file and write a new reply. Three rejected replies
-end the turn with an explicit failure.
+Explicit paths enroll current files and leave other pending paths untouched.
+Without paths, only already-pending files are selected; unrelated dirty files
+are never enrolled. Each call deliberately adopts current disk snapshots,
+including completed external formatter changes, and reports reconciled paths.
+It does not claim that earlier tracked bytes were checked. Changes during the
+batch are conflicts: checked snapshots are revalidated after diagnostics, and
+conflicting paths remain pending without overwriting concurrent edits.
 
-## Limits
+Results distinguish checked, unmatched, disabled, idle, failed and skipped
+stages. `clean` is unknown when nothing was checked; findings are untrusted
+workspace data, not instructions. Formatter failure skips diagnostics rather
+than claiming an unsettled snapshot is clean. Unrelated running jobs do not
+silently suppress explicit checks. Concurrent batches are serialized.
 
-- Only local `files.write` and `files.edit` calls are tracked. Format shell,
-  standard library Python, remote and outside-workspace edits explicitly.
-- Reports made while background cells or jobs run defer the check until later.
-- Without a project formatter, file types with no configured chain are ignored.
-- The tracker holds at most 1024 pending paths. Files must be at most 16 MiB.
-  Exceeding the path limit fails the check rather than dropping entries.
-- The formatter refuses concurrent changes and symlink escapes. It leaves
-  unrelated dirty files alone.
-- Shadow context is bounded to 20,000 immediate entries along tracked paths;
-  exceeding that limit fails the gate explicitly. Sibling directory trees such
-  as `.direnv` and `node_modules` are linked, never traversed. Context is not a
-  sandbox: commands can read original configuration and must respect explicit
-  staged target paths, not rewrite other project files through context links.
-  Tracked targets themselves are regular staged copies and symlink replacements
-  are rejected before publishing.
-- Commands share a 45-second budget. Output is bounded. Cancellation kills and
-  reaps the process group before removing the staged files.
-- Tracking lives in the Python process and does not survive a kernel or daemon
-  restart. Finish formatting before deliberately restarting with pending edits.
+This is explicit verification, not enforcement: the model must call it after
+its last edit and disclose incomplete checks. Neither final replies nor native
+Stop hooks perform validation. Direct `lsp.diagnostics()` remains available and
+does not consume pending batch work. Remote checks are unsupported.
 
-## Tests
+## Formatting and safety
 
-`test/formatter_python_test.py` checks staging, command arguments, limits,
-timeouts, cancellation and concurrent edits with child processes.
-`test/formatter_e2e_test.py` checks live events, rejected replies, repair,
-retry limits, both provider protocols and streaming with formatting disabled.
+Project treefmt configuration takes precedence, then configured `nix fmt`, then
+suffix chains. Project targets use one sparse shadow workspace per batch with
+original relative paths. Target-ancestor directories and selected files are real
+staged copies; sibling context is linked rather than recursively copied.
+Treefmt receives the shadow root explicitly. Nix evaluates the original flake
+and passes shadow targets with subprocess-only `TREEFMT_WORKING_DIR`, including
+support for treefmt-nix `--tree-root-file=flake.nix` wrappers. Wrappers hardcoding
+the original root or ignoring explicit target paths are incompatible.
 
-For unit tests, set `ALBEDO_FORMATTER_SOURCE` to the integrated `priv/python`
-directory. `scripts/test-e2e.py` copies the daemon cases and fixture files into
-a writable pinned-source tree. The tests do not use your Albedo home, live
-providers or MCP credentials.
+Commands must respect supplied paths: staging is not a sandbox. Only selected
+files can be published. Publishing checks file contents and identity, preserves
+mode and uses atomic replacement. Symlink replacements, outside-workspace paths
+and concurrent edits are refused. Successful exclusions and already formatted
+files are valid no-ops. Cancellation kills formatter process groups and leaves
+uncompleted validation pending.
+
+## Limits and tests
+
+Tracking is kernel-local and does not survive restart. Each tracker and batch
+is limited to 1024 paths; files must be regular and at most 16 MiB. LSP may have
+stricter file-size limits. Tracking overflow is an explicit failure, not evidence
+that all edits were checked; restart the kernel and supply the affected paths
+explicitly in bounded batches to recover. Capacity rejection before enrollment
+does not alter tracking. Shadow context is bounded to 20,000 immediate entries
+along selected ancestors; dependency subtrees are linked, not traversed.
+Formatter commands and LSP checks each have bounded time and output budgets.
+
+`test/files_check_test.py` checks adoption, stage order, scope, cancellation,
+capacity and multi-file conflicts. `test/formatter_python_test.py` retains real
+treefmt/Nix, process cleanup and staged-publish regressions.
+`test/formatter_e2e_test.py` checks explicit failures/repair, ordinary live final
+streaming under both protocols, native Stop behavior and disabled formatting.
+Tests use isolated homes, fake providers and local fixtures, not live accounts.

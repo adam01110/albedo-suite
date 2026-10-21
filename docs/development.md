@@ -115,13 +115,13 @@ payloads.
 Formatter and LSP support are local stopgaps for the pinned upstream version.
 Do not add unrelated editor features or make other extensions depend on them.
 Remove each layer when upstream covers its useful behavior and the native path
-passes the relevant lifecycle tests. Native Stop hooks run after the assistant
-response is committed and streamed, and fail open on hook crashes; they do not
-replace the formatter's pre-final acceptance gate. Disabling one must leave
-ordinary files, Python, MCP and streaming behavior intact.
+passes the relevant lifecycle tests. `files.check()` runs an explicit ordered
+formatting/diagnostics batch. It is not a final-reply veto or a native Stop hook.
+Disabling either feature must leave ordinary files, Python, MCP and streaming
+behavior intact.
 
 LSP servers shut down after 60 seconds without an LSP operation, including
-deferred diagnostics. Active requests are never interrupted by idle cleanup.
+batch diagnostics. Active requests are never interrupted by idle cleanup.
 Healthy servers restart lazily on the next operation with fresh document state;
 failed servers still require explicit `lsp.close()` before retrying. Idle cleanup
 does not discard pending edit checks or run as a session background job.
@@ -137,9 +137,9 @@ before removing its suite options.
 Formatter owns `albedo_formatter.py`, `albedo_plugins/formatter.py`,
 `harness/extensions/formatter/extension.gleam` and
 `nix/home-manager/formatter.nix`. Retirement also removes file-write tracking in
-`albedo_plugins/files.py`, formatter registration/settings and the managed
-pre-final hook additions in the session, loop, runtime, extension and composition
-source replacements. Compare each replacement with upstream before deleting it;
+`albedo_plugins/files.py`, its optional stage in `files.check()`, and formatter
+registration/settings. Final-acceptance hook support has been retired; native
+streaming and Stop behavior are unchanged. Compare replacements before deletion;
 other suite changes may share a file. Keep lazy MCP and diff-display changes.
 
 Remove retired cases from the flake checks and E2E runner, update documentation

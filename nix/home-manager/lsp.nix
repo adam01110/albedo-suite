@@ -21,7 +21,7 @@ in {
     settings = mkOption {
       type = types.attrsOf jsonFormat.type;
       default = {};
-      description = "Public LSP server declarations. Executables and arguments are trusted, local, and started on explicit operations or deferred pre-final diagnostics for files edits.";
+      description = "Public LSP server declarations. Executables and arguments are trusted, local, and started on explicit operations or files.check() for edited files.";
     };
   };
 }

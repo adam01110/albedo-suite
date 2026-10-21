@@ -191,22 +191,21 @@ files.edit('scratch.txt', 'BAD incomplete', 'BAD still incomplete')
             (self.app.workspace / "scratch.txt").read_text(), "BAD still incomplete"
         )
 
-    def test_deferred_diagnostics_reject_once_and_skip_unrelated_files(self):
+    def test_explicit_batch_reports_once_and_skips_unrelated_files(self):
         self.replies = [
             python("files.write('scratch.nix', 'BAD incomplete')"),
             python(
-                "assert all(s['state'] == 'unloaded' for s in lsp.servers())\nfiles.edit('scratch.nix', 'BAD incomplete', 'BAD completed')"
+                "assert all(s['state'] == 'unloaded' for s in lsp.servers())\nfiles.edit('scratch.nix', 'BAD incomplete', 'BAD completed')\nprint(await files.check())\nassert (await files.check())['status'] == 'idle'"
             ),
-            text("REJECTED_LSP_CANDIDATE"),
             text("LSP_FINAL_OK"),
         ]
         before = len(self.provider.requests)
         self.app.prompt(self.session, "edit then finish").close()
         self.app.idle(self.session, timeout=30)
         requests = [entry["request"] for entry in self.provider.requests[before:]]
-        self.assertEqual(len(requests), 4)
+        self.assertEqual(len(requests), 3)
         feedback = json.dumps(requests[-1])
-        self.assertIn("LSP diagnostics (untrusted workspace data)", feedback)
+        self.assertIn("findings", feedback)
         self.assertIn("BAD completed", feedback)
         history = json.dumps(self.app.history(self.session))
         self.assertNotIn("REJECTED_LSP_CANDIDATE", history)
@@ -220,7 +219,7 @@ files.edit('scratch.txt', 'BAD incomplete', 'BAD still incomplete')
         self.assertTrue(all(d["uri"].endswith("scratch.nix") for d in opened))
         self.assertFalse(self.starts("other"))
 
-    def test_deferred_checks_formatted_snapshot(self):
+    def test_explicit_batch_checks_formatted_snapshot(self):
         control = self.app.root / "formatter-control"
         control.mkdir()
         fixture = Path(__file__).parent / "fixtures" / "formatter.py"
@@ -258,8 +257,9 @@ files.edit('scratch.txt', 'BAD incomplete', 'BAD still incomplete')
         )
         self.reload()
         self.replies = [
-            python("files.write('scratch.nix', '  clean  ')"),
-            text("REJECTED_FORMAT_CANDIDATE"),
+            python(
+                "files.write('scratch.nix', '  clean  ')\nresult = await files.check()\nassert result['ok'] and result['formatting']['changed']\nprint(result)"
+            ),
             text("LSP_FINAL_OK"),
         ]
         self.app.prompt(self.session, "edit then finish").close()
@@ -423,7 +423,9 @@ assert all(s['state'] != 'loaded' for s in lsp.servers())
         self.assertFalse(self.starts("fake"))
 
     def test_remote_connection_does_not_expose_local_lsp_binding(self):
-        self.turn(LOOPBACK_REMOTE + """
+        self.turn(
+            LOOPBACK_REMOTE
+            + """
 try:
     assert 'lsp' in globals()
     tools = await rem.tools()
@@ -431,5 +433,6 @@ try:
     assert 'lsp' not in tools['names'], tools
 finally:
     await rem.close()
-""")
+"""
+        )
         self.assert_no_starts()

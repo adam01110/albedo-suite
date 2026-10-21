@@ -1,4 +1,4 @@
-"""Private pre-final formatting gate; only successful files edits are tracked."""
+"""Staged formatting for explicit checks of bounded workspace edits."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ import re
 from pathlib import Path
 import signal
 import stat
-import sys
 import tempfile
 from dataclasses import dataclass
 
@@ -29,12 +28,14 @@ _root: Path | None = None
 _config: dict = {}
 _pending: dict[Path, Postimage | str] = {}
 _overflow = ""
+_versions: dict[Path, int] = {}
+_generation = 0
 _lock: asyncio.Lock | None = None
 
 
 def configure(config: dict, workspace: str | None = None) -> None:
     """Enable local tracking without adding a model-visible binding."""
-    global _root, _config, _lock, _overflow
+    global _root, _config, _lock, _overflow, _generation
     timeout = config.get("timeoutMs", 120000)
     if (
         isinstance(timeout, bool)
@@ -45,6 +46,8 @@ def configure(config: dict, workspace: str | None = None) -> None:
     _root = Path(workspace or os.getcwd()).resolve(strict=True)
     _config = config
     _pending.clear()
+    _versions.clear()
+    _generation = 0
     _overflow = ""
     _lock = asyncio.Lock()
 
@@ -91,7 +94,7 @@ def _read(path: Path, *, boundary: Path | None = None) -> tuple[bytes, Postimage
 
 def record(path: str | Path) -> None:
     """Remember the postimage, not a command to run after each write."""
-    global _overflow
+    global _overflow, _generation
     if _root is None:
         return
     target = Path(os.path.abspath(Path(path).expanduser()))
@@ -102,6 +105,8 @@ def record(path: str | Path) -> None:
         if target not in _pending and len(_pending) >= MAX_FILES:
             _overflow = "formatter tracking exceeds 1024 files; finish pending files before further writes"
             return
+        _generation += 1
+        _versions[target] = _generation
         _pending[target] = _read(target)[1]
     except (OSError, ValueError) as error:
         if target in _pending or len(_pending) < MAX_FILES:
@@ -308,26 +313,39 @@ def _publish(path: Path, staged: Path, expected: Postimage) -> bool:
     return True
 
 
-def _busy() -> bool:
-    cells = sys.modules.get("albedo_cells")
-    current = asyncio.current_task()
-    if cells is not None and any(
-        task is not current and not task.done()
-        for task in getattr(cells, "CELL_TASKS", {}).values()
-    ):
-        return True
-    jobs = sys.modules.get("albedo_plugins.run")
-    return jobs is not None and any(
-        not job.service and job.exit_code is None
-        for job in getattr(jobs, "jobs", {}).values()
-    )
+def workspace() -> Path | None:
+    return _root
 
 
-async def finish() -> dict:
+def pending_paths() -> tuple[Path, ...]:
+    return tuple(_pending)
+
+
+async def finish(
+    paths: set[Path] | None = None, *, adopt: bool = False, details: bool = False
+) -> dict:
     """Format staged copies, revalidate postimages, then atomically publish."""
     changed = False
-    if _root is None or _busy():
-        return {"ok": True, "error": "", "changed": False}
+    checked = []
+    unmatched = []
+    changed_paths = []
+    reconciled = []
+    snapshots = {}
+
+    def report(ok, error=""):
+        result = {"ok": ok, "error": error, "changed": changed}
+        if details:
+            result.update(
+                checked=checked,
+                unmatched=unmatched,
+                changed_paths=changed_paths,
+                reconciled=reconciled,
+                _snapshots=snapshots,
+            )
+        return result
+
+    if _root is None:
+        return report(True)
     assert _lock is not None
     async with _lock:
         try:
@@ -336,11 +354,27 @@ async def finish() -> dict:
             ):
                 if _overflow:
                     raise ValueError(_overflow)
+                selected = set(_pending) if paths is None else paths
+                if len(set(_pending) | selected) > MAX_FILES:
+                    raise ValueError(
+                        "formatter tracking capacity exceeded before enrollment"
+                    )
+                if adopt:
+                    for path in sorted(selected):
+                        current = _read(path)[1]
+                        if path in _pending and _pending[path] != current:
+                            reconciled.append(str(path))
+                        record(path)
+                work = [
+                    (path, expected, _versions.get(path))
+                    for path, expected in list(_pending.items())
+                    if path in selected
+                ]
                 with tempfile.TemporaryDirectory(
                     prefix="albedo-project-format-"
                 ) as project_directory:
                     project_context = None
-                    for path, expected in list(_pending.items()):
+                    for path, expected, generation in work:
                         if isinstance(expected, str):
                             raise ValueError(expected)
                         original, current = _read(path)
@@ -355,7 +389,7 @@ async def finish() -> dict:
                         ) as directory:
                             if is_project and project_context is None:
                                 project_context = Path(project_directory) / "workspace"
-                                _snapshot(project_context, list(_pending))
+                                _snapshot(project_context, [item[0] for item in work])
                             context = project_context if is_project else None
                             if context is not None:
                                 staged = context / path.relative_to(_root)
@@ -388,19 +422,28 @@ async def finish() -> dict:
                                     ):
                                         await _run(fallback, fallback_cwd)
                             # A write during the await must not be confused with this snapshot.
-                            if _pending.get(path) != expected:
+                            if (
+                                _pending.get(path) != expected
+                                or _versions.get(path) != generation
+                            ):
                                 raise ValueError(
-                                    f"formatter file edited during gate: {path}"
+                                    f"formatter file edited during check: {path}"
                                 )
                             if commands:
-                                changed = _publish(path, staged, expected) or changed
+                                if _publish(path, staged, expected):
+                                    changed = True
+                                    changed_paths.append(str(path))
                             else:
                                 if _read(path)[1] != expected:
                                     raise ValueError(
                                         f"formatter refuses concurrent change: {path}"
                                     )
+                            snapshots[path] = (_read(path)[1], generation)
+                            (checked if commands else unmatched).append(str(path))
                             del _pending[path]
-            return {"ok": True, "error": "", "changed": changed}
+                            if not details:
+                                _versions.pop(path, None)
+            return report(True)
         except (OSError, ValueError, asyncio.TimeoutError) as error:
             message = str(error) or "formatter timed out"
-            return {"ok": False, "error": message[:MAX_OUTPUT], "changed": changed}
+            return report(False, message[:MAX_OUTPUT])

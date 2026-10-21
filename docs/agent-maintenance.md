@@ -22,8 +22,9 @@ this guide describes the constraints to preserve, not a frozen file inventory.
 
 - MCP connections are lazy unless explicitly configured otherwise. Preserve
   explicit discovery, tool calls, operation lifecycle and cleanup.
-- Formatting is deferred until final-reply acceptance, not run after every edit.
-  LSP starts on demand. Both remain optional and isolated compatibility layers;
+- Formatting and diagnostics run explicitly through `files.check()`, never after
+  every edit or as a final-reply veto. LSP starts on demand. Both remain optional
+  and isolated compatibility layers;
   disabling them must preserve ordinary file, Python, MCP and streaming behavior.
 - Questions are durable and answerable through `/questions`, resuming the asking
   session. Preserve streaming replay and session/operation lifecycle behavior.
@@ -49,9 +50,9 @@ accident. Flag intentional behavior changes for the user.
 
 `src/server/` and `src/client/` are sparse replacements and additions using
 upstream-relative paths. They are not complete, independently buildable checkouts.
-`nix/modules/packages.nix` obtains `albedo-git` from the locked NUR input, verifies its
-source hash and original-file checksums, copies suite sources, then runs NUR's
-post-patch hooks. Preserve upstream dependencies and build hooks.
+`nix/modules/packages.nix` obtains `albedo-git` from the locked NUR input,
+verifies its source hash and original-file checksums, copies suite sources,
+then runs NUR's post-patch hooks. Preserve upstream dependencies and build hooks.
 
 `upstream/pin.json` records the upstream revision, whole-source NAR hash and server
 source inventory. `upstream/server.sha256` and `upstream/client.sha256` describe

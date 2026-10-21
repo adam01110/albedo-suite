@@ -18,7 +18,7 @@
 in {
   options.programs.albedo = {
     formatter = {
-      enable = mkEnableOption "temporary deferred tracked-file formatting before final replies";
+      enable = mkEnableOption "temporary explicit tracked-file formatting with files.check()";
       settings = mkOption {
         type = types.attrsOf jsonFormat.type;
         default = {};

@@ -133,8 +133,9 @@ class LspTests(unittest.IsolatedAsyncioTestCase):
         try:
             with patch.dict(sys.modules, {"albedo_cells": stub}):
                 self.assertTrue((await manager.finish())["ok"])
-                self.assertFalse(self.log.exists())
-                self.assertIn(self.path, manager.pending)
+                self.assertTrue(self.log.exists())
+                self.assertNotIn(self.path, manager.pending)
+                manager.record(self.path)
         finally:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
@@ -165,7 +166,8 @@ class LspTests(unittest.IsolatedAsyncioTestCase):
         ):
             manager.record(self.path)
             self.assertTrue((await manager.finish())["ok"])
-            self.assertFalse(self.log.exists())
+            self.assertTrue(self.log.exists())
+        manager.record(self.path)
         report = {
             "server": "fixture",
             "path": str(self.path),

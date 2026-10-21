@@ -204,7 +204,9 @@ class FormatterTest(unittest.IsolatedAsyncioTestCase):
 
     @unittest.skipUnless(shutil.which("treefmt"), "standalone test requires treefmt")
     async def test_real_treefmt_exact_paths_and_config_context(self):
-        self.config["treefmt"] = [shutil.which("treefmt")]
+        treefmt = shutil.which("treefmt")
+        assert treefmt is not None
+        self.config["treefmt"] = [treefmt]
         (self.root / "src").mkdir()
         (self.root / "src" / "style.txt").write_text("context-formatted\n")
         (self.root / "config").mkdir()
@@ -253,6 +255,10 @@ class FormatterTest(unittest.IsolatedAsyncioTestCase):
         "standalone Nix smoke requires nix, treefmt and git",
     )
     async def test_real_nix_fmt_treefmt_exact_path(self):
+        nix = shutil.which("nix")
+        treefmt = shutil.which("treefmt")
+        assert nix is not None and treefmt is not None
+
         async def command(*argv):
             child = await asyncio.create_subprocess_exec(
                 *argv,
@@ -267,7 +273,7 @@ class FormatterTest(unittest.IsolatedAsyncioTestCase):
         system = await command(
             "nix", "eval", "--impure", "--raw", "--expr", "builtins.currentSystem"
         )
-        treefmt_root = str(Path(shutil.which("treefmt")).resolve().parent.parent)
+        treefmt_root = str(Path(treefmt).resolve().parent.parent)
         for root_flags in ([], ["--tree-root-file", "flake.nix"]):
             wrapper = (
                 f"#!{sys.executable}\n"
@@ -304,7 +310,7 @@ class FormatterTest(unittest.IsolatedAsyncioTestCase):
             await command("git", "init", "--quiet")
             await command("git", "add", "flake.nix", "project.toml", "src/example.py")
             self.config["nix"] = [
-                shutil.which("nix"),
+                nix,
                 "--offline",
                 "--option",
                 "pure-eval",
@@ -391,10 +397,10 @@ class FormatterTest(unittest.IsolatedAsyncioTestCase):
             sys.modules,
             {"albedo_plugins.run": types.SimpleNamespace(jobs={"job": job})},
         ):
-            self.assertFalse((await formatter.finish())["changed"])
-            self.assertIn(path, formatter._pending)
-            job.service = True
             self.assertTrue((await formatter.finish())["changed"])
+            self.assertNotIn(path, formatter._pending)
+            job.service = True
+            self.assertFalse((await formatter.finish())["changed"])
         self.write()
         other = asyncio.create_task(asyncio.sleep(20))
         try:
@@ -402,8 +408,8 @@ class FormatterTest(unittest.IsolatedAsyncioTestCase):
                 sys.modules,
                 {"albedo_cells": types.SimpleNamespace(CELL_TASKS={"other": other})},
             ):
-                self.assertFalse((await formatter.finish())["changed"])
-                self.assertTrue(formatter._pending)
+                self.assertTrue((await formatter.finish())["changed"])
+                self.assertFalse(formatter._pending)
         finally:
             other.cancel()
             with self.assertRaises(asyncio.CancelledError):

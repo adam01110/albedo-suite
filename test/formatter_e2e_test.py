@@ -1,4 +1,4 @@
-"""Formatter final-reply tests.
+"""Explicit formatter batch and ordinary final-streaming tests.
 
 Run through scripts/test-e2e.py, which copies these cases and their fixtures
 into the pinned upstream test tree and uses the supplied runtime binaries.
@@ -145,13 +145,12 @@ class FormatterE2ETests(unittest.TestCase):
             python("files.write('note.txt', 'BAD incomplete')"),
             python(
                 f"import pathlib\nassert not pathlib.Path({str(self.log)!r}).exists()\n"
-                "files.edit('note.txt', 'BAD incomplete', ' valid  ')"
+                "files.edit('note.txt', 'BAD incomplete', ' valid  ')\nprint(await files.check())"
             ),
-            text("INVALID_STALE_CANDIDATE"),
             text("INVALID_REGENERATED_FINAL"),
         ]
         self.finish()
-        self.assert_final("INVALID_REGENERATED_FINAL", ["INVALID_STALE_CANDIDATE"])
+        self.assert_final("INVALID_REGENERATED_FINAL")
         runs = self.runs()
         self.assertEqual(len(runs), 1, runs)
         self.assertEqual(runs[0]["input"], " valid  ")
@@ -160,38 +159,39 @@ class FormatterE2ETests(unittest.TestCase):
         self.assertEqual(other.read_text(), " untouched  ")
         self.assertEqual(escaped.read_text(), " outside  ")
 
-    def test_chat_changed_bytes_reject_candidate_in_live_http_and_replay(self):
+    def test_chat_explicit_changed_bytes_preserve_live_http_and_replay(self):
         self.check_changed_bytes_in_live_http_and_replay()
 
-    def test_responses_changed_bytes_reject_candidate_in_live_http_and_replay(self):
+    def test_responses_explicit_changed_bytes_preserve_live_http_and_replay(self):
         self.check_changed_bytes_in_live_http_and_replay()
 
     def check_changed_bytes_in_live_http_and_replay(self):
         self.replies = [
-            python("files.write('note.txt', ' raw  ')"),
-            text("STALE_CHAT_CANDIDATE"),
-            text("REGENERATED_CHAT_FINAL"),
+            python("files.write('note.txt', ' raw  ')\nprint(await files.check())"),
+            text("CHECKED_STREAMED_FINAL"),
         ]
         wire = self.finish(capture=True)
-        self.assert_final("REGENERATED_CHAT_FINAL", ["STALE_CHAT_CANDIDATE"])
-        self.assertNotIn("STALE_CHAT_CANDIDATE", wire)
-        self.assertIn("REGENERATED_CHAT_FINAL", wire)
+        self.assert_final("CHECKED_STREAMED_FINAL")
+        self.assertIn("CHECKED_STREAMED_FINAL", wire)
         self.assertEqual(len(self.runs()), 1)
-        self.assertEqual(len(self.seen), 3)
+        self.assertEqual(len(self.seen), 2)
+        self.assertEqual(self.live_text, "CHECKED_STREAMED_FINAL")
+        self.assertNotIn("formatter/pre-final", wire)
         feedback = json.dumps(self.seen[-1])
-        self.assertIn("formatter", feedback.lower())
+        self.assertIn("changed_paths", feedback)
         self.assertIn("note.txt", feedback)
 
     def test_failure_feedback_allows_agent_repair_then_final(self):
         self.replies = [
-            python("files.write('note.txt', 'BAD')"),
-            text("FAILED_STALE_CANDIDATE"),
-            python("files.edit('note.txt', 'BAD', 'fixed\\n')"),
+            python("files.write('note.txt', 'BAD')\nprint(await files.check())"),
+            python(
+                "files.edit('note.txt', 'BAD', 'fixed\\n')\nprint(await files.check())"
+            ),
             text("REPAIRED_FINAL"),
         ]
         self.finish()
-        self.assert_final("REPAIRED_FINAL", ["FAILED_STALE_CANDIDATE"])
-        self.assertIn("FORMATTER_FIXTURE_BAD", json.dumps(self.seen[2]))
+        self.assert_final("REPAIRED_FINAL")
+        self.assertIn("FORMATTER_FIXTURE_BAD", json.dumps(self.seen[1]))
         self.assertEqual([r["input"] for r in self.runs()], ["BAD", "fixed\n"])
         self.assertEqual((self.app.workspace / "note.txt").read_text(), "fixed\n")
 
@@ -237,16 +237,16 @@ class FormatterE2ETests(unittest.TestCase):
     def test_stop_hook_sees_only_repaired_accepted_final(self):
         log = self.configure_stop_hook()
         self.replies = [
-            python("files.write('note.txt', 'BAD')"),
-            text("STOP_HOOK_REJECTED_CANDIDATE"),
-            python("files.edit('note.txt', 'BAD', 'fixed\\n')"),
+            python("files.write('note.txt', 'BAD')\nprint(await files.check())"),
+            python(
+                "files.edit('note.txt', 'BAD', 'fixed\\n')\nprint(await files.check())"
+            ),
             text("STOP_HOOK_ACCEPTED_FINAL"),
         ]
         wire = self.finish(capture=True)
-        self.assert_final("STOP_HOOK_ACCEPTED_FINAL", ["STOP_HOOK_REJECTED_CANDIDATE"])
-        self.assertNotIn("STOP_HOOK_REJECTED_CANDIDATE", wire)
+        self.assert_final("STOP_HOOK_ACCEPTED_FINAL")
         self.assertIn("STOP_HOOK_ACCEPTED_FINAL", wire)
-        self.assertEqual(len(self.seen), 4)
+        self.assertEqual(len(self.seen), 3)
         self.assertEqual([r["input"] for r in self.runs()], ["BAD", "fixed\n"])
         stops = [json.loads(line) for line in log.read_text().splitlines()]
         self.assertEqual(len(stops), 1, stops)
@@ -254,49 +254,69 @@ class FormatterE2ETests(unittest.TestCase):
         self.assertEqual(stops[0]["file_text"], "fixed\n")
         self.assertFalse(stops[0]["stop_hook_active"])
 
-    def test_stop_hook_continuation_preserves_three_check_cap(self):
+    def test_stop_hook_continuation_preserves_native_semantics(self):
         log = self.configure_stop_hook(continue_once=True)
         self.replies = [
-            python("files.write('note.txt', ' first  ')"),
-            text("STOP_CAP_REJECTED_FIRST"),
-            text("STOP_CAP_ACCEPTED_INTERIM"),
-            python("files.write('note.txt', ' second  ')"),
-            text("STOP_CAP_REJECTED_SECOND"),
-            python("files.write('note.txt', ' third  ')"),
-            text("STOP_CAP_REJECTED_THIRD"),
+            python("files.write('note.txt', ' first  ')\nprint(await files.check())"),
+            text("STOP_ACCEPTED_INTERIM"),
+            python("files.write('note.txt', ' second  ')\nprint(await files.check())"),
+            python("files.write('note.txt', ' third  ')\nprint(await files.check())"),
+            text("STOP_ACCEPTED_FINAL"),
         ]
         self.finish()
-        self.assert_final(
-            "STOP_CAP_ACCEPTED_INTERIM",
-            [
-                "STOP_CAP_REJECTED_FIRST",
-                "STOP_CAP_REJECTED_SECOND",
-                "STOP_CAP_REJECTED_THIRD",
-            ],
-        )
-        self.assertEqual(len(self.seen), 7)
-        self.assertIn("STOP_CONTINUE", json.dumps(self.seen[3]))
+        self.assert_final("STOP_ACCEPTED_FINAL")
+        self.assertEqual(len(self.seen), 5)
+        self.assertIn("STOP_CONTINUE", json.dumps(self.seen[2]))
         self.assertEqual(
             [r["input"] for r in self.runs()], [" first  ", " second  ", " third  "]
         )
         stops = [json.loads(line) for line in log.read_text().splitlines()]
-        self.assertEqual(len(stops), 1, stops)
+        self.assertEqual(len(stops), 2, stops)
         self.assertEqual(
-            stops[0]["last_assistant_message"], "STOP_CAP_ACCEPTED_INTERIM"
+            [row["last_assistant_message"] for row in stops],
+            ["STOP_ACCEPTED_INTERIM", "STOP_ACCEPTED_FINAL"],
         )
-        self.assertEqual(stops[0]["file_text"], "first\n")
+        self.assertEqual([row["file_text"] for row in stops], ["first\n", "third\n"])
         self.assertEqual((self.app.workspace / "note.txt").read_text(), "third\n")
 
-    def test_repeated_failure_hits_three_check_cap_without_clean_final(self):
+    def test_repeated_explicit_failures_do_not_veto_final(self):
         self.replies = [
-            python("files.write('note.txt', 'BAD')"),
-            text("NEVER_ACCEPT_FINAL"),
+            python(
+                "files.write('note.txt', 'BAD')\nfor _ in range(4):\n    result = await files.check()\n    assert not result['ok']\n    print(result)"
+            ),
+            text("CHECK_FAILURE_REPORTED"),
+        ]
+        wire = self.finish(capture=True)
+        self.assertEqual(len(self.runs()), 4)
+        self.assertEqual(len(self.seen), 2)
+        self.assertIn("CHECK_FAILURE_REPORTED", self.history())
+        self.assertEqual(self.live_text, "CHECK_FAILURE_REPORTED")
+        self.assertNotIn("formatter/pre-final", wire)
+        self.assertEqual((self.app.workspace / "note.txt").read_text(), "BAD")
+
+    def test_no_implicit_check_or_final_interception(self):
+        self.replies = [
+            python("files.write('note.txt', ' raw  ')"),
+            text("EXPLICIT_CHECK_NOT_REQUESTED"),
+        ]
+        wire = self.finish(capture=True)
+        self.assertEqual(self.live_text, "EXPLICIT_CHECK_NOT_REQUESTED")
+        self.assertEqual(len(self.seen), 2)
+        self.assertEqual(self.runs(), [])
+        self.assertEqual((self.app.workspace / "note.txt").read_text(), " raw  ")
+        self.assertNotIn("formatter/pre-final", wire)
+
+    def test_shell_formatting_is_reconciled_and_explicit_paths_enrolled(self):
+        self.replies = [
+            python(
+                "from pathlib import Path\nfiles.write('note.txt', ' first  ')\nPath('note.txt').write_text('first\\n')\nPath('shell.txt').write_text(' shell  ')\na = await files.check()\nassert a['ok'] and a['formatting']['reconciled']\nb = await files.check(paths='shell.txt')\nassert b['ok'] and b['formatting']['changed']\nprint(a, b)"
+            ),
+            text("SHELL_CHECKED_FINAL"),
         ]
         self.finish()
-        self.assertEqual(len(self.runs()), 3)
-        self.assertEqual(len(self.seen), 4)
-        self.assertNotIn("NEVER_ACCEPT_FINAL", self.history())
-        self.assertEqual((self.app.workspace / "note.txt").read_text(), "BAD")
+        self.assertEqual(len(self.runs()), 2)
+        self.assertEqual((self.app.workspace / "note.txt").read_text(), "first\n")
+        self.assertEqual((self.app.workspace / "shell.txt").read_text(), "shell\n")
 
     def test_unsupported_and_shell_writes_do_not_start_formatter(self):
         self.replies = [
@@ -304,7 +324,7 @@ class FormatterE2ETests(unittest.TestCase):
                 "files.write('note.md', ' unchanged  ')\n"
                 "job = run('" + sys.executable + "', '-c', "
                 "\"from pathlib import Path; Path('shell.txt').write_text(' shell  ')\")\n"
-                "await job\nassert job.exit_code == 0"
+                "await job\nassert job.exit_code == 0\nprint(await files.check())"
             ),
             text("NO_FORMAT_WORK_FINAL"),
         ]
@@ -315,7 +335,7 @@ class FormatterE2ETests(unittest.TestCase):
 
     def test_already_formatted_file_accepts_first_candidate(self):
         self.replies = [
-            python("files.write('note.txt', 'clean\\n')"),
+            python("files.write('note.txt', 'clean\\n')\nprint(await files.check())"),
             text("CLEAN_FINAL"),
         ]
         self.finish()
@@ -326,7 +346,7 @@ class FormatterE2ETests(unittest.TestCase):
     def test_cancel_blocked_formatter_reaps_process_and_never_applies_stage(self):
         (self.control / "block").touch()
         self.replies = [
-            python("files.write('note.txt', ' original  ')"),
+            python("files.write('note.txt', ' original  ')\nawait files.check()"),
             text("CANCELLED_CANDIDATE"),
         ]
         input_id = operation_id()
@@ -349,7 +369,9 @@ class FormatterE2ETests(unittest.TestCase):
 
     def test_disabled_keeps_streamed_final(self):
         self.replies = [
-            python("files.write('note.txt', ' unformatted  ')"),
+            python(
+                "files.write('note.txt', ' unformatted  ')\nassert (await files.check())['status'] == 'disabled'"
+            ),
             text("DISABLED_STREAMED_FINAL"),
         ]
         wire = self.finish(capture=True)
