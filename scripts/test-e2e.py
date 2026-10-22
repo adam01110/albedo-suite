@@ -23,6 +23,10 @@ SUITE_CASES = (
     "web_e2e_test.py",
 )
 UPSTREAM_CASES = (
+    "artifacts_test.py",
+    "history_content_test.py",
+    "session_status_test.py",
+    "kernel_detach_test.py",
     "cache_miss_test.py",
     "context_test.py",
     "hooks_test.py",

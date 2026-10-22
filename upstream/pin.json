@@ -1,7 +1,7 @@
 {
   "project": "https://tangled.org/okami.mom/albedo",
-  "rev": "09cf44544ccc66a51000cbfa50ac407233691a6f",
-  "narHash": "sha256-ZuQTNNgUA8tMmKKzMYEGb49MvdQwCHUvwWG6GvKdRrY=",
+  "rev": "270274392660a1c749936eacf025eef4e0be5422",
+  "narHash": "sha256-SsS6rjyckPkawmOPNYVLK9xQlc7WeHWyMuGyKuaWzRo=",
   "sourceFiles": [
     "priv/python/albedo_fff.mjs",
     "priv/python/albedo_formatter.py",

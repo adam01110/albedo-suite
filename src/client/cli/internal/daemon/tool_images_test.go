@@ -72,7 +72,11 @@ func TestToolImagesSurviveLiveAndReplayMetadata(t *testing.T) {
 	}
 	var entry protocol.HistoryEntry
 	_ = json.Unmarshal([]byte(`{"id":"42","position":42,"kind":"tool_result","content":[{"kind":"image","image":`+meta+`},{"kind":"json","field":"result","value":"attached image"}],"tool":{"name":"python","tool_call_id":"call","progress_call_id":"progress"}}`), &entry)
-	replay, err := historyEntryEvents(entry)
+	decoded, err := decodeHistoryEntries([]protocol.HistoryEntry{entry})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, err := historyEntryEvents(decoded[0])
 	if err != nil || len(replay) != 2 || len(replay[0].Images) != 1 || replay[0].Images[0] != event.Images[0] {
 		t.Fatalf("replay metadata lost: %+v %v", replay, err)
 	}

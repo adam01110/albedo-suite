@@ -101,6 +101,8 @@ type AppModel struct {
 
 func (m *AppModel) newChatModel(session *daemon.Session) ChatModel {
 	chat := NewChatModel(session, daemon.NewChatClient(m.Conn, session.ID))
+	chat.artifactConn = m.Conn
+	chat.openBrowser = m.openBrowser
 	if pending, ok := m.pendingBySession[session.ID]; ok {
 		chat.pendingUsers = slices.Clone(pending.users)
 		chat.pendingContinuations = maps.Clone(pending.continuations)
@@ -244,6 +246,13 @@ func (m *AppModel) Update(msg tea.Msg) (model tea.Model, resultCmd tea.Cmd) {
 		m.Login.SetSize(msg.Width, msg.Height)
 		m.Quota.SetSize(msg.Width, msg.Height)
 		return m, nil
+
+	case tea.FocusMsg:
+		// the chat is the one screen that wakes up for input
+		return m, m.Chat.focus(true)
+
+	case tea.BlurMsg:
+		return m, m.Chat.focus(false)
 
 	case tea.ModeReportMsg:
 		// the reply Bubble Tea switches to grapheme widths on

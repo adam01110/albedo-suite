@@ -56,7 +56,8 @@ It runs formatter, LSP, lazy and eager MCP, operation lifecycle, and streaming r
 and user-question cases plus OpenCode Go routing/discovery and RTK/FFF daemon
 checks, plus upstream cache-miss, provider-timeout, speechless-response,
 context-window, hooks, rewind, trace, job output, kernel restoration/upgrade
-and provider-catalog regressions.
+and provider-catalog regressions, plus native artifacts, durable history,
+push session status and detached-kernel recovery.
 Additional supervised RTK
 and FFF integration tests run in the flake Python check against the packaged
 runtime.
@@ -157,7 +158,8 @@ required by either layer; their settings are additive public configuration.
 ## Native provider and web integration
 
 The current base includes native OpenCode Go OAuth, account rotation, portable
-cross-protocol replay, Gemini routing, OpenCode Zen, Discord and `/config`.
+cross-protocol replay, Gemini routing, OpenCode Zen, Discord, `/config`, native
+artifacts, push kernel/sidebar status and demand-driven terminal rendering.
 Go's provider extension uses pristine upstream code; the suite no longer
 replaces the daemon's profile protocol selection. Narrow Go wire/catalog
 additions preserve SDK-metadata

@@ -2,6 +2,7 @@ import albedo/harness/extension
 import albedo/harness/extensions/agents/extension as agents
 import albedo/harness/extensions/alibaba/extension as alibaba
 import albedo/harness/extensions/antigravity/extension as antigravity
+import albedo/harness/extensions/artifacts/extension as artifacts
 import albedo/harness/extensions/bedrock/extension as bedrock
 import albedo/harness/extensions/browser/extension as browser
 import albedo/harness/extensions/claude/extension as claude
@@ -63,6 +64,7 @@ fn installed() -> Config {
       schedule.extension(),
       paperclips.extension(),
       questions.extension(),
+      artifacts.extension(),
       files.extension(),
       // Diagnostics inspect published formatter output, not unfinished edits.
       formatter.extension(),
@@ -110,11 +112,11 @@ fn installed() -> Config {
     ],
     [
       "python", "run", "work", "mail", "agents", "schedule", "files", "memory",
-      "links", "instructions", "commands", "skills", "paperclips", "models",
-      "openai", "codex", "antigravity", "alibaba", "opencode-go", "opencode-zen",
-      "bedrock", "claude", "vertex", "rolling", "snapcompact-memory",
-      "lcm-memory", "notes", "remote", "browser", "warm", "exa", "web-search",
-      "questions",
+      "links", "instructions", "commands", "skills", "paperclips", "artifacts",
+      "models", "openai", "codex", "antigravity", "alibaba", "opencode-go",
+      "opencode-zen", "bedrock", "claude", "vertex", "rolling",
+      "snapcompact-memory", "lcm-memory", "notes", "remote", "browser", "warm",
+      "exa", "web-search", "questions",
     ],
   )
 }
