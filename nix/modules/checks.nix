@@ -102,6 +102,9 @@
         python3 -m unittest discover -s ${../../test} -p formatter_python_test.py -v
         python3 -m unittest discover -s ${../../test} -p files_check_test.py -v
         python3 ${../../test}/e2e_runner_test.py -v
+        python3 ${../../test}/prompt_context_python_test.py -v
+        export ALBEDO_MEMORY_ERLANG=${../../src/server/src/albedo/harness/extensions/memory/albedo_memory.erl}
+        python3 ${../../test}/memory_index_test.py -v
         python3 -m unittest discover -s ${../../test} -p lazy_mcp_python_test.py -v
         python3 ${../../test}/lsp_test.py -v
         python3 -m unittest discover -s ${../../test} -p questions_python_test.py -v

@@ -78,6 +78,13 @@ The tests use fake providers, temporary homes and local stdio servers. They do
 not activate your configuration, read your credentials or contact live
 providers.
 
+## Agent context
+
+[Prompt context](prompt-context.md) documents static reference reductions and
+append-only documentation retrieval. Cache regression tests assert unchanged
+instructions, schemas and prior request input after ordinary tool operations;
+never replace this with dynamic prompt rewriting or silent evidence eviction.
+
 ## Kernel startup recovery
 
 Fresh local kernels validate the working directory before launching Python.
