@@ -179,3 +179,28 @@ use this shape:
 
 The helper preserves other choices and refuses invalid capability groups.
 Session-specific overrides still take precedence over global choices.
+
+## Terminal colors
+
+The CLI reads `$XDG_CONFIG_HOME/albedo/theme.json` (normally
+`~/.config/albedo/theme.json`) before querying terminal colors. Set
+`ALBEDO_THEME_FILE` to select another file. The JSON object must contain exactly
+`base00` through `base0F`, with uppercase slot suffixes and `#RRGGBB` values.
+Invalid files and missing explicitly selected files produce a startup error;
+a missing default file preserves terminal autodetection.
+
+With a file, colors use the Base16 palette directly rather than contrast-mixing
+terminal replies. This covers transcript accents, effort indicators, pickers,
+language/host labels, orchestrator identities and code highlighting. Diff panels
+use base01; signs retain the red/green state colors. Ordinary text and the canvas
+still inherit the terminal foreground/background; configure the terminal with the
+same theme. Truecolor support is required for exact RGB output. This setting does
+not change the web UI. Restart the CLI to read a changed file; no daemon restart
+is needed.
+
+For Stylix, generate the JSON from `config.lib.stylix.colors.withHashtag` using
+Home Manager's `xdg.configFile."albedo/theme.json".text`. The Infra integration
+lives in `modules/programs/tui/albedo/theme.nix`. It sets
+`programs.albedo.environment.ALBEDO_THEME_FILE` to the generated path. That module
+requires a suite package containing this feature; the configuration alone does
+not patch an older CLI.

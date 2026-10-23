@@ -84,6 +84,7 @@
           (old.postCheck or "")
           + ''
             go test ./internal/app ./internal/cli ./internal/webui -count=1
+            go test ./internal/tui -run '^TestBase16' -count=1 -v
             go test ./internal/tui -run '^TestVim' -count=1 -v
             go test ./internal/tui -run '^TestOpenCodeGo' -count=1 -v
             go test ./internal/tui ./internal/daemon -run '^TestToolImages' -count=1 -v

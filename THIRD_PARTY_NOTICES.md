@@ -16,6 +16,7 @@ native OAuth, account rotation and portable wire implementation,
 recoverable kernel startup failures with workspace validation,
 cache-stable startup reference reductions with on-demand API documentation,
 Vim-style CLI composer editing with a footer mode indicator,
+explicit Base16 terminal palettes,
 and optional default CLI diff visibility. `upstream/pin.json` inventories server
 replacements; the client
 replacements live under `src/client/cli/`.
