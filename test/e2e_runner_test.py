@@ -60,6 +60,14 @@ class RunnerTests(unittest.TestCase):
                     ).hexdigest(),
                 )
 
+    def test_python_targets_use_the_actual_upstream_filename(self):
+        targets = [case for case in runner.UPSTREAM_CASES if ":" in case]
+        self.assertEqual(len(targets), 4)
+        for target in targets:
+            filename, _, test_name = target.partition(":")
+            self.assertEqual(filename, "python_test.py")
+            self.assertTrue(test_name.startswith("PythonToolsTests.test_"))
+
     def test_changed_pin_fixture_is_not_silently_patched(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "kernel_upgrade_test.py"
