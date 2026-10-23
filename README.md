@@ -26,6 +26,7 @@ providers, skills and SOPS declarations stay in Infra.
 | [Explicit file checks](docs/formatter.md) | Format tracked files and collect diagnostics in one `files.check()` call. |
 | [Local LSP](docs/lsp.md) | Start a language server on an explicit diagnostics or navigation call. |
 | [User questions](docs/questions.md) | Record questions, answer in `/questions`, and resume the asking session. |
+| [Monitor snapshots](docs/monitor.md) | Export running-agent status and cached connected-account quotas without starting the daemon. |
 | [RTK and FFF](docs/tool-parity.md) | Filter supported commands through RTK and replace file search with FFF. |
 | CLI resume | `albedo resume` without an ID reopens the newest non-archived session in the current directory. |
 | [Vim editing](docs/vim.md) | Modal composer motions and edits, with the current mode in the footer. |

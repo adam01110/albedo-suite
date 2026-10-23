@@ -136,6 +136,7 @@
       albedo-defaults
       albedo-fff
       albedo-mcp-launcher
+      albedo-monitor
       albedo-patched
       # keep-sorted end
       ;
