@@ -20,16 +20,18 @@ still owed when the retry lands share one notice, and so one turn.
 
 from __future__ import annotations
 
-from albedo_output import JobOutput, read_window
+from albedo_output import JobOutput, plain, read_window
 
 from collections import OrderedDict
 from collections.abc import Callable, Generator
 from typing import NoReturn, cast
 from albedo_api import (
+    OUTPUT_PREVIEW,
     Host,
     PythonApi,
     OutputCapture,
     Send,
+    Text,
     check_timeout,
 )
 import albedo_proc
@@ -40,6 +42,7 @@ import albedo_shims
 import albedo_trace
 import asyncio
 import os
+import re
 import shlex
 import shutil
 import sys
@@ -256,6 +259,38 @@ def _lower_priority() -> None:
         os.nice(NICENESS)
     except OSError:
         pass
+
+
+WAIT_POLL = 0.1  # seconds between looks at a job's output in wait_for
+FAILED_LINES = 30  # last lines a JobFailed quotes
+
+
+def _shown(pattern: str | re.Pattern[str]) -> str:
+    return repr(pattern.pattern if isinstance(pattern, re.Pattern) else pattern)
+
+
+def _last(output: str) -> str:
+    return "\n".join(output.rstrip("\n").split("\n")[-FAILED_LINES:])
+
+
+class JobFailed(RuntimeError):
+    """A job that exited nonzero or timed out when text() read it, or that
+    ended before wait_for saw its pattern. `output` is what it printed."""
+
+    def __init__(
+        self, job: Job, output: str, waiting: str | re.Pattern[str] | None = None
+    ) -> None:
+        self.job, self.exit_code, self.output = job, job.exit_code, output
+        how = (
+            f"timed out after {job.duration or 0:.0f}s"
+            if job.timed_out
+            else f"exited {job.exit_code}"
+        )
+        head = f"{job.pipeline} {how}" + (
+            f" without printing {_shown(waiting)}" if waiting is not None else ""
+        )
+        last = _last(output)
+        super().__init__(f"{head}. Its last lines:\n{last}" if last.strip() else head)
 
 
 class Job(JobOutput):
@@ -481,6 +516,64 @@ class Job(JobOutput):
         if self.exit_code is not None:
             self._read = True
         return self.exit_code
+
+    async def text(self, check: bool = True) -> Text:
+        """Wait for the job and return its whole output as plain text: escape
+        codes dropped, a redrawn line at its last draw. A job that exits
+        nonzero or times out raises JobFailed with its last lines, unless
+        check=False."""
+        await self
+        output = plain(self.read())
+        if check and (self.exit_code != 0 or self.timed_out):
+            raise JobFailed(self, output)
+        return Text(output)
+
+    async def wait_for(
+        self, pattern: str | re.Pattern[str], timeout: float = 60
+    ) -> Text:
+        """Wait until a line of output contains `pattern` (text, or a compiled
+        regex) and return that line; output already written counts. Raises
+        TimeoutError after `timeout` seconds, and JobFailed when the job ends
+        without it. Neither stops the job."""
+        check_timeout(timeout)
+
+        def matches(line: str) -> bool:
+            if isinstance(pattern, re.Pattern):
+                return pattern.search(line) is not None
+            return str(pattern) in line
+
+        deadline = loop.time() + timeout
+        scanned, carry = 0, ""
+        while True:
+            finished = self.task.done()
+            previous = scanned
+            try:
+                _, scanned, chunk = read_window(
+                    self.capture, scanned, OUTPUT_PREVIEW, finished
+                )
+            except LookupError:
+                # Past retention: carry on from what is still kept.
+                scanned, carry = self.capture.seen - len(self.capture.tail()), ""
+                continue
+            *lines, carry = (carry + chunk).split("\n")
+            # The line still being written counts too: a prompt has no newline.
+            for line in (*lines, carry):
+                shown = plain(line)
+                if matches(shown):
+                    return Text(shown)
+            if scanned < self.capture.seen and scanned > previous:
+                continue
+            if finished:
+                raise JobFailed(self, self._plain_tail(), waiting=pattern)
+            if loop.time() >= deadline:
+                raise TimeoutError(
+                    f"{self.pipeline} printed no {_shown(pattern)} in {timeout:g}s; "
+                    f"it is still running. Its last lines:\n{_last(self._plain_tail())}"
+                )
+            await asyncio.sleep(WAIT_POLL)
+
+    def _plain_tail(self) -> str:
+        return plain(self.capture.tail().decode("utf-8", errors="replace"))
 
     @property
     def returncode(self) -> int | None:

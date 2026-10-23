@@ -883,11 +883,25 @@ class Files:
         {"path": "file_path", "old_str": "old_string", "new_str": "new_string"},
     )
     def edit(
-        self, path: str, old_str: str, new_str: str, line_hint: int | None = None
+        self,
+        path: str,
+        old_str: str | Sequence[tuple[str, str]],
+        new_str: str | None = None,
+        line_hint: int | None = None,
     ) -> Text:
-        """Replace one exact, unique string. A miss reports what is actually there."""
-        if not old_str:
-            raise ValueError("old_str must be non-empty")
+        """Replace one exact, unique string, or apply a list of (old, new)
+        pairs in order: all of them or, when one misses, none. A miss reports
+        what is actually there."""
+        if isinstance(old_str, str):
+            if new_str is None:
+                raise ValueError("new_str is required with one old_str")
+            edits = [(old_str, new_str)]
+        else:
+            if new_str is not None or line_hint is not None:
+                raise ValueError(
+                    "a list of (old, new) pairs takes no new_str or line_hint"
+                )
+            edits = _pairs(old_str)
         if line_hint is not None and (
             isinstance(line_hint, bool) or not isinstance(line_hint, int)
         ):
@@ -900,26 +914,21 @@ class Files:
         target = target.resolve()
         snapshot = _snapshot(target)
         content = snapshot[0].decode("utf-8")
-        found = _occurrences(content, old_str)
-        if not found:
-            closest = _closest(content, old_str)
-            raise ValueError(
-                f"string not found in {path}"
-                + (
-                    "; the text is there, but whitespace differs (indentation, "
-                    "tabs, trailing spaces or line endings)"
-                    if _words(old_str) in _words(content) and _words(old_str)
-                    else ""
-                )
-                + (f"\n{closest}" if closest else "")
-            )
-        chosen = _choose(content, old_str, found, line_hint, path)
-        replacement = (
-            content[: chosen.index] + new_str + content[chosen.index + len(old_str) :]
-        ).encode("utf-8")
-        _replace(target, snapshot, replacement)
+        for number, (old, new) in enumerate(edits, 1):
+            try:
+                content = _replace_one(content, old, new, line_hint, path)
+            except ValueError as error:
+                if len(edits) == 1:
+                    raise
+                raise ValueError(
+                    f"edit {number} of {len(edits)} failed, so none were made: {error}"
+                ) from None
+        _replace(target, snapshot, content.encode("utf-8"))
         _record_edit(Path(path).expanduser())
-        return Text(f"Edited {target}")
+        return Text(
+            f"Edited {target}"
+            + (f" ({len(edits)} replacements)" if len(edits) > 1 else "")
+        )
 
     @hook.reported("files.write", {"path": "file_path", "content": "content"})
     def write(self, path: str, content: str) -> Text:
@@ -929,6 +938,46 @@ class Files:
         target.write_text(content, encoding="utf-8")
         _record_edit(target)
         return Text(f"Wrote {target.resolve()} ({len(content.encode())} bytes)")
+
+
+def _pairs(edits: object) -> list[tuple[str, str]]:
+    """The (old, new) pairs of a multi-edit, checked before anything is read."""
+    if not isinstance(edits, (list, tuple)) or not edits:
+        raise ValueError("old_str is a string, or a non-empty list of (old, new) pairs")
+    pairs = []
+    for number, pair in enumerate(edits, 1):
+        if not (
+            isinstance(pair, (list, tuple))
+            and len(pair) == 2
+            and all(isinstance(part, str) for part in pair)
+        ):
+            raise ValueError(f"edit {number} is not an (old, new) pair of strings")
+        pairs.append((pair[0], pair[1]))
+    return pairs
+
+
+def _replace_one(
+    content: str, old_str: str, new_str: str, line_hint: int | None, path: str
+) -> str:
+    """`content` with the one occurrence of `old_str` replaced, or ValueError
+    saying why there is not exactly one."""
+    if not old_str:
+        raise ValueError("old_str must be non-empty")
+    found = _occurrences(content, old_str)
+    if not found:
+        closest = _closest(content, old_str)
+        raise ValueError(
+            f"string not found in {path}"
+            + (
+                "; the text is there, but whitespace differs (indentation, "
+                "tabs, trailing spaces or line endings)"
+                if _words(old_str) in _words(content) and _words(old_str)
+                else ""
+            )
+            + (f"\n{closest}" if closest else "")
+        )
+    chosen = _choose(content, old_str, found, line_hint, path)
+    return content[: chosen.index] + new_str + content[chosen.index + len(old_str) :]
 
 
 def _require_roots(targets: list[Path]) -> None:

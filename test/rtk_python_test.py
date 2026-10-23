@@ -1,5 +1,7 @@
-"""Deterministic RTK argv grammar tests; no subprocess in classification."""
+"""RTK argv grammar and supervised-job output regressions."""
 
+import asyncio
+from collections import OrderedDict
 import os
 from pathlib import Path
 import sys
@@ -72,6 +74,73 @@ class RtkRoutingTests(unittest.TestCase):
         self.assertTrue(albedo_rtk.supported(["wc", "-l"], stdin=True))
         for argv in (["cargo", "test"], ["go", "build"], ["ls"], ["pytest"]):
             self.assertFalse(albedo_rtk.supported(argv, stdin=True))
+
+
+class JobWaitForTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        from rtk_e2e_test import albedo_capture, plugin
+
+        self.plugin = plugin
+        state = patch.multiple(
+            plugin,
+            create=True,
+            loop=asyncio.get_running_loop(),
+            capture_factory=lambda id: albedo_capture.Capture(id, "job"),
+            preview_limit=65536,
+            send=lambda _frame: None,
+            host=None,
+            watch_output=None,
+            forget_output=None,
+            jobs={},
+            active={},
+            retained=OrderedDict(),
+            owed={},
+            announcer=None,
+        )
+        state.start()
+        self.addCleanup(state.stop)
+
+    async def asyncTearDown(self):
+        await self.plugin.close()
+        if self.plugin.announcer is not None:
+            self.plugin.announcer.cancel()
+            await asyncio.gather(self.plugin.announcer, return_exceptions=True)
+
+    async def partial_job(self, after):
+        job = self.plugin.start(
+            [
+                sys.executable,
+                "-u",
+                "-c",
+                "import os, time; os.write(1, b'\\xc3'); " + after,
+            ],
+            timeout=5,
+            traced=False,
+        )
+
+        async def captured():
+            while job.capture.seen == 0:
+                await asyncio.sleep(0.001)
+
+        await asyncio.wait_for(captured(), 2)
+        self.assertEqual(job.capture.tail(), b"\xc3")
+        return job
+
+    async def test_wait_for_partial_utf8_times_out_without_stopping_job(self):
+        job = await self.partial_job("time.sleep(3)")
+        with self.assertRaisesRegex(TimeoutError, "it is still running"):
+            await job.wait_for("ready", timeout=0.02)
+        self.assertIsNone(job.exit_code)
+        self.assertFalse(job.task.done())
+        await job.stop()
+
+    async def test_wait_for_split_utf8_yields_until_character_completes(self):
+        job = await self.partial_job(
+            "time.sleep(0.2); os.write(1, b'\\xa9 ready\\n')"
+        )
+        self.assertEqual(await job.wait_for("é ready", timeout=2), "é ready")
+        await job
+        self.assertEqual(job.exit_code, 0)
 
 
 if __name__ == "__main__":

@@ -1027,7 +1027,7 @@ class RemoteConnection:
             raise TypeError(
                 f"show_image takes image bytes or a remote path, not {type(source).__name__}"
             )
-        return "attached " + attach_image(data)
+        return attach_image(data)
 
     async def _ssh(
         self, script: str, timeout: float, stdin: bytes | None = None

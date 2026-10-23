@@ -41,6 +41,11 @@ UPSTREAM_CASES = (
     "speechless_test.py",
     "mcp_test.py",
     "operations_lifecycle_test.py",
+    "image_limits_test.py",
+    "python_test:PythonToolsTests.test_a_list_of_edits_applies_all_or_none",
+    "python_test:PythonToolsTests.test_text_returns_plain_output_and_raises_with_the_last_lines",
+    "python_test:PythonToolsTests.test_wait_for_returns_the_line_and_leaves_the_job_running",
+    "python_test:PythonToolsTests.test_chdir_moves_run_and_files",
     "stream_replay_test.py",
 )
 

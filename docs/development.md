@@ -56,7 +56,8 @@ It runs formatter, LSP, lazy and eager MCP, operation lifecycle, and streaming r
 and user-question cases plus OpenCode Go routing/discovery and RTK/FFF daemon
 checks, plus upstream cache-miss, provider-timeout, speechless-response,
 context-window, hooks, rewind, trace, job output, kernel restoration/upgrade
-and provider-catalog regressions, plus native artifacts, durable history,
+and provider-catalog regressions, plus native atomic file edits, job text/readiness,
+kernel working-directory changes, image limits, artifacts, durable history,
 push session status and detached-kernel recovery.
 Additional supervised RTK
 and FFF integration tests run in the flake Python check against the packaged
@@ -124,6 +125,13 @@ has finished. It waits for an idle session, no pending inputs and an attached
 kernel, then asserts the stale bundle and single live job before the original
 single upgrade request. It does not retry a 409, change product admission rules
 or weaken the forced-swap assertions. A changed fixture fails closed for review.
+
+## Job readiness
+
+The suite preserves upstream `Job.text()` and `Job.wait_for()`. The readiness
+reader yields when an incomplete UTF-8 character prevents byte progress, so
+later output can complete the character and the timeout remains reachable.
+Regression tests exercise both paths through real supervised jobs.
 
 ## Temporary compatibility layers
 

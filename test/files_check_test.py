@@ -91,6 +91,26 @@ class FilesCheckTests(unittest.IsolatedAsyncioTestCase):
         lsp_plugin._manager = manager
         return manager
 
+    async def test_batch_edit_records_only_the_committed_result(self):
+        manager = self.lsp()
+        path = self.root / "batch.py"
+        path.write_text("one two\n")
+        self.fs.edit(str(path), [("one", "three"), ("two", "four")])
+        self.assertEqual(path.read_text(), "three four\n")
+        self.assertIn(path, formatter._pending)
+        self.assertIn(path, manager.pending)
+        result = await self.fs.check()
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(path.read_text(), "THREE FOUR\n")
+        self.assertNotIn(path, formatter._pending)
+        self.assertNotIn(path, manager.pending)
+
+        with self.assertRaisesRegex(ValueError, "edit 2 of 2 failed"):
+            self.fs.edit(str(path), [("THREE", "five"), ("missing", "six")])
+        self.assertEqual(path.read_text(), "THREE FOUR\n")
+        self.assertNotIn(path, formatter._pending)
+        self.assertNotIn(path, manager.pending)
+
     async def test_completed_manual_formatter_is_adopted(self):
         path = self.write()
         path.write_text("EXTERNALLY FORMATTED\n")
