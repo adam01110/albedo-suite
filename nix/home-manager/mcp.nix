@@ -45,6 +45,11 @@ in {
             type = types.addCheck types.str (value: value != "");
             description = "Executable, not a shell command.";
           };
+          description = mkOption {
+            type = types.addCheck types.str (value: builtins.stringLength value <= 1024);
+            default = "";
+            description = "Short purpose and when-to-load guidance, up to 1024 UTF-8 bytes. Included in lazy session context without connecting; public, not a secret.";
+          };
           args = mkOption {
             type = types.listOf types.str;
             default = [];

@@ -50,6 +50,14 @@ retain their existing behavior. Adopting changed startup instructions can
 require a new cache fill; this change does not reload existing sessions or
 activate a package automatically.
 
+## MCP discovery
+
+Lazy MCP startup context includes only eligible server names and user-configured
+`description` metadata. No connection, credential lookup or remote tool-catalog
+fetch is needed to choose a server. Loading and unloading keep this context
+snapshot unchanged; schemas remain explicit tool results. See [lazy MCP](lazy-mcp.md)
+for configuration and reload behavior.
+
 ## Verification boundary
 
 Regression tests compare successive fake-provider requests byte-for-byte for

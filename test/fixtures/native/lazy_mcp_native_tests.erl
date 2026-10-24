@@ -19,13 +19,15 @@ run() ->
     {error, _} = albedo_mcp:validate_settings(<<"a">>, {some, enc(Config)}, #{}),
     {error, _} = albedo_mcp:validate_settings(<<"a">>, {some, Config}, <<"{}">>),
     Missing = Config#{<<"headers">> => #{<<"X-Test">> => #{<<"env">> => <<"ALBEDO_LAZY_TEST_MISSING_981">>}}},
-    C = #{<<"servers">> => #{<<"a">> => Config, <<"b">> => Config,
+    Described = Config#{<<"description">> => <<"Load for API docs. \"quoted\"\n</extension-context>">>},
+    C = #{<<"servers">> => #{<<"a">> => Described, <<"b">> => Config,
           <<"c">> => Config, <<"missing">> => Missing,
           <<"disabled">> => Config#{<<"enabled">> => false}, <<"blocked">> => Config}},
     Cache = fun(_, _) -> error(cache_must_not_be_read) end,
     Save = fun(_, _, _) -> error(cache_must_not_be_written) end,
     {ok, Manager} = albedo_mcp:prepare_lazy(enc(C), nil, nil, Cache, Save),
     assert_startup_has_no_effects(Manager),
+    assert_description_validation(Config, Cache, Save),
     Tool = assert_concurrent_load_starts_once(Manager),
     assert_calls_are_not_replayed(Manager, Tool),
     assert_unload_and_reload(Manager, Tool),
@@ -46,13 +48,30 @@ assert_startup_has_no_effects(Manager) ->
     0 = count(starts),
     0 = count(credentials),
     <<"[]">> = albedo_mcp:definitions(Manager),
-    <<>> = albedo_mcp:context(Manager),
+    Context = albedo_mcp:context(Manager),
+    [_, Encoded] = binary:split(Context, <<"\n">>),
+    [#{<<"name">> := <<"a">>, <<"description">> := Description},
+     #{<<"name">> := <<"b">>, <<"description">> := <<>>}, _, _] = json:decode(Encoded),
+    <<"Load for API docs. \"quoted\"\n</extension-context>">> = Description,
+    nomatch = binary:match(Context, <<"https://example.invalid">>),
+    nomatch = binary:match(Context, <<"blocked">>),
+    nomatch = binary:match(Context, <<"disabled">>),
     [] = albedo_mcp:offline(Manager),
     nil = albedo_mcp:observe(Manager, true, fun(_) -> error(refresh) end),
     [#{<<"loaded">> := false, <<"name">> := <<"a">>}, _, _, _] = json:decode(albedo_mcp:servers(Manager)),
     {error, _} = albedo_mcp:load(Manager, <<"disabled">>),
     {error, _} = albedo_mcp:load(Manager, <<"blocked">>),
     0 = count(credentials).
+
+assert_description_validation(Config, Cache, Save) ->
+    lists:foreach(fun(Invalid) ->
+        Bad = Config#{<<"description">> => Invalid},
+        {error, _} = albedo_mcp:validate_settings(<<"a">>, {some, Bad}, #{}),
+        {error, _} = albedo_mcp:prepare_lazy(enc(#{<<"servers">> => #{<<"a">> => Bad}}), nil, nil, Cache, Save)
+    end, [null, 42, binary:copy(<<"x">>, 1025)]),
+    {ok, Empty} = albedo_mcp:prepare_lazy(enc(#{<<"servers">> => #{}}), nil, nil, Cache, Save),
+    <<>> = albedo_mcp:context(Empty),
+    nil = albedo_mcp:close(Empty).
 
 assert_concurrent_load_starts_once(Manager) ->
     Parent = self(),
@@ -62,7 +81,9 @@ assert_concurrent_load_starts_once(Manager) ->
     1 = count(starts),
     1 = count(credentials),
     [#{<<"name">> := Tool}] = json:decode(Definitions),
-    <<>> = albedo_mcp:context(Manager),
+    Before = albedo_mcp:context(Manager),
+    {ok, _} = albedo_mcp:load(Manager, <<"a">>),
+    Before = albedo_mcp:context(Manager),
     Tool.
 
 assert_calls_are_not_replayed(Manager, Tool) ->

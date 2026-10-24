@@ -8,13 +8,33 @@ upstream eager discovery when `mcp.lazy` is absent or false in `extensions.json`
 
 In lazy mode, session preparation checks configuration and capabilities. It does
 not read server credentials, consult cached catalogues or contact servers.
-Initial model context contains generic MCP instructions, without server names,
-descriptions, schemas, resources or prompts.
+Initial model context lists eligible server names and locally configured
+`description` strings, like the skills catalog. Use the description to state
+what the server does and when it should load. Descriptions are optional
+(default empty), limited to 1024 UTF-8 bytes, and public: never put secrets in
+them. Disabled and capability-excluded servers are omitted. Remote tool schemas,
+resources and prompts are not fetched or injected.
+
+Home Manager:
+
+```nix
+programs.albedo.mcp.servers.docs = {
+  command = "/path/to/docs-mcp";
+  description = "Retrieve API docs. Load for version-specific coding questions.";
+};
+```
+
+Without Home Manager, set `mcp.servers.<name>.description` in `extensions.json`
+for either stdio or HTTP servers. The lazy context catalog is a preparation-time
+snapshot; loading and unloading do not rewrite it. Use a session reload or new
+session to pick up changed settings. Metadata is discovery data, not instructions
+or permission to execute tools.
 
 Use the Python API to discover and load servers:
 
 ```python
-await mcp.servers()                         # List names and state without connecting.
+# Names, descriptions and state; no connections.
+await mcp.servers()
 await mcp.tools()                           # List already-loaded operations.
 await mcp.tools("docs")                     # Load docs and return tool summaries.
 await mcp.load("docs")                      # Load docs and return full definitions.

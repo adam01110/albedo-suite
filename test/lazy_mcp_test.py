@@ -19,11 +19,12 @@ REMOTE = "REMOTE_SCHEMA_SENTINEL"
 
 @exclusive
 class LazyMcpTests(unittest.TestCase):
+    markers: Path
     def setUp(self):
         self.code = None
         self.lazy = self._testMethodName != "test_eager_default_is_unchanged"
 
-        def script(request):
+        def script(_request):
             if self.code is not None:
                 code, self.code = self.code, None
                 return python(code + "\nprint('LAZY_CELL_OK')")
@@ -53,6 +54,7 @@ class LazyMcpTests(unittest.TestCase):
                 (control / "tools").write_text(json.dumps(tools))
                 wrapper = Path(__file__).parent / "fixtures" / "mcp-server.py"
                 servers[name] = {
+                    "description": f"LOCAL_DESCRIPTION_{name}: load for test tasks",
                     "type": "stdio",
                     "command": sys.executable,
                     "args": [str(wrapper), str(control), str(SERVER)],
@@ -140,15 +142,24 @@ class LazyMcpTests(unittest.TestCase):
     def test_boot_listing_and_repeated_activity_never_dial(self):
         self.assertFalse(list(self.markers.glob("*/pid-*")))
         self.reload()
+        initial = self.turn()
+        context = initial["instructions"]
+        for name in ("fake", "other", "filtered", "broken"):
+            self.assertIn(f"LOCAL_DESCRIPTION_{name}", context)
+        for name in ("disabled", "excluded"):
+            self.assertNotIn(f"LOCAL_DESCRIPTION_{name}", context)
+        self.assertFalse(list(self.markers.glob("*/pid-*")))
         baseline = self.turn("""
 servers = await mcp.servers()
 assert {'fake', 'other', 'filtered', 'broken'} <= {s.name for s in servers}
 assert all(not s.loaded for s in servers)
+assert all(s.description.startswith("LOCAL_DESCRIPTION_") for s in servers)
 assert await mcp.tools() == []
 """)
         for _ in range(3):
             current = self.turn()
             self.assertEqual(current["tools"], baseline["tools"])
+            self.assertEqual(current["instructions"], initial["instructions"])
         self.assertFalse(list(self.markers.glob("*/pid-*")))
 
     def test_concurrent_first_load_unload_and_reload_are_explicit(self):

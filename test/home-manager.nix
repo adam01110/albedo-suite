@@ -39,6 +39,7 @@
       enable = true;
       servers.fixture = {
         command = "/bin/fixture";
+        description = "Load for fixture documentation.";
         secretFiles.API_KEY = "/run/user/12345/albedo-secret";
       };
     };
@@ -88,6 +89,11 @@
     (builtins.tryEval (builtins.deepSeq home.config.programs.albedo.mcp.servers true)).success;
 in
   lib.runTests {
+    testMcpDescriptionIsConfigurable = {
+      expr = configured.config.programs.albedo.mcp.servers.fixture.description;
+      expected = "Load for fixture documentation.";
+    };
+
     testMcpIdleCleanupDefaultsToOneMinute = {
       expr = minimal.config.programs.albedo.mcp.idleTimeoutMs;
       expected = 60000;

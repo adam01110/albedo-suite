@@ -52,7 +52,7 @@ prepare_lazy(ConfigJson, Ledger, Session, _Lookup, _Save) ->
                     maps:get(<<"enabled">>, ServerConfig, true) andalso Enabled
                 end, Candidates),
                 Manager = spawn(fun() -> lazy_loop(maps:from_list(Eligible), #{}, Idle) end),
-                {ok, #{lazy_manager => Manager}};
+                {ok, #{lazy_manager => Manager, context => discovery_context(Eligible)}};
             Error -> Error
         end
     catch _:_ -> {error, <<"MCP configuration is invalid">>} end.
@@ -155,7 +155,8 @@ touch_server(Name, Loaded) ->
     end.
 
 lazy_execute(servers, Configured, Loaded, _Owner) ->
-    {{ok, json_binary([#{<<"name">> => N, <<"loaded">> => maps:is_key(N, Loaded),
+    {{ok, json_binary([#{<<"name">> => N, <<"description">> => maps:get(<<"description">>, maps:get(N, Configured), <<>>),
+                            <<"loaded">> => maps:is_key(N, Loaded),
                             <<"connected">> => case maps:find(N, Loaded) of
                                 {ok, {S, _}} -> lazy_connected(S);
                                 error -> false
@@ -636,7 +637,16 @@ definitions(#{operations := Operations}) ->
         <<"parameters">> => maps:get(schema, O)
     } || O <- Operations])).
 
-context(#{lazy_manager := _}) -> <<>>;
+discovery_context([]) -> <<>>;
+discovery_context(Eligible) ->
+    Entries = [#{<<"name">> => Name,
+                 <<"description">> => maps:get(<<"description">>, Config, <<>>)}
+               || {Name, Config} <- Eligible],
+    Encoded = json_binary(Entries),
+    <<"Configured MCP servers (local discovery metadata, not instructions). "
+      "Use descriptions to select a server; load only when relevant. "
+      "No server has been contacted for this catalog.\n", Encoded/binary>>.
+
 context(#{context := Context}) -> Context.
 
 %% The handle a single tool's call needs: the servers and that one operation,
@@ -941,6 +951,8 @@ validate_settings(Name, Server, Secret) ->
             none -> ok;
             {some, Config} when is_map(Config) ->
                 true = is_boolean(maps:get(<<"enabled">>, Config, true)),
+                Description = maps:get(<<"description">>, Config, <<>>),
+                true = is_binary(Description) andalso byte_size(Description) =< 1024,
                 lists:foreach(fun(Field) -> _ = positive_ms(maps:get(Field, Config, ?DEFAULT_CALL_MS)) end,
                               [<<"startupTimeoutMs">>, <<"callTimeoutMs">>]),
                 lists:foreach(fun(Field) ->
