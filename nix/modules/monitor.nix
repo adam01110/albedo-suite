@@ -1,6 +1,6 @@
-_: {
+{self, ...}: {
   perSystem = {pkgs, ...}: let
-    inherit (builtins) readFile;
+    inherit (builtins) readFile replaceStrings;
     inherit (pkgs.lib) getExe;
     inherit (pkgs) runCommand writeTextFile;
 
@@ -11,7 +11,7 @@ _: {
       meta.mainProgram = "albedo-monitor";
       text = ''
         #!${pkgs.python3}/bin/python3
-        ${readFile ../../scripts/albedo-monitor.py}
+        ${replaceStrings ["ALBEDO_CLI = \"albedo\""] ["ALBEDO_CLI = \"${getExe self.packages.${pkgs.stdenv.hostPlatform.system}.albedo-defaults}\""] (readFile ../../scripts/albedo-monitor.py)}
       '';
     };
   in {

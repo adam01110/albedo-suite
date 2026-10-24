@@ -1,16 +1,21 @@
-"""Read a bounded, non-attaching snapshot from an already running daemon."""
+"""Read a bounded, non-attaching daemon snapshot; startup requires --start-daemon."""
 
 import argparse
+import fcntl
 import http.client
 import json
 import math
 import os
 import signal
 import stat
+import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlencode
+
+
+ALBEDO_CLI = "albedo"
 
 
 class MonitorError(Exception):
@@ -144,16 +149,18 @@ def session_row(item):
     }
 
 
-def stale_window(observed, resets, now):
-    def stamp(value):
-        try:
-            parsed = datetime.fromisoformat(value)
-            return parsed.timestamp() if parsed.tzinfo is not None else None
-        except (AttributeError, ValueError, TypeError, OverflowError, OSError):
-            return None
+def timestamp(value):
+    try:
+        parsed = datetime.fromisoformat(value)
+        epoch = parsed.timestamp() if parsed.tzinfo is not None else None
+        return epoch if epoch is not None and math.isfinite(epoch) else None
+    except (AttributeError, ValueError, TypeError, OverflowError, OSError):
+        return None
 
-    observed_at = stamp(observed)
-    resets_at = stamp(resets)
+
+def stale_window(observed, resets, now):
+    observed_at = timestamp(observed)
+    resets_at = timestamp(resets)
     return (
         observed_at is None
         or observed_at > now + 60
@@ -200,6 +207,7 @@ def account_rows(readings):
                 or text(reading.get("limit_id")),
                 "remaining_percent": remaining,
                 "resets_at": text(reading.get("resets_at"), None),
+                "resets_at_epoch": timestamp(reading.get("resets_at")),
                 "observed_at": text(reading.get("observed_at"), None),
                 "status": status,
                 "stale": stale_window(
@@ -296,7 +304,59 @@ def connected_accounts(auth, readings, identities):
     return result
 
 
-def snapshot(home, timeout=5.0):
+def daemon_absent(home):
+    try:
+        discovery = discover(home)
+    except MonitorError as exc:
+        if str(exc) == "daemon_not_running":
+            return True
+        raise
+    try:
+        os.kill(discovery["pid"], 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        pass
+    except (OSError, OverflowError):
+        raise MonitorError("invalid_discovery") from None
+    return False
+
+
+def start_daemon(home, deadline):
+    if not daemon_absent(home):
+        return
+    try:
+        home = Path(home).resolve()
+        home.mkdir(mode=0o700, parents=True, exist_ok=True)
+        # Keep concurrent monitor invocations out of the native startup command.
+        with (home / "monitor-start.lock").open("a") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise MonitorError("daemon_start_in_progress") from None
+            if not daemon_absent(home):
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise MonitorError("daemon_start_failed")
+            subprocess.run(
+                [ALBEDO_CLI, "daemon"],
+                env={**os.environ, "ALBEDO_HOME": str(home)},
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=remaining,
+                check=True,
+            )
+    except (OSError, subprocess.SubprocessError):
+        raise MonitorError("daemon_start_failed") from None
+    except MonitorError as exc:
+        if str(exc) == "timeout":
+            raise MonitorError("daemon_start_failed") from None
+        raise
+
+
+def snapshot(home, timeout=5.0, start=False):
     result = {
         "version": 1,
         "online": False,
@@ -305,9 +365,12 @@ def snapshot(home, timeout=5.0):
         "accounts": [],
         "accounts_error": "",
     }
+    deadline = time.monotonic() + timeout
     try:
+        if start:
+            start_daemon(home, deadline)
         discovery = discover(home)
-        client = Client(discovery, timeout)
+        client = Client(discovery, max(0, deadline - time.monotonic()))
         server = client.get("/server")
         if server.get("protocol") != 3 or server.get("state") != "ready":
             raise MonitorError("incompatible_daemon")
@@ -362,6 +425,7 @@ def main():
         "--home", default=os.environ.get("ALBEDO_HOME") or str(Path.home() / ".albedo")
     )
     parser.add_argument("--timeout", type=float, default=5.0)
+    parser.add_argument("--start-daemon", action="store_true")
     args = parser.parse_args()
     if not math.isfinite(args.timeout) or not 0 < args.timeout <= 30:
         parser.error("--timeout must be greater than zero and at most 30 seconds")
@@ -372,7 +436,7 @@ def main():
     signal.signal(signal.SIGALRM, timed_out)
     signal.setitimer(signal.ITIMER_REAL, args.timeout)
     try:
-        result = snapshot(args.home, args.timeout)
+        result = snapshot(args.home, args.timeout, start=args.start_daemon)
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
     print(json.dumps(result, allow_nan=False, separators=(",", ":")))

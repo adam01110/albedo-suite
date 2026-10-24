@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+import subprocess
 import tempfile
 import threading
 import time
@@ -90,6 +91,131 @@ class MonitorTest(unittest.TestCase):
 
     def snapshot(self, **kwargs):
         return monitor.snapshot(self.home, **kwargs)
+
+    def test_start_requires_opt_in_and_skips_live_daemon(self):
+        with patch.object(monitor.subprocess, "run") as launch:
+            self.assertTrue(self.snapshot(start=True)["online"])
+            launch.assert_not_called()
+            (self.home / "daemon.json").unlink()
+            self.assertEqual(self.snapshot()["error"], "daemon_not_running")
+            launch.assert_not_called()
+
+    def test_native_start_argv_home_and_budget(self):
+        (self.home / "daemon.json").unlink()
+
+        def started(*args, **kwargs):
+            self.write("daemon.json", self.discovery)
+
+        with patch.object(monitor.subprocess, "run", side_effect=started) as launch:
+            self.assertTrue(self.snapshot(start=True, timeout=0.8)["online"])
+        args, kwargs = launch.call_args
+        self.assertEqual(args, ([monitor.ALBEDO_CLI, "daemon"],))
+        self.assertEqual(kwargs["env"]["ALBEDO_HOME"], str(self.home))
+        self.assertGreater(kwargs["timeout"], 0)
+        self.assertLessEqual(kwargs["timeout"], 0.8)
+        self.assertEqual(kwargs["stdin"], subprocess.DEVNULL)
+        self.assertEqual(kwargs["stdout"], subprocess.DEVNULL)
+        self.assertEqual(kwargs["stderr"], subprocess.DEVNULL)
+        self.assertTrue(kwargs["check"])
+
+    def test_failed_native_start_is_redacted(self):
+        (self.home / "daemon.json").unlink()
+        for error in (
+            FileNotFoundError("credential-canary"),
+            subprocess.CalledProcessError(1, "secret", stderr="credential-canary"),
+            subprocess.TimeoutExpired("credential-canary", 0.01),
+            monitor.MonitorError("timeout"),
+        ):
+            with (
+                self.subTest(error=type(error)),
+                patch.object(monitor.subprocess, "run", side_effect=error),
+            ):
+                result = self.snapshot(start=True)
+                self.assertFalse(result["online"])
+                self.assertEqual(result["error"], "daemon_start_failed")
+                self.assertNotIn("credential-canary", json.dumps(result))
+
+    def test_start_does_not_touch_live_unreachable_or_invalid_daemon(self):
+        with patch.object(monitor.subprocess, "run") as launch:
+            self.write("daemon.json", {**self.discovery, "port": 1})
+            self.assertEqual(self.snapshot(start=True)["error"], "daemon_unreachable")
+            self.write("daemon.json", {**self.discovery, "pid": 10**400})
+            self.assertEqual(self.snapshot(start=True)["error"], "invalid_discovery")
+            self.write("daemon.json", {})
+            self.assertEqual(self.snapshot(start=True)["error"], "invalid_discovery")
+            launch.assert_not_called()
+
+    def test_dead_pid_allows_native_start(self):
+        with (
+            patch.object(monitor.os, "kill", side_effect=ProcessLookupError),
+            patch.object(monitor.subprocess, "run") as launch,
+        ):
+            self.assertTrue(self.snapshot(start=True)["online"])
+            launch.assert_called_once()
+
+    def test_start_serialized_and_rechecks_discovery(self):
+        (self.home / "daemon.json").unlink()
+        with (
+            (self.home / "monitor-start.lock").open("a") as lock,
+            patch.object(monitor.subprocess, "run") as launch,
+        ):
+            monitor.fcntl.flock(lock, monitor.fcntl.LOCK_EX | monitor.fcntl.LOCK_NB)
+            self.assertEqual(
+                self.snapshot(start=True)["error"], "daemon_start_in_progress"
+            )
+            launch.assert_not_called()
+        with (
+            patch.object(monitor, "daemon_absent", side_effect=[True, False]),
+            patch.object(monitor.subprocess, "run") as launch,
+        ):
+            monitor.start_daemon(self.home, time.monotonic() + 1)
+            launch.assert_not_called()
+
+    def test_start_deadline_is_shared_with_requests(self):
+        (self.home / "daemon.json").unlink()
+        with patch.object(monitor.subprocess, "run") as launch:
+            with self.assertRaisesRegex(monitor.MonitorError, "daemon_start_failed"):
+                monitor.start_daemon(self.home, time.monotonic() - 1)
+            launch.assert_not_called()
+
+        def started(*args, **kwargs):
+            threading.Event().wait(0.04)
+            self.write("daemon.json", self.discovery)
+
+        self.delay = 0.04
+        with patch.object(monitor.subprocess, "run", side_effect=started):
+            started_at = time.monotonic()
+            self.assertEqual(
+                self.snapshot(start=True, timeout=0.06)["error"], "timeout"
+            )
+            self.assertLess(time.monotonic() - started_at, 0.15)
+
+    def test_reset_epoch_utc_offsets_and_malformed(self):
+        for value in (
+            "2026-05-02T14:00:00Z",
+            "2026-05-02T16:00:00+02:00",
+            "2026-05-02T09:00:00-05:00",
+        ):
+            row = monitor.account_rows(
+                [{"provider": "p", "account_id": "a", "resets_at": value}]
+            )[0]
+            self.assertEqual(row["windows"][0]["resets_at_epoch"], 1777730400)
+        for value in (
+            None,
+            "",
+            "bad",
+            "2026-99-99",
+            "2026-05-02T14:00:00",
+            42,
+            True,
+            float("nan"),
+            float("inf"),
+        ):
+            row = monitor.account_rows(
+                [{"provider": "p", "account_id": "a", "resets_at": value}]
+            )[0]
+            self.assertIsNone(row["windows"][0]["resets_at_epoch"])
+            json.dumps(row, allow_nan=False)
 
     def test_discovery_absent_and_invalid(self):
         (self.home / "daemon.json").unlink()
@@ -249,6 +375,28 @@ class MonitorTest(unittest.TestCase):
         self.assertEqual(
             monitor.identity_index(self.home), ({}, "account_identity_unavailable")
         )
+
+    def test_warning_and_exhausted_are_measured_balances(self):
+        from datetime import datetime
+
+        observed = datetime.fromtimestamp(time.time(), UTC).isoformat()
+        for used, status, remaining in ((91, "warning", 9), (100, "exhausted", 0)):
+            with self.subTest(status=status):
+                row = monitor.account_rows(
+                    [
+                        {
+                            "provider": "openai-codex",
+                            "account_id": "account",
+                            "used_percent": used,
+                            "status": status,
+                            "observed_at": observed,
+                        }
+                    ]
+                )[0]
+                self.assertEqual(row["error"], "")
+                self.assertEqual(row["windows"][0]["remaining_percent"], remaining)
+                self.assertEqual(row["windows"][0]["status"], status)
+                self.assertFalse(row["windows"][0]["stale"])
 
     def test_remaining_unknown_errors_and_staleness(self):
         for used in (None, "50", -1, 101, float("nan"), True):

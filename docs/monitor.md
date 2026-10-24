@@ -2,15 +2,19 @@
 
 `albedo-monitor` emits one versioned JSON object to stdout, then exits. It uses
 `$ALBEDO_HOME` (default `~/.albedo`); `--home PATH` overrides discovery and
-`--timeout SECONDS` sets the network budget (default 5, maximum 30).
+`--timeout SECONDS` sets the overall startup/request budget (default 5, maximum 30).
+Without `--start-daemon` the helper only observes an existing daemon.
 
 ```console
 albedo-monitor
 albedo-monitor --home /path/to/albedo-home --timeout 3
+albedo-monitor --start-daemon
 ```
 
 The standalone flake package is `packages.<system>.albedo-monitor`; the overlay
-also exports `albedo-monitor`. It depends only on Python, not a daemon rebuild.
+also exports `albedo-monitor`. Its runtime includes Python and the suite
+`albedo-defaults` CLI, pinned by absolute executable path; no ambient CLI is needed.
+Running the source script directly uses `albedo` from PATH.
 
 ## Contract version 1
 
@@ -37,6 +41,7 @@ also exports `albedo-monitor`. It depends only on Python, not a daemon rebuild.
       "label": "5 hours",
       "remaining_percent": 75.0,
       "resets_at": "2026-05-02T14:00:00Z",
+      "resets_at_epoch": 1777730400.0,
       "observed_at": "2026-05-02T12:00:00Z",
       "status": "ok",
       "stale": false
@@ -62,7 +67,9 @@ also exports `albedo-monitor`. It depends only on Python, not a daemon rebuild.
   `openai-codex`, `google-antigravity` and `opencode-go`.
 - Windows use cached daemon samples only. `remaining_percent` is `100 - used`
   only for finite percentages in range, otherwise null. Timestamps are RFC3339
-  strings or null. Stale means observation missing/unparseable, older than 30
+  strings or null. The additive optional `resets_at_epoch` field is finite Unix
+  seconds parsed from a timezone-aware reset timestamp, otherwise null; clients
+  must also accept its absence from older version-1 snapshots. Stale means observation missing/unparseable, older than 30
   minutes, implausibly future-dated, or reset elapsed. Stale values are historical,
   never renewed guesses. Provider status is retained; raw provider error bodies
   are replaced with fixed error codes.
@@ -74,7 +81,15 @@ also exports `albedo-monitor`. It depends only on Python, not a daemon rebuild.
 
 ## Safety and limitations
 
-The helper never starts, attaches to, restarts or upgrades the daemon. Requests
+By default the helper never starts, attaches to, restarts or upgrades the daemon.
+`--start-daemon` explicitly permits the native `albedo daemon` command only when
+discovery is missing or its PID no longer exists. A live PID (even an unreachable
+or incompatible daemon) and invalid discovery never trigger startup. Concurrent
+monitor startups are serialized by a nonblocking `monitor-start.lock` in the home;
+a competing invocation reports `daemon_start_in_progress`. Startup failures and
+startup timeouts report `daemon_start_failed`, without native command output.
+The helper never creates a session or attaches a session client. Existing live
+daemons are observed directly, never passed through native CLI startup. Requests
 are authenticated GETs to loopback only: `/server`, `/auth` and paginated
 `/sessions?scope=all&archived=false`. No provider quota requests are triggered.
 Redirects and proxies are not followed. Discovery is capped at 64 KiB, each HTTP
@@ -85,7 +100,9 @@ is reported as possibly truncated.
 `GET /auth` is the ordinary native account-list API. Upstream can initialize
 missing stable account IDs and update display metadata in `creds.json`; it does
 not change credential secrets, account selection or remotely refresh tokens.
-The helper itself writes no files. It reads `creds.json` locally only to map the
+Without the startup flag the helper itself writes no files. Opt-in startup can
+create the home, its monitor lock and native daemon files. It reads `creds.json`
+locally only to map the
 public account ID onto non-secret quota identity fields. Tokens, refresh secrets,
 API keys, MCP configuration, prompts, previews and transcripts are never emitted.
 Raw exceptions and HTTP error bodies are never included in JSON.
