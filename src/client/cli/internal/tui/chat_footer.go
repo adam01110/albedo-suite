@@ -161,7 +161,11 @@ func (m ChatModel) renderFooter() string {
 	right, compact := m.contextStat()
 	commands := hint{"/", "commands"}
 	sessions := hint{"←", "sessions"}
-	mode := hint{m.vimMode(), ""}
+	modeStyle := DefaultStyles.You
+	if !m.vim.normal {
+		modeStyle = DefaultStyles.Success
+	}
+	mode := hint{modeStyle.Bold(true).Render(m.vimMode()), ""}
 	candidates := []struct {
 		right string
 		left  []hint

@@ -17,8 +17,10 @@ Both suite packages include the same Vim support.
 ## Modes and application keys
 
 New chat models start in `NORMAL`; press `i` to type. The footer shows `sessions`,
-the current mode, then `commands`. This edits only the unsent composer, never the
-transcript or already-submitted messages.
+the current mode, then `commands`. The mode label is bold: `NORMAL` uses the
+theme's cyan and `INSERT` its green (Base16 base0C/base0B when configured).
+This edits only the unsent composer, never the transcript or already-submitted
+messages.
 
 | Key | Behavior |
 | --- | --- |
