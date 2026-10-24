@@ -303,7 +303,7 @@ func (m *AppModel) Update(msg tea.Msg) (model tea.Model, resultCmd tea.Cmd) {
 		m.ModelPicker.Saving = true
 		m.ModelPicker.Error = ""
 		m.ModelGen++
-		return m, m.changeModelCmd(msg.Model, msg.Provider, msg.Effort, msg.RaiseCap, m.ModelGen, msg.CapKey)
+		return m, m.changeModelCmd(msg.Model, msg.Provider, msg.Effort, capChange{CapKey: msg.CapKey, Raise: msg.RaiseCap, CompactAt: msg.CompactAt}, m.ModelGen)
 
 	case ChatOpenExtensionPickerMsg:
 		return m, m.openExtensionPicker()

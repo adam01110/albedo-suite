@@ -27,7 +27,13 @@ import gleam/result
 import gleam/string
 
 pub type Watcher {
-  Watcher(owner: process.Pid, notify: fn() -> Nil, notified: Bool)
+  Watcher(
+    owner: process.Pid,
+    key: String,
+    monitor: process.Monitor,
+    notify: fn() -> Nil,
+    notified: Bool,
+  )
 }
 
 pub type State(message) {

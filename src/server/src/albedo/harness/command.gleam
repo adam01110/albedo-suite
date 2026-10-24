@@ -51,6 +51,12 @@ pub type StateOp {
   EffortSelect(effort: String)
   CompactAtGet
   CompactAtSet(tokens: Option(Int))
+  /// Who named the session, and what it is called.
+  NameGet
+  /// The person's own name for the session; None clears it.
+  NameSelect(name: Option(String))
+  /// The model's name for the session, which a person's name outranks.
+  NameSuggest(name: String)
   ContextSummary
   /// Compact now; a named strategy first becomes the session's own.
   Compact(strategy: Option(String))
@@ -322,6 +328,7 @@ pub fn prepare_input(
         ModelGet
         | EffortGet
         | CompactAtGet
+        | NameGet
         | ContextSummary
         | ContextPage(_, _)
         | KernelReport -> context.state(operation)

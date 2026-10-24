@@ -23,6 +23,7 @@ import albedo/daemon/session_extensions
 import albedo/daemon/session_history
 import albedo/daemon/session_last_call
 import albedo/daemon/session_namespace
+import albedo/daemon/session_naming
 import albedo/daemon/session_prompt
 import albedo/daemon/session_provider
 import albedo/daemon/session_run
@@ -195,6 +196,8 @@ pub type Message {
   /// An idle session started after a daemon restart because it waits on
   /// work that will wake it: its extensions hear its last turn call again.
   Rewarm
+  /// Saved profiles were renamed, old name first.
+  RenameProfiles(List(#(String, String)))
   ReadCapture(Subject(Result(Unobserved, String)))
   ReadSummary(Subject(Summary))
   /// The live facts alone, for a client that keeps its history over the stream.
@@ -239,6 +242,11 @@ pub type Message {
   ChangeEffort(String, Subject(Result(json.Json, String)))
   ReadCompactAt(Subject(Result(json.Json, String)))
   ChangeCompactAt(Option(Int), Subject(Result(json.Json, String)))
+  ReadName(Subject(Result(json.Json, String)))
+  /// The person's name for the session, or None to clear it.
+  ChangeName(Option(String), Subject(Result(json.Json, String)))
+  /// The model's name for the session.
+  SuggestName(String, Subject(Result(json.Json, String)))
   StopJob(String, Subject(Result(Nil, String)))
   /// Report on the kernel's staleness, or (True) force its swap now.
   UpgradeKernel(Subject(Result(runtime.KernelUpgrade, String)))
@@ -250,8 +258,9 @@ pub type Message {
     Option(Cursor),
     Subject(Result(#(Cursor, List(json.Json), Option(Unobserved)), String)),
   )
-  Watch(process.Pid, fn() -> Nil)
-  Consumed(process.Pid, Cursor, Bool)
+  Watch(process.Pid, String, fn() -> Nil)
+  Unwatch(process.Pid, String)
+  Consumed(process.Pid, String, Cursor, Bool)
   Publish(String, view.Event, Subject(Bool))
   AgentProgress(String)
   ToolProgressDelta(String, Int, Int, Int, String, String, Subject(Bool))
@@ -588,10 +597,20 @@ pub fn change_configuration(
   |> result.try(fn(observe) { observe() })
 }
 
-/// Register a wake callback for one streaming client. The callback runs in the
-/// session process and must only notify; dead watchers are dropped.
-pub fn watch(session: Session, owner: process.Pid, notify: fn() -> Nil) -> Nil {
-  process.send(session, Watch(owner, notify))
+/// Register one keyed follow for a streaming client. The callback runs in the
+/// session process and must only notify; dead owners are dropped.
+pub fn watch(
+  session: Session,
+  owner: process.Pid,
+  key: String,
+  notify: fn() -> Nil,
+) -> Nil {
+  process.send(session, Watch(owner, key, notify))
+}
+
+/// Stop one keyed follow and its monitor.
+pub fn unwatch(session: Session, owner: process.Pid, key: String) -> Nil {
+  process.send(session, Unwatch(owner, key))
 }
 
 /// A successful frame consumed this cursor. Timers can overtake a queued wake,
@@ -599,10 +618,11 @@ pub fn watch(session: Session, owner: process.Pid, notify: fn() -> Nil) -> Nil {
 pub fn consumed(
   session: Session,
   owner: process.Pid,
+  key: String,
   cursor: Cursor,
   wake_consumed: Bool,
 ) -> Nil {
-  process.send(session, Consumed(owner, cursor, wake_consumed))
+  process.send(session, Consumed(owner, key, cursor, wake_consumed))
 }
 
 /// Events after the fully consumed actor cursor. A reset returns a captured
@@ -741,6 +761,13 @@ pub fn alive(session: Session) -> Bool {
 /// warming where a daemon restart left it.
 pub fn rewarm(session: Session) -> Nil {
   process.send(session, Rewarm)
+}
+
+pub fn rename_profiles(
+  session: Session,
+  renames: List(#(String, String)),
+) -> Nil {
+  process.send(session, RenameProfiles(renames))
 }
 
 pub fn close(session: Session) -> Nil {
@@ -1257,6 +1284,18 @@ fn handle(
             Ok(state) -> actor.continue(restore_last_call(state))
           }
       }
+    RenameProfiles(renames) -> {
+      let previous = state.info.provider
+      let state = session_history.rename_profiles(state, renames)
+      case state.info.provider == previous {
+        True -> actor.continue(state)
+        False -> {
+          let base = "/sessions/" <> state.info.id
+          bus.invalidate(["/sessions", base], [state.info.id], False)
+          actor.continue(state |> session_state.invalidate("session", base))
+        }
+      }
+    }
     KernelOpened(result) -> actor.continue(kernel_opened(state, result))
     StartQueued -> actor.continue(start_queued(state))
     AdmitOperation(operation, submission, reply) ->
@@ -1504,6 +1543,39 @@ fn handle(
       )
     }
 
+    ReadName(reply) -> answer(state, reply, session_naming.read(state))
+    ChangeName(name, reply) -> {
+      let #(state, changed) =
+        session_configure.change(state, session_configure.SelectName(name))
+      answer(
+        state,
+        reply,
+        result.map(changed, fn(saved) {
+          json.object([
+            #("name", json.string(session_configuration.display_name(saved))),
+            #(
+              "source",
+              json.string(case saved.name {
+                Some(_) -> "user"
+                None -> "automatic"
+              }),
+            ),
+            #(
+              "message",
+              json.string(case saved.name {
+                Some(name) -> "session named \"" <> name <> "\""
+                None -> "the session's own name is cleared"
+              }),
+            ),
+          ])
+        }),
+      )
+    }
+    SuggestName(name, reply) -> {
+      let #(state, suggested) = session_naming.suggest(state, name)
+      answer(state, reply, suggested)
+    }
+
     ReloadData(reply) ->
       transition(
         reply,
@@ -1526,21 +1598,41 @@ fn handle(
         None ->
           answer(state, reply, Error("no kernel attached to this session"))
       }
-    Watch(owner, notify) -> {
+    Watch(owner, key, notify) -> {
       let watchers = case
-        list.any(state.watchers, fn(watcher) { watcher.owner == owner })
+        list.any(state.watchers, fn(watcher) {
+          watcher.owner == owner && watcher.key == key
+        })
       {
         True -> state.watchers
         False -> {
-          let _ = process.monitor(owner)
-          [session_state.Watcher(owner, notify, False), ..state.watchers]
+          let monitor = process.monitor(owner)
+          [
+            session_state.Watcher(owner, key, monitor, notify, False),
+            ..state.watchers
+          ]
         }
       }
       actor.continue(session_state.watch_glances(
         session_state.State(..state, watchers: watchers),
       ))
     }
-    Consumed(owner, cursor, wake_consumed) -> {
+    Unwatch(owner, key) -> {
+      let watchers =
+        list.filter(state.watchers, fn(watcher) {
+          case watcher.owner == owner && watcher.key == key {
+            True -> {
+              process.demonitor_process(watcher.monitor)
+              False
+            }
+            False -> True
+          }
+        })
+      actor.continue(session_state.watch_glances(
+        session_state.State(..state, watchers: watchers),
+      ))
+    }
+    Consumed(owner, key, cursor, wake_consumed) -> {
       let watchers = case
         cursor.generation == state.generation
         && cursor.sequence >= 0
@@ -1549,7 +1641,7 @@ fn handle(
         False -> state.watchers
         True ->
           list.map(state.watchers, fn(watcher) {
-            case watcher.owner == owner {
+            case watcher.owner == owner && watcher.key == key {
               False -> watcher
               True -> {
                 let notified = watcher.notified && !wake_consumed
@@ -2184,6 +2276,9 @@ fn command_op(
     command.EffortGet -> actor.call(session, 5000, ReadEffort)
     command.EffortSelect(level) ->
       actor.call(session, 5000, ChangeEffort(level, _))
+    command.NameGet -> actor.call(session, 5000, ReadName)
+    command.NameSelect(name) -> actor.call(session, 5000, ChangeName(name, _))
+    command.NameSuggest(name) -> actor.call(session, 5000, SuggestName(name, _))
     command.CompactAtGet -> read_compact_at(session)
     command.CompactAtSet(tokens) ->
       actor.call(session, 5000, ChangeCompactAt(tokens, _))

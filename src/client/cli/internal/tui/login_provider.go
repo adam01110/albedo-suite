@@ -32,7 +32,7 @@ var customProviders = []customProvider{
 	{
 		ID:            "add-alibaba",
 		Label:         "Alibaba",
-		Detail:        "token plan · Qwen, DeepSeek, GLM",
+		Detail:        "api key · token plan · Qwen, DeepSeek, GLM",
 		Extension:     "alibaba",
 		DefaultName:   "alibaba",
 		DefaultURL:    "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
@@ -41,7 +41,7 @@ var customProviders = []customProvider{
 	{
 		ID:            "add-opencode-go",
 		Label:         "OpenCode Go",
-		Detail:        "subscription · Qwen, GLM, Kimi, DeepSeek, MiMo",
+		Detail:        "api key · subscription · Qwen, GLM, Kimi, DeepSeek, MiMo",
 		Extension:     "opencode-go",
 		DefaultName:   "opencode-go",
 		DefaultURL:    "https://opencode.ai/inference/go/v1",
@@ -60,7 +60,7 @@ var customProviders = []customProvider{
 	{
 		ID:            "add-anthropic",
 		Label:         "Anthropic",
-		Detail:        "console billing · Claude models",
+		Detail:        "api key · console billing · Claude models",
 		Extension:     "claude",
 		DefaultName:   "anthropic",
 		FixedProtocol: "chat_completions",
@@ -106,8 +106,13 @@ func (p customProvider) facts() []loginFact {
 	if p.FixedProtocol != "" {
 		facts = append(facts, loginFact{"protocol", p.FixedProtocol})
 	}
-	if p.Scoped {
-		facts = append(facts, loginFact{"asks for", "project and location"})
+	switch {
+	case p.Scoped:
+		facts = append(facts, loginFact{"auth", "application default credentials"}, loginFact{"asks for", "project and location"})
+	case p.Optional:
+		facts = append(facts, loginFact{"auth", "api key, or none"})
+	default:
+		facts = append(facts, loginFact{"auth", "api key"})
 	}
 	return facts
 }
@@ -214,6 +219,7 @@ func (m *LoginModel) startCustomProvider(p customProvider) tea.Cmd {
 // left cannot run without an api key, so it signs in first.
 func (m *LoginModel) useProfile(name string, settings config.Settings) tea.Cmd {
 	if login, ok := m.signInFor(settings.Extension); ok && !hasKey(settings) && m.signedOut(settings.Extension) {
+		m.Name, m.Draft = name, settings
 		return m.startSignIn(login)
 	}
 	m.Step = StepSaving
@@ -238,6 +244,7 @@ func (m *LoginModel) applyHint() tea.Cmd {
 		return m.useProfile(name, saved)
 	}
 	if login, ok := m.signInFor(name); ok {
+		m.Draft = signInDraft(name)
 		return m.startSignIn(login)
 	}
 	m.useNamedGoProvider(name)
@@ -295,8 +302,18 @@ func (m LoginModel) fetchCatalogCmd(ext, endpoint string, gen int) tea.Cmd {
 	}
 }
 
-// saveProviderCmd saves the profile and optional key through the daemon.
+// saveProviderCmd saves the profile and optional key through the daemon and
+// makes it the default, or, editing, saves it as it is and lists again.
 func (m LoginModel) saveProviderCmd(name string, settings config.Settings) tea.Cmd {
+	if m.Editing {
+		return m.reloadCmd(func(ctx context.Context) error {
+			validated, err := settings.Validate()
+			if err != nil {
+				return err
+			}
+			return daemon.SaveProvider(ctx, m.Conn, name, validated, m.Profiles.ETag)
+		})
+	}
 	return func() tea.Msg {
 		validated, err := settings.Validate()
 		if err != nil {

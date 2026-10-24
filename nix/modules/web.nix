@@ -8,7 +8,7 @@
       pname = "albedo-web";
       version = "1.0.0";
       src = upstream + "/web";
-      npmDepsHash = "sha256-J7frp32iNwe3xBuFSSAzQFzYSF2zgyaQtoCMMO/z7TU=";
+      npmDepsHash = "sha256-eurmLkvwpdJz98qKHkeUyLAc5eqNEMNosmgVoxNWjq8=";
       installPhase = ''
         runHook preInstall
         cp -R dist $out

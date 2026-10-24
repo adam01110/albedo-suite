@@ -553,6 +553,8 @@ type Invoked {
 }
 
 fn invoke(state: Loop, call: types.ToolCall) -> Result(Invoked, String) {
+  // Before the hooks, so they judge the cell that runs.
+  let call = runtime.as_cell(state.kernel, call)
   let asked = hook.Call(call.id, call.name, call.arguments, None)
   let started = requests.now()
   use hook.Answer(calling, _) <- result.try(hooked(state, hook.Calling(asked)))

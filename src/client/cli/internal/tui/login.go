@@ -35,6 +35,9 @@ const (
 	StepAccountProfile
 	StepOAuthFlow
 	StepOAuthFields
+	StepProfileName
+	StepRename
+	StepCredential
 )
 
 // signInPollInterval is how often the daemon is asked about a running sign-in.
@@ -84,6 +87,9 @@ type LoginModel struct {
 	Width      int
 	Height     int
 	Step       LoginStep
+	// Editing changes the saved profile Name in place: it saves without
+	// making Name the default and comes back to the list.
+	Editing bool
 }
 
 // NewLoginModel panics if conn is nil. A nil browser opener disables automatic
@@ -230,9 +236,7 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 			if len(msg.Accounts) > 0 {
 				m.Draft.AccountID = &msg.Accounts[0].ID
 			}
-			m.Step = StepOAuthModels
-			m.Generation = nextPageGeneration()
-			return m, m.fetchCatalogCmd(m.Provider, "", m.Generation)
+			return m, m.credentialChosen()
 		case "failed", "cancelled", "expired":
 			m.LoginID = ""
 			m.Error = msg.Message
@@ -281,9 +285,23 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 				}
 			}
 			return m, nil
+		case m.Step == StepChoose && (key == "ctrl+r" || key == "ctrl+e"):
+			if name, ok := m.highlightedProfile(); ok {
+				if key == "ctrl+r" {
+					return m, m.askRename(name)
+				}
+				if m.editable(name) {
+					return m, m.editCredential(name)
+				}
+			}
+			return m, nil
+		case key == "esc" && (m.Step == StepRename || m.Step == StepProfileName):
+			// These questions start from the list, so esc goes back to it.
+			m.Error = ""
+			return m, m.backToChoose()
 		}
 		if key == "esc" || key == "ctrl+c" || key == "ctrl+d" {
-			pickerStep := m.Step == StepChoose || m.Step == StepAccountProfile || m.Step == StepOAuthFlow || m.Step == StepProtocol || m.Step == StepModels || m.Step == StepOAuthModels
+			pickerStep := m.Step == StepChoose || m.Step == StepAccountProfile || m.Step == StepCredential || m.Step == StepOAuthFlow || m.Step == StepProtocol || m.Step == StepModels || m.Step == StepOAuthModels
 			if !pickerStep || key == "ctrl+d" {
 				cancel := m.Close()
 				m.LoginValues = nil
@@ -302,18 +320,30 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 		case StepOAuthFields:
 			return m, m.acceptLoginField(msg.ID)
 		case StepAccountProfile:
-			if m.SelectedAccount != nil {
-				m.Name = msg.ID
+			if m.SelectedAccount == nil {
+				break
+			}
+			if msg.ID == newProfileRow {
+				return m, m.askProfileName(m.SelectedAccount.Provider)
+			}
+			if name, ok := strings.CutPrefix(msg.ID, "profile:"); ok {
+				m.Name = name
 				m.Step = StepSaving
 				return m, m.selectAccountCmd(*m.SelectedAccount)
 			}
+		case StepCredential:
+			return m, m.chooseCredentialRow(msg.ID)
 		case StepChoose:
 			if p, ok := customProviderByID(msg.ID); ok {
 				return m, m.startCustomProvider(p)
 			}
 			if provider, ok := strings.CutPrefix(msg.ID, "signin:"); ok {
 				if login, ok := m.signInFor(provider); ok {
-					return m, m.startSignIn(login)
+					if login.Kind == "service" {
+						return m, m.startSignIn(login)
+					}
+					m.SelectedAccount = nil
+					return m, m.askProfileName(provider)
 				}
 			}
 			// Choosing an account selects it; d removes it.
@@ -345,7 +375,7 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 
 	case PickerCancelMsg:
 		switch m.Step {
-		case StepOAuthFlow, StepOAuthFields:
+		case StepOAuthFlow, StepOAuthFields, StepAccountProfile, StepCredential:
 			return m, m.backToChoose()
 		case StepChoose, StepOAuthModels:
 			return m, func() tea.Msg { return LoginCancelMsg{} }
@@ -375,7 +405,7 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 	}
 
 	switch m.Step {
-	case StepChoose, StepAccountProfile, StepOAuthFlow, StepProtocol, StepModels, StepOAuthModels:
+	case StepChoose, StepAccountProfile, StepCredential, StepOAuthFlow, StepProtocol, StepModels, StepOAuthModels:
 		return m, m.pickUpdate(msg)
 	}
 
@@ -395,16 +425,26 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 			// keeps a key or this is that extension's api-key flow.
 			flow := m.Draft.Extension
 			extension := name
-			if saved, known := m.Profiles.Providers[name]; known {
+			saved, known := m.Profiles.Providers[name]
+			if known {
 				extension = saved.Extension
 				m.Draft = saved
 			} else {
 				m.useNamedGoProvider(name)
 			}
 			if login, ok := m.signInFor(extension); ok && !hasKey(m.Draft) && extension != flow {
+				if !known {
+					m.Draft = signInDraft(extension)
+				}
 				return m, m.startSignIn(login)
 			}
 			return m, m.askEndpoint()
+
+		case StepProfileName:
+			return m.acceptProfileName()
+
+		case StepRename:
+			return m.acceptRename()
 
 		case StepBaseURL:
 			m.TextInput.SetCursor(0)

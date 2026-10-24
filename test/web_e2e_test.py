@@ -24,7 +24,15 @@ class WebPackagingTests(unittest.TestCase):
         if dist is not None:
             environment["ALBEDO_WEB_DIST"] = str(dist)
         process = subprocess.Popen(
-            [environment["ALBEDO_TEST_CLI"], "web", "--port", "0", "--no-open"],
+            [
+                environment["ALBEDO_TEST_CLI"],
+                "web",
+                "--foreground",
+                "--local",
+                "--port",
+                "0",
+                "--no-open",
+            ],
             cwd=self.app.workspace,
             env=environment,
             stdout=subprocess.PIPE,

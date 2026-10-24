@@ -58,7 +58,8 @@ checks, plus upstream cache-miss, provider-timeout, speechless-response,
 context-window, hooks, rewind, trace, job output, kernel restoration/upgrade
 and provider-catalog regressions, plus native atomic file edits, job text/readiness,
 kernel working-directory changes, image limits, artifacts, durable history,
-push session status and detached-kernel recovery.
+push session status and detached-kernel recovery, plus native event follows,
+profile renaming, session names and daemon-managed web lifecycle.
 Additional supervised RTK
 and FFF integration tests run in the flake Python check against the packaged
 runtime.
@@ -185,3 +186,8 @@ NUR does not yet bundle the native web assets. `nix/modules/web.nix` builds the
 pinned upstream web client with upstream's dependency hash; both suite packages
 set `ALBEDO_WEB_DIST` on the CLI wrapper. Retire that packaging bridge when NUR
 supplies its own web derivation and wrapper. No web source is replaced.
+
+`albedo web` now serves through a daemon-owned child and keeps running after the
+command exits; `--stop` disables it. The packaging tests use `--foreground --local`
+to keep their listener isolated and verify per-command `ALBEDO_WEB_DIST` overrides.
+Managed serving uses the daemon's environment, not an invoking CLI's override.
