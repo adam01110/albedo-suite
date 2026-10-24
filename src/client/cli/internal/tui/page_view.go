@@ -299,9 +299,15 @@ func (m PageViewModel) Update(msg tea.Msg) (PageViewModel, tea.Cmd) {
 	return m, cmd
 }
 
-// keyPress routes a key by the mode the page is in. A bare letter only ever
-// reaches the filter or a prompt; actions run from chords.
+// keyPress keeps list navigation separate from prompts and confirmations.
 func (m PageViewModel) keyPress(msg tea.KeyPressMsg) (PageViewModel, tea.Cmd) {
+	if m.Mode == modeBrowse {
+		var done bool
+		msg, done = m.navigation.key(msg, &m.input, false)
+		if done {
+			return m, nil
+		}
+	}
 	key := msg.String()
 	if m.Mode == modeConfirm {
 		if m.confirm.key(msg) {

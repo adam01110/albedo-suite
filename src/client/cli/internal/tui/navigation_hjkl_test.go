@@ -28,37 +28,44 @@ func TestNavigationSearchKeepsLetters(t *testing.T) {
 	for _, r := range "hjkl" {
 		t.Run(string(r), func(t *testing.T) {
 			m := NewPickerModel("search", []PickerItem{{ID: "hjkl"}}, true, "")
+			m, _ = m.Update(navigationKey('/'))
 			m, _ = m.Update(navigationKey(r))
 			if m.SearchInput.Value() != string(r) {
 				t.Fatalf("picker swallowed %c", r)
 			}
 			page := pageAt(120, 30, detailFixture())
+			page, _ = page.Update(navigationKey('/'))
 			page, _ = page.Update(navigationKey(r))
 			if page.input.Value() != string(r) {
 				t.Fatalf("page filter swallowed %c", r)
 			}
 			context := contextFixture(t)
+			context, _ = context.Update(navigationKey('/'))
 			context, _ = context.Update(navigationKey(r))
 			if context.input.Value() != string(r) {
 				t.Fatalf("context filter swallowed %c", r)
 			}
 			sessions := NewSessionViewer("/work")
+			sessions, _ = sessions.Update(navigationKey('/'))
 			sessions, _ = sessions.Update(navigationKey(r))
 			if sessions.SearchInput.Value() != string(r) {
 				t.Fatalf("session search swallowed %c", r)
 			}
 			agents := agentsFixture(t)
+			agents, _ = agents.Update(navigationKey('i'))
 			agents, _ = agents.Update(navigationKey(r))
 			if agents.input.Value() != string(r) {
 				t.Fatalf("agent composer swallowed %c", r)
 			}
 			folder := NewFolderPicker(nil, daemon.Session{Workspace: "/work"}, nil)
 			defer folder.cancelReads()
+			folder, _ = folder.Update(navigationKey('/'))
 			folder, _ = folder.Update(navigationKey(r))
 			if folder.input.Value() != string(r) {
 				t.Fatalf("folder query swallowed %c", r)
 			}
 			model := loadedPicker(t)
+			model, _ = model.Update(navigationKey('/'))
 			model, _ = model.Update(navigationKey(r))
 			if model.search.Value() != string(r) {
 				t.Fatalf("model filter swallowed %c", r)

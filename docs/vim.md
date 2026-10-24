@@ -45,14 +45,34 @@ already delivered to the agent and newer uncancelled inputs are not restored.
 
 ## Navigation outside the composer
 
-`j`/`k` also move through non-search pickers, page action menus and the folder
-browser's session pane. In that pane, `h` returns to the folder query. Choice
-menus and the effort selector accept `h`/`k` for previous and `l`/`j` for next.
-The context detail reader uses `j`/`k` to scroll and `h`/`l` to change pages.
-On the MCP transport row, `h`/`l` change transport and `j`/`k` move focus.
+Searchable lists open in `NORMAL`: `j`/`k` move down/up, `h` goes back and
+`l` acts like Enter. This includes sessions, login pickers, extensions,
+capabilities (MCP, skills and instructions), configuration, checkpoints, context,
+webhooks, Discord and command-backed pages. Existing confirmations still require
+Enter; navigation letters never confirm a pending mutation.
 
-Live search and text-entry fields keep these letters as text, including session,
-model and folder searches. Arrow keys remain available there.
+Press `/` to edit the search, including queries starting with `h`, `j`, `k` or
+`l`. Other printable letters also start a search for compatibility with typing
+to filter. In `SEARCH`, hjkl are literal text. `Esc` returns to navigation while
+keeping the filter; a second `Esc` leaves the screen. Arrow keys and control
+shortcuts remain available. The search line displays the current mode.
+
+- Model picker: `j`/`k` select models; `h`/`l` adjust reasoning effort.
+- Folder browser: `j`/`k` select folders; `h` ascends and `l` descends. Use the
+  right arrow to enter a folder's session pane; `h` returns from it. `/` edits
+  the path, so enter `//` to start an absolute path from an empty query. From
+  sessions, `Ctrl+f` still opens folder browsing.
+- Agents: hjkl cycle agents. `i` enters message editing; `Esc` preserves the
+  draft and resumes navigation. `/spawn` remains a literal message command.
+- Context reader: `j`/`k` scroll; `h`/`l` change pages.
+- Choice menus and effort selector: `h`/`k` select previous; `l`/`j` select next.
+- MCP transport row: `h`/`l` change transport; `j`/`k` move focus.
+
+With an empty Normal-mode composer, `j`/`k` scroll the transcript and `h` returns
+to sessions. With draft text, hjkl retain their composer motions.
+
+Text prompts, rename fields, credentials and form text fields remain ordinary
+text entry; hjkl are not intercepted there.
 
 ## Motions
 

@@ -180,6 +180,18 @@ func (m *ChatModel) handleVim(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		return nil, true
 	}
 	before := m.vimSnapshot()
+	if before.text == "" {
+		switch key {
+		case "h":
+			return func() tea.Msg { return ChatBackToSessionsMsg{} }, true
+		case "j":
+			m.scrollBy(input.count)
+			return nil, true
+		case "k":
+			m.scrollBy(-input.count)
+			return nil, true
+		}
+	}
 	if command, ok := vimCommands[key]; ok {
 		return command(m, input, before, msg), true
 	}

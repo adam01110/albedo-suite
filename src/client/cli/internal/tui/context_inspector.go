@@ -384,6 +384,12 @@ func (m ContextInspectorModel) readerKey(msg tea.KeyPressMsg) (ContextInspectorM
 }
 
 func (m ContextInspectorModel) sectionsKey(msg tea.KeyPressMsg) (ContextInspectorModel, tea.Cmd) {
+	var done bool
+	msg, done = m.navigation.key(msg, &m.input, false)
+	if done {
+		return m, nil
+	}
+
 	switch msg.String() {
 	case "esc", "ctrl+c", "ctrl+d":
 		return m, func() tea.Msg { return ContextDoneMsg{} }

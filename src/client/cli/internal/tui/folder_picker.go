@@ -140,6 +140,7 @@ type cachedFolderPreview struct {
 // folder. Browsing, from the sessions view, it starts a session in the
 // folder instead. Either way → steps into the folder's sessions to open one.
 type FolderPicker struct {
+	navigation  searchNavigation
 	readCtx     context.Context
 	cancelReads context.CancelFunc
 	src         folderSource
@@ -368,6 +369,20 @@ func (m FolderPicker) Update(msg tea.Msg) (FolderPicker, tea.Cmd) {
 				return m, cmd
 			}
 		}
+		original := msg.String()
+		var done bool
+		msg, done = m.navigation.key(msg, &m.input, false)
+		if done {
+			return m, nil
+		}
+		if !m.navigation.editing {
+			if original == "h" {
+				msg = tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift}
+			}
+			if original == "l" {
+				msg = tea.KeyPressMsg{Code: tea.KeyTab}
+			}
+		}
 		switch msg.String() {
 		case "esc", "ctrl+c", "ctrl+d":
 			return m, func() tea.Msg { return FolderPickerCancelMsg{} }
@@ -403,6 +418,7 @@ func (m FolderPicker) Update(msg tea.Msg) (FolderPicker, tea.Cmd) {
 			return m.typed(msg)
 		}
 	case tea.PasteMsg:
+		m.navigation.paste(msg, &m.input)
 		return m.typed(msg)
 	}
 	return m, m.follow()
