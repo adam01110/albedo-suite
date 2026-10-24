@@ -222,6 +222,7 @@ type ChatModel struct {
 	loadingOlder      bool
 	isSending         bool
 	interruptDeferred bool
+	interruptPending  bool
 	hostAuth          *hostSignIn
 	sentHere          bool
 	// graphemes says the terminal measures grapheme clusters (mode 2027),

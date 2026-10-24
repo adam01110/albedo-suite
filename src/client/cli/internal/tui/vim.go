@@ -130,7 +130,7 @@ var vimPassthroughKeys = map[string]bool{
 func (m *ChatModel) handleVim(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 	key := msg.String()
 	if !m.vim.normal {
-		if key != "esc" || len(m.CommandMenu.Matches(m.TextArea.Value())) > 0 || m.isSending || m.Status.Running || len(m.pendingUsers) > 0 {
+		if key != "esc" || len(m.CommandMenu.Matches(m.TextArea.Value())) > 0 {
 			return nil, false
 		}
 		m.vimEndInsert()
@@ -151,7 +151,12 @@ func (m *ChatModel) handleVim(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		m.vimHistory(count, true)
 		return nil, true
 	}
-	if key == "esc" || msg.Mod & ^tea.ModShift != 0 || vimPassthroughKeys[key] {
+	if key == "esc" {
+		unfinished := m.vim.count != 0 || m.vim.operatorCount != 0 || m.vim.pending != "" || m.vim.argument != nil
+		m.vim.resetInput()
+		return nil, unfinished
+	}
+	if msg.Mod & ^tea.ModShift != 0 || vimPassthroughKeys[key] {
 		m.vim.resetInput()
 		return nil, false
 	}
