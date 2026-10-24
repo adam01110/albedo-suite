@@ -143,10 +143,15 @@ func TestVimEscapePreservesStoppingAndMenus(t *testing.T) {
 	vimKeys(&m, "i")
 	m.Status.Running = true
 	vimKeys(&m, "esc")
-	if !m.Stopping || m.vim.normal {
-		t.Fatal("escape did not stop running turn")
+	if m.Stopping || !m.vim.normal {
+		t.Fatal("Insert Escape did not enter Normal without stopping")
+	}
+	vimKeys(&m, "esc")
+	if !m.Stopping {
+		t.Fatal("plain Normal Escape did not stop running turn")
 	}
 	m.Status.Running = false
+	vimKeys(&m, "i")
 	m.TextArea.SetValue("/model")
 	vimKeys(&m, "esc")
 	if m.vim.normal {

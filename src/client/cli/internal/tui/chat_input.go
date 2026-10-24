@@ -21,9 +21,9 @@ func (m *ChatModel) handleInput(msg tea.Msg) (tea.Cmd, bool) {
 		// The selector owns keys while open, before chat navigation or composer input.
 		if len(m.effortOptions) > 0 {
 			switch msg.String() {
-			case "left", "up":
+			case "left", "up", "h", "k":
 				m.effortSelected = max(0, m.effortSelected-1)
-			case "right", "down":
+			case "right", "down", "l", "j":
 				m.effortSelected = min(len(m.effortOptions)-1, m.effortSelected+1)
 			case "enter", "esc":
 				level := m.effortOptions[m.effortSelected]
