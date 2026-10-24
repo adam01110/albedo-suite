@@ -86,6 +86,8 @@
             go test ./internal/app ./internal/cli ./internal/webui -count=1
             go test ./internal/tui -run '^TestBase16' -count=1 -v
             go test ./internal/tui -run '^TestVim' -count=1 -v
+            go test ./internal/tui -run '^TestNavigation' -count=1 -v
+            go test ./internal/tui ./internal/daemon -run '^(TestSuiteEscape|TestInterrupt)' -count=1 -v
             go test ./internal/tui -run '^TestOpenCodeGo' -count=1 -v
             go test ./internal/tui ./internal/daemon -run '^TestToolImages' -count=1 -v
             ${pkgs.lib.optionalString showDiffs "go test ./internal/tui -run '^TestDefaultDiffVisibility$' -count=1 -v"}

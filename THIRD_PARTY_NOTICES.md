@@ -15,7 +15,8 @@ OpenCode Go SDK-metadata routing and endpoint-scoped discovery caches on the
 native OAuth, account rotation and portable wire implementation,
 recoverable kernel startup failures with workspace validation,
 cache-stable startup reference reductions with on-demand API documentation,
-Vim-style CLI composer editing with a footer mode indicator,
+Vim-style CLI composer editing with a footer mode indicator, recoverable queued
+inputs on interruption and context-sensitive hjkl navigation,
 explicit Base16 terminal palettes,
 and optional default CLI diff visibility. `upstream/pin.json` inventories server
 replacements; the client

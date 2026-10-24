@@ -24,9 +24,9 @@ messages.
 
 | Key | Behavior |
 | --- | --- |
-| `Esc` in Insert mode | Enter Normal mode once idle. An open command menu or transcript selection, or a running/queued turn, takes priority: Escape dismisses/cancels it first. |
-| `Esc` in Normal mode | Cancel an unfinished count, operator or literal argument; retain application Escape behavior. |
-| `i` / `a` | Insert at / after the cursor. |
+| `Esc` in Insert mode | Enter Normal mode, including while an agent runs. An open command menu or transcript selection is dismissed first. |
+| `Esc` in Normal mode | Cancel an unfinished count, operator or literal argument first. Otherwise interrupt a running/queued turn and restore cancelled queued input to the composer. |
+| `i` / `a` | Insert at / after the cursor, including while an agent runs. |
 | `I` / `A` | Insert at the first nonblank / end of the logical line. |
 | `o` / `O` | Open one line below / above and enter Insert mode. |
 | `/` in Normal mode | Enter Insert mode and insert `/` at the start of the draft for Albedo commands; **not** Vim search. |
@@ -37,6 +37,22 @@ Arrows, transcript paging, control/Alt shortcuts, menus and external-editor
 integration retain their application behavior. `Ctrl+r` in Normal mode is the
 exception: it performs Vim-style redo. Unsupported unmodified Normal-mode keys
 are generally consumed without inserting text; they do not invoke Vim features.
+
+When interruption cancels queued messages, their text, images and collapsed pastes
+return to an editable Insert-mode composer. Existing draft text stays first;
+multiple cancelled messages follow in queue order, separated by newlines. Inputs
+already delivered to the agent and newer uncancelled inputs are not restored.
+
+## Navigation outside the composer
+
+`j`/`k` also move through non-search pickers, page action menus and the folder
+browser's session pane. In that pane, `h` returns to the folder query. Choice
+menus and the effort selector accept `h`/`k` for previous and `l`/`j` for next.
+The context detail reader uses `j`/`k` to scroll and `h`/`l` to change pages.
+On the MCP transport row, `h`/`l` change transport and `j`/`k` move focus.
+
+Live search and text-entry fields keep these letters as text, including session,
+model and folder searches. Arrow keys remain available there.
 
 ## Motions
 
