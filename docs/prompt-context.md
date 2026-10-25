@@ -58,6 +58,21 @@ fetch is needed to choose a server. Loading and unloading keep this context
 snapshot unchanged; schemas remain explicit tool results. See [lazy MCP](lazy-mcp.md)
 for configuration and reload behavior.
 
+## Context reader
+
+The CLI `/context` reader opens sections in a formatted view: Markdown headings,
+lists and code blocks use the chat renderer; complete JSON objects and arrays
+are indented; extension wrapper tags stay visible. Long generated instruction
+lines have paragraph spacing, and formatted text wraps at at most 100 columns.
+
+Press `r` to toggle between formatted and raw views. Raw view shows the original
+page text with terminal-width wrapping, not Markdown rendering or JSON changes.
+The header identifies the current view. Switching views resets the scroll to the
+start of the current page; arrow/hjkl navigation and page jumps are unchanged.
+Formatting is local to the CLI and never changes the prepared request, its byte
+counts or the model's context. Pages remain bounded; incomplete JSON at a page
+boundary stays literal rather than being reconstructed.
+
 ## Verification boundary
 
 Regression tests compare successive fake-provider requests byte-for-byte for

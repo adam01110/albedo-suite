@@ -23,6 +23,7 @@ type ContextDetail struct {
 	Section daemon.ContextSection
 	Page    int
 	Scroll  int
+	Raw     bool
 	// visible is the body rows the last frame drew; page jumps move by it.
 	visible int
 	// wrapped is wrappedFrom's content at wrappedWidth, kept because every
@@ -30,6 +31,7 @@ type ContextDetail struct {
 	wrapped      []string
 	wrappedWidth int
 	wrappedFrom  *daemon.ContextPage
+	wrappedRaw   bool
 }
 
 // rows is the page's content wrapped to width.
@@ -37,8 +39,13 @@ func (d *ContextDetail) rows(width int) []string {
 	if d.Value == nil {
 		return nil
 	}
-	if d.wrappedFrom != d.Value || d.wrappedWidth != width {
-		d.wrapped, d.wrappedWidth, d.wrappedFrom = wrapContextContent(d.Value.Content, width), width, d.Value
+	if d.wrappedFrom != d.Value || d.wrappedWidth != width || d.wrappedRaw != d.Raw {
+		if d.Raw {
+			d.wrapped = wrapContextContent(d.Value.Content, width)
+		} else {
+			d.wrapped = formattedContextRows(d.Value.Content, min(width, 100))
+		}
+		d.wrappedWidth, d.wrappedFrom, d.wrappedRaw = width, d.Value, d.Raw
 	}
 	return d.wrapped
 }
@@ -52,7 +59,11 @@ func (d *ContextDetail) scroll(by int) {
 // from, any warning, then the scrolled rows.
 func (d *ContextDetail) list(width, height int) []string {
 	sec := d.Section
-	head := []string{DefaultStyles.Faint.Render(fmt.Sprintf("%s · page %d/%d · %s", sec.Source, d.Page+1, sec.Pages, contextCount(sec.ByteCount, "byte")))}
+	mode := "formatted"
+	if d.Raw {
+		mode = "raw"
+	}
+	head := []string{DefaultStyles.Faint.Render(fmt.Sprintf("%s · page %d/%d · %s · %s", sec.Source, d.Page+1, sec.Pages, contextCount(sec.ByteCount, "byte"), mode))}
 	var rows []string
 	switch {
 	case d.Error != "":
@@ -319,7 +330,7 @@ func (m ContextInspectorModel) footer(width int) string {
 
 // readerFooter is the footer while a section's content is open.
 func readerFooter(width int) string {
-	return footerLine(width, []hint{{"↑↓", "scroll"}, {"pgup/pgdn", "jump"}, {"←→", "page"}, {"esc", "sections"}}, "", false)
+	return footerLine(width, []hint{{"↑↓", "scroll"}, {"pgup/pgdn", "jump"}, {"←→", "page"}, {"r", "raw/formatted"}, {"esc", "sections"}}, "", false)
 }
 
 func (m ContextInspectorModel) Update(msg tea.Msg) (ContextInspectorModel, tea.Cmd) {
@@ -361,6 +372,8 @@ func (m ContextInspectorModel) readerKey(msg tea.KeyPressMsg) (ContextInspectorM
 	case "esc", "ctrl+c", "ctrl+d":
 		m.Detail = nil
 		m.Generation = nextPageGeneration()
+	case "r":
+		d.Raw, d.Scroll = !d.Raw, 0
 	case "up", "k":
 		d.scroll(-1)
 	case "down", "j":
@@ -411,10 +424,8 @@ func (m ContextInspectorModel) sectionsKey(msg tea.KeyPressMsg) (ContextInspecto
 }
 
 func wrapContextContent(content string, width int) []string {
-	if width <= 1 {
-		width = 76
-	}
-	return strings.Split(ansi.Wrap(content, width, " "), "\n")
+	width = max(1, width)
+	return strings.Split(ansi.Hardwrap(ansi.Wrap(content, width, " "), width, true), "\n")
 }
 
 var englishPrinter = message.NewPrinter(language.English)

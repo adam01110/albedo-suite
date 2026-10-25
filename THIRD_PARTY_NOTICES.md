@@ -17,7 +17,7 @@ recoverable kernel startup failures with workspace validation,
 cache-stable startup reference reductions with on-demand API documentation,
 Vim-style CLI composer editing with a footer mode indicator, recoverable queued
 inputs on interruption and modal hjkl navigation across searchable CLI screens,
-explicit Base16 terminal palettes,
+explicit Base16 terminal palettes, formatted CLI context inspection with a raw toggle,
 and optional default CLI diff visibility. `upstream/pin.json` inventories server
 replacements; the client
 replacements live under `src/client/cli/`.
