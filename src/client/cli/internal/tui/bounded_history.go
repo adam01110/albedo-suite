@@ -38,6 +38,7 @@ type HistoryEntry struct {
 	Text       string
 	ToolName   string
 	ToolResult string
+	ToolTitle  string
 	// Strategy is the compaction strategy that produced a compacted entry.
 	Strategy  string
 	Kind      EntryKind

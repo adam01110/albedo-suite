@@ -306,6 +306,7 @@ pub type Message {
   Down(process.Down)
   Idle(Subject(Report))
   Release(Subject(Bool))
+  ExpireState(Subject(Bool))
   EvictHistory(Subject(Bool))
   /// Queued behind a handler that dropped a large part of the state. An idle
   /// actor never collects on its own, so without this the dropped history and
@@ -784,6 +785,13 @@ pub fn release(session: Session) -> Bool {
   actor.call(session, 40_000, Release)
 }
 
+/// Delete the saved variables unless a kernel, turn or boot uses them now.
+/// True when they were deleted.
+pub fn expire_state(session: Session) -> Bool {
+  actor_call.try_call(session, waiting: 5000, sending: ExpireState)
+  |> result.unwrap(False)
+}
+
 /// Cut an idle session back to before the user message at `checkpoint`, after
 /// copying all of it into the archived session `archive_id`. The actor stops on
 /// success; the next lookup starts one that reads what is left.
@@ -993,7 +1001,7 @@ fn schedule_progress_flush(state: State) -> State {
     False, None | True, Some(_) -> state
     True, None -> {
       let token = state.progress_timer_token + 1
-      let timer = process.send_after(state.self, 100, ProgressFlush(token))
+      let timer = clock.send_after(state.self, 100, ProgressFlush(token))
       session_state.State(
         ..state,
         progress_timer_token: token,
@@ -1240,7 +1248,12 @@ fn handle(
   }
   // Runs end in finish_turn and background_finish, which follow at once; this
   // catches a turn that never started, such as one whose kernel failed to boot.
-  let state = settle(state)
+  // Read-only requests must not apply a pending workspace here: that path
+  // acknowledges the move with a writer query and can queue behind storage.
+  let state = case read_only(message) {
+    True -> state
+    False -> settle(state)
+  }
   case message {
     ReadCapture(reply) -> answer(state, reply, capture_state(state))
     ReadSummary(reply) -> answer(state, reply, summary_state(state))
@@ -1271,9 +1284,17 @@ fn handle(
       }
     }
     Resume ->
-      case kernel_or_park(state, Resume) {
-        Error(state) -> actor.continue(state)
-        Ok(state) -> actor.continue(resume(state))
+      case workspace_ready(state) {
+        Error(err) ->
+          actor.continue(failed_queued(
+            session_state.State(..state, activity: turn.Resting),
+            submission_error(err),
+          ))
+        Ok(Nil) ->
+          case kernel_or_park(state, Resume) {
+            Error(state) -> actor.continue(state)
+            Ok(state) -> actor.continue(resume(state))
+          }
       }
     Rewarm ->
       case busy(state) || state.steering != [] {
@@ -1362,7 +1383,7 @@ fn handle(
           case turn.running(state.activity), state.active_submissions {
             Some(run), [submission] if submission.operation_id == Some(id) -> {
               interrupt_kernel(state)
-              let _ = process.send_after(state.self, 2500, Abort(run.id))
+              let _ = clock.send_after(state.self, 2500, Abort(run.id))
               answer(
                 session_state.State(
                   ..state,
@@ -1413,7 +1434,7 @@ fn handle(
           let requested = case turn.running(state.activity), run_id {
             Some(run), Some(id) if run.id == id -> {
               interrupt_kernel(state)
-              let _ = process.send_after(state.self, 2500, Abort(run.id))
+              let _ = clock.send_after(state.self, 2500, Abort(run.id))
               True
             }
             _, _ -> False
@@ -2059,7 +2080,7 @@ fn handle(
         state,
         reply,
         Report(
-          turn.running(state.activity) != None,
+          uses_kernel(state),
           kernel,
           state.history != None,
           clock.monotonic_ms() - state.last_touch,
@@ -2067,6 +2088,16 @@ fn handle(
         ),
       )
     }
+    // Expiry decides on reports taken earlier in its sweep; deciding again
+    // here, where boots start, keeps the file for one begun since.
+    ExpireState(reply) ->
+      case state.kernel, uses_kernel(state) {
+        None, False -> {
+          discard_state(state.home, state.info.id)
+          answer(state, reply, True)
+        }
+        _, _ -> answer(state, reply, False)
+      }
     Release(reply) ->
       case state.kernel, turn.running(state.activity) {
         Some(kernel), None -> {
@@ -2563,6 +2594,11 @@ fn waiting_turn(state: State) -> Bool {
       list.contains(parked, StartQueued) || list.contains(parked, Resume)
     None -> False
   }
+}
+
+/// Running, or booting a kernel that restores the saved state.
+fn uses_kernel(state: State) -> Bool {
+  turn.running(state.activity) != None || state.booting != None
 }
 
 /// Running a turn, or about to once the kernel is up.
@@ -3857,6 +3893,26 @@ fn apply_workspace_state(state: State) -> Result(State, #(State, String)) {
   }
 }
 
+/// Whether a message only observes session state and must not settle a move.
+fn read_only(message: Message) -> Bool {
+  case message {
+    ReadCapture(_)
+    | ReadSummary(_)
+    | ReadStatus(_)
+    | ReadAwaited(_)
+    | ReadKernel(_)
+    | ReadCommands(_)
+    | ReadSelection(_)
+    | ReadEffort(_)
+    | ReadCompactAt(_)
+    | ReadName(_)
+    | Read(_, _)
+    | ReadContext(_)
+    | Idle(_) -> True
+    _ -> False
+  }
+}
+
 /// A busy session makes the move it owes an ancestor when its run ends.
 fn settle(state: State) -> State {
   case busy(state) || state.booting != None {
@@ -4012,7 +4068,7 @@ fn interrupt_waiting(
     None, False -> answer(state, reply, False)
     Some(run), _ -> {
       interrupt_kernel(state)
-      let _ = process.send_after(state.self, 2500, Abort(run.id))
+      let _ = clock.send_after(state.self, 2500, Abort(run.id))
       let state = clear_tool_progress(state)
       answer(
         session_state.State(

@@ -18,6 +18,9 @@ type customProvider struct {
 	DefaultName   string
 	DefaultURL    string
 	FixedProtocol string
+	// DefaultProtocol preselects a protocol the person can still change, for
+	// a row that shares its extension with the generic OpenAI-compatible one.
+	DefaultProtocol string
 	// FixedEndpoint skips the base url: the extension knows where it sends.
 	FixedEndpoint bool
 	// Scoped asks for a cloud project and location instead of a base url and
@@ -85,6 +88,15 @@ var customProviders = []customProvider{
 		Scoped:        true,
 	},
 	{
+		ID:              "add-ollama",
+		Label:           "Ollama Cloud",
+		Detail:          "api key · ollama.com cloud models",
+		Extension:       "openai",
+		DefaultName:     "ollama-cloud",
+		DefaultURL:      "https://ollama.com/v1",
+		DefaultProtocol: "chat_completions",
+	},
+	{
 		ID:         "add-openai",
 		Label:      "OpenAI-compatible",
 		Detail:     "your own base URL and api key",
@@ -126,7 +138,9 @@ func customProviderByID(id string) (customProvider, bool) {
 	return customProvider{}, false
 }
 
-// custom finds the api-key provider the draft's extension belongs to.
+// custom finds the api-key provider by the draft's extension, the first row with
+// it, since a draft does not remember which row began it. Rows that share an
+// extension must agree on the flags read through here.
 func (m LoginModel) custom() (customProvider, bool) {
 	i := slices.IndexFunc(customProviders, func(p customProvider) bool { return p.Extension == m.Draft.Extension })
 	if i < 0 {
@@ -209,7 +223,7 @@ func (m *LoginModel) advanceToModels() tea.Cmd {
 
 func (m *LoginModel) startCustomProvider(p customProvider) tea.Cmd {
 	m.Name = p.DefaultName
-	m.Draft = config.Settings{Extension: p.Extension, BaseURL: p.DefaultURL, Protocol: cmp.Or(p.FixedProtocol, "responses")}
+	m.Draft = config.Settings{Extension: p.Extension, BaseURL: p.DefaultURL, Protocol: cmp.Or(p.FixedProtocol, p.DefaultProtocol, "responses")}
 	m.Step = StepName
 	m.TextInput.Placeholder = p.DefaultName
 	return m.promptInput("", false)

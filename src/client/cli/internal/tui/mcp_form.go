@@ -232,17 +232,17 @@ func (f *mcpForm) view(width int) []string {
 	}
 	rows := []string{DefaultStyles.Bold.Render(title)}
 	for i, key := range f.fields() {
-		value := f.Transport
+		value, pad := f.Transport, 13
 		if key != fieldTransport {
 			value = f.Inputs[key].View()
 		} else if f.Editing == "" {
-			value = " http  ‹stdio›"
+			value, pad = " http  ‹stdio›", 12
 			if f.Transport == "http" {
 				value = "‹http›  stdio "
 			}
 		}
 		label := cmp.Or(mcpFieldLabels[key], key)
-		rows = append(rows, formRow(i == f.Focus, label, 13, value, width))
+		rows = append(rows, formRow(i == f.Focus, label, pad, value, width))
 	}
 	return rows
 }

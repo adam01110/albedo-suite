@@ -497,6 +497,9 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 		case StepOAuthFields:
 			return m, m.acceptLoginField(m.TextInput.Value())
 		case StepOAuth:
+			if login, ok := m.signInFor(m.Provider); ok && m.signInOver() {
+				return m, m.startSignIn(login)
+			}
 			val := strings.TrimSpace(m.TextInput.Value())
 			if val != "" && m.LoginID != "" {
 				m.Status = "exchanging authorization code…"

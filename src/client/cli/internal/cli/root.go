@@ -309,10 +309,13 @@ func newStop(deps Dependencies) *cobra.Command {
 	}}
 }
 func newDaemon(deps Dependencies) *cobra.Command {
-	var stop bool
+	var stop, kernels bool
 	command := &cobra.Command{Use: "daemon", Short: "start Albedo in the background or stop it", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+		if kernels && !stop {
+			return fmt.Errorf("--kernels goes with --stop")
+		}
 		if stop {
-			return deps.Application.StopDaemon(cmd.Context())
+			return deps.Application.StopDaemon(cmd.Context(), kernels)
 		}
 		conn, err := deps.Application.Connect(cmd.Context())
 		if err != nil {
@@ -322,6 +325,7 @@ func newDaemon(deps Dependencies) *cobra.Command {
 		return err
 	}}
 	command.Flags().BoolVar(&stop, "stop", false, "stop the running daemon")
+	command.Flags().BoolVar(&kernels, "kernels", false, "with --stop, end every Python kernel too instead of leaving them for the next daemon: variables are saved and restored, running jobs end")
 	return command
 }
 func newLogin(deps Dependencies) *cobra.Command {

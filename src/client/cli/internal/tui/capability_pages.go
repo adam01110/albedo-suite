@@ -3,6 +3,7 @@ package tui
 import (
 	"albedo/cli/internal/config"
 	"albedo/cli/internal/daemon"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -28,6 +29,8 @@ type CapabilityPageModel struct {
 	SessionETag, GlobalETag, MCPETag string
 	Diagnostics                      []string
 	ExtensionEnabled                 bool
+	// noticeWarns says the notice is a warning rather than a save that went through.
+	noticeWarns bool
 	pageStatus
 	listView
 	confirm
@@ -50,9 +53,10 @@ type capabilityLoadedMsg struct {
 	ExtensionEnabled                 bool
 }
 type capabilitySavedMsg struct {
-	Err     error
-	Warning string
-	Gen     int
+	Err    error
+	Notice string
+	Warns  bool
+	Gen    int
 }
 type CapabilityPageDoneMsg struct{}
 type CapabilityPageChangedMsg struct{}
@@ -154,7 +158,7 @@ func (m CapabilityPageModel) enableExtensionCmd(gen int) tea.Cmd {
 			return capabilitySavedMsg{Gen: gen, Err: err}
 		}
 		reloaded, reloadErr := daemon.ReloadSession(context.Background(), m.Conn, m.SessionID, daemon.ReloadRequest{Target: "session"})
-		warning := reloaded.Message()
+		warning, warns := reloaded.Message(), true
 		switch {
 		case reloadErr != nil:
 			warning = "Extension enabled; reload failed: " + reloadErr.Error()
@@ -165,8 +169,10 @@ func (m CapabilityPageModel) enableExtensionCmd(gen int) tea.Cmd {
 			warning = "Extension enabled; reload returned no session outcome."
 		case reloaded.Session.State != "applied":
 			warning = "Extension enabled; session reload " + reloaded.Session.State + ". " + reloaded.Message()
+		default:
+			warns = false
 		}
-		return capabilitySavedMsg{Gen: gen, Warning: warning}
+		return capabilitySavedMsg{Gen: gen, Notice: warning, Warns: warns}
 	}
 }
 
@@ -185,7 +191,7 @@ func (m CapabilityPageModel) choiceCmd(item capabilityItem, scope string, enable
 		} else {
 			result, err = daemon.SetCatalogCapability(context.Background(), m.Conn, m.SessionID, daemon.CatalogCapabilityRequest{Revision: m.Revision, ID: item.ID, Kind: m.Kind, ETag: etag, Scope: scope, Enabled: enabled})
 		}
-		return capabilitySavedMsg{Gen: gen, Err: err, Warning: strings.TrimSpace(result.Message + " " + result.Warning)}
+		return capabilitySavedMsg{Gen: gen, Err: err, Notice: strings.TrimSpace(result.Message + " " + result.Warning), Warns: result.Warning != ""}
 	}
 }
 
@@ -193,14 +199,14 @@ func (m CapabilityPageModel) choiceCmd(item capabilityItem, scope string, enable
 func (m CapabilityPageModel) saveMCPCmd(sub mcpSubmission, gen int) tea.Cmd {
 	return func() tea.Msg {
 		result, err := daemon.SaveMCP(context.Background(), m.Conn, m.SessionID, daemon.MCPUpdateRequest{Name: sub.Name, ETag: m.MCPETag, StoredSecrets: m.storedSecrets(sub.Name), Server: &sub.Server, Secrets: sub.Secrets})
-		return capabilitySavedMsg{Gen: gen, Err: err, Warning: strings.TrimSpace(result.Message + " " + result.Warning)}
+		return capabilitySavedMsg{Gen: gen, Err: err, Notice: strings.TrimSpace(result.Message + " " + result.Warning), Warns: result.Warning != ""}
 	}
 }
 
 func (m CapabilityPageModel) deleteMCPCmd(name string, gen int) tea.Cmd {
 	return func() tea.Msg {
 		result, err := daemon.SaveMCP(context.Background(), m.Conn, m.SessionID, daemon.MCPUpdateRequest{Name: name, ETag: m.MCPETag, Server: nil, Secrets: daemon.MCPSecretsPatch{}})
-		return capabilitySavedMsg{Gen: gen, Err: err, Warning: strings.TrimSpace(result.Message + " " + result.Warning)}
+		return capabilitySavedMsg{Gen: gen, Err: err, Notice: strings.TrimSpace(result.Message + " " + result.Warning), Warns: result.Warning != ""}
 	}
 }
 
@@ -245,7 +251,7 @@ func (m CapabilityPageModel) Update(msg tea.Msg) (CapabilityPageModel, tea.Cmd) 
 			if apiErr, ok := errors.AsType[*daemon.APIError](msg.Err); ok && apiErr.Code == "catalog_changed" {
 				m.Saving, m.Loading, m.Error = false, true, ""
 				m.confirm.dismiss()
-				m.Notice = "The list changed. Review it before trying again."
+				m.Notice, m.noticeWarns = "The list changed. Review it before trying again.", true
 				m.Generation = nextPageGeneration()
 				return m, m.loadCmd(m.Generation)
 			}
@@ -256,10 +262,8 @@ func (m CapabilityPageModel) Update(msg tea.Msg) (CapabilityPageModel, tea.Cmd) 
 		}
 		m.Form = nil
 		m.confirm.dismiss()
-		m.Notice = "Saved. Reload the session to apply the selection."
-		if msg.Warning != "" {
-			m.Notice = msg.Warning
-		}
+		m.Notice = cmp.Or(msg.Notice, "Saved. Reload the session to apply the selection.")
+		m.noticeWarns = msg.Warns
 		m.Loading, m.Generation = true, nextPageGeneration()
 		return m, tea.Batch(m.loadCmd(m.Generation), func() tea.Msg { return CapabilityPageChangedMsg{} })
 
@@ -500,14 +504,10 @@ func (m CapabilityPageModel) hasSessionChoice(item capabilityItem) bool {
 	return item.Candidate.SessionOverride != nil
 }
 
-// entry is how an item reads in the list: its global state in front, and
-// this session's choice at the edge when it differs.
+// entry is how an item reads in the list: its state in this session in
+// front, daggered when that is the session's own choice.
 func (m CapabilityPageModel) entry(item capabilityItem) listEntry {
-	lead, tag := DefaultStyles.Faint.Render("off"), ""
-	if m.enabledIn(item, scopeGlobal) && !serverDisabled(item) {
-		lead = DefaultStyles.Success.Render("on")
-	}
-	entry := listEntry{key: item.ID, lead: lead, name: item.Title, detail: func(width int) []string { return m.details(item, width) }}
+	entry := listEntry{key: item.ID, lead: stateLead(m.enabledIn(item, scopeSession)), name: item.Title, detail: func(width int) []string { return m.details(item, "", width) }}
 	if m.Kind == "mcp" {
 		entry.desc = item.Detail
 		entry.search = []string{item.Server.URL, item.Server.Command}
@@ -522,25 +522,34 @@ func (m CapabilityPageModel) entry(item capabilityItem) listEntry {
 			entry.lead = DefaultStyles.Faint.Render("shadowed")
 		}
 	}
-	if m.hasSessionChoice(item) {
-		tag = DefaultStyles.Muted.Render("this session: " + onOff(m.enabledIn(item, scopeSession)))
-	}
-	entry.tag = tag
+	entry.lead = daggered(entry.lead, m.hasSessionChoice(item))
 	return entry
 }
 
 // details is the pane: what the item is, where it comes from, and both of
-// its states.
-func (m CapabilityPageModel) details(item capabilityItem, width int) []string {
+// its states, which lead when a question asks to change one.
+func (m CapabilityPageModel) details(item capabilityItem, asked string, width int) []string {
 	if m.Kind == "mcp" {
-		return m.serverDetails(item, width)
+		return m.serverDetails(item, asked, width)
 	}
-	return m.candidateDetails(item, width)
+	return m.candidateDetails(item, asked, width)
 }
 
-func (m CapabilityPageModel) candidateDetails(item capabilityItem, width int) []string {
+func (m CapabilityPageModel) candidateDetails(item capabilityItem, asked string, width int) []string {
 	c := item.Candidate
-	lines := paneTitle(c.Title, valueOr(c.Description), width)
+	global := onOff(m.enabledIn(item, scopeGlobal))
+	if c.GlobalPreference == nil {
+		global += " (default)"
+	}
+	session := "follows global"
+	if c.SessionOverride != nil {
+		session = onOff(*c.SessionOverride) + " (its own choice)"
+	}
+	scopes := scopeRows(global, session, asked, width)
+	lines := paneTitle(item.Title, valueOr(c.Description), width)
+	if asked != "" {
+		lines, scopes = append(lines, scopes...), nil
+	}
 	lines = append(lines, factRows("source", c.Source, width)...)
 	if c.ResolvedSource != nil {
 		lines = append(lines, factRows("resolved", *c.ResolvedSource, width)...)
@@ -554,16 +563,7 @@ func (m CapabilityPageModel) candidateDetails(item capabilityItem, width int) []
 	}
 	lines = append(lines, factRows("validity", validity, width)...)
 	lines = append(lines, factRows("shadowing", shadow, width)...)
-	global := onOff(m.enabledIn(item, scopeGlobal))
-	if c.GlobalPreference == nil {
-		global += " (default)"
-	}
-	session := "follows global"
-	if c.SessionOverride != nil {
-		session = onOff(*c.SessionOverride) + " (its own choice)"
-	}
-	lines = append(lines, factRows("global", global, width)...)
-	lines = append(lines, factRows("session", session, width)...)
+	lines = append(lines, scopes...)
 	lines = append(lines, factRows("enabled", onOff(c.EffectiveEnabled)+" · eligible on reload: "+onOff(c.Eligible), width)...)
 	if c.Diagnostic != nil {
 		lines = append(lines, factRows("problem", *c.Diagnostic, width)...)
@@ -574,9 +574,13 @@ func (m CapabilityPageModel) candidateDetails(item capabilityItem, width int) []
 	return append(append(lines, ""), paneNote("Changes apply when the session reloads.", width)...)
 }
 
-func (m CapabilityPageModel) serverDetails(item capabilityItem, width int) []string {
+func (m CapabilityPageModel) serverDetails(item capabilityItem, asked string, width int) []string {
 	server := item.Server
+	scopes := scopeRows(onOff(m.enabledIn(item, scopeGlobal)), onOff(m.enabledIn(item, scopeSession)), asked, width)
 	lines := paneTitle(item.ID, item.Detail, width)
+	if asked != "" {
+		lines, scopes = append(lines, scopes...), nil
+	}
 	lines = append(lines, factRows("transport", server.Type, width)...)
 	if server.Type == "stdio" {
 		lines = append(lines, factRows("command", joinCommand(server.Command, server.Args), width)...)
@@ -591,8 +595,7 @@ func (m CapabilityPageModel) serverDetails(item capabilityItem, width int) []str
 		file = "disabled in extensions.json"
 	}
 	lines = append(lines, factRows("config", file, width)...)
-	lines = append(lines, factRows("global", onOff(m.enabledIn(item, scopeGlobal)), width)...)
-	lines = append(lines, factRows("session", onOff(m.enabledIn(item, scopeSession)), width)...)
+	lines = append(lines, scopes...)
 	lines = append(lines, factRows("tools", serverTools(server), width)...)
 	timeouts := fmt.Sprintf("startup %s · call %s", timeoutLabel(server.StartupTimeoutMs), timeoutLabel(server.CallTimeoutMs))
 	lines = append(lines, factRows("timeouts", timeouts, width)...)
@@ -648,25 +651,25 @@ func (m CapabilityPageModel) hints(item capabilityItem, ok bool) []hint {
 	if m.extensionOff() {
 		hints = append(hints, hint{"ctrl+t", "enable extension"})
 	}
-	if ok {
-		if m.canToggle(item, scopeGlobal) {
-			hints = append(hints, hint{"enter", "global"})
+	if ok && m.canToggle(item, scopeGlobal) {
+		hints = append(hints, hint{"enter", "global"})
+	}
+	if mcp {
+		hints = append(hints, hint{"ctrl+o", "add server"})
+		if ok {
+			hints = append(hints, hint{"ctrl+e", "edit"}, hint{"ctrl+d", "delete"})
 		}
+	}
+	if ok {
 		if m.canToggle(item, scopeSession) {
 			hints = append(hints, hint{"shift+enter", "this session"})
 		}
 		if !mcp && m.canClear(item) {
 			hints = append(hints, hint{"ctrl+x", "follow global"})
 		}
-		if mcp {
-			hints = append(hints, hint{"ctrl+e", "edit"}, hint{"ctrl+d", "delete"})
-		}
 		if serverDisabled(item) {
 			hints = append(hints, hint{"ctrl+g", "enable server"})
 		}
-	}
-	if mcp {
-		hints = append(hints, hint{"ctrl+o", "add server"})
 	}
 	return append(hints, hint{"ctrl+r", "refresh"}, hint{"esc", "back"})
 }
@@ -690,7 +693,7 @@ func (m CapabilityPageModel) status() (string, bool) {
 	case m.Error != "":
 		return DefaultStyles.Error.Render(m.Error), true
 	case m.Notice != "":
-		return DefaultStyles.Warning.Render(m.Notice), true
+		return notice(m.Notice, m.noticeWarns), true
 	case m.extensionOff():
 		return DefaultStyles.Warning.Render("extension is off"), true
 	case len(m.Diagnostics) > 0:
@@ -737,7 +740,7 @@ func (m CapabilityPageModel) summary() string {
 
 // formList is the open form in the list's place, clipped to its rows.
 func (m CapabilityPageModel) formList(width, height int) []string {
-	rows := m.Form.view(width)
+	rows := inset(m.Form.view(width - 1))
 	return rows[:min(len(rows), height)]
 }
 
@@ -752,11 +755,14 @@ func (m CapabilityPageModel) View() string {
 	case m.Error != "" && len(m.Items) == 0:
 		lv.Empty = "Could not load " + noun + "s; the reason is in the footer."
 	}
-	frame := lv.frame(brand("albedo")+" "+DefaultStyles.Muted.Render("/"+m.Kind), "", m.footer(width))
+	frame := lv.frame(brand("albedo")+" "+DefaultStyles.Muted.Render("/"+m.Kind), daggerLegend(slices.ContainsFunc(m.Items, m.hasSessionChoice)), m.footer(width))
 	if m.Form != nil {
 		frame.filter, frame.pane, frame.list = "", nil, m.formList
 	} else {
 		frame.summary = m.summary()
+	}
+	if item, ok := m.current(); ok && m.confirm.asking() && slices.Contains([]string{scopeGlobal, scopeSession, scopeInherit}, m.confirm.what) {
+		frame.pane = detailPane(func(width int) []string { return m.details(item, m.confirm.what, width) })
 	}
 	return frame.view(m.Width, m.Height)
 }

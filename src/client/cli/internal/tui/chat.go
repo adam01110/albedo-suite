@@ -139,6 +139,9 @@ type ChatModel struct {
 	// userRows are the settled rows where user messages start.
 	userRows      []int
 	effortOptions []string
+	// direnvAsk is the blocked .envrc the question above the composer offers
+	// to allow; empty when nothing asks.
+	direnvAsk string
 
 	// burstRows is the rendered frame of the trailing run of compact entries.
 	// Its key names every input the rows depend on, so a refresh that changes
@@ -395,6 +398,9 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		}
 		home := m.hostHomeCmd()
 		return m, tea.Batch(m.startAnimation(), m.statusPollCmd(), home)
+
+	case ChatDirenvMsg:
+		return m, m.direnvAnswered(msg)
 
 	case ChatHostMsg:
 		if msg.SessionID == m.SessionID && msg.Generation == m.Generation && msg.Workspace == m.Workspace && msg.Err == nil {

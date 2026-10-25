@@ -17,17 +17,27 @@ import (
 // profile, and lets each row carry a reasoning effort before you switch.
 
 type ModelPickerSelectMsg struct {
-	// RaiseCap is set when you changed the model's context cap here: true
-	// raises it to the provider's maximum, false restores the default window.
-	RaiseCap *bool
-	CapKey   string
-	// CompactAt is set when you changed the tokens the model compacts at
-	// here, for every session: zero clears it.
-	CompactAt *int
-	Model     string
-	Provider  string
+	Model    string
+	Provider string
 	// Effort is the chosen reasoning level. Empty lets the daemon choose.
 	Effort string
+}
+
+// ModelPickerCapsMsg asks the app to save a change to a model's context. The
+// cap and the compaction window belong to the model, for every session, so
+// they save as soon as you make them rather than with a switch. Zero
+// CompactAt clears the window.
+type ModelPickerCapsMsg struct {
+	Generation int
+	Caps       daemon.ModelCapsRequest
+}
+
+// modelCapsSavedMsg answers a ModelPickerCapsMsg with the models settings'
+// new ETag.
+type modelCapsSavedMsg struct {
+	Generation int
+	ETag       string
+	Err        error
 }
 
 type ModelPickerCancelMsg struct{}
@@ -72,13 +82,9 @@ type ModelPickerModel struct {
 	readCtx     context.Context
 	cancelReads context.CancelFunc
 	Conn        *daemon.Connection
-	// caps are cap choices made here, by model id: the cap is per model, so
-	// the same model under two profiles shares it.
-	caps    map[string]bool
-	efforts map[string]string
-	// windows are compaction windows chosen here, by cap key, zero for
-	// cleared. Like caps they save when you switch.
-	windows map[string]int
+	efforts     map[string]string
+	// saving is the cap change waiting on the daemon; keys wait with it.
+	saving *daemon.ModelCapsRequest
 	// edit is the window field in the details pane, live while editing.
 	edit    textinput.Model
 	editing bool
@@ -143,8 +149,6 @@ func NewModelPickerModel(conn *daemon.Connection, profiles config.Profiles, mode
 		Effort:      effort,
 		catalogs:    catalogs,
 		efforts:     map[string]string{},
-		caps:        map[string]bool{},
-		windows:     map[string]int{},
 		edit:        newWindowField(),
 		search:      search,
 	}
@@ -272,23 +276,6 @@ func raisable(model daemon.Model) bool {
 	return model.MaxContext > model.Context && model.Context > 0
 }
 
-// raised is the cap a row would switch with: your choice here, else the saved one.
-func (m ModelPickerModel) raised(r modelRow) bool {
-	if raised, ok := m.caps[r.model.CapKey]; ok {
-		return raised
-	}
-	return r.model.Raised
-}
-
-// compactAt is the tokens a row's model compacts at: your choice here, else
-// the saved one. Zero follows the model's window.
-func (m ModelPickerModel) compactAt(r modelRow) int {
-	if tokens, ok := m.windows[r.model.CapKey]; ok {
-		return tokens
-	}
-	return r.model.CompactAt
-}
-
 // compactable reports whether a row's model has a window to compact below.
 func compactable(r modelRow) bool {
 	return !r.typed && r.model.Context > 0
@@ -296,7 +283,7 @@ func compactable(r modelRow) bool {
 
 // window is the context a row would switch with.
 func (m ModelPickerModel) window(r modelRow) int {
-	if raisable(r.model) && m.raised(r) {
+	if raisable(r.model) && r.model.Raised {
 		return r.model.MaxContext
 	}
 	return r.model.Context
@@ -330,8 +317,21 @@ func (m ModelPickerModel) Update(msg tea.Msg) (ModelPickerModel, tea.Cmd) {
 		m.refilter(false)
 		return m, nil
 
+	case modelCapsSavedMsg:
+		if msg.Generation != m.Generation || m.saving == nil {
+			return m, nil
+		}
+		saved := *m.saving
+		m.saving = nil
+		if msg.Err != nil {
+			m.Error = operationError(msg.Err, "Model settings error: ", "Model settings may have changed; check them before trying again.")
+			return m, nil
+		}
+		m.applyCaps(saved)
+		return m, nil
+
 	case tea.KeyPressMsg:
-		if m.Saving {
+		if m.Saving || m.saving != nil {
 			return m, nil
 		}
 		if m.editing {
@@ -355,26 +355,19 @@ func (m ModelPickerModel) Update(msg tea.Msg) (ModelPickerModel, tea.Cmd) {
 				return m, nil
 			}
 			m.Error = ""
-			choice := ModelPickerSelectMsg{Model: r.model.ID, CapKey: r.model.CapKey, Provider: r.profile, Effort: m.effort(r)}
-			if raised, changed := m.caps[r.model.CapKey]; changed && raised != r.model.Raised {
-				choice.RaiseCap = &raised
-			}
-			if tokens, changed := m.windows[r.model.CapKey]; changed && tokens != r.model.CompactAt {
-				choice.CompactAt = &tokens
-			}
+			choice := ModelPickerSelectMsg{Model: r.model.ID, Provider: r.profile, Effort: m.effort(r)}
 			return m, func() tea.Msg { return choice }
 		case "up", "ctrl+p", "down", "ctrl+n", "pgup", "pgdown":
 			m.move(map[string]int{"up": -1, "ctrl+p": -1, "down": 1, "ctrl+n": 1, "pgup": -max(1, m.Height/2), "pgdown": max(1, m.Height/2)}[msg.String()])
 			return m, nil
 		case "tab":
 			if r, ok := m.highlighted(); ok && raisable(r.model) {
-				m.caps[r.model.CapKey] = !m.raised(r)
-				return m, nil
+				return m.saveCaps(daemon.ModelCapsRequest{CapKey: r.model.CapKey, Raise: new(!r.model.Raised)})
 			}
 		case "ctrl+e":
 			if r, ok := m.highlighted(); ok && compactable(r) {
 				m.editing, m.Error = true, ""
-				m.edit.SetValue(compactTokensOrEmpty(m.compactAt(r)))
+				m.edit.SetValue(compactTokensOrEmpty(r.model.CompactAt))
 				m.edit.CursorEnd()
 				return m, nil
 			}
@@ -402,15 +395,24 @@ func (m ModelPickerModel) Update(msg tea.Msg) (ModelPickerModel, tea.Cmd) {
 	return m, cmd
 }
 
-// updateEdit is the window field's keys: enter keeps the value, esc drops it.
+// updateEdit is the window field's keys: enter saves the value, esc drops it.
 func (m ModelPickerModel) updateEdit(msg tea.KeyPressMsg) (ModelPickerModel, tea.Cmd) {
 	r, ok := m.highlighted()
 	switch msg.String() {
 	case "esc", "ctrl+c":
 		m.editing, m.Error = false, ""
 	case "enter":
-		if ok && m.keepWindow(r) {
-			m.editing = false
+		if !ok {
+			break
+		}
+		tokens, err := m.parseWindow(r)
+		if err != nil {
+			m.Error = err.Error()
+			break
+		}
+		m.editing = false
+		if tokens != r.model.CompactAt {
+			return m.saveCaps(daemon.ModelCapsRequest{CapKey: r.model.CapKey, CompactAt: &tokens})
 		}
 	default:
 		var cmd tea.Cmd
@@ -421,26 +423,51 @@ func (m ModelPickerModel) updateEdit(msg tea.KeyPressMsg) (ModelPickerModel, tea
 	return m, nil
 }
 
-// keepWindow takes the field's text as the row's compaction window. An empty
-// field clears it. It reports false, with the reason in Error, when the text
-// is no window the model can compact below.
-func (m *ModelPickerModel) keepWindow(r modelRow) bool {
+// parseWindow reads the field's text as the row's compaction window. An empty
+// field clears it. It fails, saying why, when the text is no window the model
+// can compact below.
+func (m ModelPickerModel) parseWindow(r modelRow) (int, error) {
 	raw := strings.TrimSpace(m.edit.Value())
 	if raw == "" {
-		m.windows[r.model.CapKey] = 0
-		return true
+		return 0, nil
 	}
 	tokens, err := daemon.ParseTokenWindow(raw)
 	if err != nil {
-		m.Error = err.Error()
-		return false
+		return 0, err
 	}
 	if limit := m.window(r); int(tokens) > limit {
-		m.Error = "past the model's " + compactTokens(limit) + " window"
-		return false
+		return 0, errors.New("past the model's " + compactTokens(limit) + " window")
 	}
-	m.windows[r.model.CapKey] = int(tokens)
-	return true
+	return int(tokens), nil
+}
+
+// saveCaps hands the app a cap change to save now. The keys wait for its answer.
+func (m ModelPickerModel) saveCaps(caps daemon.ModelCapsRequest) (ModelPickerModel, tea.Cmd) {
+	m.saving, m.Error = &caps, ""
+	ask := ModelPickerCapsMsg{Generation: m.Generation, Caps: caps}
+	return m, func() tea.Msg { return ask }
+}
+
+// applyCaps shows a saved change on every row of the model, whichever profile
+// lists it: the cap belongs to the model.
+func (m *ModelPickerModel) applyCaps(caps daemon.ModelCapsRequest) {
+	m.catalogs = slices.Clone(m.catalogs)
+	for i := range m.catalogs {
+		c := &m.catalogs[i]
+		c.models = slices.Clone(c.models)
+		for j := range c.models {
+			if c.models[j].CapKey != caps.CapKey {
+				continue
+			}
+			if caps.Raise != nil {
+				c.models[j].Raised = *caps.Raise
+			}
+			if caps.CompactAt != nil {
+				c.models[j].CompactAt = *caps.CompactAt
+			}
+		}
+	}
+	m.refilter(false)
 }
 
 // ── view ───────────────────────────────────────────────────────────────────

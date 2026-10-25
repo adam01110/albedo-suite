@@ -14,6 +14,7 @@ import (
 	"github.com/alecthomas/chroma/v2"
 	"github.com/alecthomas/chroma/v2/formatters"
 	chromastyles "github.com/alecthomas/chroma/v2/styles"
+	"github.com/rivo/uniseg"
 )
 
 // HighlightLines colors lines of code the way a reply's code blocks are
@@ -413,11 +414,37 @@ func renderMarkdown(text string, width int) string {
 	}
 	markdownThemes.Lock()
 	defer markdownThemes.Unlock()
-	rendered, err := renderer.Render(text)
+	rendered, err := renderer.Render(expandTabs(text))
 	if err != nil {
 		return text
 	}
 	return rendered
+}
+
+// expandTabs turns tabs into spaces at markdown's stops of 4, which keeps the
+// block structure: a terminal draws a tab out to its own stop, past the width
+// a row was padded to.
+func expandTabs(text string) string {
+	if !strings.Contains(text, "\t") {
+		return text
+	}
+	var b strings.Builder
+	column := 0
+	for _, r := range text {
+		switch r {
+		case '\t':
+			pad := 4 - column%4
+			b.WriteString(strings.Repeat(" ", pad))
+			column += pad
+		case '\n':
+			b.WriteRune(r)
+			column = 0
+		default:
+			b.WriteRune(r)
+			column += uniseg.StringWidth(string(r))
+		}
+	}
+	return b.String()
 }
 
 var (

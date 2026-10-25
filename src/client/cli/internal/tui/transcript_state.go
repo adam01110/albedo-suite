@@ -214,7 +214,7 @@ func (t *transcriptState) apply(evt daemon.StreamEvent, agentName string) []Hist
 		entries = t.settle(agentName)
 		entries = append(entries, HistoryEntry{
 			Kind: EntryTool, ID: evt.EntryID, Seq: evt.Position, ToolName: evt.ToolName, ToolArgs: evt.ToolArgs,
-			ToolResult: evt.ToolResult, ToolTrace: evt.ToolTrace, Images: evt.Images,
+			ToolResult: evt.ToolResult, ToolTrace: evt.ToolTrace, ToolTitle: evt.ToolTitle, Images: evt.Images,
 			Timestamp: time.Now().UnixMilli(),
 		})
 		if t.turn == nil {

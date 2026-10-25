@@ -317,6 +317,7 @@ fn tool(
     #("tool_call_id", json.string(call.id)),
     #("progress_call_id", json.string(progress_id)),
     #("name", json.string(call.name)),
+    #("title", json.nullable(progress.call_title(call), json.string)),
     #("arguments", case complete {
       True -> arguments
       False -> json.null()
@@ -504,6 +505,7 @@ pub fn progress(value: progress.Snapshot) -> json.Json {
     #("name", json.string(value.name)),
     #("phase", json.string(value.phase)),
     #("intent", json.string("unknown")),
+    #("title", json.nullable(value.title, json.string)),
   ]
   json.object(case value.code {
     None -> fields

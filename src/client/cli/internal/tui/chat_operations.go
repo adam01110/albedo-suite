@@ -20,12 +20,13 @@ func (m *ChatModel) Moved(moved daemon.Session, retry *WorkspaceRetry) tea.Cmd {
 	// a hint from an earlier move names a folder this one did not leave
 	m.Notices = slices.DeleteFunc(m.Notices, func(n Notice) bool { return strings.HasPrefix(n.Message, linkHintText) })
 	m.Notices.AddNotice(linkHint(from, workspace, retry))
+	m.direnvAsk = "" // the question was about the folder it left
 	m.syncViewportHeight()
 	m.Workspace, m.Host, m.hostHome = workspace, sessionHost(moved), ""
 	m.Renderer.Workspace = workspace
 	m.rebuildSettledLines() // settled rows name paths from the old workspace
 	m.refreshViewportContent()
-	return m.resend(retry)
+	return tea.Batch(m.resend(retry), m.direnvCmd())
 }
 
 const linkHintText = "to share memory and work with the folder you left: /link add "

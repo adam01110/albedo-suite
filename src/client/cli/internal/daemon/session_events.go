@@ -163,6 +163,7 @@ func decodeChatEnvelope(envelope sessionEventEnvelope, wireBytes int, content *e
 		for _, image := range data.Images {
 			event.Images = append(event.Images, ImageMetadata{MimeType: ImageMimeType(image.MimeType), Width: int(image.Width), Height: int(image.Height), Bytes: int(image.OriginalBytes), Reference: image.Reference.URL})
 		}
+		event.ToolTitle = value(data.Title)
 		arguments, _ := dynamicValue(data.Arguments)
 		event.ToolArgs, _ = arguments.(map[string]any)
 		if json.Unmarshal(data.Result, &event.ToolResult) != nil {
@@ -311,6 +312,7 @@ type toolEventData struct {
 	ToolCallID      string                     `json:"tool_call_id"`
 	ProgressCallID  string                     `json:"progress_call_id"`
 	Name            string                     `json:"name"`
+	Title           *string                    `json:"title,omitempty"`
 	Arguments       json.RawMessage            `json:"arguments"`
 	Result          json.RawMessage            `json:"result"`
 	Trace           json.RawMessage            `json:"trace"`

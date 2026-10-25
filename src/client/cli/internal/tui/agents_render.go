@@ -140,6 +140,22 @@ func drawTail(line tailLine, width, limit int) []string {
 	return out
 }
 
+// graphOffset scrolls a tall swarm so the selected dot and its children's
+// dots stay in view, the selected one first when both do not fit.
+func (m AgentsViewModel) graphOffset(height int) int {
+	n := m.nodes[m.selected]
+	if n == nil {
+		return 0
+	}
+	bottom := n.y + 3
+	for _, child := range m.nodes {
+		if child.parent == m.selected {
+			bottom = max(bottom, child.y+2)
+		}
+	}
+	return max(0, min(bottom-height, n.y-1))
+}
+
 func (m AgentsViewModel) View() string {
 	if m.Width <= 0 || m.Height <= 0 {
 		return ""
@@ -155,7 +171,7 @@ func (m AgentsViewModel) View() string {
 		tokens += n.chars / 4
 	}
 	right := DefaultStyles.Faint.Render(fmt.Sprintf("%d agents · %d running · ▴%s tok", len(m.nodes)-1, live, compactCount(tokens)))
-	out := []string{titleRule(m.Width, brand("albedo")+" "+DefaultStyles.Muted.Render("/agents"), right)}
+	out := []string{" " + titleRule(m.Width-1, brand("albedo")+" "+DefaultStyles.Muted.Render("/agents"), right)}
 
 	var confirmRows []string
 	if m.confirm.asking() {
@@ -163,21 +179,21 @@ func (m AgentsViewModel) View() string {
 	}
 	bodyH := max(1, m.Height-3-max(1, len(confirmRows)))
 	dagW := m.dagWidth()
-	// Scroll so the selected dot stays in view on a tall swarm.
-	offset := 0
-	if n := m.nodes[m.selected]; n != nil && n.y+3 > bodyH {
-		offset = n.y + 3 - bodyH
-	}
 	pw := m.paneWidth()
-	stacked := 0
+	var stacked []string
 	if pw == 0 {
-		stacked = min(len(m.paneHeader()), max(1, bodyH/2))
-		bodyH = max(1, bodyH-stacked)
-		offset = 0
-		if n := m.nodes[m.selected]; n != nil && n.y+3 > bodyH {
-			offset = n.y + 3 - bodyH
+		// Under the graph no tail follows, so the header ends at its facts.
+		stacked = m.paneHeader()
+		stacked = stacked[:max(0, len(stacked)-1)]
+		for len(stacked) > 0 && stacked[len(stacked)-1] == "" {
+			stacked = stacked[:len(stacked)-1]
+		}
+		stacked = stacked[:min(len(stacked), max(0, bodyH/2-1))]
+		if len(stacked) > 0 {
+			bodyH = max(1, bodyH-len(stacked)-1)
 		}
 	}
+	offset := m.graphOffset(bodyH)
 	canvas := newCanvas(dagW, bodyH+offset)
 	m.drawEdges(canvas)
 	m.drawNodes(canvas)
@@ -192,17 +208,13 @@ func (m AgentsViewModel) View() string {
 			}
 			row += divider + " " + ansi.Truncate(side, pw-1, "…")
 		}
-		out = append(out, row)
+		out = append(out, " "+row)
 	}
 
-	if stacked > 0 {
-		rows := m.paneHeader()
-		for i := range stacked {
-			row := ""
-			if i < len(rows) {
-				row = rows[i]
-			}
-			out = append(out, ansi.Truncate(row, max(1, m.Width), "…"))
+	if len(stacked) > 0 {
+		out = append(out, " "+DefaultStyles.Decor.Render(strings.Repeat("─", max(0, m.Width-2))))
+		for _, row := range stacked {
+			out = append(out, " "+ansi.Truncate(row, max(1, m.Width-1), "…"))
 		}
 	}
 
@@ -224,7 +236,7 @@ func (m AgentsViewModel) View() string {
 	if len(confirmRows) > 0 {
 		out = append(out, confirmRows...)
 	} else {
-		out = append(out, status)
+		out = append(out, " "+status)
 	}
 	target := m.label(m.selected, "agent")
 	input := m.input.View()
@@ -232,9 +244,9 @@ func (m AgentsViewModel) View() string {
 		input = DefaultStyles.Faint.Render("message " + target + "…  or /spawn <name> <task>")
 	}
 	if n := m.nodes[m.rename.id]; n != nil && m.rename.active() {
-		out = append(out, DefaultStyles.Prompt.Render("✎ ")+m.rename.view(m.Width-promptMarkWidth), renameHints("restores "+renameBlank(n)))
+		out = append(out, " "+DefaultStyles.Prompt.Render("✎ ")+m.rename.view(m.Width-promptMarkWidth-1), " "+renameHints("restores "+renameBlank(n)))
 	} else {
-		out = append(out, promptLead()+input, fitHints([]hint{{"hjkl/tab", "agent"}, {"i", "type"}, {"enter", "open or send"}, {"ctrl+r", "rename"}, {"ctrl+x", "delete"}, {"esc", "back"}}, max(1, m.Width)))
+		out = append(out, " "+promptLead()+input, footerLine(m.Width, []hint{{"hjkl/tab", "agent"}, {"enter", "open or send"}, {"ctrl+r", "rename"}, {"ctrl+x", "delete"}, {"esc", "back"}}, "", false))
 	}
 	return strings.Join(out, "\n")
 }

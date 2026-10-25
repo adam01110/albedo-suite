@@ -12,6 +12,7 @@ import (
 
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 type PageTone = daemon.PageTone
@@ -93,7 +94,12 @@ func NewPageViewModel(conn *daemon.Connection, sessionID, command string) PageVi
 func (m *PageViewModel) SetSize(width, height int) {
 	m.pageStatus.SetSize(width, height)
 	m.listView.setSize(width, height)
-	m.TextInput.SetWidth(max(10, width-20))
+	m.fitInput()
+}
+
+// fitInput gives the text field the room its prompt leaves on the row.
+func (m *PageViewModel) fitInput() {
+	m.TextInput.SetWidth(max(1, cmp.Or(m.Width, 80)-ansi.StringWidth(m.textLead())-2))
 }
 
 func (m PageViewModel) Init() tea.Cmd {
@@ -461,6 +467,7 @@ func (m *PageViewModel) promptField(act PageAction) tea.Cmd {
 		return nil
 	}
 	m.Mode = modeText
+	m.fitInput()
 	initial := ""
 	if field.Default != nil {
 		if json.Unmarshal(field.Default, &initial) != nil && string(field.Default) != "null" {

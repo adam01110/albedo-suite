@@ -27,6 +27,8 @@ type ConfigPageModel struct {
 	// order; ETag is the validator the next save has to match.
 	Sections []daemon.ExtensionSettingsSection
 	ETag     string
+	// noticeWarns says the notice is a warning rather than a save that went through.
+	noticeWarns bool
 	pageStatus
 	listView
 }
@@ -120,7 +122,7 @@ func (m ConfigPageModel) Update(msg tea.Msg) (ConfigPageModel, tea.Cmd) {
 		if msg.Err != nil {
 			if apiErr, ok := errors.AsType[*daemon.APIError](msg.Err); ok && apiErr.StatusCode == http.StatusPreconditionFailed {
 				m.Error = ""
-				m.Notice = "These settings changed elsewhere. Review them before saving again."
+				m.Notice, m.noticeWarns = "These settings changed elsewhere. Review them before saving again.", true
 				m.Loading, m.Generation = true, nextPageGeneration()
 				return m, m.loadCmd(m.Generation)
 			}
@@ -130,7 +132,7 @@ func (m ConfigPageModel) Update(msg tea.Msg) (ConfigPageModel, tea.Cmd) {
 		}
 		m.adopt(msg.Settings)
 		m.Form, m.Error = nil, ""
-		m.Notice = "Saved."
+		m.Notice, m.noticeWarns = "Saved.", false
 		return m, nil
 
 	case tea.PasteMsg:
@@ -323,24 +325,23 @@ func configTag(setting daemon.ExtensionSetting) string {
 // holds now.
 func (m ConfigPageModel) settingDetails(section daemon.ExtensionSettingsSection, setting daemon.ExtensionSetting, width int) []string {
 	lines := paneTitle(setting.Label, setting.Description, width)
+	if section.Problem != "" {
+		lines = append(lines, factRows("problem", section.Problem, width)...)
+	}
 	lines = append(lines, factRows("section", section.Name, width)...)
 	lines = append(lines, factRows("key", setting.Key, width)...)
 	lines = append(lines, factRows("kind", string(setting.Kind), width)...)
 	lines = append(lines, factRows("range", configRule(setting), width)...)
 	lines = append(lines, factRows("default", configDefault(setting), width)...)
-	lines = append(lines, factRows("saved", configSaved(setting), width)...)
-	if section.Problem != "" {
-		lines = append(lines, factRows("problem", section.Problem, width)...)
-	}
-	return lines
+	return append(lines, factRows("saved", configSaved(setting), width)...)
 }
 
 func (m ConfigPageModel) sectionDetails(section daemon.ExtensionSettingsSection, width int) []string {
 	lines := paneTitle(section.Label, section.Description, width)
-	lines = append(lines, factRows("section", section.Name, width)...)
 	if section.Problem != "" {
 		lines = append(lines, factRows("problem", section.Problem, width)...)
 	}
+	lines = append(lines, factRows("section", section.Name, width)...)
 	return append(lines, paneNote("This section declares no settings.", width)...)
 }
 
@@ -349,7 +350,7 @@ func (m ConfigPageModel) sectionDetails(section daemon.ExtensionSettingsSection,
 func (m ConfigPageModel) hints(setting daemon.ExtensionSetting, ok bool) []hint {
 	hints := []hint{{"↑↓", "move"}}
 	if ok {
-		hints = append(hints, hint{"enter", "edit"}, hint{"ctrl+e", "edit"})
+		hints = append(hints, hint{"enter", "edit"})
 		if setting.Saved.Set() {
 			hints = append(hints, hint{"ctrl+x", "reset"})
 		}
@@ -371,7 +372,7 @@ func (m ConfigPageModel) status() (string, bool) {
 	case m.Error != "":
 		return DefaultStyles.Error.Render(m.Error), true
 	case m.Notice != "":
-		return DefaultStyles.Warning.Render(m.Notice), true
+		return notice(m.Notice, m.noticeWarns), true
 	}
 	return DefaultStyles.Faint.Render(counted(len(m.Sections), "section")), false
 }
@@ -397,7 +398,7 @@ func (m ConfigPageModel) summary() string {
 
 // formList is the open form in the list's place, clipped to its rows.
 func (m ConfigPageModel) formList(width, height int) []string {
-	rows := m.Form.view(width)
+	rows := inset(m.Form.view(width - 1))
 	return rows[:min(len(rows), height)]
 }
 

@@ -20,6 +20,7 @@ type listEntry struct {
 	name    string // what the filter underlines
 	desc    string // faint after the name, and searched
 	tag     string // styled, at the right edge
+	faint   bool   // a row that is done with, drawn faint unless selected
 	search  []string
 	detail  func(width int) []string // the pane's lines; nil leaves it blank
 }
@@ -165,26 +166,39 @@ func (l listView) filterLine() string {
 // frame is the screen's layout around this list and the highlighted row's
 // detail.
 func (l listView) frame(title, right, footer string) listFrame {
-	return listFrame{title: title, right: right, filter: l.filterLine(), list: l.list, pane: l.pane, footer: footer}
+	f := listFrame{title: title, right: right, filter: l.filterLine(), list: l.list, footer: footer}
+	if len(l.shown) > 0 {
+		f.pane = l.pane
+	}
+	return f
 }
 
 // list draws the rows under their group headings and section rules at
 // exactly width × height.
 func (l listView) list(width, height int) []string {
 	if len(l.shown) == 0 {
-		note := "  no matches"
+		note := []string{"no matches"}
 		if len(l.rows) == 0 {
-			note = "  " + l.Empty
+			note = svWrap(l.Empty, max(1, width-3), height)
 		}
-		return scrollWindow([]string{DefaultStyles.Faint.Render(note)}, -1, width, height)
+		for i, line := range note {
+			note[i] = DefaultStyles.Faint.Render("  " + line)
+		}
+		return scrollWindow(note, -1, width, height)
 	}
-	leadW, nameW := 0, 0
+	leadW, nameW, tagW, described := 0, 0, 0, false
 	for _, s := range l.shown {
 		r := l.rows[s.row]
 		leadW = max(leadW, ansi.StringWidth(r.lead))
 		nameW = max(nameW, ansi.StringWidth(r.name))
+		tagW = max(tagW, ansi.StringWidth(r.tag))
+		described = described || r.desc != ""
 	}
-	nameW = min(nameW, max(12, width/3))
+	if described {
+		nameW = min(nameW, max(12, width/3))
+	} else {
+		nameW = min(nameW, width-leadW-6-tagW)
+	}
 
 	type line struct {
 		text  string
@@ -200,7 +214,8 @@ func (l listView) list(width, height int) []string {
 		}
 		newGroup := r.group != "" && (prev == nil || prev.group != r.group)
 		if newGroup {
-			if len(all) > 0 && height >= 10 {
+			// A group's heading has no rule of its own, so it keeps its gap.
+			if len(all) > 0 {
 				all = append(all, line{shown: -1})
 			}
 			all = append(all, line{text: groupHeading(r.group, width), shown: -1})
@@ -224,19 +239,41 @@ func (l listView) list(width, height int) []string {
 		}
 		all = append(all, line{shown: i})
 	}
-	return drawWindow(len(all), func(i int) string {
+	// A window never ends on a heading with none of its rows under it, and
+	// one that starts inside a group shows that group's heading on top.
+	start, cut := windowStart(len(all), selectedAt, height), len(all) > height && height >= 3
+	orphan := func() bool { return cut && start < len(all)-height && all[start+height-2].shown < 0 }
+	for orphan() && start > 0 && selectedAt < start+height-3 {
+		start--
+	}
+	for orphan() && selectedAt > start+1 {
+		start++
+	}
+	out := drawFrom(len(all), func(i int) string {
 		if all[i].shown < 0 {
 			return all[i].text
 		}
 		return l.row(l.shown[all[i].shown], all[i].shown == l.Cursor, width, leadW, nameW)
-	}, selectedAt, width, height)
+	}, start, width, height)
+	if cut && start > 0 && all[start+1].shown >= 0 {
+		for i := start; i >= 0; i-- {
+			if all[i].shown < 0 && all[i].text != "" {
+				out[0] = svFit(all[i].text, width)
+				break
+			}
+		}
+	}
+	return out
 }
 
 func (l listView) row(s listShown, selected bool, width, leadW, nameW int) string {
 	r := l.rows[s.row]
 	bar, nameStyle := " ", lipgloss.NewStyle()
-	if selected {
+	switch {
+	case selected:
 		bar, nameStyle = selectBar(), DefaultStyles.Bold
+	case r.faint:
+		nameStyle = DefaultStyles.Faint
 	}
 	line := bar + " "
 	if leadW > 0 {
@@ -261,17 +298,18 @@ func (l listView) row(s listShown, selected bool, width, leadW, nameW int) strin
 
 // pane is the highlighted row's detail at exactly width × height.
 func (l listView) pane(width, height int) []string {
-	inner := max(1, width-2)
-	r, ok := l.highlighted()
-	switch {
-	case !ok && len(l.rows) == 0:
-		return paneBox(nil, inner, width, height)
-	case !ok:
-		return paneBox([]string{"", DefaultStyles.Muted.Render("nothing matches"), DefaultStyles.Faint.Render("Try fewer search terms")}, inner, width, height)
-	case r.detail == nil:
-		return paneBox(nil, inner, width, height)
+	if r, ok := l.highlighted(); ok && r.detail != nil {
+		return detailPane(r.detail)(width, height)
 	}
-	return paneBox(r.detail(inner), inner, width, height)
+	return paneBox(nil, max(1, width-2), width, height)
+}
+
+// detailPane draws detail lines as a pane at exactly width × height.
+func detailPane(detail func(width int) []string) func(width, height int) []string {
+	return func(width, height int) []string {
+		inner := max(1, width-2)
+		return paneBox(detail(inner), inner, width, height)
+	}
 }
 
 // paneTitle opens a detail pane: the name in bold, a description under it,
@@ -289,15 +327,17 @@ func paneTitle(name, description string, width int) []string {
 	return append(lines, DefaultStyles.Decor.Render(strings.Repeat("─", width)))
 }
 
+// factLabelW is the label column of a detail pane's facts.
+const factLabelW = 11
+
 // factRows is one labelled fact of a detail pane; a long value wraps under
 // itself.
 func factRows(label, value string, width int) []string {
-	const labelW = 10
 	var lines []string
-	for i, l := range svWrap(value, max(1, width-labelW), 4) {
-		cell := strings.Repeat(" ", labelW)
+	for i, l := range svWrap(value, max(1, width-factLabelW), 4) {
+		cell := strings.Repeat(" ", factLabelW)
 		if i == 0 {
-			cell = DefaultStyles.Muted.Render(svCell(label, labelW, false))
+			cell = DefaultStyles.Muted.Render(svCell(label, factLabelW, false))
 		}
 		lines = append(lines, cell+l)
 	}

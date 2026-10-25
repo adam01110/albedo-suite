@@ -1,12 +1,14 @@
 # Source attribution
 
 The files under `src/server/` and `src/client/` replace files from Albedo at
-revision `01f7365aeb295d487846cfe4504b431e85a027cc`,
+revision `b274c034e64263a48961adcdf736f1e0cc838fd6`,
 <https://tangled.org/okami.mom/albedo>. Albedo is copyright 2026 albedo contributors
-(okami.mom & ptr.pet), licensed under WTFPL v2; the original license is retained
-in `LICENSES/albedo-WTFPL.txt`. Source replacements and their extension-local
-additions use WTFPL v2. Suite-authored material, including packaging, modules,
-helpers and tests, also uses WTFPL v2 under the root `LICENSE`.
+(okami.mom, ptr.pet, aly.codes and other contributors), licensed under MPL 2.0;
+the license is retained in `LICENSES/albedo-MPL-2.0.txt`. Updated source
+replacements retain upstream MPL 2.0 coverage. The previous WTFPL v2 license
+is retained in `LICENSES/albedo-WTFPL.txt` for earlier source versions.
+Suite-authored packaging, modules, helpers and tests use WTFPL v2 under the
+root `LICENSE`.
 
 Modifications add opt-in lazy MCP lifecycle/bindings, explicit staged formatting
 and local LSP batch checks, isolated local LSP compatibility tools, durable user

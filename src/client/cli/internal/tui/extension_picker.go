@@ -26,6 +26,7 @@ type extensionToggledMsg struct {
 	Err        error
 	Extensions []ExtensionItem
 	Notice     string
+	Warns      bool
 	Gen        int
 }
 
@@ -43,6 +44,8 @@ type ExtensionPickerModel struct {
 	Conn       *daemon.Connection
 	SessionID  string
 	Extensions []ExtensionItem
+	// noticeWarns says the notice is a warning rather than a save that went through.
+	noticeWarns bool
 	pageStatus
 	listView
 	confirm
@@ -103,8 +106,9 @@ func (m ExtensionPickerModel) changeExtensionCmd(name, scope string, enabled boo
 		if err != nil {
 			return extensionToggledMsg{Err: err, Gen: gen}
 		}
-		notice := "Saved the global default. Reload sessions to apply it."
+		notice, warns := "Saved the global default. Reload sessions to apply it.", false
 		if scope != "global" {
+			warns = true
 			reloaded, reloadErr := daemon.ReloadSession(context.Background(), m.Conn, m.SessionID, daemon.ReloadRequest{Target: "session"})
 			switch {
 			case reloadErr != nil:
@@ -117,10 +121,10 @@ func (m ExtensionPickerModel) changeExtensionCmd(name, scope string, enabled boo
 			case reloaded.Session.State != "applied":
 				notice = "Selection saved; session reload " + reloaded.Session.State + ". " + reloaded.Message()
 			default:
-				notice = reloaded.Message()
+				notice, warns = reloaded.Message(), false
 			}
 		}
-		return extensionToggledMsg{Extensions: updated, Notice: notice, Gen: gen}
+		return extensionToggledMsg{Extensions: updated, Notice: notice, Warns: warns, Gen: gen}
 	}
 }
 
@@ -224,7 +228,7 @@ func (m ExtensionPickerModel) Update(msg tea.Msg) (ExtensionPickerModel, tea.Cmd
 			if apiErr, ok := errors.AsType[*daemon.APIError](msg.Err); ok && apiErr.StatusCode == 412 {
 				m.Saving, m.Loading, m.Error = false, true, ""
 				m.confirm.dismiss()
-				m.Notice = "The configuration changed. Review the refreshed choices before saving."
+				m.Notice, m.noticeWarns = "The configuration changed. Review the refreshed choices before saving.", true
 				m.Generation = nextPageGeneration()
 				return m, m.loadExtensionsCmd(m.Generation)
 			}
@@ -236,7 +240,7 @@ func (m ExtensionPickerModel) Update(msg tea.Msg) (ExtensionPickerModel, tea.Cmd
 		m.confirm.dismiss()
 		m.setExtensions(msg.Extensions)
 		m.Error = ""
-		m.Notice = msg.Notice
+		m.Notice, m.noticeWarns = msg.Notice, msg.Warns
 		return m, func() tea.Msg { return ExtensionPickerChangedMsg{} }
 
 	case tea.KeyPressMsg:
@@ -294,18 +298,12 @@ func (m ExtensionPickerModel) Update(msg tea.Msg) (ExtensionPickerModel, tea.Cmd
 	return m, cmd
 }
 
-// entry is how an extension reads in the list: its global default in front,
-// and this session's own choice at the edge when it differs.
+// entry is how an extension reads in the list: its state in this session in
+// front, daggered when that is the session's own choice.
 func (m ExtensionPickerModel) entry(ext ExtensionItem) listEntry {
-	lead, tag := DefaultStyles.Faint.Render("off"), ""
-	switch {
-	case ext.Quarantined != "":
+	lead, tag := daggered(stateLead(ext.Enabled), ext.Overridden), ""
+	if ext.Quarantined != "" {
 		lead, tag = DefaultStyles.Error.Render("bad"), DefaultStyles.Error.Render("quarantined")
-	case ext.GlobalEnabled:
-		lead = DefaultStyles.Success.Render("on")
-	}
-	if ext.Overridden && ext.Quarantined == "" {
-		tag = DefaultStyles.Muted.Render("this session: " + onOff(ext.Enabled))
 	}
 	return listEntry{
 		key:    ext.Name,
@@ -314,8 +312,31 @@ func (m ExtensionPickerModel) entry(ext ExtensionItem) listEntry {
 		desc:   ext.Description,
 		tag:    tag,
 		search: append(slices.Clone(ext.Plugins), ext.Requires...),
-		detail: func(width int) []string { return m.details(ext, width) },
+		detail: func(width int) []string { return m.details(ext, "", width) },
 	}
+}
+
+func stateLead(on bool) string {
+	if on {
+		return DefaultStyles.Success.Render("on")
+	}
+	return DefaultStyles.Faint.Render("off")
+}
+
+// daggered marks a row's state as this session's own choice.
+func daggered(lead string, overridden bool) string {
+	if overridden {
+		return lead + DefaultStyles.Muted.Render("†")
+	}
+	return lead
+}
+
+// daggerLegend is the title's right end while some row carries a dagger.
+func daggerLegend(marked bool) string {
+	if !marked {
+		return ""
+	}
+	return DefaultStyles.Muted.Render("†") + DefaultStyles.Faint.Render(" session override")
 }
 
 func onOff(on bool) string {
@@ -325,16 +346,15 @@ func onOff(on bool) string {
 	return "off"
 }
 
-// details is the pane: both choices, what the extension provides, and what
-// each key would change.
-func (m ExtensionPickerModel) details(ext ExtensionItem, width int) []string {
+// details is the pane: both choices, the one a question asks about first,
+// what the extension provides, and what each key would change.
+func (m ExtensionPickerModel) details(ext ExtensionItem, asked string, width int) []string {
 	lines := paneTitle(ext.Name, ext.Description, width)
 	session := "follows global"
 	if ext.Overridden {
 		session = onOff(ext.Enabled) + " (its own choice)"
 	}
-	lines = append(lines, factRows("global", onOff(ext.GlobalEnabled)+" default", width)...)
-	lines = append(lines, factRows("session", session, width)...)
+	lines = append(lines, scopeRows(onOff(ext.GlobalEnabled)+" default", session, asked, width)...)
 	lines = append(lines, factRows("plugins", joinOr(ext.Plugins, ", ", "not reported"), width)...)
 	lines = append(lines, factRows("provides", joinOr(m.capabilitiesList(ext), " · ", "not reported"), width)...)
 	lines = append(lines, factRows("requires", joinOr(ext.Requires, ", ", "none"), width)...)
@@ -345,9 +365,23 @@ func (m ExtensionPickerModel) details(ext ExtensionItem, width int) []string {
 		}
 		return lines
 	}
-	lines = append(lines, "")
-	lines = append(lines, paneNote("A global change applies as sessions reload. A session change reloads this session and may lose Python variables that cannot be saved.", width)...)
-	return lines
+	switch asked {
+	case "":
+		return lines
+	case scopeGlobal:
+		return append(append(lines, ""), paneNote("A global change applies as sessions reload.", width)...)
+	}
+	return append(append(lines, ""), paneNote("A session change reloads this session and may lose Python variables that cannot be saved.", width)...)
+}
+
+// scopeRows are the global and session facts, the session's first when a
+// question asks about it.
+func scopeRows(global, session, asked string, width int) []string {
+	rows := [][]string{factRows("global", global, width), factRows("session", session, width)}
+	if asked == scopeSession || asked == scopeInherit {
+		slices.Reverse(rows)
+	}
+	return slices.Concat(rows...)
 }
 
 func joinOr(items []string, sep, empty string) string {
@@ -361,6 +395,9 @@ func (m ExtensionPickerModel) footer(width int) string {
 	if m.confirm.asking() && !m.Saving {
 		return m.confirm.footer(width, m.Error)
 	}
+	if len(m.Extensions) == 0 && m.Error != "" {
+		return footerLine(width, []hint{{"ctrl+r", "retry"}, {"esc", "back"}}, DefaultStyles.Error.Render(m.Error), true)
+	}
 	ext, _ := m.current()
 	hints := []hint{{"↑↓", "move"}, {"enter", "global"}, {"shift+enter", "this session"}}
 	if ext.Overridden {
@@ -368,9 +405,6 @@ func (m ExtensionPickerModel) footer(width int) string {
 	}
 	if (ext.Name == "webhooks" || ext.Name == "discord") && ext.Enabled {
 		hints = append(hints, hint{"ctrl+w", ext.Name})
-	}
-	if len(m.Extensions) == 0 && m.Error != "" {
-		hints = append(hints, hint{"ctrl+r", "retry"})
 	}
 	hints = append(hints, hint{"esc", "back"})
 
@@ -384,7 +418,7 @@ func (m ExtensionPickerModel) footer(width int) string {
 	case m.Error != "":
 		status = DefaultStyles.Error.Render(m.Error)
 	case m.Notice != "":
-		status = DefaultStyles.Warning.Render(m.Notice)
+		status = notice(m.Notice, m.noticeWarns)
 	default:
 		on := 0
 		for _, e := range m.Extensions {
@@ -400,8 +434,16 @@ func (m ExtensionPickerModel) footer(width int) string {
 func (m ExtensionPickerModel) View() string {
 	lv := m.listView
 	lv.Empty = "No extensions are available for this session."
-	if m.Loading {
+	switch {
+	case m.Loading:
 		lv.Empty = "loading extensions…"
+	case m.Error != "" && len(m.Extensions) == 0:
+		lv.Empty = "Could not load extensions; the reason is in the footer."
 	}
-	return lv.frame(brand("albedo")+" "+DefaultStyles.Muted.Render("/extensions"), "", m.footer(max(1, m.Width))).view(m.Width, m.Height)
+	marked := slices.ContainsFunc(m.Extensions, func(e ExtensionItem) bool { return e.Overridden && e.Quarantined == "" })
+	frame := lv.frame(brand("albedo")+" "+DefaultStyles.Muted.Render("/extensions"), daggerLegend(marked), m.footer(max(1, m.Width)))
+	if ext, ok := m.current(); ok && m.confirm.asking() {
+		frame.pane = detailPane(func(width int) []string { return m.details(ext, m.confirm.what, width) })
+	}
+	return frame.view(m.Width, m.Height)
 }

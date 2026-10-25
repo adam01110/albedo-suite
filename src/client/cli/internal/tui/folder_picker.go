@@ -144,6 +144,7 @@ type FolderPicker struct {
 	readCtx     context.Context
 	cancelReads context.CancelFunc
 	src         folderSource
+	Tick        TickFunc
 	asked       map[string]bool
 	retry       *WorkspaceRetry
 	previews    map[string]*cachedFolderPreview
@@ -206,6 +207,7 @@ func NewFolderPicker(src folderSource, session daemon.Session, retry *WorkspaceR
 		session:            session,
 		retry:              retry,
 		src:                src,
+		Tick:               tea.Tick,
 		listings:           map[string]*folderListMsg{},
 		repos:              map[string]*daemon.Repo{},
 		asked:              map[string]bool{},

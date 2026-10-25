@@ -34,6 +34,7 @@ from albedo_api import (
     Text,
     check_timeout,
 )
+import albedo_direnv
 import albedo_proc
 import albedo_rtk
 import albedo_shell
@@ -850,11 +851,11 @@ async def _announce() -> None:
         try:
             await notify("jobs.completed", notice([job._facts() for job in batch]))
         except Exception as error:
-            if getattr(error, "code", "") == "busy":
+            if getattr(error, "code", "") in ("busy", "unknown"):
                 await asyncio.sleep(NOTICE_RETRY)
                 continue
             for job in batch:
-                job.capture.write(f"\n[completion notice not delivered: {error}\n")
+                job.capture.write(f"\n[completion notice not delivered: {error}]\n")
         for job in batch:
             owed.pop(job.id, None)
 
@@ -964,6 +965,7 @@ def run(
     script = albedo_shell.shell_script(argv)
     if script is not None:
         raise albedo_shell.refusal(f"`{os.path.basename(argv[0])} -c`", script=script)
+    albedo_direnv.refresh()
     environment = albedo_shims.prepend(
         None
         if env is None

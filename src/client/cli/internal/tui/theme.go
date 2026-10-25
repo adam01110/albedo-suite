@@ -395,7 +395,7 @@ func languageStyle(name, linguist string) lipgloss.Style {
 
 // identityHues tell things apart that have no meaning of their own to show:
 // agents in the orchestrator view, hosts beside their paths.
-var identityHues = []string{"#e08cf5", "#6fd1c4", "#f28fb8", "#f0c674", "#b6e37a", "#b9a6f5", "#80aaf9", "#f5a97f"}
+var identityHues = []string{"#e08cf5", "#6fd1c4", "#b6e37a", "#b9a6f5", "#80aaf9", "#f5a97f"}
 
 // hostStyle colors a host label the same way every time, legible on the
 // terminal's background like a language's color.

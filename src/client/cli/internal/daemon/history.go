@@ -222,6 +222,7 @@ func historyEntryEvents(entry historyEntry) ([]StreamEvent, error) {
 		}
 		event.ToolName = wire.Tool.Name
 		event.ProgressCallID = value(wire.Tool.ProgressCallID)
+		event.ToolTitle = value(wire.Tool.Title)
 		if event.ToolResult == "" {
 			event.ToolResult = event.Text
 		}

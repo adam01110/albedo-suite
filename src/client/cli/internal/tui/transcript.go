@@ -293,7 +293,13 @@ func toolSummary(entry HistoryEntry) string {
 	}
 	switch entry.ToolName {
 	case "python":
-		return "python · " + firstLine(arg("code"))
+		if entry.ToolTitle != "" {
+			return "python · " + entry.ToolTitle
+		}
+		if line := firstLine(arg("code")); line != "" {
+			return "python · " + line
+		}
+		return "python"
 	case "shell":
 		return "$ " + firstLine(arg("command"))
 	case "read_file", "write_file", "edit_file":

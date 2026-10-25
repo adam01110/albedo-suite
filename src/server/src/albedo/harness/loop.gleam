@@ -1,5 +1,6 @@
 //// Model → tools → model. The session owns cancellation and durable commits.
 
+import albedo/clock
 import albedo/daemon/conversation
 import albedo/daemon/events as view
 import albedo/daemon/image_fit
@@ -22,7 +23,6 @@ import albedo/harness/runtime
 import albedo/openai_api/types
 import albedo/text_scalars
 import gleam/dynamic/decode
-import gleam/erlang/process
 import gleam/int
 import gleam/io
 import gleam/json
@@ -1009,7 +1009,7 @@ fn retry_stream(
             False -> Error(types.Cancelled)
             True -> {
               reset_progress(attempt)
-              process.sleep(int.bitwise_shift_left(250, attempt - 1))
+              clock.sleep(int.bitwise_shift_left(250, attempt - 1))
               retry_stream(
                 run,
                 publish,

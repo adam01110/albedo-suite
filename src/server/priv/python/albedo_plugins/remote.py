@@ -587,6 +587,7 @@ class RemoteConnection:
         self._stdout = None
         self._write_lock = asyncio.Lock()
         self._pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
+        self._placeholders: dict[str, RemoteRef] = {}
         self._refs: dict[str, RemoteRef] = {}
         self._mirrors: dict[str, dict[str, Any]] = {}
         self._handshake: asyncio.Future[dict[str, Any]] | None = None
@@ -685,6 +686,19 @@ class RemoteConnection:
             or frame["type"] == "introspected"
             or frame["type"] == "job_stop"
         ):
+            if (
+                frame["type"] == "invoked"
+                and frame.get("ok") is True
+                and "handle" in frame
+            ):
+                handle = str(frame["handle"])
+                state = frame.get("state")
+                if isinstance(state, dict):
+                    self._mirrors[handle] = dict(state)
+                placeholder = self._placeholders.get(frame["id"])
+                if placeholder is not None:
+                    placeholder._handle = handle
+                    self._refs[handle] = placeholder
             future = self._pending.get(frame["id"])
             if future is not None and not future.done():
                 future.set_result(dict(frame))
@@ -812,7 +826,7 @@ class RemoteConnection:
             except Exception as error:
                 # A busy session refuses rather than queueing, as it does for a
                 # local job's wake, so this retries until the run ends.
-                if getattr(error, "code", "") != "busy":
+                if getattr(error, "code", "") not in ("busy", "unknown"):
                     return  # the daemon is gone, or the session is shutting down
                 await asyncio.sleep(NOTICE_RETRY)
 
@@ -878,6 +892,8 @@ class RemoteConnection:
             frame["await"] = True
         future: asyncio.Future[dict[str, Any]] = loop.create_future()
         self._pending[call_id] = future
+        if placeholder is not None:
+            self._placeholders[call_id] = placeholder
         await self._send(frame)
         try:
             reply = await asyncio.wait_for(future, timeout)
@@ -892,6 +908,7 @@ class RemoteConnection:
             raise
         finally:
             self._pending.pop(call_id, None)
+            self._placeholders.pop(call_id, None)
         return self._result(reply, placeholder)
 
     def _result(
@@ -913,9 +930,6 @@ class RemoteConnection:
             raise RemoteError(str(error)) from error
         if "handle" in reply:
             handle = str(reply["handle"])
-            state = reply.get("state")
-            if state is not None:
-                self._mirrors[handle] = state
             reference = (
                 placeholder if placeholder is not None else self._refs.get(handle)
             )
@@ -1367,12 +1381,14 @@ class FallbackJob(JobOutput):
                 await host_call("jobs.completed", self._notice())
                 return
             except HostErrorType as error:
-                if getattr(error, "code", "") != "busy":
-                    self.capture.write(f"\n[completion notice not delivered: {error}\n")
+                if getattr(error, "code", "") not in ("busy", "unknown"):
+                    self.capture.write(
+                        f"\n[completion notice not delivered: {error}]\n"
+                    )
                     return
             except Exception:
                 return  # the kernel is going away; the result stays on the handle
-            await asyncio.sleep(2.0)
+            await asyncio.sleep(NOTICE_RETRY)
 
     def _notice(self) -> dict[str, object]:
         """The wake turn's display text, model text, and the facts behind both."""

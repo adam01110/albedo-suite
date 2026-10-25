@@ -26,6 +26,7 @@ SUITE_CASES = (
 UPSTREAM_CASES = (
     "artifacts_test.py",
     "events_test.py",
+    "direnv_test.py",
     "profile_rename_test.py",
     "session_name_test.py",
     "web_test.py",

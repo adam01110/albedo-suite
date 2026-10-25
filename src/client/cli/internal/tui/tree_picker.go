@@ -371,12 +371,17 @@ func (m TreePickerModel) View() string {
 		command, subtitle, summary = "/fork", "branch history", "this creates a new session with a fresh Python namespace"
 		lv.Empty = "No history checkpoints available to branch from."
 	}
-	if m.Loading {
+	switch {
+	case m.Loading:
 		lv.Empty = "loading history…"
+	case m.Error != "":
+		lv.Empty = "could not load history"
 	}
 	title := brand("albedo") + " " + DefaultStyles.Muted.Render(command)
 	f := lv.frame(title, DefaultStyles.Faint.Render(subtitle), m.footer(max(1, m.Width)))
 	// Without the pane's room, the note still reads as one line.
-	f.summary = summary
+	if m.Error == "" {
+		f.summary = summary
+	}
 	return f.view(m.Width, m.Height)
 }

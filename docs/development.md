@@ -56,7 +56,8 @@ It runs formatter, LSP, lazy and eager MCP, operation lifecycle, and streaming r
 and user-question cases plus OpenCode Go routing/discovery and RTK/FFF daemon
 checks, plus upstream cache-miss, provider-timeout, speechless-response,
 context-window, hooks, rewind, trace, job output, kernel restoration/upgrade
-and provider-catalog regressions, plus native atomic file edits, job text/readiness,
+and provider-catalog regressions, plus native direnv environments, atomic file
+edits, job text/readiness,
 kernel working-directory changes, image limits, artifacts, durable history,
 push session status and detached-kernel recovery, plus native event follows,
 profile renaming, session names and daemon-managed web lifecycle.
@@ -191,3 +192,62 @@ supplies its own web derivation and wrapper. No web source is replaced.
 command exits; `--stop` disables it. The packaging tests use `--foreground --local`
 to keep their listener isolated and verify per-command `ALBEDO_WEB_DIST` overrides.
 Managed serving uses the daemon's environment, not an invoking CLI's override.
+
+## Automated sparse upstream updates
+
+`python3 scripts/update-upstream.py` selects the current NUR revision once in an
+isolated temporary checkout. To reproduce a specific selection, use
+`python3 scripts/update-upstream.py --nur-rev <40-character-NUR-commit>`.
+The NUR commit is **not** the Albedo commit. The updater evaluates the unmodified
+`nur.repos.adam0.albedo-git.src` from each locked NUR input, realizes both pristine
+sources with Nix, verifies their NAR hashes, and records both identities in its
+JSON report. Only the NUR lock node may change; unrelated lock updates fail closed.
+Requires Nix with flakes enabled, Git and Python 3.11 or newer, and a clean
+working copy. Jujutsu checkouts use `jj diff --summary` for the cleanliness
+check; Git checkouts use `git status`. Neither path creates commits or pushes.
+
+For each baseline replacement, `git merge-file` uses old pristine upstream as
+base, suite as ours, and candidate pristine upstream as theirs. An unchanged
+upstream file is a trivial merge retaining ours. Suite-only additions remain
+unchanged. Conflicts, missing baselines, upstream deletions/possible renames,
+file/directory collisions, symlinks, executable mode changes and changed binary
+files require manual review. Renames are deliberately reported as deletions or
+type changes, not guessed by similarity. No conflict markers are written.
+All plans must resolve before any source, checksum or pin is written; write
+errors roll back. No files outside the existing overlay are copied into `src`.
+
+The manifests are generated from pristine candidate bytes. The existing
+`sourceFiles` inventory continues to list the server overlay (including its
+suite-only additions); the whole-source NAR hash pins the pristine candidate
+tree without a second file inventory. Generated `__pycache__` directories and
+`.pyc` files are excluded from overlay discovery and inventories. The package's
+source hash assertion, checksum guards, original
+NUR post-patch hooks and both package variants remain intact. Equal Albedo
+revision/hash is a no-op, even if NUR moved: packaging-only NUR updates require
+separate review. The updater does not retire compatibility features or rewrite
+NUR hook integrations; package and daemon regressions must detect incompatibility.
+Changes to the web dependency hash, E2E fixture guard or build API may therefore
+require manual changes rather than an automatically successful update.
+
+The default report is `/tmp/albedo-upstream-update.json`; choose another location
+with `--report /absolute/path/report.json` outside the checkout. Exit status is
+0 for updated/no-change, 2 for unresolved merges, and 1 for operational errors.
+The report lists old/candidate NUR and Albedo identities, automatically merged
+paths and unresolved reasons. Reproduce a conflict with its exact candidate NUR
+SHA, obtain both source paths with the `source_expr` expression in the script,
+and compare the reported path in the old source, suite and candidate. Resolve in
+a separate human branch, update pristine manifests and run the full checks.
+
+After a successful local update, run `bash scripts/validate-upstream.sh`. This
+runs updater fixtures, formatting verification, both builds, all flake checks,
+and the complete isolated E2E case set using the candidate package's actual
+`server.src` and built output. It sets Erlang's explicit CA bundle as required by
+the existing checks. No live providers or personal credentials are used.
+
+### Publication boundary
+
+The updater is a local preparation tool, not an unattended update service.
+GitHub is a mirror: no scheduled Actions updater, publishing token, bot branch
+or pull request publisher is installed. Review candidate changes and run the
+validation script before publishing through the canonical repository. A clean
+text merge does not establish API compatibility or retire suite features.

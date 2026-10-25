@@ -256,12 +256,12 @@ func (s *Service) DeleteSessions(ctx context.Context, ids []string) error {
 	}
 	return nil
 }
-func (s *Service) StopDaemon(ctx context.Context) error {
+func (s *Service) StopDaemon(ctx context.Context, stopKernels bool) error {
 	conn, err := s.Existing(ctx)
 	if err != nil || conn == nil {
 		return err
 	}
-	return daemon.StopDaemon(ctx, conn)
+	return daemon.StopDaemon(ctx, conn, stopKernels)
 }
 func (s *Service) PrepareLogin(ctx context.Context) (PreparedOpen, error) {
 	conn, err := s.Connect(ctx)

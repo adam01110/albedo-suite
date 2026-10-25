@@ -53,15 +53,12 @@ func (m FolderPicker) View() string {
 }
 
 // narrowKeys is the width the full keys need beside a status; less than that
-// and a failed session list keeps only its retry. minStatusRoom is the least
-// a status can have beside the keys.
-const (
-	narrowKeys    = 28
-	minStatusRoom = 16
-)
+// and a failed session list keeps only its retry.
+const narrowKeys = 28
 
 // footer is the keys on the left and the most pressing thing to say on the
-// right, which takes what the keys leave.
+// right: an urgent one whole, for footerLine to place, a quiet one in what
+// the keys leave.
 func (m FolderPicker) footer(width int) string {
 	hints := m.hints()
 	keys := " " + keyHints(hints...)
@@ -69,26 +66,22 @@ func (m FolderPicker) footer(width int) string {
 		hints = []hint{m.retryHint()}
 		keys = " " + keyHints(hints...)
 	}
-	room := width - ansi.StringWidth(keys) - 3
-	if room < minStatusRoom {
-		room = width - 2 // too little beside the keys: an urgent status takes a row of its own
+	status, urgent := m.status(width - 2)
+	if !urgent {
+		status, _ = m.status(width - ansi.StringWidth(keys) - 3)
 	}
-	status, urgent := m.status(room)
 	return footerLine(width, hints, status, urgent)
 }
 
 // status is the most pressing thing to say in room columns: a move in
-// flight, a refusal, a dead host, a failed listing, a folder that went
-// missing, or else where the session is.
+// flight, a refusal, a failed listing, a folder that went missing, or else
+// where the session is.
 func (m FolderPicker) status(room int) (string, bool) {
-	dead := m.deadHighlighted()
 	switch {
 	case m.moving:
 		return DefaultStyles.Faint.Render("moving…"), true
 	case m.notice != "":
 		return DefaultStyles.Warning.Render(tailFit(m.notice, room)), true
-	case dead != "":
-		return DefaultStyles.Error.Render(ansi.Truncate(dead, room, "…")), true
 	case m.sessionsError != "":
 		return DefaultStyles.Warning.Render(ansi.Truncate("Recent sessions: "+m.sessionsError, room, "…")), true
 	case m.retry != nil:
@@ -115,19 +108,25 @@ func (m FolderPicker) hints() []hint {
 	if m.inSessions {
 		return append(hints, hint{"↑↓", "move"}, hint{"enter", "open"}, hint{"←", "folders"})
 	}
-	hints = append(hints, hint{"↑↓", "move"}, hint{"tab", "open"}, hint{"⇧tab", "up"})
 	row, ok := m.highlighted()
+	if ok {
+		hints = append(hints, hint{"↑↓", "move"}, hint{"tab", "open"})
+	}
+	hints = append(hints, hint{"shift+tab", "up"})
 	if ok && len(m.sessionsIn(row.path)) > 0 {
 		hints = append(hints, hint{"→", "sessions"})
 	}
 	if ok && m.probe(row.hostKey).State == "needs_auth" {
 		hints = append(hints, hint{"ctrl+l", "sign in"})
 	}
-	action := "move here"
-	if m.browse {
-		action = "new session"
+	if m.target() != "" {
+		action := "move here"
+		if m.browse {
+			action = "new session"
+		}
+		hints = append(hints, hint{"enter", action})
 	}
-	return append(hints, hint{"enter", action}, hint{"esc", "back"})
+	return append(hints, hint{"esc", "back"})
 }
 
 // retryHint is the way back into a session list that failed to load.
@@ -155,13 +154,17 @@ func (m FolderPicker) list(width, height int) []string {
 		return scrollWindow([]string{sectionRule(m.section, 0, width), DefaultStyles.Faint.Render("   " + m.emptyNote())}, 1, width, height)
 	}
 	here, latest := m.workspace(), m.latestOther()
+	tagW := 0
+	if slices.ContainsFunc(m.rows, func(r folderRow) bool { return repoTag(m.repos[r.path]) != "" }) {
+		tagW = 12
+	}
 	now := time.Now()
 	return drawWindow(len(m.rows)+1, func(i int) string {
 		if i == 0 {
 			return sectionRule(m.section, len(m.rows), width)
 		}
 		row := m.rows[i-1]
-		return m.row(row, i-1 == m.cursor, row.path == here, row.path == latest, width, now)
+		return m.row(row, i-1 == m.cursor, row.path == here, row.path == latest, width, tagW, now)
 	}, m.cursor+1, width, height)
 }
 
@@ -171,19 +174,6 @@ func (m FolderPicker) typedHost() folderRow {
 		return folderRow{hostKey: m.canonical(host), hostRow: true}
 	}
 	return folderRow{}
-}
-
-// deadHighlighted is why the highlighted row's host cannot be reached, in
-// full, or empty when it can.
-func (m FolderPicker) deadHighlighted() string {
-	row, _ := m.highlighted()
-	if row.hostKey == "" {
-		row = m.typedHost()
-	}
-	if p := m.probe(row.hostKey); p.State == "unreachable" || p.State == "unsupported" {
-		return m.labelOf(row.hostKey) + ": " + cmp.Or(p.Detail, p.State)
-	}
-	return ""
 }
 
 func (m FolderPicker) emptyNote() string {
@@ -200,7 +190,7 @@ func (m FolderPicker) emptyNote() string {
 	case l == nil:
 		return "loading…"
 	case l.Err != nil:
-		return l.Err.Error()
+		return DefaultStyles.Error.Render(l.Err.Error())
 	case len(l.List.Entries) == 0:
 		return "No folders here"
 	}
@@ -254,8 +244,10 @@ func (m FolderPicker) reach(row folderRow) (note string, style lipgloss.Style, d
 }
 
 // row is a folder in the sessions view's grammar: bar, glyph, name with
-// the matched letters lit, then quiet columns for where, head and age.
-func (m FolderPicker) row(row folderRow, selected, here, latest bool, width int, now time.Time) string {
+// the matched letters lit, then quiet columns for where, head and age. The
+// head column is tagW wide, none when no row has a head, and where takes
+// what the others leave.
+func (m FolderPicker) row(row folderRow, selected, here, latest bool, width, tagW int, now time.Time) string {
 	glyph, glyphStyle := "· ", DefaultStyles.Faint
 	switch {
 	case selected:
@@ -265,11 +257,15 @@ func (m FolderPicker) row(row folderRow, selected, here, latest bool, width int,
 	case latest:
 		glyph, glyphStyle = "● ", DefaultStyles.Success
 	}
-	whereW, tagW, ageW := 0, 12, 4
-	if (row.recent || row.hostRow) && width >= 48 {
-		whereW = 16
+	ageW, tail := 4, 6
+	if tagW > 0 {
+		tail += tagW + 2
 	}
-	nameW := min(18, max(4, width-4-(whereW+2)-(tagW+2)-(ageW+2)))
+	nameW, whereW, noteW := min(18, max(4, width-4-tail)), 0, max(tail-2, 18)
+	if (row.recent || row.hostRow) && width >= 48 {
+		nameW = min(18, max(4, width-4-tail-14))
+		whereW = width - 4 - nameW - 2 - tail
+	}
 	bar := " "
 	if selected {
 		bar = selectBar()
@@ -283,17 +279,24 @@ func (m FolderPicker) row(row folderRow, selected, here, latest bool, width int,
 		base = DefaultStyles.Bold
 	}
 	line := bar + glyphStyle.Render(glyph) + " " + litName(row.name, row.matched, nameW, base)
+	if note != "" {
+		if whereW -= noteW - (tail - 2); whereW < 8 {
+			whereW, noteW = 0, width-6-nameW
+		}
+	}
 	if whereW > 0 {
 		line += "  " + DefaultStyles.Faint.Render(svCell(m.where(row), whereW, false))
 	}
 	if note != "" {
-		line += "  " + noteStyle.Render(svCell(note, tagW+2+ageW, false))
+		line += "  " + noteStyle.Render(svCell(note, noteW, false))
 		if selected {
 			return selectedLine(line, width)
 		}
 		return line
 	}
-	line += "  " + DefaultStyles.Faint.Render(svCell(repoTag(m.repos[row.path]), tagW, false))
+	if tagW > 0 {
+		line += "  " + DefaultStyles.Faint.Render(svCell(repoTag(m.repos[row.path]), tagW, false))
+	}
 	age := ""
 	if here {
 		age = "here"
@@ -394,11 +397,24 @@ func (m FolderPicker) preview(width, height int) []string {
 		body = append(body, fitTree(*tree, height-2-len(body)-kept)...)
 	}
 	lines := []string{m.paneRule(row.path, languages, width), ""}
+	if m.inSessions && height-len(lines)-len(body)-sessionHead < min(3, len(sessions)) {
+		lines = append(lines[:1], m.sessionRows(sessions, width, height-1)...)
+		return append(lines, make([]string, max(0, height-len(lines)))...)[:height]
+	}
+	if len(body) == 0 {
+		lines = lines[:1]
+	}
 	for _, l := range body {
 		lines = append(lines, "  "+l)
 	}
 	lines = append(lines, m.sessionBlock(sessions, width, height-len(lines)-sessionHead)...)
 	return append(lines, make([]string, max(0, height-len(lines)))...)[:height]
+}
+
+// stacked is whether the frame draws the pane under the list, below its own
+// divider, so the pane's heading needs no rule of its own.
+func (m FolderPicker) stacked() bool {
+	return cmp.Or(m.Width, 80) < paneMinWidth || cmp.Or(m.Height, 24) < paneMinHeight
 }
 
 // hostPane is a host, or a folder on a host not reached yet: how the host
@@ -422,7 +438,11 @@ func (m FolderPicker) hostPane(row folderRow, width, height int) []string {
 	default:
 		body = []string{DefaultStyles.Error.Render(cmp.Or(p.Detail, p.State))}
 	}
-	lines := []string{DefaultStyles.Decor.Render("─ ") + hostStyle(label).Render(label) + " " + DefaultStyles.Decor.Render(strings.Repeat("─", max(0, width-3-ansi.StringWidth(label)))), ""}
+	head := DefaultStyles.Decor.Render("─ ") + hostStyle(label).Render(label) + " " + DefaultStyles.Decor.Render(strings.Repeat("─", max(0, width-3-ansi.StringWidth(label))))
+	if m.stacked() {
+		head = hostStyle(label).Bold(true).Render(label)
+	}
+	lines := []string{head, ""}
 	for _, l := range body {
 		lines = append(lines, "  "+ansi.Truncate(l, max(0, width-2), "…"))
 	}
@@ -441,6 +461,11 @@ func (m FolderPicker) sessionBlock(sessions []daemon.Session, width, room int) [
 	if len(sessions) == 0 || room <= 0 {
 		return nil
 	}
+	return append([]string{"", plainRule("sessions", width), ""}, m.sessionRows(sessions, width, room)...)
+}
+
+// sessionRows are the sessions in at most room rows, without their rule.
+func (m FolderPicker) sessionRows(sessions []daemon.Session, width, room int) []string {
 	now := time.Now()
 	rows := make([]string, len(sessions))
 	for i, s := range sessions {
@@ -471,7 +496,7 @@ func (m FolderPicker) sessionBlock(sessions []daemon.Session, width, room int) [
 	if len(rows) > room && !m.inSessions {
 		rows = append(rows[:room-1], DefaultStyles.Faint.Render(fmt.Sprintf("   … %d more", len(sessions)-room+1)))
 	}
-	return append([]string{"", plainRule("sessions", width), ""}, scrollWindow(rows, m.sessionCursor, width, min(room, len(rows)))...)
+	return scrollWindow(rows, m.sessionCursor, width, min(room, len(rows)))
 }
 
 func (m FolderPicker) sessionsIn(p string) []daemon.Session {
@@ -490,6 +515,9 @@ func (m FolderPicker) paneRule(p string, languages []daemon.LanguageShare, w int
 	}
 	for len(parts) > 2 && ansi.StringWidth(lead()+tail) > w-8 {
 		parts = append([]string{"…"}, parts[2:]...)
+	}
+	if m.stacked() {
+		return crumbs(parts) + tail
 	}
 	n := max(0, w-ansi.StringWidth(lead())-ansi.StringWidth(tail))
 	var rule strings.Builder

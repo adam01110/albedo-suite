@@ -13,6 +13,21 @@
     suitePackages = self.packages.${pkgs.stdenv.hostPlatform.system};
     runtime = suitePackages.albedo-defaults;
   in {
+    checks.upstream-update =
+      runCommand "albedo-upstream-update-tests" {
+        nativeBuildInputs = [
+          # keep-sorted start
+          pkgs.git
+          pkgs.python311
+          # keep-sorted end
+        ];
+      } ''
+        export PYTHONDONTWRITEBYTECODE=1
+        export ALBEDO_UPDATER=${../../scripts/update-upstream.py}
+        python3 -m unittest discover -s ${../../test} -p upstream_update_test.py -v
+        touch $out
+      '';
+
     checks.helpers = runCommand "albedo-helper-tests" {nativeBuildInputs = [pkgs.python311];} ''
       export PYTHONDONTWRITEBYTECODE=1
       export ALBEDO_CONFIGURE=${suitePackages.albedo-configure}/bin/albedo-configure

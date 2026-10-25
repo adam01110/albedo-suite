@@ -97,6 +97,7 @@ type AppModel struct {
 
 	// Graphemes says the terminal measures grapheme clusters; see ChatModel.
 	Graphemes bool
+	Tick      TickFunc
 }
 
 func (m *AppModel) newChatModel(session *daemon.Session) ChatModel {
@@ -127,6 +128,7 @@ func NewAppModel(conn *daemon.Connection, bootstrap Bootstrap, initialSession *d
 		ActiveSession: initialSession,
 		Workspace:     workspace,
 		openBrowser:   openBrowser,
+		Tick:          tea.Tick,
 	}
 
 	// Seed the shared owner before constructing a screen that reads preferences.
@@ -303,7 +305,21 @@ func (m *AppModel) Update(msg tea.Msg) (model tea.Model, resultCmd tea.Cmd) {
 		m.ModelPicker.Saving = true
 		m.ModelPicker.Error = ""
 		m.ModelGen++
-		return m, m.changeModelCmd(msg.Model, msg.Provider, msg.Effort, capChange{CapKey: msg.CapKey, Raise: msg.RaiseCap, CompactAt: msg.CompactAt}, m.ModelGen)
+		return m, m.changeModelCmd(msg.Model, msg.Provider, msg.Effort, m.ModelGen)
+
+	case ModelPickerCapsMsg:
+		return m, m.saveCapsCmd(msg)
+
+	case modelCapsSavedMsg:
+		if msg.Err == nil {
+			if m.SettingsETags == nil {
+				m.SettingsETags = map[string]string{}
+			}
+			m.SettingsETags["models"] = msg.ETag
+		}
+		var cmd tea.Cmd
+		m.ModelPicker, cmd = m.ModelPicker.Update(msg)
+		return m, cmd
 
 	case ChatOpenExtensionPickerMsg:
 		return m, m.openExtensionPicker()

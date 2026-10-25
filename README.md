@@ -95,6 +95,7 @@ tests. [Third-party notices](THIRD_PARTY_NOTICES.md) record source attribution.
 
 ## License
 
-Suite-authored material uses [WTFPL v2](LICENSE), matching Albedo. Upstream and
+Suite-authored packaging, helpers and tests use [WTFPL v2](LICENSE). Albedo
+source replacements follow upstream MPL 2.0 coverage. Upstream and
 third-party attributions and license exceptions are retained in
 [the source notices](THIRD_PARTY_NOTICES.md) and `LICENSES/`.

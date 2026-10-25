@@ -113,8 +113,8 @@ func svLayout(width int) svColumns {
 		cols.age = 4
 		rest -= cols.age + 2
 	}
-	if width >= 56 {
-		cols.model = min(20, max(14, width/5))
+	if width >= 48 {
+		cols.model = min(20, max(12, width/5))
 		rest -= cols.model + 2
 	}
 	if width >= 90 {
@@ -182,13 +182,13 @@ func (m SessionViewer) hints() []hint {
 		if _, ok := m.Highlighted(); !ok {
 			return []hint{{"esc", "back"}}
 		}
-		return []hint{{"↑↓", "move"}, {"enter", "open"}, {"^r", "rename"}, {"^a", "restore"}, {"^d", "delete"}, {"esc", "back"}}
+		return []hint{{"↑↓", "move"}, {"enter", "open"}, {"ctrl+d", "delete"}, {"ctrl+r", "rename"}, {"ctrl+a", "restore"}, {"esc", "back"}}
 	}
 	esc := "quit"
 	if m.HasActive {
 		esc = "back"
 	}
-	return []hint{{"↑↓", "move"}, {"tab", "switch"}, {"enter", "open"}, {"^r", "rename"}, {"^s", "pin"}, {"^a", "archive"}, {"^f", "folders"}, {"esc", esc}}
+	return []hint{{"↑↓", "move"}, {"tab", "switch"}, {"enter", "open"}, {"ctrl+r", "rename"}, {"ctrl+s", "pin"}, {"ctrl+a", "archive"}, {"ctrl+f", "folders"}, {"esc", esc}}
 }
 
 // counts is how many sessions the list holds, and how many of them today.
@@ -293,10 +293,20 @@ func scrollWindow(all []string, selectedAt, width, height int) []string {
 // drawWindow is scrollWindow over n lines that line draws on demand, so a
 // long list draws only the lines that show.
 func drawWindow(n int, line func(int) string, selectedAt, width, height int) []string {
-	start := 0
-	if n > height {
-		start = min(max(0, selectedAt-height/2), n-height)
+	return drawFrom(n, line, windowStart(n, selectedAt, height), width, height)
+}
+
+// windowStart is the first of n lines a window of height shows, centred on
+// selectedAt.
+func windowStart(n, selectedAt, height int) int {
+	if n <= height {
+		return 0
 	}
+	return min(max(0, selectedAt-height/2), n-height)
+}
+
+// drawFrom draws the window of n lines that starts at start.
+func drawFrom(n int, line func(int) string, start, width, height int) []string {
 	cut := n > height && height >= 3
 	out := make([]string, height)
 	for i := range out {
@@ -417,7 +427,7 @@ func (m SessionViewer) preview(width, height int, now time.Time) []string {
 	case !ok && m.SearchInput.Value() == "":
 		return paneBox([]string{"", DefaultStyles.Muted.Render("Nothing listed here")}, inner, width, height)
 	case !ok:
-		return paneBox([]string{"", DefaultStyles.Muted.Render("No matching sessions"), DefaultStyles.Faint.Render("Try fewer search terms")}, inner, width, height)
+		return paneBox(nil, inner, width, height)
 	case !isSession:
 		return paneBox(m.actionPreview(item.ID, inner, height), inner, width, height)
 	}
@@ -561,7 +571,7 @@ var svMarkdownMarks = strings.NewReplacer("**", "", "__", "", "`", "")
 
 // svWrap word-wraps plain text into at most maxLines lines of width columns.
 func svWrap(text string, width, maxLines int) []string {
-	lines := strings.Split(ansi.Wrap(text, width, " -"), "\n")
+	lines := strings.Split(ansi.Wrap(text, width, " /"), "\n")
 	if len(lines) > maxLines {
 		lines = lines[:maxLines]
 		last := strings.TrimRight(lines[maxLines-1], " ")

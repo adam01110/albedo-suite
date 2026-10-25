@@ -140,7 +140,7 @@ fn hold(state: State(message), event: view.Event) -> State(message) {
       let timer = case state.output_timer {
         Some(timer) -> timer
         None ->
-          process.send_after(
+          clock.send_after(
             state.self,
             int.max(0, state.output_published_at + frame_ms - now),
             state.publish_output,
@@ -331,7 +331,7 @@ pub fn watch_glances(state: State(message)) -> State(message) {
     [_, ..], None ->
       State(
         ..state,
-        glance_timer: Some(process.send_after(
+        glance_timer: Some(clock.send_after(
           state.self,
           glance_ms,
           state.glances_due,

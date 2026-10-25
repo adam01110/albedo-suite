@@ -271,7 +271,7 @@ func (m ModelPickerModel) facts(r modelRow) [][2]string {
 	if raisable(r.model) {
 		state := DefaultStyles.Faint.Render("default") + DefaultStyles.Decor.Render(" · ") +
 			DefaultStyles.Faint.Render("tab raises to "+compactTokens(r.model.MaxContext))
-		if m.raised(r) {
+		if r.model.Raised {
 			state = brandInk(1).Bold(true).Render("raised") + DefaultStyles.Decor.Render(" · ") +
 				DefaultStyles.Faint.Render("tab restores "+compactTokens(r.model.Context))
 		}
@@ -290,22 +290,16 @@ func (m ModelPickerModel) facts(r modelRow) [][2]string {
 }
 
 // compactFact is where a row's model compacts: the window field while it is
-// open, else the saved or chosen window.
+// open, else the saved window.
 func (m ModelPickerModel) compactFact(r modelRow) string {
 	faint, dot := DefaultStyles.Faint, DefaultStyles.Decor.Render(" · ")
-	if m.editing {
-		return m.edit.View()
-	}
-	tokens := m.compactAt(r)
 	switch {
-	case tokens != r.model.CompactAt && tokens == 0:
-		return faint.Render("model window") + dot + brandInk(1).Render("clears")
-	case tokens != r.model.CompactAt:
-		return brandInk(1).Bold(true).Render("at "+compactTokens(tokens)) + dot + faint.Render("saves on enter")
-	case tokens == 0:
+	case m.editing:
+		return m.edit.View()
+	case r.model.CompactAt == 0:
 		return faint.Render("model window")
 	}
-	return "at " + compactTokens(tokens) + dot + faint.Render("all sessions")
+	return "at " + compactTokens(r.model.CompactAt) + dot + faint.Render("all sessions")
 }
 
 // compactTokensOrEmpty seeds the window field: nothing for no window.
@@ -349,11 +343,11 @@ func (m ModelPickerModel) summary(r modelRow) string {
 	if r.model.Context > 0 {
 		parts = append(parts, compactTokens(m.window(r))+" context")
 	}
-	if raisable(r.model) && m.raised(r) {
+	if raisable(r.model) && r.model.Raised {
 		parts = append(parts, "cap raised")
 	}
-	if tokens := m.compactAt(r); tokens > 0 {
-		parts = append(parts, "compacts at "+compactTokens(tokens))
+	if r.model.CompactAt > 0 {
+		parts = append(parts, "compacts at "+compactTokens(r.model.CompactAt))
 	}
 	if r.model.Output > 0 {
 		parts = append(parts, compactTokens(r.model.Output)+" output")
@@ -412,7 +406,7 @@ func (m ModelPickerModel) details(width, height int) []string {
 			facts = append(facts, [2]string{"effort", strings.Join(marks, DefaultStyles.Decor.Render(" · "))})
 		}
 		for _, f := range facts {
-			lines = append(lines, DefaultStyles.Muted.Render(svCell(f[0], 9, false))+f[1])
+			lines = append(lines, factRows(f[0], f[1], inner)...)
 		}
 		if len(facts) == 0 {
 			note("the catalog knows nothing else about this model.")
@@ -424,18 +418,21 @@ func (m ModelPickerModel) details(width, height int) []string {
 }
 
 func (m ModelPickerModel) footer(width int) string {
-	hints := []hint{{"↑↓", "move"}, {"←→", "effort"}}
+	hints := []hint{{"↑↓", "move"}}
+	if !m.Saving {
+		hints = append(hints, hint{"enter", "switch"})
+	}
+	hints = append(hints, hint{"←→", "effort"})
 	if r, ok := m.highlighted(); ok && raisable(r.model) {
 		hints = append(hints, hint{"tab", "cap"})
 	}
 	if r, ok := m.highlighted(); ok && compactable(r) {
 		hints = append(hints, hint{"ctrl+e", "edit"})
 	}
-	hints = append(hints, hint{"enter", "switch"}, hint{"esc", "back"})
+	hints = append(hints, hint{"esc", "back"})
 	if m.editing {
-		hints = []hint{{"enter", "keep"}, {"esc", "drop"}}
+		hints = []hint{{"enter", "save"}, {"esc", "drop"}}
 	}
-	left := " " + keyHints(hints...)
 	loading, models := 0, 0
 	for _, c := range m.catalogs {
 		if c.loading {
@@ -447,6 +444,8 @@ func (m ModelPickerModel) footer(width int) string {
 	switch {
 	case m.Saving:
 		right = DefaultStyles.Busy.Render("switching…")
+	case m.saving != nil:
+		right = DefaultStyles.Busy.Render("saving…")
 	case m.Error != "":
 		right = DefaultStyles.Error.Render(m.Error)
 	case loading > 0:
@@ -455,14 +454,7 @@ func (m ModelPickerModel) footer(width int) string {
 		right = DefaultStyles.Faint.Render(counted(models, "model")) + DefaultStyles.Decor.Render(" · ") +
 			DefaultStyles.Faint.Render(counted(len(m.catalogs), "profile"))
 	}
-	gap := width - ansi.StringWidth(left) - ansi.StringWidth(right) - 1
-	if gap >= 3 {
-		return left + strings.Repeat(" ", gap) + right
-	}
-	if m.Error != "" {
-		return " " + right
-	}
-	return left
+	return footerLine(width, hints, right, m.Saving || m.saving != nil || m.Error != "")
 }
 
 func counted(n int, noun string) string {

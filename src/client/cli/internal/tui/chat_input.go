@@ -39,6 +39,12 @@ func (m *ChatModel) handleInput(msg tea.Msg) (tea.Cmd, bool) {
 			return nil, true
 		}
 
+		if m.direnvAsk != "" && m.TextArea.Value() == "" {
+			if cmd, handled := m.answerDirenv(msg); handled {
+				return cmd, true
+			}
+		}
+
 		if msg.String() == "left" && m.TextArea.Value() == "" {
 			return func() tea.Msg { return ChatBackToSessionsMsg{} }, true
 		}
@@ -177,7 +183,7 @@ func (m *ChatModel) handleInput(msg tea.Msg) (tea.Cmd, bool) {
 		mouse := msg.Mouse()
 		point := func() Point {
 			screen := max(0, min(m.Viewport.Height()-1, mouse.Y-firstRow))
-			return Point{Row: m.scrollOffset + screen, Col: max(0, min(m.Viewport.Width(), mouse.X-m.padding()))}
+			return Point{Row: m.scrollOffset + screen, Col: max(0, min(m.Viewport.Width(), mouse.X-chatMargin))}
 		}
 		switch msg := msg.(type) {
 		case tea.MouseReleaseMsg:
