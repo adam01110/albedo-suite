@@ -22,6 +22,21 @@ Merge both sets of changes before updating the pin and checksums. Do not change
 a checksum merely to make a failing check pass. New files have no individual
 baseline checksum. The whole-source hash still pins their upstream base.
 
+## Packaged licenses and source
+
+Both suite variants and their server/client/renderer outputs include
+`share/doc/albedo-suite/` with MPL-2.0, attribution, preserved third-party notices
+and [corresponding source instructions](package-sources.md). The source links
+retain the exact suite and pristine upstream snapshots in the package closure.
+The standalone web package similarly includes `share/doc/albedo-web/`, web source
+and npm dependency notices. The FFF adapter retains its MPL notice and readable
+source alongside the separate MIT dependency licenses.
+
+Distribute the complete closure, including its referenced source snapshots, or
+supply corresponding source and notices separately when extracting binaries or
+browser assets. `checks.package-licenses` checks metadata, installed notices,
+source links, pristine checksums and Python overlay/source correspondence.
+
 ## Checks
 
 Run `nix develop` before using Python tooling. The shell exposes the pinned

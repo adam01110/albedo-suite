@@ -37,8 +37,38 @@
       # keep-sorted end
     ];
 
-    withServerSources = package:
+    withSuiteNotices = package:
       package.overrideAttrs (old: {
+        meta = (old.meta or {}) // {license = pkgs.lib.licenses.mpl20;};
+        postInstall =
+          (old.postInstall or "")
+          + ''
+            doc="$out/share/doc/albedo-suite"
+            mkdir -p "$doc/source"
+            cp ${../../LICENSE} "$doc/LICENSE"
+            cp ${../../THIRD_PARTY_NOTICES.md} "$doc/THIRD_PARTY_NOTICES.md"
+            cp -r --no-preserve=mode ${../../LICENSES} "$doc/LICENSES"
+            cp ${../../docs/package-sources.md} "$doc/SOURCE.md"
+            cp ${albedo-git.src}/native/render/fonts/JetBrainsMono-OFL.txt "$doc/LICENSES/JetBrainsMono-OFL.txt"
+            mkdir -p "$doc/dependency-notices"
+            for dependencies in build/packages vendor cli/vendor "''${cargoDeps-}"; do
+              if [ -d "$dependencies" ]; then
+                target="$doc/dependency-notices/$(basename "$dependencies")"
+                (
+                  cd "$dependencies"
+                  find . -type f \( -iname 'license*' -o -iname 'copying*' -o -iname 'notice*' -o -iname 'copyright*' \) -print0 | while IFS= read -r -d "" notice; do
+                    install -Dm644 "$notice" "$target/$notice"
+                  done
+                )
+              fi
+            done
+            ln -s ${self.outPath} "$doc/source/suite"
+            ln -s ${albedo-git.src} "$doc/source/upstream"
+          '';
+      });
+
+    withServerSources = package:
+      withSuiteNotices (package.overrideAttrs (old: {
         # Fail on upstream drift before installing editable source files.
         postPatch =
           ''
@@ -64,7 +94,7 @@
           + ''
             wrapProgram "$out/bin/albedo-daemon" --prefix PATH : ${toolPath}
           '';
-      });
+      }));
 
     # Zig defaults to the build host CPU, which may exceed the runtime CPU.
     withPortableUsageCore = package:
@@ -86,7 +116,7 @@
         filter = path: _: showDiffs || !(builtins.elem (baseNameOf path) ["default_diffs_test.go" "chat_test.go"]);
       };
     in
-      package.overrideAttrs (old: {
+      withSuiteNotices (package.overrideAttrs (old: {
         postPatch =
           ''
             sha256sum --check ${../../upstream/client.sha256}
@@ -107,7 +137,7 @@
             go test ./internal/tui ./internal/daemon -run '^TestToolImages' -count=1 -v
             ${pkgs.lib.optionalString showDiffs "go test ./internal/tui -run '^TestDefaultDiffVisibility$' -count=1 -v"}
           '';
-      });
+      }));
 
     suiteAlbedo = showDiffs:
       assert albedo-git.src.outputHash == pin.narHash;
@@ -120,10 +150,13 @@
             then withServerSources package
             else if name == "client.nix"
             then withClientSources showDiffs package
+            else if name == "render.nix"
+            then withSuiteNotices package
             else if name == "usage-core.nix"
             then withPortableUsageCore package
             else package;
         }).overrideAttrs (old: {
+          meta = (old.meta or {}) // {license = pkgs.lib.licenses.mpl20;};
           passthru = (old.passthru or {}) // {web = self.packages.${pkgs.stdenv.hostPlatform.system}.albedo-web;};
           buildCommand =
             old.buildCommand

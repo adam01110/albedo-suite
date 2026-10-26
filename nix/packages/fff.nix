@@ -83,6 +83,8 @@ in
       tar xzf ${ffiRs} -C "$modules/ffi-rs" --strip-components=1
       tar xzf ${ffiBin} -C "$modules/@yuuang/ffi-rs-linux-${arch}-gnu" --strip-components=1
       cp ${../../src/server/priv/python/albedo_fff.mjs} "$out/libexec/albedo-fff.mjs"
+      cp ${../../LICENSE} "$out/share/licenses/albedo-fff/LICENSE"
+      cp ${./fff-sources.md} "$out/share/licenses/albedo-fff/SOURCE.md"
       cp ${fffLicense} "$out/share/licenses/albedo-fff/fff-LICENSE"
       cp "$modules/ffi-rs/LICENSE" "$out/share/licenses/albedo-fff/ffi-rs-LICENSE"
       makeWrapper ${nodejs}/bin/node "$out/bin/albedo-fff" --add-flags "$out/libexec/albedo-fff.mjs" --prefix NODE_PATH : "$modules"
@@ -123,7 +125,12 @@ in
     meta = {
       description = "FFF native file indexer worker for Albedo";
       homepage = "https://github.com/dmtrKovalenko/fff";
-      license = lib.licenses.mit;
+      license = [
+        # keep-sorted start
+        lib.licenses.mit
+        lib.licenses.mpl20
+        # keep-sorted end
+      ];
       platforms = [
         # keep-sorted start
         "aarch64-linux"

@@ -77,6 +77,37 @@
       touch $out
     '';
 
+    checks.package-licenses = assert pkgs.lib.all (package: package.meta.license.spdxId == "MPL-2.0") [
+      # keep-sorted start
+      runtime
+      runtime.client
+      runtime.render
+      runtime.server
+      suitePackages.albedo-patched
+      suitePackages.albedo-patched.client
+      suitePackages.albedo-web
+      # keep-sorted end
+    ];
+    assert map (license: license.spdxId) suitePackages.albedo-fff.meta.license == ["MIT" "MPL-2.0"];
+      runCommand "albedo-package-license-tests" {
+        nativeBuildInputs = [pkgs.python311];
+        ALBEDO_LICENSE_PACKAGES = builtins.toJSON {
+          # keep-sorted start
+          client = "${runtime.client}";
+          client-patched = "${suitePackages.albedo-patched.client}";
+          defaults = "${runtime}";
+          fff = "${suitePackages.albedo-fff}";
+          patched = "${suitePackages.albedo-patched}";
+          render = "${runtime.render}";
+          server = "${runtime.server}";
+          web = "${runtime.web}";
+          # keep-sorted end
+        };
+      } ''
+        python3 ${../../test/package_licenses_test.py}
+        touch $out
+      '';
+
     checks.package-layout = assert pkgs.lib.hasInfix "--no-preserve=mode" runtime.server.postPatch;
     assert pkgs.lib.hasInfix "--no-preserve=mode" runtime.client.postPatch;
       runCommand "albedo-package-layout" {} ''
