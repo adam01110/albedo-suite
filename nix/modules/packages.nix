@@ -13,7 +13,7 @@
       readFile
       # keep-sorted end
       ;
-    inherit (pkgs.lib) makeBinPath;
+    inherit (pkgs.lib) hasInfix makeBinPath;
     inherit
       (pkgs)
       # keep-sorted start
@@ -66,6 +66,20 @@
           '';
       });
 
+    # Zig defaults to the build host CPU, which may exceed the runtime CPU.
+    withPortableUsageCore = package:
+      package.overrideAttrs (old: {
+        buildPhase = assert hasInfix "zig build " old.buildPhase;
+          builtins.replaceStrings ["zig build "] ["zig build -Dcpu=baseline "] old.buildPhase;
+        nativeBuildInputs = (old.nativeBuildInputs or []) ++ [pkgs.python3];
+        doInstallCheck = true;
+        postInstallCheck =
+          (old.postInstallCheck or "")
+          + ''
+            ALBEDO_USAGE_CORE="$out/bin/usage" python3 ${../../test/usage_core_test.py}
+          '';
+      });
+
     withClientSources = showDiffs: package: let
       clientSources = builtins.path {
         path = ../../src/client;
@@ -106,6 +120,8 @@
             then withServerSources package
             else if name == "client.nix"
             then withClientSources showDiffs package
+            else if name == "usage-core.nix"
+            then withPortableUsageCore package
             else package;
         }).overrideAttrs (old: {
           passthru = (old.passthru or {}) // {web = self.packages.${pkgs.stdenv.hostPlatform.system}.albedo-web;};
