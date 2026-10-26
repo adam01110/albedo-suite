@@ -95,7 +95,7 @@ tests. [Third-party notices](THIRD_PARTY_NOTICES.md) record source attribution.
 
 ## License
 
-Suite-authored packaging, helpers and tests use [WTFPL v2](LICENSE). Albedo
-source replacements follow upstream MPL 2.0 coverage. Upstream and
+This repository is licensed under the [Mozilla Public License 2.0](LICENSE),
+except where third-party notices specify otherwise. Upstream and
 third-party attributions and license exceptions are retained in
 [the source notices](THIRD_PARTY_NOTICES.md) and `LICENSES/`.

@@ -7,8 +7,10 @@ revision `b274c034e64263a48961adcdf736f1e0cc838fd6`,
 the license is retained in `LICENSES/albedo-MPL-2.0.txt`. Updated source
 replacements retain upstream MPL 2.0 coverage. The previous WTFPL v2 license
 is retained in `LICENSES/albedo-WTFPL.txt` for earlier source versions.
-Suite-authored packaging, modules, helpers and tests use WTFPL v2 under the
-root `LICENSE`.
+Suite-authored code, packaging, modules, helpers, tests and documentation are
+copyright 2026 Adam0 and licensed under MPL 2.0 in the root `LICENSE`, except
+where third-party notices specify otherwise. Earlier versions retain their
+original licenses.
 
 Modifications add opt-in lazy MCP lifecycle/bindings, explicit staged formatting
 and local LSP batch checks, isolated local LSP compatibility tools, durable user

@@ -16,7 +16,7 @@
       '';
       meta = {
         description = "Canvas web client for Albedo";
-        license = pkgs.lib.licenses.wtfpl;
+        license = pkgs.lib.licenses.mpl20;
         platforms = pkgs.lib.platforms.unix;
       };
     };
