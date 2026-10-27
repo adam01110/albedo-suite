@@ -9,6 +9,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // A row action is a click target. Like the copy marks in selection.go, its
@@ -50,6 +51,10 @@ func entryKey(entry HistoryEntry) string {
 
 // actAt runs the action of the transcript row at absolute index row.
 func (m *ChatModel) actAt(row int) tea.Cmd {
+	return m.actAtCol(row, 0)
+}
+
+func (m *ChatModel) actAtCol(row, col int) tea.Cmd {
 	if row < 0 || row >= len(m.frameLines) {
 		return nil
 	}
@@ -63,14 +68,27 @@ func (m *ChatModel) actAt(row int) tea.Cmd {
 	case verbOpen:
 		m.toggleBurst(act.key, row)
 	case verbArtifact:
+		if copyIconAt(m.frameLines[row], col) {
+			return m.openArtifactAction(act.key, true)
+		}
 		m.AddNotice("opening artifact in your browser…")
-		return m.openArtifactAction(act.key)
+		return m.openArtifactAction(act.key, false)
 	case verbMore:
 		if !m.toggleFold(act.key, row) {
 			m.toggleLookup(act.key, row)
 		}
 	}
 	return nil
+}
+
+// copyIconAt reports whether column col lands on a row's trailing " · ⧉".
+func copyIconAt(line string, col int) bool {
+	plain := strings.TrimRight(ansi.Strip(line), " ")
+	if !strings.HasSuffix(plain, " · ⧉") {
+		return false
+	}
+	width := ansi.StringWidth(plain)
+	return col >= width-ansi.StringWidth(" · ⧉") && col <= width
 }
 
 // toggleFold shows or folds the rest of the message, note or tool card whose

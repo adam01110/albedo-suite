@@ -355,9 +355,12 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 	switch msg := msg.(type) {
 
 	case artifactOpenResult:
-		if msg.Err != nil {
+		switch {
+		case msg.Err != nil:
 			m.AddError(msg.Err.Error())
-		} else if msg.Notice != "" {
+		case msg.Copied != "":
+			return m, m.copied(msg.Copied)
+		case msg.Notice != "":
 			m.AddNotice(msg.Notice)
 		}
 		return m, nil

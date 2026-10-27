@@ -97,6 +97,15 @@ var customProviders = []customProvider{
 		DefaultProtocol: "chat_completions",
 	},
 	{
+		ID:              "add-openrouter",
+		Label:           "OpenRouter",
+		Detail:          "api key · models from many providers",
+		Extension:       "openai",
+		DefaultName:     "openrouter",
+		DefaultURL:      "https://openrouter.ai/api/v1",
+		DefaultProtocol: "chat_completions",
+	},
+	{
 		ID:         "add-openai",
 		Label:      "OpenAI-compatible",
 		Detail:     "your own base URL and api key",

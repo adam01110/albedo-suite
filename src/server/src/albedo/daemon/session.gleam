@@ -201,7 +201,7 @@ pub type Message {
   ReadCapture(Subject(Result(Unobserved, String)))
   ReadSummary(Subject(Summary))
   /// The live facts alone, for a client that keeps its history over the stream.
-  ReadStatus(Subject(Result(StatusRead, String)))
+  ReadStatus(Subject(fn() -> Result(StatusRead, String)))
   /// The kernel's port owner saw its job facts change.
   KernelJobs
   /// A watching client is due a read of the extension sidebars.
@@ -586,7 +586,7 @@ pub fn summary(session: Session) -> Result(Summary, String) {
 pub fn status_read(session: Session) -> Result(StatusRead, String) {
   actor_call.try_call(session, 5000, ReadStatus)
   |> result.replace_error("session status unavailable")
-  |> result.flatten
+  |> result.try(fn(observe) { observe() })
 }
 
 pub fn change_configuration(
@@ -1117,17 +1117,22 @@ fn summary_state(state: State) -> Summary {
 
 /// Everything the footer draws, from memory and the kernel's port owner: no
 /// store read, no composition read. `glances` is what the stream last
-/// published; a caller that finds none observes the composition itself.
-fn status_state(state: State) -> Result(StatusRead, String) {
-  use observed <- result.try(session_namespace.observe_kernel(state))
-  Ok(StatusRead(
+/// published; a caller that finds none observes the composition itself. The
+/// caller finishes the kernel observation, as it does a capture's.
+fn status_state(state: State) -> fn() -> Result(StatusRead, String) {
+  let kernel = session_namespace.kernel_observer(state)
+  // Bind the facts, not `state`, so the transcript stays in the actor.
+  let #(id, cursor, status, usage, glances) = #(
     state.info.id,
     Cursor(state.generation, state.sequence),
     session_state.current_status(state),
-    observed,
     state.latest_usage,
     state.announced_glances,
-  ))
+  )
+  fn() {
+    use observed <- result.map(kernel())
+    StatusRead(id, cursor, status, observed, usage, glances)
+  }
 }
 
 /// Another session may have written the work ledger or a vent since the last
@@ -1151,9 +1156,10 @@ fn glances_due(state: State) -> State {
   session_state.watch_glances(state)
 }
 
-/// A capture finished by its caller with the session's composition. The
-/// runtime observes composition on worker slots that kernel boots share, so
-/// it can queue for seconds; the caller waits for it, never the actor.
+/// A capture finished by its caller with the session's composition and, when
+/// it holds no kernel, what the runtime has loaded. The runtime observes
+/// composition on worker slots that kernel boots share, and stops kernels
+/// inline, so it can take seconds; the caller waits for it, never the actor.
 type Unobserved =
   fn() -> Result(Capture, String)
 
@@ -1166,9 +1172,10 @@ fn capture_state(state: State) -> Result(Unobserved, String) {
   ))
   let summary = summary_state(state)
   use active_output <- result.try(active_output.capture(state.active_output))
-  use kernel <- result.try(session_namespace.observe_kernel(state))
+  let kernel = session_namespace.kernel_observer(state)
   let #(host, home, id) = #(state.host, state.home, state.info.id)
   Ok(fn() {
+    use kernel <- result.try(kernel())
     use composition <- result.try(runtime.observe_composition(host, home, id))
     Ok(Capture(
       durable.info,

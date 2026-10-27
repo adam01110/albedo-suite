@@ -201,7 +201,7 @@ func (m *ChatModel) handleInput(msg tea.Msg) (tea.Cmd, bool) {
 				return nil, true
 			}
 			if sel.IsEmpty() {
-				cmd := m.actAt(sel.Head.Row)
+				cmd := m.actAtCol(sel.Head.Row, sel.Head.Col)
 				return cmd, true
 			}
 			if text := SelectedText(m.frameLines, sel); text != "" {

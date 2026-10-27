@@ -27,11 +27,11 @@ import struct
 import time
 import uuid
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import Any, TypedDict, cast
 
 from albedo_protocol import RemoteCall, RemoteMessage, parse_remote
 
-from albedo_api import PythonApi, ReadyList, Text, check_timeout, excerpt
+from albedo_api import OutputCapture, PythonApi, ReadyList, Text, check_timeout, excerpt
 import albedo_bundle
 from albedo_values import InvalidValue, decode
 import albedo_shell
@@ -1263,6 +1263,31 @@ def _remote_path(connection: RemoteConnection, path: str) -> str:
     return path
 
 
+class FallbackProcess(asyncio.SubprocessProtocol):
+    """Observe ssh's exit separately from EOF held by a surviving descendant."""
+
+    def __init__(self, capture: OutputCapture) -> None:
+        self.capture = capture
+        self.exited: asyncio.Future[int] = loop.create_future()
+        self.drained: asyncio.Future[None] = loop.create_future()
+        self.transport: asyncio.SubprocessTransport
+
+    def connection_made(self, transport: asyncio.BaseTransport) -> None:
+        self.transport = cast(asyncio.SubprocessTransport, transport)
+
+    def pipe_data_received(self, fd: int, data: bytes) -> None:
+        self.capture.write_bytes(data)
+
+    def pipe_connection_lost(self, fd: int, exc: Exception | None) -> None:
+        if fd == 1 and not self.drained.done():
+            self.drained.set_result(None)
+
+    def process_exited(self) -> None:
+        code = self.transport.get_returncode()
+        assert code is not None
+        self.exited.set_result(code)
+
+
 class FallbackJob(JobOutput):
     """One command over the control connection when no kernel could boot.
 
@@ -1320,7 +1345,8 @@ class FallbackJob(JobOutput):
     async def _run(
         self, host: str, script: str, timeout: float, stdin: bytes | None
     ) -> "FallbackJob":
-        process = await asyncio.create_subprocess_exec(
+        transport, process = await loop.subprocess_exec(
+            lambda: FallbackProcess(self.capture),
             *ssh_base(host),
             host,
             script,
@@ -1332,24 +1358,26 @@ class FallbackJob(JobOutput):
             env=ssh_env(host),
         )
         self._process = process
-        if stdin is not None and process.stdin is not None:
-            process.stdin.write(stdin)
-            process.stdin.close()
-        copying = loop.create_task(self._copy(process.stdout))
+        pipe = cast(asyncio.WriteTransport | None, transport.get_pipe_transport(0))
+        if stdin is not None and pipe is not None:
+            pipe.write(stdin)
+            pipe.close()
         try:
-            self.exit_code = await asyncio.wait_for(process.wait(), timeout)
+            self.exit_code = await asyncio.wait_for(
+                asyncio.shield(process.exited), timeout
+            )
             with contextlib.suppress(asyncio.TimeoutError):
-                await asyncio.wait_for(copying, timeout=1.0)
+                await asyncio.wait_for(asyncio.shield(process.drained), timeout=1.0)
         except asyncio.TimeoutError:
             self.timed_out = True
-            process.kill()
-            self.exit_code = await process.wait()
+            transport.kill()
+            self.exit_code = await asyncio.shield(process.exited)
             self.capture.write(
                 f"\n[deadline exceeded after {timeout:g}s; the ssh client was killed; "
                 f"the remote command may still be running]"
             )
         finally:
-            copying.cancel()
+            transport.close()
             if self._hooked is not None:
                 self.capture.write(
                     await hook.job_ended(self._hooked, self.exit_code, self.timed_out)
@@ -1425,10 +1453,6 @@ class FallbackJob(JobOutput):
             "host": self._connection.host,
         }
 
-    async def _copy(self, stream: Any) -> None:
-        while chunk := await stream.read(8192):
-            self.capture.write_bytes(chunk)
-
     def __await__(self):
         return self._wait().__await__()
 
@@ -1464,12 +1488,12 @@ class FallbackJob(JobOutput):
                 break
             await asyncio.sleep(0.01)
         process = getattr(self, "_process", None)
-        if process is not None and process.returncode is None:
-            process.terminate()
+        if process is not None and process.transport.get_returncode() is None:
+            process.transport.terminate()
             try:
-                await asyncio.wait_for(process.wait(), 2.0)
+                await asyncio.wait_for(asyncio.shield(process.exited), 2.0)
             except asyncio.TimeoutError:
-                process.kill()
+                process.transport.kill()
             self.capture.write(
                 "\n[stopped locally; the remote command may still be running]"
             )
