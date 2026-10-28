@@ -36,6 +36,10 @@ pub type Watcher {
   )
 }
 
+pub type PendingSwitch {
+  PendingSwitch(caller: String, provider: String, model: String)
+}
+
 pub type State(message) {
   State(
     active_output: active_output.Projection,
@@ -50,6 +54,7 @@ pub type State(message) {
     history: Option(List(transcript.Entry)),
     latest_usage: Option(usage.Metadata),
     activity: turn.Activity,
+    pending_switch: Option(PendingSwitch),
     steering: List(Submission),
     active_submissions: List(Submission),
     sequence: Int,
@@ -65,6 +70,10 @@ pub type State(message) {
     /// While the kernel boots: boot attempts so far, and the work waiting for
     /// it, re-sent to the actor once the kernel is ready.
     booting: Option(#(Int, List(message))),
+    /// Work parked until the previous workspace's kernel is confirmed stopped.
+    workspace_reset: Option(List(message)),
+    releasing: Option(List(message)),
+    closing: Bool,
     blocked_until: Int,
     /// Failed kernel startup waits for an explicit retry or workspace move.
     kernel_blocked: Bool,
@@ -376,7 +385,11 @@ pub fn current_status(state: State(message)) -> session_activity.Status {
       })
     _, _ -> None
   }
-  session_activity.status(state.activity, state.booting != None, blocking)
+  session_activity.status(
+    state.activity,
+    state.booting != None || state.workspace_reset != None,
+    blocking,
+  )
 }
 
 fn publish(state: State(message), event: view.Event) -> State(message) {

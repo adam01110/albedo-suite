@@ -3,7 +3,7 @@
 %% parsed once per file revision.
 
 -include_lib("kernel/include/file.hrl").
--export([refresh/3, reload/2, lookup/3, lookup_provider/3, list/3]).
+-export([refresh/3, reload/2, lookup/3, lookup_provider/3, list/3, env_names/2]).
 
 -define(MAX_BYTES, 33554432).
 -define(REFRESH_PROCESS, albedo_models_refresh).
@@ -254,6 +254,16 @@ host(Url) when is_binary(Url), Url =/= <<>> ->
         _ -> <<>>
     end;
 host(_) -> <<>>.
+
+
+env_names(Catalog0, Endpoint0) ->
+    Catalog = text(Catalog0), Endpoint = unicode:characters_to_binary(Endpoint0),
+    case catalog(Catalog) of
+        {ok, #{providers := Providers}} ->
+            Host = host(Endpoint),
+            lists:usort(lists:append([Env || {_Name, {ProviderHost, _Api, Env, _Ids}} <- maps:to_list(Providers), ProviderHost =:= Host]));
+        _ -> []
+    end.
 
 list(Catalog0, Provider0, Endpoint0) ->
     Catalog = text(Catalog0),

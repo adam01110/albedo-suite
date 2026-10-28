@@ -1,10 +1,8 @@
 """Provider model lists: each provider's own list reaches the picker and reloads.
 
-Alibaba caches its /models answer for a day, so a model it starts offering
-stays out of the picker until that cache ages out; `/reload models` must
-refetch it at once through the configured profile's endpoint and key. A
-catalog that cannot be fetched (Codex, Antigravity, and Claude are never
-signed in here) keeps its previous list: the reload still succeeds and names
+`/reload models` refetches the sign-in providers' cached catalogs. A catalog
+that cannot be fetched (Codex, Antigravity, and Claude are never signed in
+here) keeps its previous list: the reload still succeeds and names
 it rather than reporting it refreshed. Claude's picker shows whatever the
 Anthropic Models API listed, newest first, with the API's own limits and
 efforts, so a model released after albedo shipped is offered without an
@@ -51,8 +49,6 @@ MODELS_CATALOG = {
     },
 }
 
-ALIBABA_MODELS = {"data": [{"id": "qwen-fresh"}, {"id": "qwen-tts-fresh"}]}
-
 OPENCODE_GO_MODELS = {"data": [{"id": "glm-5.3-flash"}, {"id": "glm-audio-1"}]}
 
 # Zen's own list, free tier included, with a speech route the picker filters.
@@ -94,8 +90,6 @@ class ModelCatalogReloadTests(unittest.TestCase):
         self.addCleanup(self.provider.close)
         self.catalog = Provider(lambda _request: text("ok"), catalog=MODELS_CATALOG)
         self.addCleanup(self.catalog.close)
-        self.alibaba = Provider(lambda _request: text("ok"), catalog=ALIBABA_MODELS)
-        self.addCleanup(self.alibaba.close)
         self.opencode_go = Provider(
             lambda _request: text("ok"), catalog=OPENCODE_GO_MODELS
         )
@@ -107,7 +101,6 @@ class ModelCatalogReloadTests(unittest.TestCase):
 
         def prepare(app):
             # Fresh on disk, so nothing but an explicit reload refetches them.
-            (app.home / "alibaba-models.json").write_text(json.dumps(["qwen-stale"]))
             endpoint_hash = (
                 hashlib.sha256(self.opencode_go.url.encode()).hexdigest().upper()
             )
@@ -129,13 +122,6 @@ class ModelCatalogReloadTests(unittest.TestCase):
                     "baseUrl": self.provider.url,
                     "apiKey": "fixture-key",
                     "model": "fixture-model",
-                    "protocol": "chat_completions",
-                },
-                "fixture-alibaba": {
-                    "extension": "alibaba",
-                    "baseUrl": self.alibaba.url,
-                    "apiKey": "fixture-alibaba-key",
-                    "model": "qwen-fresh",
                     "protocol": "chat_completions",
                 },
                 "fixture-opencode-go": {
@@ -161,7 +147,6 @@ class ModelCatalogReloadTests(unittest.TestCase):
         go_cache = self.app.home / f"opencode-go-models-{endpoint_hash}.json"
         self.addCleanup(go_cache.unlink, missing_ok=True)
         for name in (
-            "alibaba-models.json",
             "opencode-go-models.json",
             "opencode-zen-models.json",
             "claude-models.json",
@@ -184,9 +169,6 @@ class ModelCatalogReloadTests(unittest.TestCase):
         ) as response:
             return json.load(response)
 
-    def alibaba_listed(self):
-        return self.listed("alibaba", self.alibaba.url)
-
     def opencode_go_listed(self):
         return self.listed("opencode-go", self.opencode_go.url)
 
@@ -194,7 +176,6 @@ class ModelCatalogReloadTests(unittest.TestCase):
         return self.listed("opencode-zen", self.opencode_zen.url)
 
     def test_reload_models_refetches_provider_lists_and_names_failures(self):
-        self.assertEqual([item["id"] for item in self.alibaba_listed()], ["qwen-stale"])
         self.assertEqual(
             [item["id"] for item in self.opencode_go_listed()], ["glm-stale"]
         )
@@ -203,7 +184,7 @@ class ModelCatalogReloadTests(unittest.TestCase):
         )
         outcome = self.reload("models")
         catalogs = {item["provider"]: item for item in outcome["models"]}
-        self.assertEqual(catalogs["alibaba"]["state"], "refreshed")
+        self.assertNotIn("alibaba", catalogs)
         self.assertEqual(catalogs["opencode-go"]["state"], "refreshed")
         self.assertEqual(catalogs["opencode-zen"]["state"], "refreshed")
         self.assertEqual(catalogs["models"]["state"], "refreshed")
@@ -212,8 +193,7 @@ class ModelCatalogReloadTests(unittest.TestCase):
             {name for name, item in catalogs.items() if item["state"] == "failed"},
         )
         self.assertTrue(catalogs["claude"]["failure"])
-        # The non-chat entitlement stays filtered, as on any other fetch.
-        self.assertEqual([item["id"] for item in self.alibaba_listed()], ["qwen-fresh"])
+        # Non-chat entitlements stay filtered, as on any other fetch.
         self.assertEqual(
             [item["id"] for item in self.opencode_go_listed()], ["glm-5.3-flash"]
         )

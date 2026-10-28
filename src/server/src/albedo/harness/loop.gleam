@@ -31,6 +31,17 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 
+/// A switch applied between requests, with history projected for its new provider.
+pub type Selection {
+  Selection(
+    model: String,
+    effort: Option(String),
+    profile: String,
+    upstream: extension.Upstream,
+    inputs: List(types.Input),
+  )
+}
+
 pub type Loop {
   Loop(
     model: String,
@@ -53,8 +64,13 @@ pub type Loop {
       Result(#(Int, Option(Int)), String),
     /// Appends image fit rows ahead of the request that needs them.
     commit_fits: fn(List(transcript.ImageFit)) -> Result(Nil, String),
-    record_context: fn(types.Request, Option(compaction.Observation), Bool) ->
-      Nil,
+    record_context: fn(
+      String,
+      types.Protocol,
+      types.Request,
+      Option(compaction.Observation),
+      Bool,
+    ) -> Nil,
     record_usage: fn(usage.Metadata) -> Result(Nil, String),
     drain_steering: fn() -> Result(List(types.Input), String),
     /// Reports the pin's compaction baseline (`Some`) or that compaction
@@ -79,6 +95,15 @@ pub type Loop {
     warned_small: Bool,
     /// How often a `Stopping` hook already kept this turn going.
     held: Int,
+    /// Commits what a provider attempt that failed for this reason streamed,
+    /// with a note to continue from it, and answers what it wrote: nothing
+    /// when the attempt showed nothing.
+    salvage: fn(String) -> Result(List(types.Input), String),
+    /// Attempts this step already spent on streams that broke after showing
+    /// output; its next call counts its retries on from them.
+    spent: Int,
+    /// Returns the model switch a parent queued; `run` applies it before a request.
+    refresh: fn() -> Result(Option(Selection), String),
   )
 }
 
@@ -138,6 +163,22 @@ pub fn run(
   step: Int,
 ) -> Result(Nil, String) {
   use _ <- result.try(checkpoint(state))
+  use selection <- result.try(state.refresh())
+  let #(state, inputs) = case selection {
+    None -> #(state, inputs)
+    Some(selected) -> #(
+      Loop(
+        ..state,
+        model: selected.model,
+        effort: selected.effort,
+        profile: selected.profile,
+        upstream: selected.upstream,
+        reported: None,
+        warned_small: False,
+      ),
+      selected.inputs,
+    )
+  }
   use prompted <- result.try(prompted(state, inputs, step))
   case prompted {
     None -> Ok(Nil)
@@ -165,7 +206,13 @@ fn converse(
   let state = warn_small(state, prepared.observation)
   let current_instructions = request_instructions(state)
   let request = request(state, current_instructions, history)
-  state.record_context(request, prepared.observation, prepared.compacted)
+  state.record_context(
+    state.profile,
+    state.upstream.protocol,
+    request,
+    prepared.observation,
+    prepared.compacted,
+  )
   let answer = fn(request: types.Request, original: List(types.Input)) {
     call(
       call_context(state),
@@ -202,15 +249,18 @@ fn converse(
         }
       },
       state.progress_reset,
+      state.salvage,
+      state.spent + 1,
     )
     |> result.map_error(describe(state.upstream, state.model, _))
   }
-  use answered <- result.try(answer(request, original))
+  use called <- result.try(answer(request, original))
+  use answered <- go_on(state, id, inputs, step, called)
   // A turn that ends with neither a reply nor a call left the user nothing.
   // Sending the same request again buys another full reasoning pass that
   // likely ends the same way, so the one retry says what went wrong.
-  use #(row, turn, sent, attempt) <- result.try(case speechless(answered.1) {
-    False -> Ok(answered)
+  use called <- result.try(case speechless(answered.1) {
+    False -> Ok(Answered(answered))
     True -> {
       let nudge = types.User(speechless_nudge)
       case state.publish(view.Retry(state.run_id, 2, speechless_retry, 0)) {
@@ -223,6 +273,7 @@ fn converse(
       }
     }
   })
+  use #(row, turn, sent, attempt) <- go_on(state, id, inputs, step, called)
   let cache = fading(state, sent)
   let cache_loss = case row {
     Some(id) ->
@@ -260,6 +311,7 @@ fn converse(
   let state =
     Loop(
       ..state,
+      spent: 0,
       reported: option.map(turn.usage, fn(usage) {
         usage.input_tokens + usage.output_tokens
       }),
@@ -406,6 +458,8 @@ pub fn compact(state: Loop, inputs: List(types.Input)) -> Result(Nil, String) {
   }
   // A forced compaction keeps the default options; an ordinary turn sets effort.
   state.record_context(
+    state.profile,
+    state.upstream.protocol,
     types.Request(
       ..request(state, instructions, history),
       options: types.defaults,
@@ -460,7 +514,10 @@ pub fn background(
     fn(_event) { types.Continue },
     fn(_attempt, _event) { types.Continue },
     fn(_attempt) { Nil },
+    keep_nothing,
+    1,
   )
+  |> result.try(whole)
   |> result.map(fn(attempt) { attempt.1.usage })
   |> result.map_error(describe(state.upstream, request.model, _))
 }
@@ -791,7 +848,9 @@ fn bounded(text: String, limit: Int, note: String) -> String {
 /// it cost, how it ended, and the prefix identity it went out with. The row
 /// id of the attempt that succeeded is answered so its transcript seq can be
 /// attached once committed, with the call as it went out. A row that cannot
-/// be written is logged and skipped, never a failed turn.
+/// be written is logged and skipped, never a failed turn. Attempts count from
+/// `first`; a retryable failure after the stream showed output keeps that
+/// output through `salvage` and resumes instead of retrying.
 fn call(
   state: CallContext,
   kind: requests.Kind,
@@ -801,7 +860,12 @@ fn call(
   on_event: fn(types.Event) -> types.Control,
   progress_event: fn(Int, types.Event) -> types.Control,
   reset_progress: fn(Int) -> Nil,
-) -> Result(#(Option(Int), types.Turn, extension.SentCall, Int), types.Error) {
+  salvage: fn(String) -> Result(List(types.Input), String),
+  first: Int,
+) -> Result(
+  Attempt(#(Option(Int), types.Turn, extension.SentCall, Int)),
+  types.Error,
+) {
   let input_chain =
     requests.input_chain(
       option.unwrap(request.instructions, ""),
@@ -900,9 +964,60 @@ fn call(
     publish,
     state.run_id,
     reset_progress,
-    1,
+    salvage,
+    first,
     0,
   )
+}
+
+/// How a provider call ended for its turn.
+type Attempt(a) {
+  Answered(a)
+  /// The stream broke after it showed output; `kept` is what was committed
+  /// of it, and the turn goes on from there at attempt `next`.
+  Resumed(kept: List(types.Input), next: Int)
+}
+
+/// For calls that keep nothing a broken stream showed, so never resume.
+fn keep_nothing(_reason: String) -> Result(List(types.Input), String) {
+  Ok([])
+}
+
+/// The answer of a call that cannot resume.
+fn whole(called: Attempt(a)) -> Result(a, types.Error) {
+  case called {
+    Answered(value) -> Ok(value)
+    Resumed(..) -> Error(types.UnexpectedEnd)
+  }
+}
+
+/// Goes on with an answered call; a resumed one starts the step again from
+/// history that ends with what its broken stream showed.
+fn go_on(
+  state: Loop,
+  id: String,
+  inputs: List(types.Input),
+  step: Int,
+  called: Attempt(a),
+  answered: fn(a) -> Result(Nil, String),
+) -> Result(Nil, String) {
+  case called {
+    Answered(value) -> answered(value)
+    Resumed(kept, next) -> {
+      use kept <- result.try(
+        kept
+        |> list.reverse
+        |> list.map(transcript.Entry(_, None, None, None, None))
+        |> projection.for_model(state.profile, state.upstream.protocol),
+      )
+      run(
+        Loop(..state, spent: next - 1),
+        id,
+        unshift(inputs, [list.reverse(kept)]),
+        step + 1,
+      )
+    }
+  }
 }
 
 /// Attaches the transcript row a recorded call produced — the first
@@ -971,16 +1086,18 @@ const attempts = 8
 /// request most likely thinks just as long again, so it gets one more go.
 const accepted_timeout_retries = 1
 
-/// Reissue transient transport and gateway failures. A failed attempt has no committed output
-/// or tool effects; discard its live previews before forwarding the next attempt.
+/// Reissue transient transport and gateway failures. A failed attempt that
+/// showed nothing is sent again as it was; one that showed output keeps it
+/// through `salvage`, and the call resumes from it instead.
 fn retry_stream(
   run: fn(Int) -> Result(a, types.Error),
   publish: fn(view.Event) -> Bool,
   run_id: String,
   reset_progress: fn(Int) -> Nil,
+  salvage: fn(String) -> Result(List(types.Input), String),
   attempt: Int,
   accepted_timeouts: Int,
-) -> Result(a, types.Error) {
+) -> Result(Attempt(a), types.Error) {
   case run(attempt) {
     Error(error) -> {
       let accepted = accepted_timeout(error)
@@ -994,35 +1111,49 @@ fn retry_stream(
         && accepted_timeouts <= accepted_timeout_retries
       {
         False -> Error(error)
-        True ->
-          case
-            publish(view.Retry(
-              run_id,
-              attempt + 1,
-              case accepted {
-                True -> "provider went silent after accepting the request"
-                False -> "transient provider request failure"
-              },
-              int.bitwise_shift_left(250, attempt - 1),
-            ))
-          {
+        True -> {
+          let reason = case accepted {
+            True -> "provider went silent after accepting the request"
+            False -> "transient provider request failure"
+          }
+          let delay = int.bitwise_shift_left(250, attempt - 1)
+          // Before the retry notice, which discards the attempt's live output.
+          let kept = case salvage(reason) {
+            Ok(kept) -> kept
+            Error(error) -> {
+              io.println_error(
+                "keeping a broken stream's output failed for run "
+                <> run_id
+                <> ": "
+                <> error,
+              )
+              []
+            }
+          }
+          case publish(view.Retry(run_id, attempt + 1, reason, delay)) {
             False -> Error(types.Cancelled)
             True -> {
               reset_progress(attempt)
-              clock.sleep(int.bitwise_shift_left(250, attempt - 1))
-              retry_stream(
-                run,
-                publish,
-                run_id,
-                reset_progress,
-                attempt + 1,
-                accepted_timeouts,
-              )
+              clock.sleep(delay)
+              case kept {
+                [] ->
+                  retry_stream(
+                    run,
+                    publish,
+                    run_id,
+                    reset_progress,
+                    salvage,
+                    attempt + 1,
+                    accepted_timeouts,
+                  )
+                kept -> Ok(Resumed(kept, attempt + 1))
+              }
             }
           }
+        }
       }
     }
-    outcome -> outcome
+    Ok(value) -> Ok(Answered(value))
   }
 }
 
@@ -1312,7 +1443,10 @@ fn summarize(
       fn(_) { types.Continue },
       fn(_, _) { types.Continue },
       fn(_) { Nil },
+      keep_nothing,
+      1,
     )
+    |> result.try(whole)
     |> result.map_error(fn(error) {
       "summarizer provider request failed: "
       <> describe(state.upstream, model, error)

@@ -27,8 +27,10 @@ import albedo/daemon/session_naming
 import albedo/daemon/session_prompt
 import albedo/daemon/session_provider
 import albedo/daemon/session_run
+import albedo/daemon/session_salvage
 import albedo/daemon/session_state
 import albedo/daemon/session_submission
+import albedo/daemon/session_switch
 import albedo/daemon/session_workspace
 import albedo/daemon/store
 import albedo/daemon/tool_progress as tool_progress_state
@@ -43,6 +45,7 @@ import albedo/harness/extensions/python/kernel as python
 import albedo/harness/extensions/run/extension as run
 import albedo/harness/location
 import albedo/harness/loop
+import albedo/harness/protect
 import albedo/harness/runtime
 import albedo/harness/ssh
 import albedo/openai_api/types
@@ -54,6 +57,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
 import gleam/string
+import sqlight
 
 /// What a turn resumed after a daemon restart tells the model, and the
 /// transcript's marker for the restart.
@@ -199,6 +203,7 @@ pub type Message {
   /// Saved profiles were renamed, old name first.
   RenameProfiles(List(#(String, String)))
   ReadCapture(Subject(Result(Unobserved, String)))
+  CaptureIn(Option(sqlight.Connection), Subject(Result(Unobserved, String)))
   ReadSummary(Subject(Summary))
   /// The live facts alone, for a client that keeps its history over the stream.
   ReadStatus(Subject(fn() -> Result(StatusRead, String)))
@@ -208,9 +213,11 @@ pub type Message {
   GlancesDue
   GlancesObserved(Result(runtime.CompositionObservation, String))
   /// See `extension.Session.awaited`.
-  ReadAwaited(Subject(Bool))
+  ReadAwaited(Subject(fn() -> Bool))
   /// The kernel handle, for a read that must wait on it outside the actor.
   ReadKernel(Subject(Option(python.Kernel)))
+  SwitchModel(String, String, String, Subject(Result(Bool, String)))
+  RequestBoundary(String, Subject(Result(Option(loop.Selection), String)))
   ChangeConfiguration(
     session_configuration.Version,
     session_configuration.Patch,
@@ -278,6 +285,9 @@ pub type Message {
     Subject(Result(#(Int, Option(Int)), String)),
   )
   CommitFits(String, List(transcript.ImageFit), Subject(Result(Nil, String)))
+  /// The worker's stream broke for this reason after it showed output, and
+  /// the turn goes on from that output.
+  Salvage(String, String, Subject(Result(List(types.Input), String)))
   RecordContext(String, context_snapshot.Snapshot, Bool, Subject(Nil))
   RecordUsage(String, usage.Metadata, Subject(Result(Nil, String)))
   ReportPin(String, Option(Int), Subject(Nil))
@@ -306,6 +316,8 @@ pub type Message {
   Down(process.Down)
   Idle(Subject(Report))
   Release(Subject(Bool))
+  Released(runtime.Session, Result(python.Saved, String), Subject(Bool))
+  Deleted(Result(Nil, String), Subject(Result(Nil, String)))
   ExpireState(Subject(Bool))
   EvictHistory(Subject(Bool))
   /// Queued behind a handler that dropped a large part of the state. An idle
@@ -316,6 +328,7 @@ pub type Message {
   /// Stop the actor if nothing runs, waits, watches, or holds a live job or a
   /// running child, whose report will wake it. True when it stopped.
   Unload(Subject(Bool))
+  ChildrenObserved(Message, Bool)
   /// Archive the whole transcript, cut it back before a user message, and
   /// stop, so each stream ends and its client reconnects to a reset.
   RewindHistory(
@@ -343,6 +356,7 @@ pub type Message {
   )
   /// The runtime answered this session's kernel request.
   KernelOpened(Result(runtime.Session, python.Error))
+  WorkspaceReset(session_workspace.Pending, Result(Nil, String))
   /// Start a turn for what waits in the queue, now that the kernel is here.
   StartQueued
   AdmitOperation(
@@ -414,6 +428,7 @@ pub fn start(
         history: None,
         latest_usage: latest_usage,
         activity: activity,
+        pending_switch: None,
         steering: steering,
         active_submissions: [],
         sequence: 0,
@@ -428,6 +443,9 @@ pub fn start(
         prepared_head: prepared_head,
         last_touch: clock.monotonic_ms(),
         booting: None,
+        workspace_reset: None,
+        releasing: None,
+        closing: False,
         blocked_until: 0,
         kernel_blocked: False,
         generation: generation,
@@ -589,6 +607,16 @@ pub fn status_read(session: Session) -> Result(StatusRead, String) {
   |> result.try(fn(observe) { observe() })
 }
 
+/// Queue a parent switch; False means it applied to an idle session now.
+pub fn switch_model(
+  session: Session,
+  caller: String,
+  provider: String,
+  model: String,
+) -> Result(Bool, String) {
+  actor.call(session, 30_000, SwitchModel(caller, provider, model, _))
+}
+
 pub fn change_configuration(
   session: Session,
   expected: session_configuration.Version,
@@ -635,7 +663,8 @@ pub fn read(session: Session, after: Option(Cursor)) -> Result(Page, String) {
   case unobserved {
     None -> Ok(Page(cursor, events, None))
     Some(observe) ->
-      observe() |> result.map(fn(capture) { Page(cursor, [], Some(capture)) })
+      observe()
+      |> result.map(fn(capture) { Page(capture.cursor, [], Some(capture)) })
   }
 }
 
@@ -913,7 +942,10 @@ fn tool_progress_running(
         )
       let state =
         apply_tool_progress(
-          state,
+          session_state.State(
+            ..state,
+            activity: turn.started(state.activity, run_id, tool_call_id),
+          ),
           progress,
           snapshot,
           invalidates_progress && had_calls,
@@ -1062,7 +1094,7 @@ fn begin_upgrade(
   state: State,
   reply: Subject(Result(runtime.KernelUpgrade, String)),
 ) -> actor.Next(State, Message) {
-  case busy(state) || state.booting != None {
+  case busy(state) || uses_kernel_transition(state) || state.booting != None {
     True ->
       answer(state, reply, Error("session must be idle to upgrade the kernel"))
     False -> {
@@ -1163,13 +1195,46 @@ fn glances_due(state: State) -> State {
 type Unobserved =
   fn() -> Result(Capture, String)
 
-/// Everything the actor knows of itself, taken in one turn. Binds no `state`
-/// in the closure, so the transcript stays in the actor.
+/// Queue reader admission in the caller, without retaining the actor's state.
 fn capture_state(state: State) -> Result(Unobserved, String) {
-  use durable <- result.try(conversation.capture(
-    runtime.ledger(state.host),
-    state.info.id,
-  ))
+  let #(ledger, self) = #(runtime.ledger(state.host), state.self)
+  Ok(fn() {
+    use observe <- result.try(
+      store.capture_snapshot(ledger, fn(db) {
+        // A queued request can still use db after a timeout. Keep the exclusive
+        // loan until the actor replies or dies, never recycle a live connection.
+        case process.subject_owner(self) {
+          Error(_) -> Error("session capture unavailable")
+          Ok(owner) -> {
+            let monitor = process.monitor(owner)
+            let reply = process.new_subject()
+            process.send(self, CaptureIn(db, reply))
+            let outcome =
+              process.new_selector()
+              |> process.select(reply)
+              |> process.select_specific_monitor(monitor, fn(_) {
+                Error("session capture unavailable")
+              })
+              |> process.selector_receive_forever
+            process.demonitor_process(monitor)
+            outcome
+          }
+        }
+      }),
+    )
+    observe()
+  })
+}
+
+/// Capture metadata and live facts together while the caller holds its reader.
+fn capture_in(
+  state: State,
+  db: Option(sqlight.Connection),
+) -> Result(Unobserved, String) {
+  use durable <- result.try(case db {
+    Some(db) -> conversation.capture_in(db, state.info.id)
+    None -> conversation.capture(runtime.ledger(state.host), state.info.id)
+  })
   let summary = summary_state(state)
   use active_output <- result.try(active_output.capture(state.active_output))
   let kernel = session_namespace.kernel_observer(state)
@@ -1263,22 +1328,39 @@ fn handle(
   }
   case message {
     ReadCapture(reply) -> answer(state, reply, capture_state(state))
+    CaptureIn(db, reply) -> answer(state, reply, capture_in(state, db))
     ReadSummary(reply) -> answer(state, reply, summary_state(state))
     ReadStatus(reply) -> answer(state, reply, status_state(state))
     KernelJobs -> actor.continue(session_namespace.announce_kernel(state))
+    WorkspaceReset(pending, outcome) ->
+      actor.continue(workspace_reset(state, pending, outcome))
     GlancesDue -> actor.continue(glances_due(state))
     GlancesObserved(result) ->
       actor.continue(case result {
         Error(_) -> state
         Ok(observed) -> session_state.announce_glances(state, observed.glances)
       })
-    ReadAwaited(reply) -> answer(state, reply, awaited(state))
+    ReadAwaited(reply) -> answer(state, reply, awaited_observer(state))
     ReadKernel(reply) ->
       answer(
         state,
         reply,
         option.map(state.kernel, fn(session) { session.kernel }),
       )
+    SwitchModel(caller, provider, model, reply) -> {
+      let #(state, changed) =
+        session_switch.queue(state, caller, provider, model)
+      answer(state, reply, changed)
+    }
+    RequestBoundary(id, reply) -> {
+      case turn.live(state.activity, id) {
+        False -> answer(state, reply, Error("stale run"))
+        True -> {
+          let #(state, selection) = session_switch.apply_pending(state)
+          answer(state, reply, Ok(selection))
+        }
+      }
+    }
     ChangeConfiguration(expected, patch, reply) -> {
       let #(state, changed) =
         session_configure.change(
@@ -1392,10 +1474,7 @@ fn handle(
               interrupt_kernel(state)
               let _ = clock.send_after(state.self, 2500, Abort(run.id))
               answer(
-                session_state.State(
-                  ..state,
-                  activity: turn.cancel(state.activity),
-                )
+                session_state.State(..state, activity: cancel_turn(state))
                   |> session_state.announce,
                 reply,
                 Ok(InterruptRequested),
@@ -1450,7 +1529,7 @@ fn handle(
             True ->
               session_state.State(
                 ..clear_tool_progress(state),
-                activity: turn.cancel(state.activity),
+                activity: cancel_turn(state),
               )
             False -> state
           }
@@ -1470,7 +1549,9 @@ fn handle(
     }
     ChangeWorkspace(request, reply) -> {
       let state = stirred(state)
-      let recorded = case busy(state) || state.booting != None {
+      let recorded = case
+        busy(state) || uses_kernel_transition(state) || state.booting != None
+      {
         True ->
           Error(session_workspace.Native(
             "session must be idle to change workspace",
@@ -1503,7 +1584,11 @@ fn handle(
         False -> {
           case apply_workspace_state(state) {
             Error(#(state, error)) -> answer(state, reply, Error(error))
-            Ok(state) -> answer(state, reply, Ok(True))
+            Ok(state) ->
+              case state.workspace_reset {
+                Some(_) -> actor.continue(park(state, ApplyWorkspace(reply)))
+                None -> answer(state, reply, Ok(True))
+              }
           }
         }
       }
@@ -1838,6 +1923,15 @@ fn handle(
             _ -> answer(state, reply, Error("stale run"))
           }
       }
+    Salvage(id, reason, reply) ->
+      case turn.owner(state.activity, id) {
+        Some(run) if !run.cancelled -> {
+          let #(state, written) =
+            session_salvage.commit(state, run, session_salvage.CutOff(reason))
+          answer(state, reply, written)
+        }
+        _ -> answer(state, reply, Ok([]))
+      }
     CommitFits(id, fits, reply) ->
       case turn.owner(state.activity, id) {
         Some(_) ->
@@ -2106,30 +2200,53 @@ fn handle(
         _, _ -> answer(state, reply, False)
       }
     Release(reply) ->
-      case state.kernel, turn.running(state.activity) {
-        Some(kernel), None -> {
-          let saved =
-            session_namespace.save_state(state.home, state.info.id, kernel)
-          session_namespace.forget(kernel)
-          runtime.reset_session(state.host, state.info.id)
-          process.send(state.self, Collect)
-          answer(
-            session_state.State(
-              ..state,
-              kernel: None,
-              released: Some(kernel),
-              context: session_state.unprepared(),
-            )
-              |> session_state.emit(view.note(
-                "daemon",
-                session_namespace.released_text(saved, "nothing was attached"),
-              )),
-            reply,
-            True,
-          )
+      case
+        state.kernel,
+        turn.running(state.activity),
+        uses_kernel_transition(state) || state.booting != None
+      {
+        Some(kernel), None, False -> {
+          let #(home, id, self) = #(state.home, state.info.id, state.self)
+          let _ =
+            process.spawn_unlinked(fn() {
+              process.send(
+                self,
+                Released(
+                  kernel,
+                  protect.guarded(fn() {
+                    session_namespace.save_state(home, id, kernel)
+                  }),
+                  reply,
+                ),
+              )
+            })
+          actor.continue(session_state.State(..state, releasing: Some([])))
         }
-        _, _ -> answer(state, reply, False)
+        _, _, _ -> answer(state, reply, False)
       }
+    Released(kernel, saved, reply) -> {
+      let parked = option.unwrap(state.releasing, [])
+      session_namespace.forget(kernel)
+      // Reset and any subsequent Open are sent by this actor, in that order.
+      runtime.reset_session_async(state.host, state.info.id)
+      process.send(state.self, Collect)
+      list.each(parked, process.send(state.self, _))
+      answer(
+        session_state.State(
+          ..state,
+          kernel: None,
+          released: Some(kernel),
+          releasing: None,
+          context: session_state.unprepared(),
+        )
+          |> session_state.emit(view.note(
+            "daemon",
+            session_namespace.released_text(saved, "nothing was attached"),
+          )),
+        reply,
+        True,
+      )
+    }
     EvictHistory(reply) ->
       case turn.running(state.activity) {
         Some(_) -> answer(state, reply, False)
@@ -2159,7 +2276,13 @@ fn handle(
       answer(state, reply, claimed)
     }
     CloseForDeletion(reply) -> {
-      let state = session_state.State(..state, steering: [], booting: None)
+      let state =
+        session_state.State(
+          ..state,
+          steering: [],
+          booting: None,
+          activity: cancel_turn(state),
+        )
       case turn.running(state.activity) {
         Some(run) -> {
           interrupt_kernel(state)
@@ -2167,8 +2290,21 @@ fn handle(
         }
         None -> Nil
       }
-      case runtime.delete_session(state.host, state.info.id) {
-        Error(error) -> answer(state, reply, Error(error))
+      let #(host, id, self) = #(state.host, state.info.id, state.self)
+      let _ =
+        process.spawn_unlinked(fn() {
+          process.send(self, Deleted(runtime.delete_session(host, id), reply))
+        })
+      actor.continue(session_state.State(..state, closing: True))
+    }
+    Deleted(outcome, reply) -> {
+      case outcome {
+        Error(error) ->
+          answer(
+            session_state.State(..state, closing: False),
+            reply,
+            Error(error),
+          )
         Ok(_) -> {
           active_output.revoke(state.home, state.info.id)
           cleanup_registrations(state.info.id)
@@ -2191,8 +2327,36 @@ fn handle(
       process.send(reply, Nil)
       actor.stop()
     }
+    Unload(_) | StartSummary(..) | RewindHistory(..) ->
+      check_children(state, message)
+    ChildrenObserved(work, children_busy) ->
+      finish_idle_work(state, work, children_busy)
+  }
+}
+
+fn check_children(state: State, work: Message) -> actor.Next(State, Message) {
+  case occupied(state) {
+    True -> finish_idle_work(state, work, True)
+    False -> {
+      let #(host, id, self) = #(state.host, state.info.id, state.self)
+      let _ =
+        process.spawn_unlinked(fn() {
+          process.send(self, ChildrenObserved(work, children_working(host, id)))
+        })
+      actor.continue(state)
+    }
+  }
+}
+
+fn finish_idle_work(
+  state: State,
+  work: Message,
+  children_busy: Bool,
+) -> actor.Next(State, Message) {
+  // The actor may have admitted new work while the family was observed.
+  case work {
     Unload(reply) ->
-      case occupied(state) || state.watchers != [] {
+      case children_busy || occupied(state) || state.watchers != [] {
         True -> answer(state, reply, False)
         False -> {
           close_idle(state)
@@ -2201,7 +2365,7 @@ fn handle(
         }
       }
     StartSummary(checkpoint, instructions, out, ack) ->
-      case occupied(state) {
+      case children_busy || occupied(state) {
         True -> answer(state, ack, Error("session must be idle to rewind"))
         False ->
           case
@@ -2216,7 +2380,7 @@ fn handle(
           }
       }
     RewindHistory(archive_id, checkpoint, summary, expected_last, reply) ->
-      case occupied(state) {
+      case children_busy || occupied(state) {
         True -> answer(state, reply, Error("session must be idle to rewind"))
         False ->
           case
@@ -2249,18 +2413,18 @@ fn handle(
             }
           }
       }
+    _ -> actor.continue(state)
   }
 }
 
-/// Something keeps this session from stopping now: a turn, a booting kernel,
-/// queued steering, a live job, or a running child that will wake it.
+/// This session's own work prevents stopping. Children are checked off-actor.
 fn occupied(state: State) -> Bool {
   let jobs = option.map(state.kernel, runtime.job_count) |> option.unwrap(0)
   busy(state)
   || state.booting != None
+  || uses_kernel_transition(state)
   || state.steering != []
   || jobs > 0
-  || children_working(state.host, state.info.id)
 }
 
 /// Stop an idle session, keeping its kernel's variables first: a clean stop is
@@ -2289,7 +2453,7 @@ fn wake_watchers(state: State) -> Nil {
 }
 
 fn forget(state: State) -> Nil {
-  runtime.forget_session(state.host, state.info.id)
+  runtime.forget_session_async(state.host, state.info.id)
   cleanup_registrations(state.info.id)
 }
 
@@ -2571,9 +2735,14 @@ fn prepare_submission(
 /// The state when a live kernel is here; otherwise `work` is parked until one
 /// arrives and the state that asked for it comes back as the error.
 fn kernel_or_park(state: State, work: Message) -> Result(State, State) {
-  case session_namespace.ready(state) {
-    #(state, Some(_)) -> Ok(state)
-    #(state, None) -> Error(park(state, work))
+  case state.closing, uses_kernel_transition(state) {
+    True, _ -> Error(state)
+    _, True -> Error(park(state, work))
+    _, False ->
+      case session_namespace.ready(state) {
+        #(state, Some(_)) -> Ok(state)
+        #(state, None) -> Error(park(state, work))
+      }
   }
 }
 
@@ -2605,7 +2774,13 @@ fn waiting_turn(state: State) -> Bool {
 
 /// Running, or booting a kernel that restores the saved state.
 fn uses_kernel(state: State) -> Bool {
-  turn.running(state.activity) != None || state.booting != None
+  turn.running(state.activity) != None
+  || state.booting != None
+  || uses_kernel_transition(state)
+}
+
+fn uses_kernel_transition(state: State) -> Bool {
+  state.workspace_reset != None || state.releasing != None || state.closing
 }
 
 /// Running a turn, or about to once the kernel is up.
@@ -2615,6 +2790,34 @@ fn busy(state: State) -> Bool {
 
 /// Keep `work` for when the kernel is ready, asking for one if nobody has.
 fn park(state: State, work: Message) -> State {
+  case state.releasing {
+    Some(parked) ->
+      session_state.State(
+        ..state,
+        releasing: Some(case list.contains(parked, work) {
+          True -> parked
+          False -> list.append(parked, [work])
+        }),
+      )
+    None -> park_workspace(state, work)
+  }
+}
+
+fn park_workspace(state: State, work: Message) -> State {
+  case state.workspace_reset {
+    Some(parked) ->
+      session_state.State(
+        ..state,
+        workspace_reset: Some(case list.contains(parked, work) {
+          True -> parked
+          False -> list.append(parked, [work])
+        }),
+      )
+    None -> park_kernel(state, work)
+  }
+}
+
+fn park_kernel(state: State, work: Message) -> State {
   case state.booting {
     Some(#(attempts, parked)) ->
       case list.contains(parked, work) {
@@ -2704,7 +2907,7 @@ fn kernel_opened(
       }
     None, Error(_) -> state
     Some(#(attempts, parked)), Error(python.Lost) if attempts < 2 -> {
-      runtime.reset_session(state.host, state.info.id)
+      runtime.reset_session_async(state.host, state.info.id)
       request_kernel(state)
       session_state.State(..state, booting: Some(#(attempts + 1, parked)))
     }
@@ -3264,6 +3467,15 @@ fn finish_turn(
   outcome: Result(Nil, String),
 ) -> actor.Next(State, Message) {
   process.demonitor_process(run.monitor)
+  // A session closing for deletion keeps nothing of the turn.
+  let state = case run.work, run.cancelled, outcome {
+    _, _, _ if state.closing -> state
+    turn.Turn(..), True, Error(_) ->
+      salvage(state, run, session_salvage.Stopped)
+    turn.Turn(..), False, Error(error) ->
+      salvage(state, run, session_salvage.Failed(error))
+    _, _, _ -> state
+  }
   let persisted =
     conversation.finish_turn(
       runtime.ledger(state.host),
@@ -3285,6 +3497,8 @@ fn finish_turn(
       activity: turn.Resting,
       active_output: active_output.retire(state.active_output),
     )
+    |> follow_up
+  let #(state, _) = session_switch.apply_pending(state)
   bus.running(state.info.id, False)
   // A webhook or wake refused while this run held the session can
   // be admitted now.
@@ -3376,7 +3590,23 @@ fn finish_turn(
     |> session_state.announce
   report_end(state, run)
   process.send(state.self, Collect)
-  actor.continue(start_queued(follow_up(state)))
+  actor.continue(start_queued(state))
+}
+
+/// Commits what a stopped or failed turn left unfinished.
+fn salvage(
+  state: State,
+  run: turn.Run,
+  ending: session_salvage.Ending,
+) -> State {
+  case session_salvage.commit(state, run, ending) {
+    #(state, Ok(_)) -> state
+    #(state, Error(error)) ->
+      session_state.emit(
+        state,
+        view.Failure(Some(run.id), "salvage_failed", error),
+      )
+  }
 }
 
 /// An extension's background call starts only while nothing else holds the
@@ -3427,11 +3657,13 @@ fn background_finish(
   })
   let state =
     session_state.State(..state, activity: turn.Resting)
+    |> follow_up
     |> session_state.announce
+  let #(state, _) = session_switch.apply_pending(state)
   // A webhook or wake refused while the call held the session can be
   // admitted now.
   mail.waiting()
-  actor.continue(start_queued(follow_up(state)))
+  actor.continue(start_queued(state))
 }
 
 /// A summary worker ended. It answers its caller itself, so only a worker
@@ -3457,9 +3689,11 @@ fn summary_finish(
   }
   let state =
     session_state.State(..state, activity: turn.Resting)
+    |> follow_up
     |> session_state.announce
+  let #(state, _) = session_switch.apply_pending(state)
   mail.waiting()
-  actor.continue(start_queued(follow_up(state)))
+  actor.continue(start_queued(state))
 }
 
 /// Start the worker that summarizes the rows from `checkpoint` on, which must
@@ -3610,6 +3844,7 @@ fn background_handle(id: String, self: Session) -> extension.Session {
     fn(reason) { process.send(self, RefreshRequested(reason)) },
     fn() {
       actor_call.try_call(self, 5000, ReadAwaited)
+      |> result.map(fn(observe) { observe() })
       |> result.unwrap(False)
     },
   )
@@ -3617,19 +3852,20 @@ fn background_handle(id: String, self: Session) -> extension.Session {
 
 /// Whether work that will wake this session is under way: a job of its own,
 /// or one of its children's.
-fn awaited(state: State) -> Bool {
-  awaiting_jobs(state) || children_working(state.host, state.info.id)
-}
-
-/// Whether a live job that is not a service runs in the kernel, here or on a
-/// host its remote plugin reached.
-fn awaiting_jobs(state: State) -> Bool {
-  case state.kernel {
-    Some(kernel) ->
+fn awaited_observer(state: State) -> fn() -> Bool {
+  let #(host, id) = #(state.host, state.info.id)
+  let held =
+    option.map(state.kernel, fn(kernel) {
       runtime.kernel_observation(kernel)
       |> result.map(python.awaits_jobs)
       |> result.unwrap(False)
-    None -> runtime.awaiting_jobs(state.host, state.info.id)
+    })
+  fn() {
+    let own = case held {
+      Some(jobs) -> jobs
+      None -> runtime.awaiting_jobs(host, id)
+    }
+    own || children_working(host, id)
   }
 }
 
@@ -3783,6 +4019,7 @@ fn run_messages() -> session_run.Messages(Message) {
     ToolProgressFinish,
     Commit,
     CommitFits,
+    Salvage,
     RecordContext,
     RecordUsage,
     DrainSteering,
@@ -3791,6 +4028,7 @@ fn run_messages() -> session_run.Messages(Message) {
     ReportCompacting,
     Finished,
     Collect,
+    RequestBoundary,
   )
 }
 
@@ -3834,9 +4072,15 @@ fn workspace_changed(state: State) -> State {
 }
 
 fn apply_workspace_state(state: State) -> Result(State, #(State, String)) {
-  let ledger = runtime.ledger(state.host)
+  case uses_kernel_transition(state) {
+    True -> Ok(state)
+    False -> apply_pending_workspace(state)
+  }
+}
+
+fn apply_pending_workspace(state: State) -> Result(State, #(State, String)) {
   use pending <- result.try(
-    store.snapshot(ledger, fn(db) {
+    store.snapshot(runtime.ledger(state.host), fn(db) {
       session_workspace.pending_in(db, state.info.id)
     })
     |> result.map_error(fn(error) { #(state, error) }),
@@ -3848,54 +4092,113 @@ fn apply_workspace_state(state: State) -> Result(State, #(State, String)) {
         location.workspace(pending.desired)
         |> result.map_error(fn(error) { #(state, error.detail) }),
       )
-      let reset_namespace = pending.desired != state.info.cwd
-      use state <- result.try(case reset_namespace {
-        False -> Ok(state)
-        True -> {
-          use _ <- result.try(
-            runtime.delete_session(state.host, state.info.id)
-            |> result.map_error(fn(error) { #(state, error) }),
-          )
-          discard_state(state.home, state.info.id)
-          Ok(
-            session_state.State(
-              ..state,
-              kernel: None,
-              notice: Some(session_namespace.lost_notice),
-              context: session_state.unprepared(),
-            ),
-          )
-        }
-      })
-      use applied <- result.try(
-        session_workspace.applied(ledger, state.info.id, pending)
-        |> result.map_error(fn(error) { #(state, error) }),
-      )
-      case applied {
-        False -> Ok(state)
-        True -> {
-          let state =
-            session_state.State(
-              ..state,
-              info: conversation.Info(..state.info, cwd: pending.desired),
-              blocked_until: 0,
-              kernel_blocked: False,
-            )
-            |> workspace_changed
-          process.send(state.self, StartQueued)
-          Ok(case reset_namespace {
-            False -> state
-            True ->
-              session_state.emit(
-                state,
-                view.note(
-                  "workspace",
-                  "workspace changed; python variables were cleared, the transcript is intact",
-                ),
+      case pending.desired == state.info.cwd {
+        True -> finish_workspace(state, pending, False)
+        False -> {
+          let #(host, id, self) = #(state.host, state.info.id, state.self)
+          let _ =
+            process.spawn_unlinked(fn() {
+              process.send(
+                self,
+                WorkspaceReset(pending, runtime.delete_session(host, id)),
               )
-          })
+            })
+          Ok(
+            session_state.State(..state, workspace_reset: Some([]))
+            |> session_state.announce,
+          )
         }
       }
+    }
+  }
+}
+
+fn workspace_reset(
+  state: State,
+  pending: session_workspace.Pending,
+  outcome: Result(Nil, String),
+) -> State {
+  let parked = option.unwrap(state.workspace_reset, [])
+  let state = session_state.State(..state, workspace_reset: None)
+  let applied = case outcome {
+    Error(error) -> Error(#(state, error))
+    Ok(_) -> {
+      let _ = option.map(state.kernel, session_namespace.forget)
+      discard_state(state.home, state.info.id)
+      finish_workspace(
+        session_state.State(
+          ..state,
+          kernel: None,
+          released: None,
+          notice: Some(session_namespace.lost_notice),
+          context: session_state.unprepared(),
+        ),
+        pending,
+        True,
+      )
+    }
+  }
+  case applied {
+    Ok(state) -> {
+      list.each(parked, process.send(state.self, _))
+      process.send(state.self, StartQueued)
+      state |> follow_up |> session_state.announce
+    }
+    Error(#(state, error)) ->
+      list.fold(parked, state, fn(state, message) {
+        case message {
+          ApplyWorkspace(reply) -> {
+            process.send(reply, Error(error))
+            state
+          }
+          StartQueued -> failed_queued(state, error)
+          Compact(_, reply) -> {
+            process.send(reply, Error(error))
+            state
+          }
+          _ -> {
+            process.send(state.self, message)
+            state
+          }
+        }
+      })
+      |> session_state.announce
+  }
+}
+
+fn finish_workspace(
+  state: State,
+  pending: session_workspace.Pending,
+  reset_namespace: Bool,
+) -> Result(State, #(State, String)) {
+  let ledger = runtime.ledger(state.host)
+  use applied <- result.try(
+    session_workspace.applied(ledger, state.info.id, pending)
+    |> result.map_error(fn(error) { #(state, error) }),
+  )
+  case applied {
+    False -> Ok(state)
+    True -> {
+      let state =
+        session_state.State(
+          ..state,
+          info: conversation.Info(..state.info, cwd: pending.desired),
+          blocked_until: 0,
+          kernel_blocked: False,
+        )
+        |> workspace_changed
+      process.send(state.self, StartQueued)
+      Ok(case reset_namespace {
+        False -> state
+        True ->
+          session_state.emit(
+            state,
+            view.note(
+              "workspace",
+              "workspace changed; python variables were cleared, the transcript is intact",
+            ),
+          )
+      })
     }
   }
 }
@@ -3904,6 +4207,11 @@ fn apply_workspace_state(state: State) -> Result(State, #(State, String)) {
 fn read_only(message: Message) -> Bool {
   case message {
     ReadCapture(_)
+    | CaptureIn(_, _)
+    | Released(_, _, _)
+    | Deleted(_, _)
+    | ChildrenObserved(_, _)
+    | WorkspaceReset(_, _)
     | ReadSummary(_)
     | ReadStatus(_)
     | ReadAwaited(_)
@@ -4076,14 +4384,13 @@ fn interrupt_waiting(
     Some(run), _ -> {
       interrupt_kernel(state)
       let _ = clock.send_after(state.self, 2500, Abort(run.id))
-      let state = clear_tool_progress(state)
       answer(
         session_state.State(
-          ..state,
+          ..clear_tool_progress(state),
           steering: [],
           blocked_until: 0,
           kernel_blocked: False,
-          activity: turn.cancel(state.activity),
+          activity: cancel_turn(state),
         )
           |> session_state.announce,
         reply,
@@ -4091,6 +4398,15 @@ fn interrupt_waiting(
       )
     }
   }
+}
+
+/// The running turn cancelled, keeping the tools of the calls the model was
+/// still writing for the turn's salvage.
+fn cancel_turn(state: State) -> turn.Activity {
+  turn.cancel(
+    state.activity,
+    tool_progress_state.generating(state.tool_progress),
+  )
 }
 
 fn clear_tool_progress(state: State) -> State {

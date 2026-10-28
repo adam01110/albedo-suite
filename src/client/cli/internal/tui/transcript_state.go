@@ -113,15 +113,18 @@ func (t *transcriptState) apply(evt daemon.StreamEvent, agentName string) []Hist
 	if evt.Type == daemon.EventMessage && evt.Text == "" || evt.Type == daemon.EventNote && evt.Source == "agent" {
 		return nil
 	}
-	if evt.EntryID != "" && !evt.Replayed && len(t.liveIDs) > 0 && (evt.Type == daemon.EventMessage || evt.Type == daemon.EventThinking) {
+	if evt.EntryID != "" && !evt.Replayed && len(t.liveIDs) > 0 && (evt.Type == daemon.EventMessage || evt.Type == daemon.EventThinking || evt.Type == daemon.EventNote) {
 		if t.pendingCanonical == nil {
 			t.pendingCanonical = NewBoundedHistory(500, 2*1024*1024)
 		}
-		kind := EntryAssistant
-		if evt.Type == daemon.EventThinking {
-			kind = EntryThinking
+		entry := HistoryEntry{ID: evt.EntryID, Seq: evt.Position, Kind: EntryAssistant, Speaker: agentName, Text: evt.Text, ElapsedMs: evt.ElapsedMs}
+		switch evt.Type {
+		case daemon.EventThinking:
+			entry.Kind = EntryThinking
+		case daemon.EventNote:
+			// A stopped response commits its note with its text.
+			entry.Kind, entry.Speaker = EntryNote, ""
 		}
-		entry := HistoryEntry{ID: evt.EntryID, Seq: evt.Position, Kind: kind, Speaker: agentName, Text: evt.Text, ElapsedMs: evt.ElapsedMs}
 		if evt.Timestamp != nil {
 			entry.Timestamp = *evt.Timestamp
 		}

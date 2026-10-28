@@ -353,8 +353,7 @@ reload_endpoints(Home, [Endpoint | Rest]) ->
 
 %% Resolve each profile before the rotation pool's key-only deduplication.
 catalog_keys(Home) ->
-    Profiles = catalog_profiles(Home),
-    lists:append([pool(Home, Name) || {Name, _} <- Profiles]) ++ pool(Home, <<>>).
+    discovery_keys(Home) ++ pool(Home, <<>>).
 
 catalog_profiles(Home) ->
     case albedo_credentials:config(Home) of
@@ -475,19 +474,16 @@ write_cache(Path, Ids) ->
 
 %% ---- key & OAuth account pool -------------------------------------------
 
-%% The session's credential as {BaseUrl, ApiKey, OrgId}. Every OpenCode Go
-%% credential albedo can see is a sibling: the profile's own key or selected
-%% OAuth account first, then sibling opencode-go profiles, creds.json's
-%% "opencode-go" accounts/keys, and the environment. Limited entries go last.
+%% The session's credential as {BaseUrl, ApiKey, OrgId}. Only an explicit
+%% accountIds list can hand a request to another account.
 access(Home0, Profile0, Session0) ->
     Home = text(Home0),
     Profile = binary(Profile0),
     Session = binary(Session0),
     case pool_for_profile(Home, Profile) of
-        {error, Reason} ->
-            {error, Reason};
+        {error, Reason} -> {error, Reason};
         {ok, []} ->
-            {error, <<"OpenCode Go is not authenticated; run /login to sign in or set OPENCODE_API_KEY">>};
+            {error, <<"OpenCode Go is not authenticated; add an account or key in /login">>};
         {ok, Keys} ->
             [First | _] = albedo_accounts:order(?SCOPE, Keys, Session, fun id/1),
             albedo_accounts:remember(?SCOPE, Session, id(First)),
@@ -496,27 +492,41 @@ access(Home0, Profile0, Session0) ->
                   maps:get(<<"orgId">>, First, <<>>)}}
     end.
 
-%% Records a 429 against the key that received it. Every OpenCode Go 429 is a
-%% limit; one naming a spent quota or usage limit lasts, the rest are
-%% per-minute rate limits.
-limited(Home0, Profile0, Key, Body0) ->
+%% Every OpenCode Go 429 is a limit. Spent subscription quotas last longer
+%% than per-minute request limits.
+limited(Home0, Profile0, Key0, Body0) ->
+    Home = text(Home0),
+    Profile = binary(Profile0),
+    Key = binary(Key0),
     Body = binary(Body0),
-    Lasting = lists:any(fun(Mark) -> binary:match(Body, Mark) =/= nomatch end,
-                        [<<"insufficient_quota">>, <<"exceeded your current quota">>,
-                         <<"usage_limit">>, <<"UsageLimit">>, <<"RateLimit">>,
-                         <<"monthly">>, <<"weekly">>, <<"rolling">>, <<"exhausted">>]),
+    Lasting = 'albedo@harness@rotation':key_lasting(Body) orelse
+        lists:any(fun(Mark) -> binary:match(Body, Mark) =/= nomatch end,
+                  [<<"usage_limit">>, <<"UsageLimit">>, <<"RateLimit">>,
+                   <<"monthly">>, <<"weekly">>, <<"rolling">>]),
     Until = erlang:system_time(millisecond) + case Lasting of
         true -> ?DEFAULT_LIMIT_MS;
         false -> ?RATE_LIMIT_MS
     end,
-    Id = id(#{<<"apiKey">> => Key}),
-    ok = albedo_accounts:note(?SCOPE, Id, Until),
-    Now = erlang:system_time(millisecond),
-    Next = [K || K <- pool(text(Home0), binary(Profile0)), id(K) =/= Id,
-                 not albedo_accounts:limited(K, Now)],
-    UntilText = albedo_accounts:local_time(Until),
-    NextName = case Next of [#{<<"name">> := Name} | _] -> Name; [] -> <<>> end,
-    {ok, {limited, <<>>, UntilText, NextName, Lasting}}.
+    Path = albedo_credentials:creds_path(Home),
+    Entries = pool(Home, Profile),
+    Hit = [E || E <- Entries, maps:get(<<"apiKey">>, E) =:= Key],
+    SavedIds = [Id || #{<<"_albedo_account_id">> := Id, <<"source">> := <<"saved">>} <- Hit],
+    Marked = case SavedIds of
+        [] ->
+            Ids = case Hit of [] -> [token_id(Key)]; _ -> [id(E) || E <- Hit] end,
+            lists:foreach(fun(Id) -> albedo_accounts:note(?SCOPE, Id, Until) end, Ids);
+        _ -> albedo_accounts:mark(Path, ?STORE,
+            fun(V) -> lists:member(maps:get(<<"_albedo_account_id">>, V, null), SavedIds) end, Until)
+    end,
+    case Marked of
+        {error, _} = Error -> Error;
+        _ ->
+            Now = erlang:system_time(millisecond),
+            Next = [K || K <- pool(Home, Profile), maps:get(<<"apiKey">>, K) =/= Key,
+                         not albedo_accounts:limited(K, Now)],
+            NextName = case Next of [#{<<"name">> := Name} | _] -> Name; [] -> <<>> end,
+            {ok, {limited, <<>>, albedo_accounts:local_time(Until), NextName, Lasting}}
+    end.
 
 pool(Home, Profile) ->
     case pool_for_profile(Home, Profile) of
@@ -525,104 +535,78 @@ pool(Home, Profile) ->
     end.
 
 pool_for_profile(Home, Profile) ->
-    {ProfileUrl, ProfileKey, AccountId} = profile_settings(Home, Profile),
-    BaseUrl = case ProfileUrl of <<>> -> resolve_base_url(<<>>); Url -> Url end,
+    Settings = profile_settings(Home, Profile),
+    BaseUrl = resolve_base_url(maps:get(<<"baseUrl">>, Settings, <<>>)),
     Path = albedo_credentials:creds_path(Home),
-    case AccountId of
-        <<_, _/binary>> ->
-            case selected_oauth_entry(Path, Profile, BaseUrl, AccountId) of
-                {ok, Entry} -> {ok, [Entry]};
-                Error -> Error
-            end;
-        _ ->
-            AccountEntries = account_entries(Path, BaseUrl),
-            EnvEntries = [{list_to_binary(Var), BaseUrl, unicode:characters_to_binary(K), <<>>}
-                          || Var <- ["OPENCODE_GO_API_KEY", "OPENCODE_API_KEY"],
-                             K <- [os:getenv(Var)], is_list(K), K =/= ""],
-            Own = case ProfileKey of
-                <<>> ->
-                    case AccountEntries ++ EnvEntries of
-                        [{_, U, K, Org} | _] -> [{Profile, U, K, Org}];
-                        [] -> []
-                    end;
-                K -> [{Profile, BaseUrl, K, <<>>}]
-            end,
-            Siblings = [{Name, case U of <<>> -> BaseUrl; _ -> U end, K, <<>>}
-                        || {Name, U, K} <- opencode_go_profiles(Home), Name =/= Profile]
-                ++ AccountEntries
-                ++ EnvEntries,
-            Unique = lists:foldl(fun({_, _, K, _} = Entry, Acc) ->
-                case lists:keymember(K, 3, Acc) of true -> Acc; false -> Acc ++ [Entry] end
-            end, [], Own ++ Siblings),
-            {ok, [#{<<"name">> => Name, <<"baseUrl">> => U, <<"apiKey">> => K, <<"orgId">> => Org,
-                    <<"selected">> => I =:= 1 andalso Own =/= [],
-                    <<"limitedUntil">> => albedo_accounts:noted(?SCOPE, id(#{<<"apiKey">> => K}))}
-                  || {I, {Name, U, K, Org}} <- lists:enumerate(Unique)]}
-    end.
-
-selected_oauth_entry(Path, Profile, BaseUrl, AccountId) ->
-    case albedo_credentials:accounts(Path) of
-        {ok, Data} ->
-            Stored = albedo_credentials:values(Data, ?STORE),
-            case [V || V <- Stored, maps:get(<<"_albedo_account_id">>, V, null) =:= AccountId] of
-                [Chosen | _] ->
-                    case resolve_account_entry(Path, BaseUrl, Chosen) of
-                        {true, {Label, U, K, Org}} ->
-                            Name = case Profile of <<>> -> Label; _ -> Profile end,
-                            {ok, #{<<"name">> => Name, <<"baseUrl">> => U, <<"apiKey">> => K, <<"orgId">> => Org,
-                                   <<"selected">> => true,
-                                   <<"limitedUntil">> => albedo_accounts:noted(?SCOPE, id(#{<<"apiKey">> => K}))}};
-                        false ->
-                            {error, <<"Profile's selected OpenCode Go account could not be refreshed; run /login">>}
-                    end;
-                [] ->
-                    {error, <<"Profile's selected account is unavailable">>}
-            end;
-        _ ->
-            {error, <<"Profile's selected account is unavailable">>}
-    end.
-
-%% A key's id in limit bookkeeping, never the key itself.
-id(#{<<"apiKey">> := Key}) ->
-    token_id(Key).
-
-opencode_go_profiles(Home) ->
-    case albedo_credentials:config(Home) of
-        {ok, #{<<"providers">> := Providers}} when is_map(Providers) ->
-            [{Name, maps:get(<<"baseUrl">>, P, <<>>), Key}
-             || {Name, #{<<"extension">> := <<"opencode-go">>, <<"apiKey">> := <<_, _/binary>> = Key} = P}
-                    <- lists:sort(maps:to_list(Providers))];
+    Stored = case albedo_credentials:accounts(Path) of
+        {ok, Data} -> albedo_credentials:values(Data, ?STORE);
         _ -> []
+    end,
+    Env = albedo_key_accounts:env(Home, ?STORE, BaseUrl),
+    Bound = case {maps:get(<<"apiKey">>, Settings, <<>>),
+                  maps:get(<<"accountId">>, Settings, null),
+                  maps:get(<<"accountIds">>, Settings, null)} of
+        {<<_, _/binary>> = Key, _, _} ->
+            {ok, [#{<<"apiKey">> => Key, <<"label">> => Profile}]};
+        {_, null, null} ->
+            OAuth = [V || #{<<"type">> := <<"oauth">>} = V <- Stored],
+            case selected_account(OAuth) of
+                [] -> {ok, lists:sublist(Env, 1)};
+                One -> {ok, One}
+            end;
+        _ -> albedo_credentials:bound_values(Home, Profile, Stored ++ Env)
+    end,
+    case Bound of
+        {ok, Values} ->
+            Entries = lists:filtermap(fun(V) -> resolve_account_entry(Path, BaseUrl, V) end, Values),
+            case length(Entries) =:= length(Values) of
+                true -> {ok, Entries};
+                false -> {error, <<"Profile's selected OpenCode Go account could not be refreshed; run /login">>}
+            end;
+        Error -> Error
     end.
 
-account_entries(Path, BaseUrl) ->
-    case albedo_credentials:accounts(Path) of
-        {ok, #{?STORE := List}} when is_list(List) ->
-            lists:filtermap(fun(V) -> resolve_account_entry(Path, BaseUrl, V) end, List);
-        {ok, #{?STORE := One}} ->
-            lists:filtermap(fun(V) -> resolve_account_entry(Path, BaseUrl, V) end, [One]);
+selected_account(Values) ->
+    case [V || V <- Values, maps:get(<<"selected">>, V, false) =:= true] of
+        [Chosen | _] -> [Chosen];
+        [] -> lists:sublist(Values, 1)
+    end.
+
+%% Catalog discovery can inspect credentials from every configured profile;
+%% request selection above never adds those profiles to a rotation.
+discovery_keys(Home) ->
+    Profiles = case albedo_credentials:config(Home) of
+        {ok, #{<<"providers">> := Providers}} ->
+            [Name || {Name, #{<<"extension">> := ?STORE}} <- lists:sort(maps:to_list(Providers))];
         _ -> []
+    end,
+    case Profiles of
+        [] -> pool(Home, <<>>);
+        _ -> lists:flatmap(fun(Profile) -> pool(Home, Profile) end, Profiles)
     end.
 
-resolve_account_entry(_, BaseUrl, <<_, _/binary>> = Key) ->
-    {true, {<<"creds.json">>, BaseUrl, Key, <<>>}};
-resolve_account_entry(Path, BaseUrl, #{<<"type">> := <<"oauth">>} = V) ->
-    Current = refreshed_oauth(Path, V),
-    case optional_binary(maps:get(<<"access">>, Current, <<>>)) of
-        <<>> -> false;
-        Access ->
-            {account, _, Label, _, _} = account(Current),
-            OrgId = optional_binary(maps:get(<<"orgId">>, Current, <<>>)),
-            {true, {first_nonempty([Label, <<"creds.json">>]), BaseUrl, Access, OrgId}}
-    end;
-resolve_account_entry(_, BaseUrl, #{<<"key">> := <<_, _/binary>> = Key} = V) ->
-    {true, {<<"creds.json">>, BaseUrl, Key, optional_binary(maps:get(<<"orgId">>, V, <<>>))}};
-resolve_account_entry(_, BaseUrl, #{<<"apiKey">> := <<_, _/binary>> = Key} = V) ->
-    {true, {<<"creds.json">>, BaseUrl, Key, optional_binary(maps:get(<<"orgId">>, V, <<>>))}};
-resolve_account_entry(_, BaseUrl, #{<<"access">> := <<_, _/binary>> = Key} = V) ->
-    {true, {<<"creds.json">>, BaseUrl, Key, optional_binary(maps:get(<<"orgId">>, V, <<>>))}};
-resolve_account_entry(_, _, _) ->
-    false.
+%% Stable account ids survive OAuth token refreshes; legacy keys use a hash.
+id(#{<<"_albedo_account_id">> := Id}) -> Id;
+id(#{<<"apiKey">> := Key}) -> token_id(Key).
+
+resolve_account_entry(Path, BaseUrl, #{<<"type">> := <<"oauth">>} = Value) ->
+    Current = refreshed_oauth(Path, Value),
+    {account, _, Label, _, _} = account(Current),
+    account_entry(Current, BaseUrl, optional_binary(maps:get(<<"access">>, Current, <<>>)), Label);
+resolve_account_entry(_, BaseUrl, #{<<"apiKey">> := Key} = Value) ->
+    account_entry(Value, BaseUrl, Key, <<"OpenCode Go key">>);
+resolve_account_entry(_, _, _) -> false.
+
+account_entry(_, _, <<>>, _) -> false;
+account_entry(Value, BaseUrl, Key, DefaultLabel) ->
+    Endpoint = first_nonempty([maps:get(<<"endpoint">>, Value, <<>>), BaseUrl]),
+    Source = maps:get(<<"source">>, Value, <<"saved">>),
+    Until = max(albedo_accounts:until_of(Value, undefined),
+                albedo_accounts:noted(?SCOPE, id(Value#{<<"apiKey">> => Key}))),
+    Entry = Value#{<<"name">> => first_nonempty([maps:get(<<"label">>, Value, <<>>), DefaultLabel]),
+                   <<"baseUrl">> => Endpoint, <<"apiKey">> => Key, <<"source">> => Source,
+                   <<"orgId">> => maps:get(<<"orgId">>, Value, <<>>), <<"limitedUntil">> => Until},
+    {true, Entry}.
 
 refreshed_oauth(Path, Value) ->
     Expires = maps:get(<<"expires">>, Value, 0),
@@ -706,10 +690,8 @@ resolve_base_url(Url) when is_binary(Url) ->
 
 profile_settings(Home, Profile) ->
     case albedo_credentials:config(Home) of
-        {ok, #{<<"providers">> := #{Profile := P}}} when is_map(P) ->
-            Bin = fun(K) -> case maps:get(K, P, <<>>) of B when is_binary(B) -> B; _ -> <<>> end end,
-            {Bin(<<"baseUrl">>), Bin(<<"apiKey">>), Bin(<<"accountId">>)};
-        _ -> {<<>>, <<>>, <<>>}
+        {ok, #{<<"providers">> := #{Profile := P}}} when is_map(P) -> P;
+        _ -> #{}
     end.
 
 text(Val) when is_binary(Val) -> unicode:characters_to_list(Val);

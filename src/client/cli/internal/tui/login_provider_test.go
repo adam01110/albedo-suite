@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -60,8 +61,14 @@ func TestOpenCodeGoPicker(t *testing.T) {
 	}
 	m.TextInput.SetValue("go-secret")
 	m, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if m.Step != StepModels || cmd == nil || m.Draft.APIKey != "go-secret" {
-		t.Fatalf("key did not advance straight to models: %v", m.Step)
+	if m.Step != StepSaving || cmd == nil || m.Draft.APIKey != "" {
+		t.Fatalf("key was not handed to account storage: %v", m.Step)
+	}
+	m, cmd = m.Update(keyAccountSavedMsg{Gen: m.Generation, Account: daemon.Account{
+		ID: "go-account", Provider: "opencode-go", Kind: "key", Label: "go-work",
+	}})
+	if m.Step != StepModels || cmd == nil || m.Draft.AccountID == nil || *m.Draft.AccountID != "go-account" {
+		t.Fatalf("saved account did not advance to models: %v", m.Step)
 	}
 	assertGoDraft(t, m)
 	m.Draft.Model = "glm-5"
@@ -118,7 +125,7 @@ func TestOpenCodeGoSavedHint(t *testing.T) {
 	saved := config.Settings{Extension: "openai", BaseURL: "https://example.com/v1", Model: "custom", Protocol: "responses", HasKey: true}
 	m.Profiles.Providers["opencode-go"] = saved
 	m.applyHint()
-	if m.Step != StepSaving || m.Draft != saved {
+	if m.Step != StepSaving || !reflect.DeepEqual(m.Draft, saved) {
 		t.Fatalf("saved profile overwritten: %+v", m.Draft)
 	}
 }
@@ -130,7 +137,7 @@ func TestOpenCodeGoSavedName(t *testing.T) {
 	m.Step = StepName
 	m.TextInput.SetValue("opencode-go")
 	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if m.Draft != saved {
+	if !reflect.DeepEqual(m.Draft, saved) {
 		t.Fatalf("saved named profile overwritten: %+v", m.Draft)
 	}
 }

@@ -18,6 +18,8 @@ type customProvider struct {
 	DefaultName   string
 	DefaultURL    string
 	FixedProtocol string
+	// FixedAPI selects an extension-owned API without changing replay protocol.
+	FixedAPI string
 	// DefaultProtocol preselects a protocol the person can still change, for
 	// a row that shares its extension with the generic OpenAI-compatible one.
 	DefaultProtocol string
@@ -33,13 +35,13 @@ type customProvider struct {
 
 var customProviders = []customProvider{
 	{
-		ID:            "add-alibaba",
-		Label:         "Alibaba",
-		Detail:        "api key · token plan · Qwen, DeepSeek, GLM",
-		Extension:     "alibaba",
-		DefaultName:   "alibaba",
-		DefaultURL:    "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
-		FixedProtocol: "chat_completions",
+		ID:              "add-alibaba",
+		Label:           "Alibaba",
+		Detail:          "api key · token plan · Qwen, DeepSeek, GLM",
+		Extension:       "openai",
+		DefaultName:     "alibaba",
+		DefaultURL:      "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+		DefaultProtocol: "chat_completions",
 	},
 	{
 		ID:            "add-opencode-go",
@@ -76,6 +78,16 @@ var customProviders = []customProvider{
 		Extension:     "bedrock",
 		DefaultName:   "bedrock",
 		FixedProtocol: "chat_completions",
+		Optional:      true,
+	},
+	{
+		ID:            "add-bedrock-converse",
+		Label:         "Amazon Bedrock Converse",
+		Detail:        "aws credentials · Converse streaming · Bedrock models",
+		Extension:     "bedrock",
+		DefaultName:   "bedrock-converse",
+		FixedProtocol: "chat_completions",
+		FixedAPI:      "converse",
 		Optional:      true,
 	},
 	{
@@ -123,6 +135,9 @@ func (p customProvider) facts() []loginFact {
 		facts = append(facts, loginFact{"endpoint", p.DefaultURL})
 	case p.FixedEndpoint:
 		facts = append(facts, loginFact{"endpoint", "the extension's own"})
+	}
+	if p.FixedAPI != "" {
+		facts = append(facts, loginFact{"api", p.FixedAPI})
 	}
 	if p.FixedProtocol != "" {
 		facts = append(facts, loginFact{"protocol", p.FixedProtocol})
@@ -232,7 +247,7 @@ func (m *LoginModel) advanceToModels() tea.Cmd {
 
 func (m *LoginModel) startCustomProvider(p customProvider) tea.Cmd {
 	m.Name = p.DefaultName
-	m.Draft = config.Settings{Extension: p.Extension, BaseURL: p.DefaultURL, Protocol: cmp.Or(p.FixedProtocol, p.DefaultProtocol, "responses")}
+	m.Draft = config.Settings{Extension: p.Extension, API: p.FixedAPI, BaseURL: p.DefaultURL, Protocol: cmp.Or(p.FixedProtocol, p.DefaultProtocol, "responses")}
 	m.Step = StepName
 	m.TextInput.Placeholder = p.DefaultName
 	return m.promptInput("", false)
@@ -341,6 +356,14 @@ func (m LoginModel) saveProviderCmd(name string, settings config.Settings) tea.C
 		validated, err := settings.Validate()
 		if err != nil {
 			return providerSavedMsg{Gen: m.Generation, Name: name, Settings: settings, Err: err}
+		}
+		if validated.APIKey != "" && (validated.Extension == "openai" || validated.Extension == "opencode-go") {
+			account, saveErr := daemon.PutKeyAccount(context.Background(), m.Conn, validated.Extension, validated.BaseURL, validated.APIKey, name)
+			if saveErr != nil {
+				return providerSavedMsg{Gen: m.Generation, Name: name, Settings: validated, Err: saveErr}
+			}
+			validated.AccountID = &account.ID
+			validated.APIKey = ""
 		}
 		err = daemon.SaveAndSelectProvider(context.Background(), m.Conn, name, validated, m.Profiles.ETag)
 		return providerSavedMsg{Gen: m.Generation, Name: name, Settings: validated, Err: err}

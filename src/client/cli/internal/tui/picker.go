@@ -72,19 +72,18 @@ func (m *PickerModel) SetSize(width, height int) {
 	m.SearchInput.SetWidth(max(1, width-8))
 }
 
-// applyFilter keeps the items whose id, label and detail contain every word
-// of the search, in the order they were listed.
+// applyFilter keeps the items whose label, detail and id match every word
+// of the search under matchFields, in the order they were listed.
 func (m *PickerModel) applyFilter() {
 	item, ok := m.Highlighted()
 	old := ""
 	if ok {
 		old = item.ID
 	}
-	tokens := strings.Fields(strings.ToLower(m.SearchInput.Value()))
+	words := searchWords(m.SearchInput.Value())
 	m.Filtered = nil
 	for _, item := range m.Items {
-		haystack := strings.ToLower(item.ID + " " + item.Label + " " + item.Detail)
-		if !slices.ContainsFunc(tokens, func(token string) bool { return !strings.Contains(haystack, token) }) {
+		if _, _, matched := matchFields(words, item.Label, item.Detail, item.ID); matched {
 			m.Filtered = append(m.Filtered, item)
 		}
 	}

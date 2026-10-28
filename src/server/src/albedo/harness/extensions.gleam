@@ -1,6 +1,5 @@
 import albedo/harness/extension
 import albedo/harness/extensions/agents/extension as agents
-import albedo/harness/extensions/alibaba/extension as alibaba
 import albedo/harness/extensions/antigravity/extension as antigravity
 import albedo/harness/extensions/artifacts/extension as artifacts
 import albedo/harness/extensions/bedrock/extension as bedrock
@@ -77,7 +76,6 @@ fn installed() -> Config {
       // Ahead of models.dev: it answers only for its own endpoint, where a
       // shared id such as claude-sonnet-4-6 has Antigravity's limits.
       antigravity.extension(),
-      alibaba.extension(),
       opencode_go.extension(),
       opencode_zen.extension(),
       bedrock.extension(),
@@ -113,10 +111,10 @@ fn installed() -> Config {
     [
       "python", "run", "work", "mail", "agents", "schedule", "files", "memory",
       "links", "instructions", "commands", "skills", "paperclips", "artifacts",
-      "models", "openai", "codex", "antigravity", "alibaba", "opencode-go",
-      "opencode-zen", "bedrock", "claude", "vertex", "rolling",
-      "snapcompact-memory", "lcm-memory", "notes", "remote", "browser", "warm",
-      "exa", "web-search", "questions",
+      "models", "openai", "codex", "antigravity", "opencode-go", "opencode-zen",
+      "bedrock", "claude", "vertex", "rolling", "snapcompact-memory",
+      "lcm-memory", "notes", "remote", "browser", "warm", "exa", "web-search",
+      "questions",
     ],
   )
 }

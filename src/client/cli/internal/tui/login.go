@@ -38,6 +38,7 @@ const (
 	StepProfileName
 	StepRename
 	StepCredential
+	StepRotationPrompt
 )
 
 // signInPollInterval is how often the daemon is asked about a running sign-in.
@@ -80,6 +81,7 @@ type LoginModel struct {
 	Catalog                      []string
 	TextInput                    textinput.Model
 	ChoosePicker                 loginPick
+	CredentialTicks              map[string]bool
 	ProtocolPicker               loginPick
 	ModelPicker                  loginPick
 	confirm
@@ -89,7 +91,8 @@ type LoginModel struct {
 	Step       LoginStep
 	// Editing changes the saved profile Name in place: it saves without
 	// making Name the default and comes back to the list.
-	Editing bool
+	Editing         bool
+	RenameAccountID string
 }
 
 // NewLoginModel panics if conn is nil. A nil browser opener disables automatic
@@ -234,7 +237,7 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 				return m, m.backToChoose()
 			}
 			if len(msg.Accounts) > 0 {
-				m.Draft.AccountID = &msg.Accounts[0].ID
+				return m, m.addedCredential(msg.Accounts[0])
 			}
 			return m, m.credentialChosen()
 		case "failed", "cancelled", "expired":
@@ -244,6 +247,18 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 		default:
 			return m, tea.Batch(browser, signInPollTickCmd(msg.ID, m.Generation))
 		}
+
+	case keyAccountSavedMsg:
+		if msg.Gen != m.Generation || m.closed {
+			return m, nil
+		}
+		if msg.Err != nil {
+			m.Step = StepAPIKey
+			m.Error = msg.Err.Error()
+			return m, nil
+		}
+		m.Accounts = append(m.Accounts, msg.Account)
+		return m, m.addedCredential(msg.Account)
 
 	case loginModelsLoadedMsg:
 		if msg.Gen != m.Generation || (m.Step != StepModels && m.Step != StepOAuthModels) {
@@ -276,16 +291,45 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 	case tea.KeyPressMsg:
 		key := msg.String()
 		switch {
+		case m.Step == StepRotationPrompt:
+			if key == "esc" || key == "ctrl+c" {
+				return m, m.rotationAnswer(false)
+			}
+			if key == "enter" {
+				item, _ := m.ChoosePicker.Highlighted()
+				return m, m.rotationAnswer(item.ID == "yes")
+			}
+			return m, m.ChoosePicker.update(msg)
 		case m.Step == StepRemove:
 			return m, m.confirmKey(msg)
 		case m.Step == StepChoose && key == "ctrl+d":
 			if item, ok := m.ChoosePicker.Highlighted(); ok {
+				if account, accountOK := m.accountAt(item.ID); accountOK && account.Source == "env" {
+					m.Status = "environment accounts are read-only and cannot be removed"
+					return m, nil
+				}
 				if target, ok := m.removalFor(item.ID); ok {
 					return m, m.confirmRemoval(target)
 				}
 			}
 			return m, nil
+		case m.Step == StepCredential && (key == "space" || key == "enter"):
+			if key == "space" {
+				return m, m.toggleCredentialTick()
+			}
+			return m, m.saveCredentialSelection()
 		case m.Step == StepChoose && (key == "ctrl+r" || key == "ctrl+e"):
+			if item, ok := m.ChoosePicker.Highlighted(); ok {
+				if account, accountOK := m.accountAt(item.ID); accountOK {
+					if account.Source == "env" {
+						m.Status = "environment accounts are read-only; rename it in the daemon environment"
+						return m, nil
+					}
+					if key == "ctrl+r" {
+						return m, m.askAccountRename(account)
+					}
+				}
+			}
 			if name, ok := m.highlightedProfile(); ok {
 				if key == "ctrl+r" {
 					return m, m.askRename(name)
@@ -461,17 +505,31 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 			}
 			m.Draft.BaseURL = endpoint
 			m.Error = ""
+			if m.keyAccounts() {
+				m.Provider = m.Draft.Extension
+				m.CredentialTicks = nil
+				return m, m.chooseCredential()
+			}
 			return m, m.askAPIKey()
 
 		case StepAPIKey:
 			m.TextInput.SetCursor(0)
 			switch val := cmp.Or(m.TextInput.Value(), m.Draft.APIKey); {
-			case val == "" && m.Draft.HasKey:
+			case val == "" && m.Draft.HasKey && !m.keyAccounts():
 				// Blank keeps the key the daemon holds.
 			case val == "" && m.optionalKey():
 			case val == "" || strings.ContainsFunc(val, func(r rune) bool { return r <= 0x20 || r == 0x7f }):
 				return m.fail("Enter an API key without spaces or control characters.")
 			default:
+				if m.keyAccounts() {
+					m.TextInput.SetValue("")
+					m.Step = StepSaving
+					conn, provider, endpoint, label, gen := m.Conn, m.Draft.Extension, m.Draft.BaseURL, m.Name, m.Generation
+					return m, func() tea.Msg {
+						account, err := daemon.PutKeyAccount(context.Background(), conn, provider, endpoint, val, label)
+						return keyAccountSavedMsg{Gen: gen, Account: account, Err: err}
+					}
+				}
 				m.Draft.APIKey = val
 			}
 			m.Error = ""
@@ -525,4 +583,10 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 	var cmd tea.Cmd
 	m.TextInput, cmd = m.TextInput.Update(msg)
 	return m, cmd
+}
+
+type keyAccountSavedMsg struct {
+	Gen     int
+	Account daemon.Account
+	Err     error
 }

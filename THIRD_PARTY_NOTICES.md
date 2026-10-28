@@ -1,7 +1,7 @@
 # Source attribution
 
 The files under `src/server/` and `src/client/` replace files from Albedo at
-revision `b274c034e64263a48961adcdf736f1e0cc838fd6`,
+revision `2d0fac2cc4ff4bbd28b422dd1dd53e0ad81aa4a6`,
 <https://tangled.org/okami.mom/albedo>. Albedo is copyright 2026 albedo contributors
 (okami.mom, ptr.pet, aly.codes and other contributors), licensed under MPL 2.0;
 the license is retained in `LICENSES/albedo-MPL-2.0.txt`. Updated source
@@ -26,11 +26,12 @@ and optional default CLI diff visibility. `upstream/pin.json` inventories server
 replacements; the client
 replacements live under `src/client/cli/`.
 `test/model_catalogs_test.py` adapts upstream
-`test/e2e/model_catalogs_test.py` at the same revision for endpoint-scoped cache
+`test/e2e/model_catalogs_test.py` from the current pinned revision for
+endpoint-scoped cache
 fixtures; its provider catalog assertions are retained.
 `scripts/test-e2e.py` adds a kernel-reattachment readiness barrier to upstream
-`test/e2e/kernel_upgrade_test.py` at that revision; its forced-swap assertions
-are retained.
+`test/e2e/kernel_upgrade_test.py` from the current pinned revision; its
+forced-swap assertions are retained.
 
 Upstream's complete third-party notices are preserved in
 `LICENSES/albedo-THIRD_PARTY_NOTICES.md`. Dependencies and packaged runtime

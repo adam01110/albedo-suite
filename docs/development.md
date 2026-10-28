@@ -197,6 +197,11 @@ replaces the daemon's profile protocol selection. Narrow Go wire/catalog
 additions preserve SDK-metadata
 routing and endpoint-scoped one-hour discovery caches. Package checks exercise
 native Go rotation, OAuth organization headers and all four wire routes.
+The current upstream binds request rotation to explicitly selected accounts
+(`accountIds`); catalog discovery still inspects configured profiles without
+sending credentials to another endpoint. Legacy Alibaba profiles migrate
+to OpenAI-compatible profiles through upstream's account migration. No suite
+compatibility layer is retired by this update.
 
 NUR does not yet bundle the native web assets. `nix/modules/web.nix` builds the
 pinned upstream web client with upstream's dependency hash; both suite packages
