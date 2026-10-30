@@ -163,6 +163,22 @@ await_state(Home, Id, Expected, N) when N > 0 ->
     case state(F) of Expected -> F; _ -> timer:sleep(10), await_state(Home,Id,Expected,N-1) end;
 await_state(Home, Id, Expected, _) -> error({state_timeout, Expected, json:decode(get(Home, Id))}).
 
+%% Observe persistence without calling the API that can expire the flow.
+await_stored_state(Home, Id, Expected) ->
+    await_stored_state(Home, Id, Expected, erlang:monotonic_time(millisecond) + 2000).
+
+await_stored_state(Home, Id, Expected, Deadline) ->
+    {ok, Records} = albedo_credentials:read(filename:join(Home,<<"oauth-logins.json">>)),
+    Record = maps:get(Id, Records),
+    case maps:get(<<"state">>, Record) of
+        Expected -> Record;
+        _ ->
+            case erlang:monotonic_time(millisecond) < Deadline of
+                true -> timer:sleep(10), await_stored_state(Home, Id, Expected, Deadline);
+                false -> error({stored_state_timeout, Expected, Record})
+            end
+    end.
+
 callback(Flow, User) -> callback(Flow, User, Flow, <<"127.0.0.1">>).
 
 callback(Flow, User, KeyFlow, Host) ->
@@ -358,13 +374,20 @@ clean_home_inference(Home, PublicId) ->
     {ok, Accounts} = albedo_credentials:accounts(albedo_credentials:creds_path(Home)),
     [#{<<"access_token">> := <<"editor-test-secret">>, <<"jwt">> := _, <<"jwt_expires">> := _}] = albedo_credentials:values(Accounts,<<"zed">>).
 
+%% Delay readiness before opening the account transport, not its scaled timeout.
+delayed_identity_start() ->
+    {ok,{Url,Instructions,Complete}} = albedo_zed_auth:start(),
+    {ok,{Url,Instructions,fun(Progress) ->
+        Complete(fun(Text) -> timer:sleep(150), Progress(Text) end)
+    end}}.
+
 unpolled_expiry_cases() ->
     OriginalScale = persistent_term:get({albedo_clock,scale},1),
     persistent_term:put({albedo_clock,scale},100),
     Home = home(), CompleteHome = home(), CancelHome = home(), CorruptHome = home(),
     Parent = self(),
     L = setelement(7,login(),{device,fun() ->
-        Parent ! {native_expiry_actor,self()}, albedo_zed_auth:start()
+        Parent ! {native_expiry_actor,self()}, delayed_identity_start()
     end}),
     try
         Owner = whereis(albedo_oauth),
@@ -379,9 +402,8 @@ unpolled_expiry_cases() ->
         Pid = receive {native_expiry_actor,P} -> P after 1000 -> error(no_actor) end,
         Monitor = erlang:monitor(process,Pid),
         Port = callback(Initial,<<"81">>),
-        timer:sleep(50),
-        {ok, Records} = albedo_credentials:read(filename:join(Home,<<"oauth-logins.json">>)),
-        #{<<"state">> := <<"confirming">>, <<"intent">> := Intent, <<"expires">> := Deadline} = maps:get(Id,Records),
+        #{<<"state">> := <<"confirming">>, <<"intent">> := Intent, <<"expires">> := Deadline} =
+            await_stored_state(Home,Id,<<"confirming">>),
         no_accounts(Home),
         %% A stale deadline or home cannot target the active attempt.
         {expire_identified,Home,Id,Intent,Deadline,MonoDeadline} = Expiry,
@@ -397,15 +419,13 @@ unpolled_expiry_cases() ->
         {CancelId,_} = start(CancelHome),
         {ok, Cancelled} = albedo_oauth:cancel_identified(CancelHome,CancelId,[login()]),
         CorruptLogin = setelement(7,login(),{device,fun() ->
-            Parent ! {corrupt_expiry_actor,self()}, albedo_zed_auth:start()
+            Parent ! {corrupt_expiry_actor,self()}, delayed_identity_start()
         end}),
         {CorruptId,CorruptInitial} = start(CorruptHome,CorruptLogin),
         CorruptPid = receive {corrupt_expiry_actor,CP} -> CP after 1000 -> error(no_corrupt_actor) end,
         CorruptMonitor = erlang:monitor(process,CorruptPid),
         CorruptPort = callback(CorruptInitial,<<"83">>),
-        timer:sleep(50),
-        {ok,CorruptRecords} = albedo_credentials:read(filename:join(CorruptHome,<<"oauth-logins.json">>)),
-        #{<<"state">> := <<"confirming">>} = maps:get(CorruptId,CorruptRecords),
+        #{<<"state">> := <<"confirming">>} = await_stored_state(CorruptHome,CorruptId,<<"confirming">>),
         ok = file:write_file(filename:join(CorruptHome,<<"oauth-logins.json">>),<<"corrupt-records">>),
         %% No GET/input/cancel touches the pending attempt until its actor dies.
         receive {'DOWN',Monitor,process,Pid,killed} -> ok after 5000 -> error(unpolled_expiry_did_not_kill_actor) end,
