@@ -2,7 +2,8 @@
 
 `albedo-monitor` emits one versioned JSON object to stdout, then exits. It uses
 `$ALBEDO_HOME` (default `~/.albedo`); `--home PATH` overrides discovery and
-`--timeout SECONDS` sets the overall startup/request budget (default 5, maximum 30).
+`--timeout SECONDS` sets the overall startup/request budget
+(default 5, maximum 30).
 Without `--start-daemon` the helper only observes an existing daemon.
 
 ```console
@@ -43,6 +44,8 @@ Running the source script directly uses `albedo` from PATH.
       "resets_at": "2026-05-02T14:00:00Z",
       "resets_at_epoch": 1777730400.0,
       "observed_at": "2026-05-02T12:00:00Z",
+      "observed_at_epoch": 1777723200.0,
+      "stale_reason": "",
       "status": "ok",
       "stale": false
     }],
@@ -63,16 +66,23 @@ Running the source script directly uses `albedo` from PATH.
   `model` and `parent_id` may be null.
 - Accounts come from the daemon's native multi-account inventory, not historical
   quota rows. Unsupported and never-measured accounts remain visible with
-  `quota_unavailable`. Canonical provider names include `anthropic`,
+  `quota_unavailable`. Missing or ambiguous OAuth mappings instead use
+  `quota_identity_unavailable` or `quota_identity_ambiguous`.
+  Canonical provider names include `anthropic`,
   `openai-codex`, `google-antigravity` and `opencode-go`.
 - Windows use cached daemon samples only. `remaining_percent` is `100 - used`
   only for finite percentages in range, otherwise null. Timestamps are RFC3339
   strings or null. The additive optional `resets_at_epoch` field is finite Unix
   seconds parsed from a timezone-aware reset timestamp, otherwise null; clients
-  must also accept its absence from older version-1 snapshots. Stale means observation missing/unparseable, older than 30
-  minutes, implausibly future-dated, or reset elapsed. Stale values are historical,
-  never renewed guesses. Provider status is retained; raw provider error bodies
-  are replaced with fixed error codes.
+  must also accept its absence from older version-1 snapshots. Stale means
+  observation missing/unparseable, older than 30 minutes, implausibly future-dated,
+  or reset elapsed. Stale values are historical,
+  never renewed guesses. The optional additive `observed_at_epoch` field gives
+  observation time in Unix seconds, not snapshot time. `stale_reason` is empty
+  when fresh, or `observation_missing`, `observation_old`, `clock_skew` or
+  `reset_passed`. Provider status is retained; raw provider errors become fixed
+  codes. Only the newest report per account/provider contributes windows; newer
+  failures or reduced reports cannot resurrect older successful limits.
 - Errors are fixed codes, not exception text. `error` covers discovery/session
   failures; `accounts_error` covers inventory/identity failures or possible quota
   truncation; account `error` covers missing/failed quotas. Empty string means no
@@ -118,8 +128,23 @@ upstream exposes the quota identity directly in its public account API.
 The suite builds the quota core with Zig's baseline CPU target rather than the
 build host's native instruction set. This prevents cached builds from crashing
 with an illegal instruction on machines without the builder's CPU features
-(for example AVX-512). A core crash leaves the last successful windows stale;
-the monitor cannot refresh them itself.
+(for example AVX-512). A failed poll replaces the current account report with an
+error; previous samples remain in history. The monitor cannot force provider
+polls. A fresh snapshot must not be treated as a fresh provider observation.
+
+## Poller recovery
+
+The daemon schedules a newly discovered account immediately instead of waiting
+for the previous ten-minute discovery timer. In-flight work is excluded from
+idle deadlines, avoiding a 250 ms wake loop. Obsolete timer and worker replies
+cannot replace newer state.
+
+Provider polls have a two-minute deadline; account discovery has a five-minute
+deadline. Timed-out workers are stopped and retried on the existing cadence and
+backoff. Poll failures replace current windows with a sanitized error; failed
+discovery preserves previously known targets. Historical quota rows are retained.
+These deadlines can interrupt an unusually slow provider or a large discovery
+round, rather than leaving the daemon's quota collection wedged indefinitely.
 
 ## Verification
 

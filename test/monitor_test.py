@@ -370,7 +370,7 @@ class MonitorTest(unittest.TestCase):
             reading,
             {("anthropic", "one"): "shared", ("anthropic", "two"): "shared"},
         )
-        self.assertTrue(all(row["error"] == "quota_unavailable" for row in rows))
+        self.assertTrue(all(row["error"] == "quota_identity_ambiguous" for row in rows))
         (self.home / "creds.json").write_text("credential-canary")
         self.assertEqual(
             monitor.identity_index(self.home), ({}, "account_identity_unavailable")
@@ -424,6 +424,77 @@ class MonitorTest(unittest.TestCase):
         self.assertFalse(monitor.stale_window(stamp(now - 60), stamp(now + 60), now))
         self.assertTrue(monitor.stale_window(stamp(now - 1801), None, now))
         self.assertTrue(monitor.stale_window(stamp(now - 60), stamp(now - 1), now))
+
+    def test_only_newest_account_report_is_current(self):
+        from datetime import datetime
+
+        now = time.time()
+        stamp = lambda n: datetime.fromtimestamp(n, UTC).isoformat()
+        base = {"provider": "openai-codex", "account_id": "a", "status": "ok"}
+        old = dict(
+            base, limit_id="primary", used_percent=100, observed_at=stamp(now - 60)
+        )
+        new = dict(base, limit_id="secondary", used_percent=47, observed_at=stamp(now))
+        for readings in ([old, new], [new, old]):
+            windows = monitor.account_rows(readings)[0]["windows"]
+            self.assertEqual([w["label"] for w in windows], ["secondary"])
+            self.assertEqual(
+                windows[0]["observed_at_epoch"], monitor.timestamp(stamp(now))
+            )
+            self.assertEqual(windows[0]["stale_reason"], "")
+        same_report = dict(old, observed_at=stamp(now))
+        self.assertEqual(len(monitor.account_rows([same_report, new])[0]["windows"]), 2)
+        # Sequence identifies the newest completed report even after clock rollback.
+        rolled_back = dict(new, sequence=3, observed_at=stamp(now - 120))
+        sequenced_old = dict(old, sequence=2)
+        result = monitor.account_rows([rolled_back, sequenced_old])[0]
+        self.assertEqual([w["label"] for w in result["windows"]], ["secondary"])
+        failure = dict(
+            base,
+            limit_id="",
+            used_percent=None,
+            observed_at=stamp(now + 1),
+            error="credential-canary",
+        )
+        result = monitor.account_rows([old, new, failure])[0]
+        self.assertNotEqual(result["error"], "")
+        self.assertTrue(all(w["remaining_percent"] is None for w in result["windows"]))
+        self.assertNotIn("credential-canary", json.dumps(result))
+        recovery = dict(new, observed_at=stamp(now + 2), used_percent=0)
+        result = monitor.account_rows([old, failure, recovery])[0]
+        self.assertEqual(result["error"], "")
+        self.assertEqual(result["windows"][0]["remaining_percent"], 100)
+
+    def test_stale_reason_distinguishes_expired_and_missing_observations(self):
+        from datetime import datetime
+
+        now = time.time()
+        stamp = lambda n: datetime.fromtimestamp(n, UTC).isoformat()
+        for observed, resets, reason in (
+            (None, None, "observation_missing"),
+            (now - 1801, None, "observation_old"),
+            (now + 61, None, "clock_skew"),
+            (now - 60, now - 1, "reset_passed"),
+            (now - 60, now + 60, ""),
+        ):
+            with (
+                self.subTest(reason=reason),
+                patch.object(monitor.time, "time", return_value=now),
+            ):
+                row = monitor.account_rows(
+                    [
+                        {
+                            "provider": "p",
+                            "account_id": "a",
+                            "used_percent": 50,
+                            "status": "ok",
+                            "observed_at": stamp(observed) if observed else None,
+                            "resets_at": stamp(resets) if resets else None,
+                        }
+                    ]
+                )[0]["windows"][0]
+                self.assertEqual(row["stale_reason"], reason)
+                self.assertEqual(row["stale"], bool(reason))
 
     def test_timeout_and_unreachable(self):
         self.delay = 0.2

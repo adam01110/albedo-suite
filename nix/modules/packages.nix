@@ -80,11 +80,13 @@
         postCheck =
           (old.postCheck or "")
           + ''
+            cp ${../../test/suite_quota_test.gleam} test/suite_quota_test.gleam
             cp ${../../test/suite_codex_error_test.gleam} test/suite_codex_error_test.gleam
             cp ${../../test/suite_opencode_go_test.gleam} test/suite_opencode_go_test.gleam
             cp ${../../test/suite_questions_test.gleam} test/suite_questions_test.gleam
             cp ${../../test/suite_prompt_docs_test.gleam} test/suite_prompt_docs_test.gleam
             gleam run -m suite_prompt_docs_test
+            gleam run -m suite_quota_test
             gleam run -m suite_codex_error_test
             gleam run -m suite_opencode_go_test
             cp ${../../test/suite_zed_test.gleam} test/suite_zed_test.gleam

@@ -17,6 +17,7 @@
     "priv/python/albedo_plugins/skills.py",
     "priv/python/albedo_rtk.py",
     "src/albedo/daemon/events.gleam",
+    "src/albedo/daemon/quota.gleam",
     "src/albedo/daemon/session.gleam",
     "src/albedo/daemon/session_provider.gleam",
     "src/albedo/daemon/session_state.gleam",

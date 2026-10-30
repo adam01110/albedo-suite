@@ -14,7 +14,6 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlencode
 
-
 ALBEDO_CLI = "albedo"
 
 
@@ -158,25 +157,47 @@ def timestamp(value):
         return None
 
 
+def stale_reason(observed_at, resets_at, now):
+    if resets_at is not None and resets_at <= now:
+        return "reset_passed"
+    if observed_at is None:
+        return "observation_missing"
+    if observed_at > now + 60:
+        return "clock_skew"
+    if now - observed_at > 1800:
+        return "observation_old"
+    return ""
+
+
 def stale_window(observed, resets, now):
-    observed_at = timestamp(observed)
-    resets_at = timestamp(resets)
-    return (
-        observed_at is None
-        or observed_at > now + 60
-        or now - observed_at > 1800
-        or (resets_at is not None and resets_at <= now)
-    )
+    return bool(stale_reason(timestamp(observed), timestamp(resets), now))
 
 
 def account_rows(readings):
     accounts = {}
     now = time.time()
-    for reading in array(readings):
-        reading = object_value(reading)
+    readings = [object_value(reading) for reading in array(readings)]
+    # Older daemons return the last row for each limit, even after a newer
+    # account-wide failure or a report that no longer includes that limit.
+    latest = {}
+    for reading in readings:
+        key = (text(reading.get("provider")), text(reading.get("account_id")))
+        observed = timestamp(reading.get("observed_at"))
+        sequence = reading.get("sequence")
+        rank = (
+            (1, sequence)
+            if type(sequence) is int and sequence >= 0
+            else (0, observed if observed is not None else float("-inf"))
+        )
+        if key not in latest or rank > latest[key][0]:
+            latest[key] = (rank, observed)
+    for reading in readings:
         key = (text(reading.get("provider")), text(reading.get("account_id")))
         if not all(key):
             raise MonitorError("invalid_response")
+        observed = timestamp(reading.get("observed_at"))
+        if observed != latest[key][1]:
+            continue
         account = accounts.setdefault(
             key, {"provider": key[0], "account": key[1], "windows": [], "error": ""}
         )
@@ -200,6 +221,8 @@ def account_rows(readings):
             and math.isfinite(used)
         ):
             remaining = 100 - used
+        resets = timestamp(reading.get("resets_at"))
+        reason = stale_reason(observed, resets, now)
         account["windows"].append(
             {
                 "label": text(reading.get("window_label"))
@@ -207,12 +230,12 @@ def account_rows(readings):
                 or text(reading.get("limit_id")),
                 "remaining_percent": remaining,
                 "resets_at": text(reading.get("resets_at"), None),
-                "resets_at_epoch": timestamp(reading.get("resets_at")),
+                "resets_at_epoch": resets,
                 "observed_at": text(reading.get("observed_at"), None),
+                "observed_at_epoch": observed,
+                "stale_reason": reason,
                 "status": status,
-                "stale": stale_window(
-                    reading.get("observed_at"), reading.get("resets_at"), now
-                ),
+                "stale": bool(reason),
             }
         )
     for account in accounts.values():
@@ -298,7 +321,22 @@ def connected_accounts(auth, readings, identities):
                 "provider": key[0],
                 "account": label or public_id,
                 "windows": sample["windows"] if sample else [],
-                "error": sample["error"] if sample else "quota_unavailable",
+                "error": (
+                    sample["error"]
+                    if sample
+                    else "quota_identity_unavailable"
+                    if not key[1]
+                    and key[0]
+                    in {
+                        "anthropic",
+                        "openai-codex",
+                        "google-antigravity",
+                        "opencode-go",
+                    }
+                    else "quota_identity_ambiguous"
+                    if key[1] and keys.count(key) != 1
+                    else "quota_unavailable"
+                ),
             }
         )
     return result
