@@ -43,6 +43,7 @@ import albedo/harness/extensions/warm/extension as warm
 import albedo/harness/extensions/web_search/extension as web_search
 import albedo/harness/extensions/webhooks/extension as webhooks
 import albedo/harness/extensions/work/extension as work
+import albedo/harness/extensions/zed/extension as zed
 
 pub type Config {
   Config(extensions: List(extension.Extension), default_enabled: List(String))
@@ -86,6 +87,7 @@ fn installed() -> Config {
       // gets models.dev's full catalog.
       codex.extension(),
       openai.extension(),
+      zed.extension(),
       models.extension(),
       snapcompact.extension(),
       rolling.extension(),
@@ -114,7 +116,7 @@ fn installed() -> Config {
       "models", "openai", "codex", "antigravity", "opencode-go", "opencode-zen",
       "bedrock", "claude", "vertex", "rolling", "snapcompact-memory",
       "lcm-memory", "notes", "remote", "browser", "warm", "exa", "web-search",
-      "questions",
+      "questions", "zed",
     ],
   )
 }

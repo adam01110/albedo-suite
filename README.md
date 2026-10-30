@@ -28,6 +28,7 @@ providers, skills and SOPS declarations stay in Infra.
 | [User questions](docs/questions.md) | Record questions, answer in `/questions`, and resume the asking session. |
 | [Monitor snapshots](docs/monitor.md) | Export running-agent status and cached connected-account quotas without starting the daemon. |
 | [RTK and FFF](docs/tool-parity.md) | Filter supported commands through RTK and replace file search with FFF. |
+| [Zed provider](docs/zed.md) | Native hosted-model streaming with tool choice, thinking, effort and usage. |
 | CLI resume | `albedo resume` without an ID reopens the newest non-archived session in the current directory. |
 | [Vim editing](docs/vim.md) | Modal composer motions and edits, with the current mode in the footer. |
 | CLI diffs | Show diffs by default when enabled. The existing toggle still works. |

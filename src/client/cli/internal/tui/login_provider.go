@@ -63,6 +63,16 @@ var customProviders = []customProvider{
 		Optional:      true,
 	},
 	{
+		ID:            "add-zed",
+		Label:         "Zed",
+		Detail:        "subscription · Zed JWT",
+		Extension:     "zed",
+		DefaultName:   "zed",
+		DefaultURL:    "https://cloud.zed.dev",
+		FixedProtocol: "chat_completions",
+		Optional:      true,
+	},
+	{
 		ID:            "add-anthropic",
 		Label:         "Anthropic",
 		Detail:        "api key · console billing · Claude models",

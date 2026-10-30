@@ -87,6 +87,8 @@
             gleam run -m suite_prompt_docs_test
             gleam run -m suite_codex_error_test
             gleam run -m suite_opencode_go_test
+            cp ${../../test/suite_zed_test.gleam} test/suite_zed_test.gleam
+            gleam run -m suite_zed_test
             gleam run -m suite_questions_test
           '';
         postInstall =

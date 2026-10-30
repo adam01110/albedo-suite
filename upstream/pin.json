@@ -40,8 +40,14 @@
     "src/albedo/harness/extensions/questions/service.gleam",
     "src/albedo/harness/extensions/run/extension.gleam",
     "src/albedo/harness/extensions/skills/extension.gleam",
+    "src/albedo/harness/extensions/zed/albedo_zed.erl",
+    "src/albedo/harness/extensions/zed/catalog.gleam",
+    "src/albedo/harness/extensions/zed/extension.gleam",
+    "src/albedo/harness/extensions/zed/stream.gleam",
+    "src/albedo/harness/extensions/zed/wire.gleam",
     "src/albedo/harness/loop.gleam",
     "src/albedo/openai_api/responses.gleam",
+    "src/albedo/openai_api/sse.gleam",
     "test/daemon/bedrock_replay_preflight_test.gleam"
   ]
 }

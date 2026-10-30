@@ -22,6 +22,7 @@ SUITE_CASES = (
     "tool_backends_e2e_test.py",
     "tool_images_e2e_test.py",
     "web_e2e_test.py",
+    "zed_e2e_test.py",
 )
 UPSTREAM_CASES = (
     "artifacts_test.py",
