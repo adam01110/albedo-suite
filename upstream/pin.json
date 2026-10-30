@@ -18,7 +18,9 @@
     "priv/python/albedo_rtk.py",
     "src/albedo/daemon/events.gleam",
     "src/albedo/daemon/session.gleam",
+    "src/albedo/daemon/session_provider.gleam",
     "src/albedo/daemon/session_state.gleam",
+    "src/albedo/harness/albedo_oauth.erl",
     "src/albedo/harness/command.gleam",
     "src/albedo/harness/extension/composition.gleam",
     "src/albedo/harness/extension/prompt_docs.gleam",
@@ -41,13 +43,16 @@
     "src/albedo/harness/extensions/run/extension.gleam",
     "src/albedo/harness/extensions/skills/extension.gleam",
     "src/albedo/harness/extensions/zed/albedo_zed.erl",
+    "src/albedo/harness/extensions/zed/albedo_zed_auth.erl",
     "src/albedo/harness/extensions/zed/catalog.gleam",
     "src/albedo/harness/extensions/zed/extension.gleam",
     "src/albedo/harness/extensions/zed/stream.gleam",
     "src/albedo/harness/extensions/zed/wire.gleam",
     "src/albedo/harness/loop.gleam",
+    "src/albedo/openai_api/albedo_openai_transport.erl",
     "src/albedo/openai_api/responses.gleam",
     "src/albedo/openai_api/sse.gleam",
+    "src/albedo/openai_api/stream_http.gleam",
     "test/daemon/bedrock_replay_preflight_test.gleam"
   ]
 }

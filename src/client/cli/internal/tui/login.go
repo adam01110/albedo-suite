@@ -65,6 +65,7 @@ type LoginModel struct {
 	Name                         string
 	Provider                     string // sign-in provider in flight, or just finished
 	LoginETag                    string
+	LoginState                   string
 	LoginFlow, LoginInstructions string
 	LoginFields                  []daemon.FormField
 	LoginFieldIndex              int
@@ -176,6 +177,8 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 		}
 		m.LoginID = msg.ID
 		m.SignInURL = msg.URL
+		m.LoginState = "waiting"
+		m.LoginInstructions = ""
 		m.Status = ""
 
 		cmds := []tea.Cmd{textinput.Blink}
@@ -211,6 +214,10 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 		}
 		m.LoginETag = msg.ETag
 		m.LoginInstructions = msg.Instructions
+		if m.LoginState != msg.State {
+			m.TextInput.SetValue("")
+		}
+		m.LoginState = msg.State
 		var browser tea.Cmd
 		if m.SignInURL == "" && msg.URL != "" {
 			m.SignInURL = msg.URL
@@ -558,9 +565,18 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 			if login, ok := m.signInFor(m.Provider); ok && m.signInOver() {
 				return m, m.startSignIn(login)
 			}
+			if m.Provider == "zed" && m.LoginState != "confirming" {
+				return m, nil
+			}
 			val := strings.TrimSpace(m.TextInput.Value())
+			if m.LoginState == "confirming" && val != "confirm" {
+				return m.fail("Type confirm to save the displayed account, or press Esc to cancel.")
+			}
 			if val != "" && m.LoginID != "" {
 				m.Status = "exchanging authorization code…"
+				if m.LoginState == "confirming" {
+					m.Status = "saving confirmed account…"
+				}
 				m.Error = ""
 				m.Generation = nextPageGeneration()
 				m.TextInput.SetValue("")

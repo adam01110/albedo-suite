@@ -1,5 +1,5 @@
 -module(albedo_zed).
--export([access/2, models/2, lookup/3, route/4, reload/1, wrap/4, unwrap/1]).
+-export([exchange/4, access/2, models/2, lookup/3, route/4, reload/1, wrap/4, unwrap/1]).
 
 -define(ENDPOINT, <<"https://cloud.zed.dev">>).
 
@@ -8,11 +8,20 @@ access(Home, Profile) ->
     P = maps:get(Profile, Profiles, #{}),
     Endpoint = endpoint(maps:get(<<"baseUrl">>, P, ?ENDPOINT)),
     Key = maps:get(<<"apiKey">>, P, <<>>),
-    Token = case Key of <<>> -> env("ZED_TOKEN"); _ -> Key end,
+    Manual = case Key of <<>> -> env("ZED_TOKEN"); _ -> Key end,
+    Result = case {Manual, Endpoint} of
+        {<<>>, ?ENDPOINT} -> albedo_zed_auth:access(Home, Profile);
+        {<<>>, _} -> {error, <<"Custom Zed endpoints require an explicit apiKey or ZED_TOKEN">>};
+        _ -> {ok, Manual}
+    end,
+    case Result of
+        {ok, Token} ->
     case valid_endpoint(Endpoint) andalso is_binary(Token) andalso
          Token =/= <<>> andalso binary:match(Token, [<<"\r">>, <<"\n">>]) =:= nomatch of
         true -> {ok, {Endpoint, Token}};
         false -> {error, <<"Zed requires a valid HTTPS base URL and a JWT in apiKey or ZED_TOKEN (HTTP is allowed only on loopback)">>}
+    end;
+        Error -> Error
     end.
 
 profiles(Home) ->
@@ -38,6 +47,12 @@ valid_endpoint(B) ->
     catch _:_ -> false end.
 
 %% Only the selected endpoint's profile can supply its credential.
+catalog_access(Home, <<"albedo:zed:profile:", Profile/binary>>) -> access(Home, Profile);
+catalog_access(Home, <<"albedo:zed:account:", Id/binary>>) ->
+    case albedo_zed_auth:access_account(Home, Id) of
+        {ok, Token} -> {ok, {?ENDPOINT, Token}};
+        Error -> Error
+    end;
 catalog_access(Home, Endpoint) ->
     Matches = [Name || {Name, #{<<"extension">> := <<"zed">>} = P} <- lists:sort(maps:to_list(profiles(Home))),
         endpoint(maps:get(<<"baseUrl">>, P, ?ENDPOINT)) =:= Endpoint],
@@ -92,7 +107,7 @@ reload(Home) ->
 
 catalog(Home, Endpoint, Force) ->
     case catalog_access(Home, Endpoint) of
-        {ok, {_, Token}} -> catalog_token(Home, Endpoint, Token, Force);
+        {ok, {Actual, Token}} -> catalog_token(Home, Actual, Token, Force);
         Error -> Error
     end.
 
@@ -112,9 +127,9 @@ catalog_token(Home, Endpoint, Token, Force) ->
 fetch_models(Endpoint, Token, Path, Now) ->
     Headers = [{"authorization", binary_to_list(<<"Bearer ", Token/binary>>)},
                {"x-zed-client-supports-x-ai", "true"}],
-    case albedo_http:get(binary_to_list(<<Endpoint/binary, "/models">>), Headers, 10000, 5000) of
-        {ok, {200, _, Body}} ->
-            try json:decode(Body) of
+    case model_response(Endpoint, Headers) of
+        {ok, Decoded} ->
+            try Decoded of
                 #{<<"models">> := Ms} when is_list(Ms) ->
                     Valid = [M || #{<<"id">> := Id} = M <- Ms, is_binary(Id), maps:get(<<"is_disabled">>, M, false) =/= true],
                     _ = filelib:ensure_dir(Path),
@@ -122,7 +137,6 @@ fetch_models(Endpoint, Token, Path, Now) ->
                     {ok, Valid};
                 _ -> {error, <<"unexpected Zed /models response">>}
             catch _:_ -> {error, <<"invalid Zed /models JSON">>} end;
-        {ok, {Status, _, _}} -> {error, iolist_to_binary(io_lib:format("Zed /models returned HTTP ~B", [Status]))};
         {error, _} -> {error, <<"could not reach Zed /models">>}
     end.
 
@@ -160,4 +174,57 @@ route(Home, Endpoint, Token, Id) ->
                 _ -> {error, <<"model is not available in the Zed catalog or uses an unsupported provider">>}
             end;
         Error -> Error
+    end.
+
+%% A 401 before model output is safe to retry once; never replay a partial turn.
+exchange(Home, Profile, Run, OnEvent) ->
+    case snapshot(Home, Profile) of
+        {ok, {Endpoint, Token, Binding}} ->
+            retry(Home, Profile, Endpoint, Token, Binding, Run, OnEvent);
+        {error, Reason} -> {error, {invalid_request, Reason}}
+    end.
+
+snapshot(Home, Profile) ->
+    albedo_settings_lock:with_lock(Home, fun() ->
+        case access(Home, Profile) of
+            {ok, {Endpoint, Token}} -> {ok, {Endpoint, Token, albedo_zed_auth:binding(Home, Profile)}};
+            Error -> Error
+        end
+    end, fun() -> {error, <<"Zed credential store is busy">>} end).
+
+retry(Home, Profile, Endpoint, Token, Binding, Run, OnEvent) ->
+    Ref = make_ref(), put(Ref, false),
+    Forward = fun(Event) ->
+        case Event of
+            {responded, 401} -> continue;
+            {responded, _} -> OnEvent(Event);
+            _ -> put(Ref, true), OnEvent(Event)
+        end
+    end,
+    try Run(Endpoint, Token, Forward) of
+        {error, {http_error, 401, _}} = Error ->
+            case get(Ref) of
+                false when Binding =/= none ->
+                    Refreshed = albedo_settings_lock:with_lock(Home, fun() ->
+                        case albedo_zed_auth:binding(Home, Profile) =:= Binding of
+                            true -> albedo_zed_auth:reject(Home, Profile, Token), snapshot(Home, Profile);
+                            false -> {error, <<"Zed account changed during the request">>}
+                        end
+                    end, fun() -> {error, <<"Zed credential store is busy">>} end),
+                    case Refreshed of
+                        {ok, {Endpoint, Fresh, Binding}} -> Run(Endpoint, Fresh, OnEvent);
+                        _ -> Error
+                    end;
+                _ -> Error
+            end;
+        Result -> Result
+    after erase(Ref) end.
+
+model_response(Endpoint, Headers) ->
+    case albedo_openai_transport:open_method(<<"GET">>, <<Endpoint/binary, "/models">>,
+            [{list_to_binary(K), list_to_binary(V)} || {K, V} <- Headers], <<>>, 10000) of
+        {ok, Connection} -> albedo_openai_transport:with_connection_discard_errors(Connection, fun() ->
+            albedo_zed_auth:read_response(Connection, erlang:monotonic_time(millisecond) + 10000)
+        end);
+        _ -> {error, <<"Could not reach Zed model catalog">>}
     end.

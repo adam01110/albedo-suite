@@ -16,6 +16,8 @@ Modifications add opt-in lazy MCP lifecycle/bindings, explicit staged formatting
 and local LSP batch checks, isolated local LSP compatibility tools, durable user
 questions, mandatory RTK command filtering and FFF search,
 a native Zed provider using existing protocol adapters and bounded NDJSON framing,
+Zed browser callback/account confirmation and account-scoped inference JWT renewal,
+narrow native OAuth confirmation and HTTP transport observation/method seams,
 OpenCode Go SDK-metadata routing and endpoint-scoped discovery caches on the
 native OAuth, account rotation and portable wire implementation,
 recoverable kernel startup failures with workspace validation,

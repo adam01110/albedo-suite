@@ -89,6 +89,9 @@
             gleam run -m suite_opencode_go_test
             cp ${../../test/suite_zed_test.gleam} test/suite_zed_test.gleam
             gleam run -m suite_zed_test
+            cp ${../../test/suite_zed_login_test.gleam} test/suite_zed_login_test.gleam
+            cp ${../../test/albedo_zed_login_test.erl} test/albedo_zed_login_test.erl
+            gleam run -m suite_zed_login_test
             gleam run -m suite_questions_test
           '';
         postInstall =
@@ -136,7 +139,7 @@
             go test ./internal/tui -run '^TestContext' -count=1 -v
             go test ./internal/tui -run '^TestQuota' -count=1 -v
             go test ./internal/tui ./internal/daemon -run '^(TestSuiteEscape|TestInterrupt)' -count=1 -v
-            go test ./internal/tui -run '^TestOpenCodeGo' -count=1 -v
+            go test ./internal/tui -run '^(TestOpenCodeGo|TestZed)' -count=1 -v
             go test ./internal/tui ./internal/daemon -run '^TestToolImages' -count=1 -v
             ${pkgs.lib.optionalString showDiffs "go test ./internal/tui -run '^TestDefaultDiffVisibility$' -count=1 -v"}
           '';

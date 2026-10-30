@@ -68,7 +68,7 @@ pub fn exchange(
   request: types.Request,
   on_event: fn(types.Event) -> types.Control,
 ) -> Result(types.Turn, types.Error) {
-  stream_http.exchange(
+  stream_http.exchange_with_status(
     openai_api.to_pump(exchange),
     stream_http.Wire(
       start: sse.new_ndjson,
@@ -99,6 +99,18 @@ pub fn exchange(
     ),
     reducer(provider, request.model, request.tools),
     on_event,
+    fn(status, headers) {
+      case
+        status >= 400
+        && list.any(headers, fn(header) {
+          let key = string.lowercase(header.0)
+          key == "x-zed-expired-token" || key == "x-zed-outdated-token"
+        })
+      {
+        True -> 401
+        False -> status
+      }
+    },
   )
 }
 
