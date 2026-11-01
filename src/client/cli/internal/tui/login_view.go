@@ -207,6 +207,11 @@ func (m LoginModel) hints() []hint {
 				if m.editable(name) {
 					hints = append(hints, hint{"ctrl+e", "edit"})
 				}
+				verb := "disable"
+				if !m.Profiles.Providers[name].IsEnabled() {
+					verb = "enable"
+				}
+				hints = append(hints, hint{"ctrl+t", verb})
 				hints = append(hints, hint{"ctrl+r", "rename"})
 			}
 			account, isAccount := m.accountAt(item.ID)
@@ -285,6 +290,9 @@ func (m LoginModel) enterVerb() string {
 func (m LoginModel) rowVerb(item loginItem) (string, bool) {
 	switch {
 	case strings.HasPrefix(item.ID, "use:"):
+		if !m.Profiles.Providers[strings.TrimPrefix(item.ID, "use:")].IsEnabled() {
+			return "", false
+		}
 		return "use", true
 	case strings.HasPrefix(item.ID, "signin:"):
 		if login, ok := m.signInFor(strings.TrimPrefix(item.ID, "signin:")); ok && login.Kind == "service" {

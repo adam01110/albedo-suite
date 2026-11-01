@@ -277,6 +277,28 @@ func (m *LoginModel) askSignInModel() tea.Cmd {
 	return m.fetchCatalogCmd(m.Draft.Extension, endpoint, m.Generation)
 }
 
+type providerAvailabilityMsg struct {
+	Result signInsLoadedMsg
+	Name   string
+}
+
+func (m *LoginModel) toggleProvider() tea.Cmd {
+	name, ok := m.highlightedProfile()
+	if !ok {
+		return nil
+	}
+	enabled := !m.Profiles.Providers[name].IsEnabled()
+	etag := m.Profiles.ETag
+	m.Error = ""
+	m.Step = StepSaving
+	reload := m.reloadCmd(func(ctx context.Context) error {
+		return daemon.SetProviderEnabled(ctx, m.Conn, name, enabled, etag)
+	})
+	return func() tea.Msg {
+		return providerAvailabilityMsg{Result: reload().(signInsLoadedMsg), Name: name}
+	}
+}
+
 // highlightedProfile is the saved profile under the list's cursor.
 func (m LoginModel) highlightedProfile() (string, bool) {
 	item, ok := m.ChoosePicker.Highlighted()

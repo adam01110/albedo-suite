@@ -128,6 +128,16 @@ func (m LoginModel) Init() tea.Cmd {
 
 func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 	switch msg := msg.(type) {
+	case providerAvailabilityMsg:
+		if msg.Result.Gen != m.Generation || m.closed {
+			return m, nil
+		}
+		old := m.ChoosePicker
+		next, cmd := m.Update(msg.Result)
+		next.ChoosePicker.input = old.input
+		next.ChoosePicker.refilter("use:" + msg.Name)
+		focusLoginCredential(&next, "use:"+msg.Name)
+		return next, cmd
 	case signInsLoadedMsg:
 		if msg.Gen != m.Generation {
 			return m, nil
@@ -309,6 +319,8 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 			return m, m.ChoosePicker.update(msg)
 		case m.Step == StepRemove:
 			return m, m.confirmKey(msg)
+		case m.Step == StepChoose && key == "ctrl+t":
+			return m, m.toggleProvider()
 		case m.Step == StepChoose && key == "ctrl+d":
 			if item, ok := m.ChoosePicker.Highlighted(); ok {
 				if account, accountOK := m.accountAt(item.ID); accountOK && account.Source == "env" {

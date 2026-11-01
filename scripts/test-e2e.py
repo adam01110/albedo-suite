@@ -16,6 +16,7 @@ SUITE_CASES = (
     "lazy_mcp_test.py",
     "lsp_e2e_test.py",
     "model_catalogs_test.py",
+    "provider_availability_e2e_test.py",
     "questions_e2e_test.py",
     "prompt_context_e2e_test.py",
     "opencode_go_e2e_test.py",

@@ -22,6 +22,7 @@ OpenCode Go SDK-metadata routing and endpoint-scoped discovery caches on the
 native OAuth, account rotation and portable wire implementation,
 recoverable kernel startup failures with workspace validation,
 quota poller deadline recovery and newest-report projection,
+reversible provider-profile availability and model-discovery filtering,
 cache-stable startup reference reductions with on-demand API documentation,
 Vim-style CLI composer editing with a footer mode indicator, recoverable queued
 inputs on interruption and modal hjkl navigation across searchable CLI screens,

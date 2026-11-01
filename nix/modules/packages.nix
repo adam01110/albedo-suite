@@ -140,6 +140,7 @@
             go test ./internal/tui -run '^TestNavigation' -count=1 -v
             go test ./internal/tui -run '^TestContext' -count=1 -v
             go test ./internal/tui -run '^TestQuota' -count=1 -v
+            go test ./internal/tui ./internal/daemon -run '^TestProviderAvailability' -count=1 -v
             go test ./internal/tui ./internal/daemon -run '^(TestSuiteEscape|TestInterrupt)' -count=1 -v
             go test ./internal/tui -run '^(TestOpenCodeGo|TestZed)' -count=1 -v
             go test ./internal/tui ./internal/daemon -run '^TestToolImages' -count=1 -v

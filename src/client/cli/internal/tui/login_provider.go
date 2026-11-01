@@ -266,6 +266,10 @@ func (m *LoginModel) startCustomProvider(p customProvider) tea.Cmd {
 // useProfile re-selects a saved profile: a sign-in provider with no accounts
 // left cannot run without an api key, so it signs in first.
 func (m *LoginModel) useProfile(name string, settings config.Settings) tea.Cmd {
+	if !settings.IsEnabled() {
+		m.Status = "provider is disabled; press ctrl+t to enable it"
+		return nil
+	}
 	if login, ok := m.signInFor(settings.Extension); ok && !hasKey(settings) && m.signedOut(settings.Extension) {
 		m.Name, m.Draft = name, settings
 		return m.startSignIn(login)
