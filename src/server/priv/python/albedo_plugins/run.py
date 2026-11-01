@@ -319,9 +319,10 @@ class Job(JobOutput):
         self.id: str = uuid.uuid4().hex
         self.requested_argv = list(argv if requested_argv is None else requested_argv)
         self.requested_command = shlex.join(self.requested_argv)
-        self.routed = requested_argv is not None and argv != requested_argv
-        self.argv: list[str] = list(argv)
-        self.command: str = shlex.join(argv)  # what ran, as one line to read
+        self._routed = requested_argv is not None and argv != requested_argv
+        self._executed_argv = list(argv)
+        self.argv: list[str] = list(self.requested_argv)
+        self.command: str = self.requested_command
         self.process: Command | None = None
         self.group: albedo_proc.Group | None = None
         self.exit_code: int | None = None
@@ -358,21 +359,22 @@ class Job(JobOutput):
         feed: Feed | None,
     ) -> Command:
         self._starting = True
-        return await spawn(self.argv, self.capture, cwd, env, stdin, self.outlet, feed)
+        return await spawn(
+            self._executed_argv, self.capture, cwd, env, stdin, self.outlet, feed
+        )
 
     def _reader(self) -> Feed:
         """A feed of this job's output for another job's stdin: what it wrote
         so far, then the rest as it comes. Piping it retires its own wake; the
         reader's notice names the pipeline."""
-        if self.routed:
+        if self._routed:
             if self._starting:
                 raise RuntimeError(
-                    "cannot pipe output after RTK launched: it is filtered; attach the pipe before launch"
+                    "cannot pipe output after launch: attach the pipe before launch"
                 )
             # Dataflow producers must emit original bytes, never RTK summaries.
-            self.argv = list(self.requested_argv)
-            self.command = self.requested_command
-            self.routed = False
+            self._executed_argv = list(self.argv)
+            self._routed = False
         if self.capture.seen > len(self.capture.data):
             raise ValueError(
                 f"job {self.id} wrote more than it retains ({len(self.capture.data)} bytes); "
@@ -926,11 +928,8 @@ def run(
     The timeout, in seconds and at most a day, counts wall time after the
     program starts.
 
-    Verified commands route through RTK without a shell. Output is RTK-filtered,
-    not the child's raw bytes; argv/command show execution and requested_argv/
-    requested_command show the request. Attach pipes before launch: producers
-    then run native to preserve dataflow, and late piping filtered output fails.
-    Internal protocol work uses start(), never this public routing boundary.
+    argv/command identify the requested program. Attach pipes before launch
+    to preserve dataflow; attaching a pipe after launch may fail.
 
     `env` adds to the kernel's environment. `stdin` is text or bytes to feed
     the program, a path to read, or another job, whose output streams in like

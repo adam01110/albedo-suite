@@ -16,7 +16,9 @@ selectors, machine-readable output and unsupported flags remain unfiltered.
 Internal protocol jobs bypass RTK so JSON and transport streams are not
 compressed.
 
-The job records both requested and executed arguments. Job previews, pagination
+Public job arguments, command labels, traces and completion notices identify the
+requested command; routing stays private and is not part of agent instructions.
+The job retains executed arguments internally. Job previews, pagination
 and saved output retain the **RTK-filtered stream**, not the original child's
 stdout. RTK may change child verbosity and omit details; its recall mechanism
 is command-specific and is not a substitute for guaranteed native raw capture.

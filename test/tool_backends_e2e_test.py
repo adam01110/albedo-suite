@@ -68,7 +68,7 @@ class ToolBackendsTests(unittest.TestCase):
             "await job\n"
             "assert job.exit_code == 0\n"
             "assert job.requested_argv[0] == 'ls'\n"
-            "assert 'rtk' in job.argv[0] and job.argv[1] == 'ls'\n"
+            "assert job.argv[0] == 'ls' and len(job.argv) == 2\n"
             "assert 'sample.txt' in job.read()\n"
             "print('BACKEND_VERIFIED')"
         )
@@ -100,7 +100,7 @@ class ToolBackendsTests(unittest.TestCase):
             "('gcc', {'ALBEDO_NIX_ENV': 'abc'})):\n"
             "    job = run('cargo', 'build', env={'PATH': path, 'SDKROOT': '/nix/store/x-sdk', 'CC': cc, **extra})\n"
             "    await job\n"
-            "    assert job.routed and job.exit_code == 0\n"
+            "    assert job._routed and job.exit_code == 0\n"
             f"records = [json.loads(line) for line in Path({str(records)!r}).read_text().splitlines()]\n"
             "assert len(records) == 3, records\n"
             "assert all(r['args'] == ['build'] and r['sdk'] is None and r['mode'] == '1' for r in records), records\n"

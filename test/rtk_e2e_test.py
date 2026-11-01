@@ -129,9 +129,10 @@ sys.exit(int(os.environ.get('FAIL', '0')))
             cwd=self.root,
             env={**self.env, "MARKER": "literal value", "FAIL": "7"},
         )
-        self.assertTrue(job.routed)
+        self.assertTrue(job._routed)
         self.assertEqual(job.requested_argv, ["cargo", *args])
-        self.assertEqual(job.argv[1:], ["cargo", *args])
+        self.assertEqual(job.argv, ["cargo", *args])
+        self.assertEqual(job._executed_argv[1:], ["cargo", *args])
         await job
         self.assertEqual(job.exit_code, 7, job.tail())
         self.assertEqual(
@@ -141,6 +142,25 @@ sys.exit(int(os.environ.get('FAIL', '0')))
         self.assertFalse((self.root / "PWN").exists())
         self.assertIn("error", job.tail())
 
+    async def test_routing_is_private_in_job_surfaces(self):
+        self.fixture()
+        with patch.object(plugin.albedo_trace, "note", wraps=plugin.albedo_trace.note) as note:
+            job = plugin.run("cargo", "check", env={**self.env, "FAIL": "7"})
+        note.assert_called_once_with("run", "cargo check")
+        self.assertTrue(job._routed)
+        self.assertEqual(job.argv, ["cargo", "check"])
+        self.assertEqual(job.command, "cargo check")
+        self.assertEqual(job.pipeline, "cargo check")
+        with self.assertRaises(plugin.JobFailed) as failure:
+            await job.text()
+        self.assertTrue(str(failure.exception).startswith("cargo check exited 7"))
+        self.assertEqual(plugin.job_record(job)["command"], "cargo check")
+        wake = plugin.notice([job._facts()])
+        self.assertIn("command: cargo check", wake["text"])
+        for surface in (str(failure.exception), repr(job), str(wake)):
+            self.assertNotIn(job._executed_argv[0], surface)
+        self.assertNotIn("RTK", plugin.run.__doc__)
+
     async def test_hook_rewrite_is_routed_before_dispatch(self):
         self.fixture()
         hooked = plugin.hook.Call("run", {"command": "cargo check"})
@@ -148,7 +168,7 @@ sys.exit(int(os.environ.get('FAIL', '0')))
             job = plugin.run("true", env=self.env)
         await job
         self.assertEqual(job.exit_code, 0, job.tail())
-        self.assertTrue(job.routed)
+        self.assertTrue(job._routed)
         self.assertEqual(job.requested_argv, ["cargo", "check"])
         self.assertEqual([call["argv"] for call in self.calls()], [["check"]])
 
@@ -168,7 +188,7 @@ sys.exit(int(os.environ.get('FAIL', '0')))
         await job
         self.assertEqual(job.exit_code, 0, job.tail())
         explicit = plugin.run("rtk", "cargo", "check", env=self.env)
-        self.assertFalse(explicit.routed)
+        self.assertFalse(explicit._routed)
         await explicit
         self.assertEqual(explicit.exit_code, 0, explicit.tail())
         self.assertEqual(len(self.calls()), 2)
@@ -176,10 +196,10 @@ sys.exit(int(os.environ.get('FAIL', '0')))
     async def test_absolute_executable_identity_and_unsupported(self):
         path = self.fixture()
         job = plugin.run(path, "test", env=self.env)
-        self.assertFalse(job.routed)
+        self.assertFalse(job._routed)
         await job
         other = plugin.run("cargo", "metadata", env=self.env)
-        self.assertFalse(other.routed)
+        self.assertFalse(other._routed)
         await other
         self.assertEqual(len(self.calls()), 2)
 
@@ -205,7 +225,7 @@ sys.exit(int(os.environ.get('FAIL', '0')))
         name = "literal ; $() [x] space"
         (self.root / name).write_text("hello\n")
         job = plugin.run("ls", name, cwd=self.root, env=self.env)
-        self.assertTrue(job.routed)
+        self.assertTrue(job._routed)
         await job
         self.assertEqual(job.exit_code, 0, job.tail())
         self.assertIn(name, job.tail())
@@ -227,9 +247,9 @@ sys.exit(int(os.environ.get('FAIL', '0')))
         # First wc would emit a filtered count; a producer instead runs native.
         producer = plugin.run("wc", "-l", stdin=b"one\ntwo\n", env=self.env)
         consumer = producer.pipe("wc", "-c", env=self.env)
-        self.assertFalse(producer.routed)
+        self.assertFalse(producer._routed)
         self.assertEqual(producer.argv, producer.requested_argv)
-        self.assertTrue(consumer.routed)
+        self.assertTrue(consumer._routed)
         await consumer
         self.assertEqual(consumer.exit_code, 0, consumer.tail())
         self.assertEqual(consumer.tail().strip(), "2")
@@ -249,7 +269,7 @@ sys.exit(int(os.environ.get('FAIL', '0')))
             ["cargo", "check"], 10, env={**os.environ, **self.env}, traced=False
         )
         await job
-        self.assertFalse(job.routed)
+        self.assertFalse(job._routed)
         self.assertEqual(job.argv, ["cargo", "check"])
         self.assertIn("Finished fixture successfully", job.tail())
 
@@ -271,7 +291,7 @@ sys.exit(int(os.environ.get('FAIL', '0')))
         job = plugin.run(
             "rg", "-F", "literal ; $(touch PWN) *", stdin=payload, env=self.env
         )
-        self.assertTrue(job.routed)
+        self.assertTrue(job._routed)
         await job
         self.assertEqual(job.exit_code, 0, job.tail())
         self.assertIn("literal", job.tail())
@@ -280,7 +300,7 @@ sys.exit(int(os.environ.get('FAIL', '0')))
         self.assertEqual(missing.exit_code, 1, missing.tail())
         producer = plugin.run("rg", "-F", "literal", stdin=payload, env=self.env)
         consumer = producer.pipe("wc", "-l", env=self.env)
-        self.assertFalse(producer.routed)
+        self.assertFalse(producer._routed)
         await consumer
         self.assertEqual(consumer.tail().strip(), "1")
 

@@ -19,6 +19,18 @@ import albedo_rtk
 
 
 class RtkRoutingTests(unittest.TestCase):
+    def test_agent_instructions_do_not_expose_routing(self):
+        extension = (
+            Path(__file__).resolve().parents[1]
+            / "src/server/src/albedo/harness/extensions/run/extension.gleam"
+        )
+        if not extension.exists():
+            self.skipTest("source overlay is unavailable")
+        instructions = extension.read_text().split("const instructions =", 1)[1].split(
+            "pub fn extension", 1
+        )[0]
+        self.assertNotIn("rtk", instructions.lower())
+
     def test_supported_grammar(self):
         for argv in (
             ["cargo", "test", "a b", "--", "--nocapture"],
