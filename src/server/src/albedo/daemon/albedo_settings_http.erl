@@ -63,7 +63,8 @@ match_group(Group, Match, Prior, Revisions) ->
 checked_candidates(Patch, Docs) ->
     Definitions = object(<<"servers">>, object(<<"mcp">>, maps:get(<<"extensions.json">>, Docs))),
     Secrets = object(<<"mcp">>, maps:get(<<"creds.json">>, Docs)),
-    [{Name, maps:get(Name, Definitions), maps:get(Name, Secrets, #{})}
+    %% A probe may record that a server asks for a sign-in; that is not a change.
+    [{Name, maps:get(Name, Definitions), maps:remove(<<"oauth">>, maps:get(Name, Secrets, #{}))}
         || {Name, Change} <- lists:sort(maps:to_list(object(<<"definitions">>, Patch))), Change =/= null].
 
 publish(Home, Group, Docs, Next, Validation, Revisions, Declared) ->
@@ -170,11 +171,12 @@ candidate(_, <<"models">>, Patch, Docs, _, _, _) ->
     end,
     {Docs#{<<"extensions.json">> => Next#{<<"raisedCaps">> => Raised}}, <<"not_applicable">>};
 candidate(_, <<"ui">>, Patch, Docs, _, _, _) ->
-    fields(Patch, [<<"thinking">>, <<"tools">>, <<"dismissed_notices">>, <<"web_allow">>]),
+    fields(Patch, [<<"thinking">>, <<"tools">>, <<"dismissed_notices">>, <<"web_allow">>, <<"proxy_allow">>]),
     maps:foreach(
         fun
             (<<"dismissed_notices">>, Value) -> strings(Value, 1000, 512);
             (<<"web_allow">>, Value) -> strings(Value, 64, 64);
+            (<<"proxy_allow">>, Value) -> strings(Value, 64, 64);
             (_, Value) -> true = is_boolean(Value)
         end,
         Patch
@@ -239,7 +241,7 @@ translate(Map, Names) -> maps:from_list([{Stored, maps:get(Wire, Map)} || {Wire,
 mcp_candidate(Patch, Prior, Secrets0) ->
     fields(Patch, [Wire || {Wire, _} <- 'albedo@harness@settings@projection':mcp_fields()] ++ [<<"environment">>, <<"headers">>, <<"secrets">>]),
     Public0 = maps:merge(Prior, translate(Patch, 'albedo@harness@settings@projection':mcp_fields())),
-    SecretPatch = object(<<"secrets">>, Patch), fields(SecretPatch, [<<"bearer_token">>, <<"environment">>, <<"headers">>]),
+    SecretPatch = object(<<"secrets">>, Patch), fields(SecretPatch, [<<"bearer_token">>, <<"environment">>, <<"headers">>, <<"oauth">>, <<"oauth_client">>]),
     {Public1, Secrets1} = lists:foldl(fun({Wire, Stored}, {Public, Secrets}) ->
         PublicChanges = maps:get(Wire, Patch, #{}), SecretChanges = maps:get(Wire, SecretPatch, #{}),
         Sources = source_choices(object(Stored, Public), PublicChanges),
@@ -254,10 +256,11 @@ mcp_candidate(Patch, Prior, Secrets0) ->
         {ok, null} -> {Public1, maps:remove(<<"bearerToken">>, Secrets1)};
         {ok, Token} -> text(Token, 1, 16384), {maps:remove(<<"bearerTokenEnvVar">>, Public1), Secrets1#{<<"bearerToken">> => Token}}
     end,
-    Secrets2 = case maps:find(<<"bearer_token_env_var">>, Patch) of
+    Secrets3 = case maps:find(<<"bearer_token_env_var">>, Patch) of
         {ok, Name} when is_binary(Name) -> true = not maps:is_key(<<"bearer_token">>, SecretPatch) orelse maps:get(<<"bearer_token">>, SecretPatch) =:= null, maps:remove(<<"bearerToken">>, Secrets);
         _ -> Secrets
     end,
+    Secrets2 = oauth_choices(Secrets3, SecretPatch),
     Type = maps:get(<<"type">>, Public),
     case Type of
         <<"http">> -> true = maps:get(<<"command">>, Public, null) =:= null, true = maps:get(<<"cwd">>, Public, null) =:= null, true = maps:get(<<"args">>, Public, []) =:= [], true = map_size(object(<<"env">>, Public)) =:= 0;
@@ -265,6 +268,29 @@ mcp_candidate(Patch, Prior, Secrets0) ->
     end,
     case maps:find(<<"startupTimeoutMs">>, Public) of {ok, Millis} -> counter(Millis, 1, 300000); error -> ok end,
     {Public, Secrets2}.
+
+%% `oauth: null` signs the server out, keeping what it asked for; a sign-in
+%% itself only ever comes from the daemon's sign-in flow. `oauth_client` is a
+%% client id (and secret) the user registered with the server's
+%% authorization server, or null to forget it.
+oauth_choices(Secrets, SecretPatch) ->
+    Signed = case maps:find(<<"oauth">>, SecretPatch) of
+        error -> Secrets;
+        {ok, null} ->
+            case maps:find(<<"oauth">>, Secrets) of
+                {ok, Record} -> Secrets#{<<"oauth">> => albedo_mcp_oauth:signed_out(Record)};
+                error -> Secrets
+            end
+    end,
+    case maps:find(<<"oauth_client">>, SecretPatch) of
+        error -> Signed;
+        {ok, null} -> maps:remove(<<"oauthClient">>, Signed);
+        {ok, Client} ->
+            fields(Client, [<<"client_id">>, <<"client_secret">>]),
+            Id = maps:get(<<"client_id">>, Client), text(Id, 1, 1024),
+            Secret = maps:get(<<"client_secret">>, Client, null), nullable_text(Secret, 4096),
+            Signed#{<<"oauthClient">> => #{<<"clientId">> => Id, <<"clientSecret">> => Secret}}
+    end.
 
 source_choices(_, null) -> #{};
 source_choices(Prior, Changes) -> maps:fold(fun
@@ -302,7 +328,7 @@ end.
 
 profile_key(Home, Change, Name, Profile, Keys, Accounts) ->
     Extension = maps:get(<<"extension">>, Profile, <<"openai">>),
-    case {lists:member(Extension, [<<"openai">>, <<"opencode-go">>]), maps:find(<<"api_key">>, Change)} of
+    case {lists:member(Extension, albedo_key_accounts:providers()), maps:find(<<"api_key">>, Change)} of
         {_, error} -> {Profile, Keys, Accounts};
         {true, {ok, null}} ->
             Id = maps:get(<<"accountId">>, Profile, null),
@@ -342,12 +368,12 @@ validate_provider_accounts(Home, Docs, Providers, Logins) ->
         {ok, Normalized} = 'albedo@daemon@configuration':normalize_profile(Name, Profile),
         Extension = maps:get(<<"extension">>, Normalized),
         ensure(lists:member(Extension, Providers), 400, <<"provider_unknown">>, <<"Provider extension is not installed">>),
+        KeyProvider = lists:member(Extension, albedo_key_accounts:providers()),
         Stores = lists:usort([element(6, Login) || Login <- Logins, element(2, Login) =:= Extension] ++
-            case Extension of <<"openai">> -> [Extension]; <<"opencode-go">> -> [Extension]; _ -> [] end),
-        Env = case Extension of
-            <<"openai">> -> albedo_key_accounts:env(Home, Extension, maps:get(<<"baseUrl">>, Normalized));
-            <<"opencode-go">> -> albedo_key_accounts:env(Home, Extension, maps:get(<<"baseUrl">>, Normalized));
-            _ -> []
+            case KeyProvider of true -> [Extension]; false -> [] end),
+        Env = case KeyProvider of
+            true -> albedo_key_accounts:env(Home, Extension, maps:get(<<"baseUrl">>, Normalized));
+            false -> []
         end,
         Values = lists:flatmap(fun(Store) -> albedo_credentials:values(Accounts, Store) end, Stores) ++ Env,
         Known = fun(Id) -> lists:any(fun(Credential) -> maps:get(<<"_albedo_account_id">>, Credential, null) =:= Id end, Values) end,

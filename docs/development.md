@@ -143,6 +143,12 @@ kernel, then asserts the stale bundle and single live job before the original
 single upgrade request. It does not retry a 409, change product admission rules
 or weaken the forced-swap assertions. A changed fixture fails closed for review.
 
+The pinned skill-symlink fixture filters catalog discovery with `kind=skills`.
+Suite extensions push skill candidates beyond the first default 50-row page;
+filtering tests the same discovery, activation, symlink and reload assertions
+without depending on the installed extension count. A checksum guard rejects
+changed upstream fixtures instead of silently applying the adjustment.
+
 ## Job readiness
 
 The suite preserves upstream `Job.text()` and `Job.wait_for()`. The readiness
@@ -200,8 +206,17 @@ native Go rotation, OAuth organization headers and all four wire routes.
 The current upstream binds request rotation to explicitly selected accounts
 (`accountIds`); catalog discovery still inspects configured profiles without
 sending credentials to another endpoint. Legacy Alibaba profiles migrate
-to OpenAI-compatible profiles through upstream's account migration. No suite
-compatibility layer is retired by this update.
+to OpenAI-compatible profiles through upstream's account migration.
+
+The November update moves the base to `9587b706c9bf3898962f8c2bda3bf63310420e7e`.
+It retains native ACP, shell commands, kernel pooling/standby, fast provider modes,
+Mistral and Perplexity providers, and HTTP MCP/OAuth. Lazy MCP uses upstream's
+native client rather than the removed Barrel dependency. The Zed transport uses
+native method selection; its temporary transport shim is retired. Formatting,
+LSP, questions, FFF/RTK and provider availability remain suite features. Child
+model listings follow upstream's profile-qualified names and concurrent discovery.
+The suite seals installed daemon builds after fixup, matching upstream's build
+identity fast path, and verifies the seal against installed bytes.
 
 NUR does not yet bundle the native web assets. `nix/modules/web.nix` builds the
 pinned upstream web client with upstream's dependency hash; both suite packages

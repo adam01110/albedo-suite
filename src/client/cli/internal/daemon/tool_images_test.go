@@ -65,9 +65,9 @@ func TestToolImagesRejectForeignAndMalformedReferencesBeforeRequest(t *testing.T
 
 func TestToolImagesSurviveLiveAndReplayMetadata(t *testing.T) {
 	meta := `{"mime_type":"image/png","width":120,"height":80,"original_bytes":3,"reference":{"url":"/sessions/s/history/42/image-0","field":"image-0","bytes":3}}`
-	live := `{"type":"tool","sequence":1,"data":{"entry_id":"42","images":[` + meta + `],"tool_call_id":"call","progress_call_id":"progress","name":"python","arguments":{"code":"show_image(data)"},"result":"attached image","trace":null,"content_complete":true,"reference":null}}`
+	live := `{"type":"tool","sequence":1,"data":{"status":"failed","entry_id":"42","images":[` + meta + `],"tool_call_id":"call","progress_call_id":"progress","name":"python","arguments":{"code":"show_image(data)"},"result":"attached image","trace":null,"content_complete":true,"reference":null}}`
 	event, err := decodeChatEvent(json.RawMessage(live))
-	if err != nil || event.EntryID != "42" || len(event.Images) != 1 || event.Images[0].Reference != "/sessions/s/history/42/image-0" {
+	if err != nil || event.ToolStatus != "failed" || event.EntryID != "42" || len(event.Images) != 1 || event.Images[0].Reference != "/sessions/s/history/42/image-0" {
 		t.Fatalf("live metadata lost: %+v %v", event, err)
 	}
 	var entry protocol.HistoryEntry

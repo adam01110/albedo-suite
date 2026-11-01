@@ -8,6 +8,7 @@ import albedo/daemon/http_history
 import albedo/daemon/mail
 import albedo/daemon/operations
 import albedo/daemon/session_activity
+import albedo/daemon/shell_commands
 import albedo/daemon/tool_progress as progress
 import albedo/daemon/transcript
 import albedo/daemon/usage
@@ -47,7 +48,10 @@ pub type Event {
     text: String,
     elapsed_ms: Option(Int),
   )
-  Message(http_history.Entry)
+  /// `replaces` names the live segments whose streamed text this durable
+  /// entry represents, as an exact ordered prefix.
+  Message(entry: http_history.Entry, replaces: List(String))
+  ShellCommand(shell_commands.Command)
   ToolProgress(Option(progress.Snapshot))
   Tool(
     call: types.ToolCall,
@@ -55,6 +59,7 @@ pub type Event {
     trace: Option(json.Json),
     progress_id: String,
     position: Int,
+    failed: Bool,
   )
   ToolWithImages(
     call: types.ToolCall,
@@ -63,6 +68,7 @@ pub type Event {
     progress_id: String,
     position: Int,
     images: List(types.Image),
+    failed: Bool,
   )
   Note(entry_id: String, origin: String, text: String, mail: Option(json.Json))
   Retry(run_id: String, attempt: Int, reason: String, delay_ms: Int)
@@ -144,21 +150,28 @@ pub fn encode(session: String, sequence: Int, event: Event) -> json.Json {
       "thinking",
       delta(run_id, message_id, text, elapsed),
     )
-    Message(entry) -> #(
+    ShellCommand(command) -> #(
+      "shell_command",
+      json.object([#("shell_command", shell_commands.encode(command))]),
+    )
+    Message(entry, replaces) -> #(
       "message",
-      json.object([#("entry", http_history.encode(session, entry, 65_536))]),
+      json.object([
+        #("entry", http_history.encode(session, entry, 65_536)),
+        #("replaces_live_ids", json.array(replaces, json.string)),
+      ]),
     )
     ToolProgress(value) -> #(
       "tool_progress",
       json.object([#("progress", json.nullable(value, progress))]),
     )
-    Tool(call, output, trace, progress_id, position) -> #(
+    Tool(call, output, trace, progress_id, position, failed) -> #(
       "tool",
-      tool(session, call, output, trace, progress_id, position, []),
+      tool(session, call, output, trace, progress_id, position, [], failed),
     )
-    ToolWithImages(call, output, trace, progress_id, position, images) -> #(
+    ToolWithImages(call, output, trace, progress_id, position, images, failed) -> #(
       "tool",
-      tool(session, call, output, trace, progress_id, position, images),
+      tool(session, call, output, trace, progress_id, position, images, failed),
     )
     Note(id, origin, text, letter) -> #(
       "note",
@@ -264,6 +277,7 @@ fn tool(
   progress_id: String,
   position: Int,
   images: List(types.Image),
+  failed: Bool,
 ) -> json.Json {
   // A large completed argument document is fetched from its durable entry;
   // live publication never parses it merely to discard the value.
@@ -277,7 +291,12 @@ fn tool(
     http_api.encoded_size(arguments)
     + result_bytes
     + { option.map(trace, http_api.encoded_size) |> option.unwrap(0) }
-  let complete = string.byte_size(call.arguments) <= 65_536 && size <= 65_536
+  // ACP snapshots have their own bounded allowance; a one-line edit should
+  // not force clients to fetch the same result again from history.
+  let snapshot_bytes = option.map(trace, snapshot_size) |> option.unwrap(0)
+  let complete =
+    string.byte_size(call.arguments) <= 65_536
+    && size <= 65_536 + int.min(snapshot_bytes, 262_144)
   json.object([
     #("entry_id", json.string(int.to_string(position))),
     #(
@@ -331,6 +350,13 @@ fn tool(
       False -> json.null()
     }),
     #("content_complete", json.bool(complete)),
+    #(
+      "status",
+      json.string(case failed {
+        True -> "failed"
+        False -> "completed"
+      }),
+    ),
     #("reference", case complete {
       True -> json.null()
       False ->
@@ -346,6 +372,26 @@ fn tool(
         ])
     }),
   ])
+}
+
+fn snapshot_size(trace: json.Json) -> Int {
+  let text_size =
+    decode.map(decode.optional(decode.string), fn(text) {
+      json.nullable(text, json.string) |> http_api.encoded_size
+    })
+  let change = {
+    use old <- decode.optional_field("old_text", 0, text_size)
+    use new <- decode.optional_field("new_text", 0, text_size)
+    decode.success(old + new)
+  }
+  json.parse(
+    json.to_string(trace),
+    decode.field("changes", decode.list(change), decode.success),
+  )
+  |> result.map(fn(sizes) {
+    list.fold(sizes, 0, fn(total, size) { total + size })
+  })
+  |> result.unwrap(0)
 }
 
 pub fn kernel(facts: KernelFacts) -> json.Json {
@@ -681,7 +727,7 @@ pub fn observe(
           )
         _ -> projection
       }
-    Message(entry) -> {
+    Message(entry, _) -> {
       let text =
         list.filter_map(entry.parts, fn(part) {
           case part {
@@ -705,7 +751,7 @@ pub fn observe(
         _ -> projection
       }
     }
-    Tool(_, output, _, _, _) | ToolWithImages(_, output, _, _, _, _) -> {
+    Tool(_, output, _, _, _, _) | ToolWithImages(_, output, _, _, _, _, _) -> {
       let text =
         json.parse(
           output,

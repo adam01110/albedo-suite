@@ -122,7 +122,7 @@ func TestSuiteEscapeRestoresOnlyCancelledInputs(t *testing.T) {
 			m, _ = m.Update(result)
 			text, images := m.Images.resolve(m.TextArea.Value())
 			_, pastes := m.Pastes.resolve(text)
-			if text != "draft [Image #1] [Paste #1, 10 chars]\nqueued [Image #2] [Paste #2, 12 chars]\nsecond" {
+			if text != "draft [Image #1] [Paste #1, 10 chars]\n\nqueued [Image #2] [Paste #2, 12 chars]\n\nsecond" {
 				t.Fatalf("draft recovery: %q", text)
 			}
 			if len(images) != 2 || images[0].Data != "live" || images[1].Data != "queued" || !reflect.DeepEqual(pastes, []string{"live paste", "queued paste"}) {

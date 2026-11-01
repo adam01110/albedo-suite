@@ -8,9 +8,10 @@ import unittest
 import urllib.parse
 import urllib.request
 
-from harness import Albedo, Provider, text
+from harness import Albedo, Provider, exclusive_class, text
 
 
+@exclusive_class
 class WebPackagingTests(unittest.TestCase):
     def setUp(self):
         provider = Provider(lambda _: text("ok"))

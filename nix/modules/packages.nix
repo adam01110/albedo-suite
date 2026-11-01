@@ -101,6 +101,12 @@
           + ''
             wrapProgram "$out/bin/albedo-daemon" --prefix PATH : ${toolPath}
           '';
+        # Seal after fixup rewrites the installed application.
+        postFixup =
+          (old.postFixup or "")
+          + ''
+            ALBEDO_BUILD_APP="$out/lib/albedo/albedo" erl +S 2:2 -pa "$out/lib/albedo"/*/ebin -noshell -eval 'application:ensure_all_started(crypto), ok = albedo_daemon:seal_build(unicode:characters_to_binary(os:getenv("ALBEDO_BUILD_APP"))), halt().'
+          '';
       }));
 
     # Zig defaults to the build host CPU, which may exceed the runtime CPU.

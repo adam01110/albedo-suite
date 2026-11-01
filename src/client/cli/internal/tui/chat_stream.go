@@ -127,6 +127,12 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 			m.transcript.resetStream()
 		}
 	}
+	if evt.Type == daemon.EventShellCommand {
+		if evt.ShellCommand != nil {
+			m.upsertShellCommand(*evt.ShellCommand)
+		}
+		return
+	}
 	if evt.Replayed {
 		// Replayed events do not describe current activity; preserve live status.
 		defer func(live daemon.AgentStatus) { m.Status = live }(m.Status)
@@ -163,13 +169,21 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 			}
 		}
 		m.History.Clear()
+		for _, command := range evt.ShellCommands {
+			m.History.Append(shellEntry(command))
+		}
 		m.burstEpoch++
 		m.settledLines = nil
 		m.settledSpans = nil
 		m.settledLinesBytes, m.droppedSettledLines = 0, 0
 		m.clearAction()
 		m.Usage = nil
-		m.ClearNotices()
+		// A first subscription has shown nothing the notices could be about,
+		// so they report what happened here meanwhile: an editor that failed,
+		// a paste, a session the app recovered.
+		if evt.Reason != "initial" {
+			m.ClearNotices()
+		}
 		m.TurnFailed, m.Stopping, m.Stopped = false, false, false
 		m.Follow, m.scrollOffset = true, 0
 		m.olderBefore, m.olderMore, m.loadingOlder = evt.Before, evt.More, false

@@ -32,12 +32,12 @@ install_transport() ->
     file:delete(Temp),
     Exports = [E || E = {Name, _} <- albedo_openai_transport:module_info(exports), Name =/= module_info],
     Head = ["-module(albedo_openai_transport).\n-export([", lists:join(",", [io_lib:format("~p/~B", [N,A]) || {N,A} <- Exports]), "]).\n"],
-    Special = "open_method(M, <<\"https://cloud.zed.dev\", Path/binary>>, H, B, T) -> P = persistent_term:get(zed_login_fixture_port), U = iolist_to_binary([\"http://127.0.0.1:\", integer_to_binary(P), Path]), albedo_zed_fixture_transport:open_method(M,U,H,B,T); open_method(_,_,_,_,_) -> error(untrusted_origin).\n",
-    Open = "open(U,H,B,T) -> open_method(<<\"POST\">>,U,H,B,T).\n",
+    Special = "open(M, <<\"https://cloud.zed.dev\", Path/binary>>, H, B, T) -> P = persistent_term:get(zed_login_fixture_port), U = iolist_to_binary([\"http://127.0.0.1:\", integer_to_binary(P), Path]), albedo_zed_fixture_transport:open(M,U,H,B,T); open(_,_,_,_,_) -> error(untrusted_origin).\n",
+    Open = "open(U,H,B,T) -> open(<<\"POST\">>,U,H,B,T).\n",
     Rest = [begin
         Vars = lists:join(",", ["A" ++ integer_to_list(I) || I <- lists:seq(1, A)]),
         io_lib:format("~p(~s) -> albedo_zed_fixture_transport:~p(~s).~n", [N,Vars,N,Vars])
-    end || {N,A} <- Exports, N =/= open_method, N =/= open],
+    end || {N,A} <- Exports, N =/= open],
     ok = file:write_file(Temp, [Head, Special, Open, Rest]),
     {ok, albedo_openai_transport, Wrapper} = compile:file(Temp, [binary, report_errors]),
     code:purge(albedo_openai_transport),

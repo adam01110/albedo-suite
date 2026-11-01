@@ -1619,6 +1619,10 @@ def setup(api: PythonApi) -> dict[str, object]:
     attach_image = api.attach_image
     session_modules = list(api.modules)
     api.on_shutdown(Remote.close_all)
+    if api.owns_resources is not None:
+        api.owns_resources(
+            lambda: any(not connection.closed for connection in connections)
+        )
     if api.on_stop_job is not None:
         api.on_stop_job(stop_remote_job)
     return {"remote": remote, "RemoteError": RemoteError}

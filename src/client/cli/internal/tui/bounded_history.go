@@ -14,6 +14,7 @@ const (
 	EntryAssistant EntryKind = "assistant"
 	EntryThinking  EntryKind = "thinking"
 	EntryTool      EntryKind = "tool"
+	EntryShell     EntryKind = "shell_command"
 	EntryNote      EntryKind = "note"
 	EntryError     EntryKind = "error"
 	EntryCompacted EntryKind = "compacted"
@@ -31,8 +32,13 @@ type HistoryEntry struct {
 	ToolArgs        map[string]any
 	// facts is what this entry contributes to a grouped row, computed once
 	// when the entry settles. Targets stay as recorded; naming is at render.
-	facts      *entryFacts
-	ToolTrace  *daemon.ToolTrace
+	facts               *entryFacts
+	ToolTrace           *daemon.ToolTrace
+	ShellCommand        *daemon.ShellCommand
+	ShellOutputLoaded   bool
+	ShellExpandedOutput string
+	// Skill is the skill a user's slash activation loaded.
+	Skill      *daemon.SkillLoad
 	Speaker    string
 	Mood       mood
 	Text       string
@@ -82,6 +88,9 @@ func (e *HistoryEntry) ComputeSize() int64 {
 	for _, image := range e.Images {
 		size += int64(len(image.Reference) + len(image.MimeType) + 32)
 	}
+	if e.ShellCommand != nil {
+		size += int64(len(e.ShellCommand.ID) + len(e.ShellCommand.Command) + len(e.ShellCommand.Output) + len(daemon.ShellCommandErrorText(*e.ShellCommand)) + 64)
+	}
 	for k, v := range e.ToolArgs {
 		size += int64(len(k) + 16)
 		switch val := v.(type) {
@@ -91,6 +100,9 @@ func (e *HistoryEntry) ComputeSize() int64 {
 			data, _ := json.Marshal(val)
 			size += int64(len(data))
 		}
+	}
+	if e.Skill != nil {
+		size += int64(len(e.Skill.Name) + len(e.Skill.Scope) + len(e.Skill.Source) + 16)
 	}
 	if e.ToolTrace != nil {
 		for _, act := range e.ToolTrace.Activities {

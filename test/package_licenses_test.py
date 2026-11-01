@@ -84,6 +84,25 @@ class PackageLicenseTests(unittest.TestCase):
         doc = PACKAGES["defaults"] / "share/doc/albedo-suite"
         self.assertIn("cd -P source/suite", (doc / "SOURCE.md").read_text())
 
+    def test_server_build_seal_matches_installed_files(self):
+        app = PACKAGES["server"] / "lib/albedo/albedo"
+        seal = (app / ".build-digest").read_text()
+        digest = hashlib.sha256()
+        paths = sorted(
+            (Path(directory) / name).relative_to(app).as_posix()
+            for subtree in ("ebin", "priv")
+            for directory, _, names in os.walk(app / subtree, followlinks=True)
+            for name in names
+            if (Path(directory) / name).is_file()
+        )
+        self.assertTrue(paths)
+        for name in paths:
+            digest.update(name.encode())
+            with (app / name).open("rb") as source:
+                while chunk := source.read(65536):
+                    digest.update(chunk)
+        self.assertEqual(seal, digest.hexdigest() + "\n")
+
     def test_included_python_overlay_matches_installed_source(self):
         package = PACKAGES["server"]
         source = package / "share/doc/albedo-suite/source/suite/src/server/priv/python"

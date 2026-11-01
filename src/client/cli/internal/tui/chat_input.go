@@ -86,6 +86,16 @@ func (m *ChatModel) handleInput(msg tea.Msg) (tea.Cmd, bool) {
 		}
 
 		switch msg.String() {
+		case "ctrl+shift+o":
+			return m.toggleLatestShell(), true
+		case "ctrl+shift+x":
+			for i := len(m.History.Entries()) - 1; i >= 0; i-- {
+				e := m.History.Entries()[i]
+				if e.Kind == EntryShell && e.ShellCommand != nil && e.ShellCommand.Status == "running" {
+					return m.cancelShellCommand(e.ShellCommand.ID), true
+				}
+			}
+			return nil, true
 		case "esc":
 			if m.isSending {
 				m.interruptDeferred = true
@@ -363,6 +373,10 @@ func (m *ChatModel) isRecognizedCommand(input string) bool {
 }
 
 func (m *ChatModel) submitInput(input string, cmds *[]tea.Cmd) {
+	if strings.HasPrefix(input, "!") {
+		m.startShellCommand(input, cmds)
+		return
+	}
 	if strings.HasPrefix(input, "/") && m.isRecognizedCommand(input) {
 		m.handleSubmittedCommand(input, cmds)
 		return

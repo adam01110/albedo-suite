@@ -1,7 +1,7 @@
 # Source attribution
 
 The files under `src/server/` and `src/client/` replace files from Albedo at
-revision `2d0fac2cc4ff4bbd28b422dd1dd53e0ad81aa4a6`,
+revision `9587b706c9bf3898962f8c2bda3bf63310420e7e`,
 <https://tangled.org/okami.mom/albedo>. Albedo is copyright 2026 albedo contributors
 (okami.mom, ptr.pet, aly.codes and other contributors), licensed under MPL 2.0;
 the license is retained in `LICENSES/albedo-MPL-2.0.txt`. Updated source
@@ -17,7 +17,7 @@ and local LSP batch checks, isolated local LSP compatibility tools, durable user
 questions, mandatory RTK command filtering and FFF search,
 a native Zed provider using existing protocol adapters and bounded NDJSON framing,
 Zed browser callback/account confirmation and account-scoped inference JWT renewal,
-narrow native OAuth confirmation and HTTP transport observation/method seams,
+narrow native OAuth confirmation and native HTTP transport integration,
 OpenCode Go SDK-metadata routing and endpoint-scoped discovery caches on the
 native OAuth, account rotation and portable wire implementation,
 recoverable kernel startup failures with workspace validation,
@@ -36,7 +36,9 @@ endpoint-scoped cache
 fixtures; its provider catalog assertions are retained.
 `scripts/test-e2e.py` adds a kernel-reattachment readiness barrier to upstream
 `test/e2e/kernel_upgrade_test.py` from the current pinned revision; its
-forced-swap assertions are retained.
+forced-swap assertions are retained. It also scopes the pinned
+`test/e2e/skills_test.py` discovery query to skills so the suite's larger
+extension inventory does not hide skill assertions behind pagination.
 
 Upstream's complete third-party notices are preserved in
 `LICENSES/albedo-THIRD_PARTY_NOTICES.md`. Dependencies and packaged runtime

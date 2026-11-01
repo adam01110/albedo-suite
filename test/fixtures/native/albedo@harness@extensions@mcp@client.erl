@@ -1,16 +1,19 @@
--module(barrel_mcp_client).
--export([start/1, close/1, server_capabilities/1, list_tools/2, call_tool/4]).
+-module('albedo@harness@extensions@mcp@client').
+-export([start/2, pid/1, close/1, capabilities/1, list/4, request/4, request_with/5, on_change/2]).
 
-start(_) ->
+start(Transport, _) ->
+    ets:insert(lazy_mcp_test, {last_transport, Transport}),
     ets:update_counter(lazy_mcp_test, starts, 1),
     Client = spawn(fun() -> receive stop -> ok end end),
     ets:insert(lazy_mcp_test, {last_client, Client}),
     {ok, Client}.
 
 close(Client) -> Client ! stop, ok.
-server_capabilities(_) -> {ok, #{}}.
+pid(Client) -> Client.
+capabilities(_) -> #{}.
+on_change(_, _) -> nil.
 
-list_tools(_, _) ->
+list(_, <<"tools/list">>, <<"tools">>, _) ->
     case ets:lookup(lazy_mcp_test, discovery_pause) of
         [{discovery_pause, Parent}] ->
             Parent ! {discovery_started, self()},
@@ -22,9 +25,12 @@ list_tools(_, _) ->
         <<"name">> => integer_to_binary(Index),
         <<"inputSchema">> => #{<<"type">> => <<"object">>}
     } || Index <- lists:seq(1, Count)],
-    {ok, Tools, undefined}.
+    {ok, Tools};
+list(_, _, _, _) -> {ok, []}.
 
-call_tool(_, _, _, _) ->
+request(Client, Method, Params, Timeout) -> request_with(Client, Method, Params, [], Timeout).
+
+request_with(_, _, _, _, _) ->
     ets:update_counter(lazy_mcp_test, calls, 1),
     case ets:lookup(lazy_mcp_test, call_pause) of
         [{call_pause, Parent}] ->

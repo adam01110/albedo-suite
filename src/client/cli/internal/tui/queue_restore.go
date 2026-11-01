@@ -33,7 +33,7 @@ func (m *ChatModel) restoreCancelledInputs(cancelled []PendingUserTurn) {
 		recovered := importDraftAttachments(&m.Images, turn.Text, unseen(turn.Images))
 		recovered = importDraftAttachments(&m.Pastes, recovered, turn.Pastes)
 		if text != "" {
-			text += "\n"
+			text += "\n\n"
 		}
 		text += recovered
 		m.pendingUsers = slices.DeleteFunc(m.pendingUsers, func(p PendingUserTurn) bool { return p.OperationID == turn.OperationID })
@@ -43,4 +43,15 @@ func (m *ChatModel) restoreCancelledInputs(cancelled []PendingUserTurn) {
 	m.vimBeginInsert(m.vimSnapshot())
 	m.syncLayout()
 	m.refreshViewportContent()
+}
+
+// restoreCancelled applies native ID-based recovery through the Vim-aware draft path.
+func (m *ChatModel) restoreCancelled(ids []string) {
+	var cancelled []PendingUserTurn
+	for _, turn := range m.pendingUsers {
+		if slices.Contains(ids, turn.OperationID) {
+			cancelled = append(cancelled, turn)
+		}
+	}
+	m.restoreCancelledInputs(cancelled)
 }

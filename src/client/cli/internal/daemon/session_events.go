@@ -44,6 +44,7 @@ func decodeChatEnvelope(envelope sessionEventEnvelope, wireBytes int, content *e
 		}
 		switch data.Reason {
 		case "initial", "generation_changed", "replay_unavailable", "recovery":
+			event.Reason = data.Reason
 		default:
 			return nil, fieldError("reset reason")
 		}
@@ -95,7 +96,8 @@ func decodeChatEnvelope(envelope sessionEventEnvelope, wireBytes int, content *e
 		}
 	case "message":
 		var data struct {
-			Entry protocol.HistoryEntry `json:"entry"`
+			Entry           protocol.HistoryEntry `json:"entry"`
+			ReplacesLiveIDs []string              `json:"replaces_live_ids"`
 		}
 		if err := decodeRequired(envelope.Data, &data, "entry"); err != nil {
 			return nil, err
@@ -119,6 +121,7 @@ func decodeChatEnvelope(envelope sessionEventEnvelope, wireBytes int, content *e
 		}
 		event = entries[0]
 		event.Replayed = false
+		event.ReplacesLiveIDs = data.ReplacesLiveIDs
 	case "note":
 		var data struct {
 			Text    string                 `json:"text"`
@@ -130,6 +133,17 @@ func decodeChatEnvelope(envelope sessionEventEnvelope, wireBytes int, content *e
 			return nil, err
 		}
 		event.Text, event.Source = data.Text, data.Origin
+	case "shell_command":
+		var data struct {
+			ShellCommand ShellCommand `json:"shell_command"`
+		}
+		if err := decodeRequired(envelope.Data, &data, "shell_command"); err != nil {
+			return nil, err
+		}
+		if err := validShellCommand(data.ShellCommand); err != nil {
+			return nil, err
+		}
+		event.Type, event.ShellCommand = EventShellCommand, &data.ShellCommand
 	case "tool_progress":
 		if wireBytes > 8192 {
 			return nil, errors.New("tool_progress exceeds 8 KiB")
@@ -163,6 +177,7 @@ func decodeChatEnvelope(envelope sessionEventEnvelope, wireBytes int, content *e
 		for _, image := range data.Images {
 			event.Images = append(event.Images, ImageMetadata{MimeType: ImageMimeType(image.MimeType), Width: int(image.Width), Height: int(image.Height), Bytes: int(image.OriginalBytes), Reference: image.Reference.URL})
 		}
+		event.ToolStatus = data.Status
 		event.ToolTitle = value(data.Title)
 		arguments, _ := dynamicValue(data.Arguments)
 		event.ToolArgs, _ = arguments.(map[string]any)
@@ -170,6 +185,7 @@ func decodeChatEnvelope(envelope sessionEventEnvelope, wireBytes int, content *e
 			event.ToolResult = string(data.Result)
 		}
 		event.ToolTrace = ParseToolTrace(data.Trace)
+		event.Sequence = value(envelope.Sequence)
 		return &wireChatEvent{CallID: data.ToolCallID, StreamEvent: event}, nil
 	case "usage":
 		var data protocol.Usage
@@ -269,7 +285,7 @@ func decodeChatEnvelope(envelope sessionEventEnvelope, wireBytes int, content *e
 		if data.Code == "history_publication_failed" {
 			return nil, &APIError{StatusCode: 503, Code: data.Code, Message: data.Message}
 		}
-		event.Text, event.TurnID = data.Message, value(data.RunID)
+		event.Text, event.TurnID, event.Reason = data.Message, value(data.RunID), data.Code
 	case "invalidate":
 		var data struct {
 			Kind string `json:"kind"`
@@ -302,12 +318,14 @@ func decodeChatEnvelope(envelope sessionEventEnvelope, wireBytes int, content *e
 	default:
 		return nil, nil
 	}
+	event.Sequence = value(envelope.Sequence)
 	return &wireChatEvent{StreamEvent: event}, nil
 }
 
 type toolEventData struct {
 	EntryID         string                     `json:"entry_id"`
 	Images          []protocol.ImageMetadata   `json:"images"`
+	Status          string                     `json:"status"`
 	Reference       *protocol.ContentReference `json:"reference"`
 	ToolCallID      string                     `json:"tool_call_id"`
 	ProgressCallID  string                     `json:"progress_call_id"`

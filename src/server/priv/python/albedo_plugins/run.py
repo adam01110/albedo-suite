@@ -23,8 +23,8 @@ from __future__ import annotations
 from albedo_output import JobOutput, plain, read_window
 
 from collections import OrderedDict
-from collections.abc import Callable, Generator
-from typing import NoReturn, cast
+from collections.abc import Callable, Coroutine, Generator, Mapping
+from typing import NoReturn, TypeVar, cast
 from albedo_api import (
     OUTPUT_PREVIEW,
     Host,
@@ -34,6 +34,7 @@ from albedo_api import (
     Text,
     check_timeout,
 )
+import albedo_capture
 import albedo_direnv
 import albedo_proc
 import albedo_rtk
@@ -42,11 +43,16 @@ from albedo_plugins import hook
 import albedo_shims
 import albedo_trace
 import asyncio
+import base64
+import contextlib
+import contextvars
+import json
 import os
 import re
 import shlex
 import shutil
 import sys
+import tempfile
 import time
 import uuid
 
@@ -345,8 +351,8 @@ class Job(JobOutput):
         self._done = albedo_trace.note("run", self.command) if traced else None
         data = None if isinstance(stdin, Job) else stdin
         with albedo_trace.unobserved():  # the cell ran argv, not the wrapper around it
-            self.spawning = loop.create_task(self._launch(cwd, env, data, self.feed))
-        self.task: asyncio.Task[Job] = loop.create_task(self._run(timeout))
+            self.spawning = supervising(self._launch(cwd, env, data, self.feed))
+        self.task: asyncio.Future[Job] = supervising(self._run(timeout))
         self.task.add_done_callback(self._cancelled)
         active[self.id] = self
         jobs[self.id] = self
@@ -430,7 +436,7 @@ class Job(JobOutput):
     def _cancelled(self, task: asyncio.Task[Job]) -> None:
         if task.cancelled():
             # Cancellation before _run starts skips its finally block.
-            loop.create_task(self._stop())
+            supervising(self._stop())
 
     async def _spawn(self) -> Command:
         process = await asyncio.shield(self.spawning)
@@ -503,12 +509,22 @@ class Job(JobOutput):
 
     async def _wait(self) -> Job:
         """Wait for the job. An await cut short (an interrupted cell, a
-        wait_for deadline) never delivered the result, so the job still wakes
-        the session when it ends."""
+        wait_for deadline) never delivered the result and did not stop the
+        job, so the cell says so, and the job still wakes the session when it
+        ends."""
         self._waiters += 1
         try:
             await asyncio.shield(self.task)
             self._awaited = True
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            if self.traced and not self.task.done():
+                print(
+                    f"\n[job {self.id} is still running: {self._facts()['command']}. "
+                    "the interrupted await did not stop it, and it wakes the session "
+                    f"when it ends; jobs[{self.id!r}] reaches it, "
+                    f"await jobs[{self.id!r}].stop() ends it]"
+                )
+            raise
         finally:
             self._waiters -= 1
             if self.task.done():
@@ -660,7 +676,7 @@ class Job(JobOutput):
                 return self.termination
         if self.ending is None or self.ending.done():
             group = self.claim()
-            self.ending = loop.create_task(
+            self.ending = supervising(
                 albedo_proc.end(group, exited) if group is not None else _unstarted()
             )
         ending = await asyncio.shield(self.ending)
@@ -684,6 +700,53 @@ class Job(JobOutput):
             f"timed_out={self.timed_out!r}, duration={self.duration!r}, "
             f"bytes={self.capture.seen})"
         )
+
+    def _saved(self) -> dict[str, object] | None:
+        """A finished job as a later kernel restores it, or None when its
+        output cannot be kept."""
+        persist = getattr(self.capture, "persist", None)
+        output = persist() if persist is not None else None
+        if output is None or self.duration is None:
+            return None
+        return {
+            "id": self.id,
+            "argv": self.argv,
+            "command": self.command,
+            "exit_code": self.exit_code,
+            "timed_out": self.timed_out,
+            "duration": self.duration,
+            "started": time.time() - (loop.time() - self.started),
+            "service": self.service,
+            "traced": self.traced,
+            "read": self._read,
+            "output": output,
+        }
+
+    @classmethod
+    def _restored(cls, saved: dict[str, object], capture: OutputCapture) -> Job:
+        """A finished job from before the kernel was released: how it ended,
+        with its output read back from disk."""
+        job = cls.__new__(cls)
+        job.service, job.traced = bool(saved["service"]), bool(saved["traced"])
+        job.source, job.feed, job.outlet = None, None, Outlet()
+        job.outlet.close()
+        job.id, job.capture = str(saved["id"]), capture
+        job.argv, job.command = (
+            list(cast(list[str], saved["argv"])),
+            str(saved["command"]),
+        )
+        job.process, job.group, job._hooked = None, None, None
+        job.exit_code = cast("int | None", saved["exit_code"])
+        job.timed_out = bool(saved["timed_out"])
+        job.duration = float(cast(float, saved["duration"]))
+        job.started = loop.time() - (time.time() - float(cast(float, saved["started"])))
+        job.termination = albedo_proc.Termination(None, (), True)
+        job.ending, job._done, job._remote = None, None, None
+        job._awaited, job._waiters, job._starting = True, 0, False
+        job._read = bool(saved["read"])
+        job.task = loop.create_future()
+        job.task.set_result(job)
+        return job
 
     def __reduce__(self):
         # Saved kernel state keeps a variable holding a job: in this kernel it
@@ -752,6 +815,19 @@ class EndedJob:
         )
 
 
+Result = TypeVar("Result")
+
+
+def supervising(
+    coroutine: Coroutine[object, object, Result],
+) -> asyncio.Task[Result]:
+    """A task of the job's own supervision. The cell's context reaches it, but
+    the cell's interrupt does not: it would end the job instead of the await."""
+    context = contextvars.copy_context()
+    context.run(albedo_proc.SUPERVISING.set, True)
+    return loop.create_task(coroutine, context=context)
+
+
 async def _unstarted() -> albedo_proc.Termination:
     return albedo_proc.Termination(None, (), True, ("process never started",))
 
@@ -766,10 +842,65 @@ def release(job: Job) -> None:
         return
     retained.pop(job.id, None)
     retained[job.id] = job
+    trim_retained()
+
+
+def trim_retained() -> None:
     while len(retained) > RETAINED_LIMIT:
         _, evicted = retained.popitem(last=False)
         if jobs.get(evicted.id) is evicted:
             del jobs[evicted.id]
+
+
+def save_jobs(path: str) -> list[dict[str, object]]:
+    """The finished jobs, oldest first, and beside the state at `path` the
+    listing the daemon serves while no kernel is attached (robot-docs/kernel.md)."""
+    book = [saved for job in retained.values() for saved in [job._saved()] if saved]
+    listing = []
+    for saved in book:
+        if not saved["traced"]:
+            continue
+        job = retained[cast(str, saved["id"])]
+        output = cast(dict[str, object], saved["output"])
+        tail = output["tail"]
+        listing.append(
+            job_record(job)
+            | {
+                "spill": output["spill"],
+                "spilled": output["spilled"],
+                "tail": base64.b64encode(tail).decode()
+                if isinstance(tail, bytes)
+                else None,
+            }
+        )
+    listing.reverse()  # newest first, as job_list answers
+    sidecar = path + ".jobs.json"
+    # The first save of a home runs before the state file's own directory exists.
+    os.makedirs(os.path.dirname(sidecar) or ".", exist_ok=True)
+    fd, temporary = tempfile.mkstemp(
+        dir=os.path.dirname(sidecar) or ".", prefix=".jobs."
+    )
+    try:
+        with os.fdopen(fd, "w") as file:
+            json.dump({"jobs": listing[:MAX_LISTED]}, file)
+        os.replace(temporary, sidecar)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(temporary)
+        raise
+    return book
+
+
+def restore_jobs(book: object, captures: Mapping[str, OutputCapture]) -> None:
+    for saved in cast(list[dict[str, object]], book):
+        id = cast(str, saved["id"])
+        if id in jobs:
+            continue
+        output = cast(dict[str, object], saved["output"])
+        capture = captures.get(id) or albedo_capture.Capture.revive(output)
+        job = Job._restored(saved, capture)
+        jobs[id] = retained[id] = job
+    trim_retained()
 
 
 def job_record(job: Job) -> dict[str, object]:
@@ -1069,6 +1200,8 @@ def setup(api: PythonApi) -> dict[str, object]:
 
     jobs, active, retained = {}, {}, OrderedDict()
     api.background_handle(Job)
+    if api.on_state is not None:
+        api.on_state("run", save_jobs, restore_jobs)
     api.on_shutdown(close)
     if api.on_stop_job is not None:
         api.on_stop_job(stop_local_job)

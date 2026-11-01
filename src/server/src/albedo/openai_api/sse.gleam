@@ -1,7 +1,9 @@
 //// Incremental framing. Only newly received bytes are searched for line endings.
 
 import gleam/bit_array
+import gleam/int
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 
@@ -17,6 +19,10 @@ pub opaque type Parser {
     event_bytes: Int,
     limit: Int,
     ndjson: Bool,
+    /// The `id` field of the event being read, and of the last one dispatched.
+    pending_id: String,
+    last_id: String,
+    retry: Option(Int),
   )
 }
 
@@ -47,6 +53,8 @@ fn field(line: String) -> #(String, String) {
   let #(name, value) = case line {
     "data:" <> value -> #("data", value)
     "event:" <> value -> #("event", value)
+    "id:" <> value -> #("id", value)
+    "retry:" <> value -> #("retry", value)
     _ -> #(line, "")
   }
   #(name, case value {
@@ -60,12 +68,37 @@ pub fn new(max_event_bytes: Int) -> Parser {
     True -> panic as "max_event_bytes must be >= 1"
     False -> Nil
   }
-  Parser([], 0, False, <<>>, False, "", [], 0, max_event_bytes, False)
+  Parser(
+    [],
+    0,
+    False,
+    <<>>,
+    False,
+    "",
+    [],
+    0,
+    max_event_bytes,
+    False,
+    "",
+    "",
+    None,
+  )
 }
 
 /// Frames one JSON value per line with the same UTF-8 and size bounds as SSE.
 pub fn new_ndjson(max_event_bytes: Int) -> Parser {
   Parser(..new(max_event_bytes), ndjson: True)
+}
+
+/// The id of the last event dispatched, "" before any; a stream resumes from
+/// it with `Last-Event-ID`.
+pub fn last_event_id(parser: Parser) -> String {
+  parser.last_id
+}
+
+/// The reconnection delay in ms the stream's last `retry` field set.
+pub fn retry(parser: Parser) -> Option(Int) {
+  parser.retry
 }
 
 pub fn feed(
@@ -194,13 +227,34 @@ fn complete_line(
             True -> Error(Malformed("invalid SSE field: event"))
             False -> Ok(#(Parser(..parser, name: value), events))
           }
+        // The SSE standard ignores an id with NUL and a retry that is not
+        // all digits.
+        #("id", value) ->
+          case string.contains(value, "\u{0000}") {
+            True -> Ok(#(parser, events))
+            False -> Ok(#(Parser(..parser, pending_id: value), events))
+          }
+        #("retry", value) ->
+          case all_digits(value), int.parse(value) {
+            True, Ok(ms) -> Ok(#(Parser(..parser, retry: Some(ms)), events))
+            _, _ -> Ok(#(parser, events))
+          }
         _ -> Ok(#(parser, events))
       }
     }
   }
 }
 
+fn all_digits(value: String) -> Bool {
+  value != ""
+  && list.all(string.to_utf_codepoints(value), fn(point) {
+    let code = string.utf_codepoint_to_int(point)
+    code >= 48 && code <= 57
+  })
+}
+
 fn dispatch(parser: Parser, events: List(Event)) -> #(Parser, List(Event)) {
+  let parser = Parser(..parser, last_id: parser.pending_id)
   let events = case parser.data {
     [] -> events
     [data] -> [Event(parser.name, data), ..events]

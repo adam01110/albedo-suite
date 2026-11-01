@@ -613,7 +613,8 @@ class Files:
         most 200000) that keeps a huge window from flooding the context; when it
         stops a read early, the result says so and names the line to resume
         from. Lines are never shortened. The numbers are what `edit(line_hint=)`
-        takes.
+        takes. `$ALBEDO_HOME/creds.json` is refused: `commands.accounts()`
+        lists its accounts without secrets.
         """
         if (
             start_line < 1
@@ -626,6 +627,7 @@ class Files:
                 "0 < max_chars <= 200000"
             )
         target = Path(path).expanduser()
+        _refuse_secrets([target])
         if not target.is_file():
             if target.is_dir():
                 raise IsADirectoryError(
@@ -766,6 +768,7 @@ class Files:
             query = "(?i)" + query
         targets = _targets(path)
         _require_roots(targets)
+        _refuse_secrets(targets)
         found = []
         total = searched = 0
         for target in targets:
@@ -787,6 +790,8 @@ class Files:
             name = str(
                 target if target.is_file() else target / item["relativePath"]
             ).removeprefix("./")
+            if _secret(name):
+                continue
             number = item["lineNumber"]
             for n, text in enumerate(
                 item.get("contextBefore", []),
@@ -978,6 +983,20 @@ def _replace_one(
         )
     chosen = _choose(content, old_str, found, line_hint, path)
     return content[: chosen.index] + new_str + content[chosen.index + len(old_str) :]
+
+
+def _secret(path: str | Path) -> bool:
+    """Whether a path is the daemon's secret store, however it is spelled."""
+    home = os.environ.get("ALBEDO_HOME") or os.path.expanduser("~/.albedo")
+    return Path(path).expanduser().resolve() == (Path(home) / "creds.json").resolve()
+
+
+def _refuse_secrets(targets: list[Path]) -> None:
+    if any(_secret(target) for target in targets):
+        raise PermissionError(
+            "creds.json holds long-lived OAuth refresh tokens and API keys; "
+            "await commands.accounts() lists accounts without secrets."
+        )
 
 
 def _require_roots(targets: list[Path]) -> None:

@@ -10,16 +10,16 @@ from harness import Albedo, Provider, exclusive, latest_user, python, text
 @exclusive
 class ProviderAvailabilityTests(unittest.TestCase):
     def setUp(self):
-        self.outputs = []
-
         def script(request):
             last = request["messages"][-1]
             if last.get("role") == "tool":
-                self.outputs.append(json.loads(last["content"])["output"])
                 return text("checked")
             prompt = latest_user(request)
             if prompt == "inspect models":
-                return python("assert not hasattr(commands, 'providers')\nprint(await agents.models())")
+                return python(
+                    "assert not hasattr(commands, 'providers')\n"
+                    "print(json.dumps(await agents.models()))"
+                )
             if prompt == "reject disabled":
                 return python(
                     "try:\n"
@@ -30,20 +30,60 @@ class ProviderAvailabilityTests(unittest.TestCase):
             return text("ok")
 
         self.provider = Provider(script)
-        self.gateway = Provider(lambda _: text("unused"), catalog={"data": [{"id": "router-model"}]})
+        self.gateway = Provider(
+            lambda _: text("unused"), catalog={"data": [{"id": "router-model"}]}
+        )
         self.addCleanup(self.provider.close)
         self.addCleanup(self.gateway.close)
-        self.app = Albedo(self.provider, providers={
-            "fixture": {"extension": "openai", "baseUrl": self.provider.url, "apiKey": "fixture-key", "model": "fixture-model", "protocol": "chat_completions"},
-            "openrouter": {"extension": "openai", "baseUrl": self.gateway.url, "apiKey": "router-secret", "model": "router-model", "protocol": "chat_completions", "custom": "preserve"},
-        })
+        self.app = Albedo(
+            self.provider,
+            providers={
+                "fixture": {
+                    "extension": "openai",
+                    "baseUrl": self.provider.url,
+                    "apiKey": "fixture-key",
+                    "model": "fixture-model",
+                    "protocol": "chat_completions",
+                },
+                "openrouter": {
+                    "extension": "openai",
+                    "baseUrl": self.gateway.url,
+                    "apiKey": "router-secret",
+                    "model": "router-model",
+                    "protocol": "chat_completions",
+                    "custom": "preserve",
+                },
+            },
+        )
         self.app.__enter__()
+        self.addCleanup(self.app.__exit__, None, None, None)
         self.session = self.app.session()
 
+    def results(self):
+        return [
+            json.loads(part["value"])
+            for entry in self.app.history(self.session)["items"]
+            if entry["kind"] == "tool_result" and entry["tool"]["name"] == "python"
+            for part in entry["content"]
+            if part["kind"] == "json" and part["field"] == "result"
+        ]
+
     def turn(self, prompt):
+        before = len(self.results())
         self.app.prompt(self.session, prompt).close()
         self.app.idle(self.session)
-        return self.outputs[-1]
+        results = self.results()
+        self.assertGreater(len(results), before, prompt)
+        self.assertEqual(results[-1]["status"], "ok", results[-1])
+        return results[-1]["output"]
+
+    def models(self):
+        output = self.turn("inspect models")
+        self.assertTrue(output.lstrip().startswith("["), output)
+        models = json.loads(output)
+        self.assertTrue(all("/" in model for model in models), models)
+        self.assertIn("fixture/fixture-model", models)
+        return models
 
     def toggle(self, enabled, profile="openrouter", etag=None):
         route = "/settings?group=providers"
@@ -51,12 +91,16 @@ class ProviderAvailabilityTests(unittest.TestCase):
             with self.app.api(route) as response:
                 json.load(response)
                 etag = response.headers["ETag"]
-        with self.app.api(route, {"profiles": {profile: {"enabled": enabled}}},
-                          method="PATCH", headers={"If-Match": etag}) as response:
+        with self.app.api(
+            route,
+            {"profiles": {profile: {"enabled": enabled}}},
+            method="PATCH",
+            headers={"If-Match": etag},
+        ) as response:
             return json.load(response)
 
     def test_disable_hides_and_blocks_then_enable_restores_without_deletion(self):
-        self.assertIn("openrouter/router-model", self.turn("inspect models"))
+        self.assertIn("openrouter/router-model", self.models())
         path = self.app.home / "config.json"
         before = json.loads(path.read_text())
         creds_path = self.app.home / "creds.json"
@@ -66,13 +110,19 @@ class ProviderAvailabilityTests(unittest.TestCase):
         self.assertFalse(saved["providers"]["openrouter"]["enabled"])
         expected = dict(before["providers"]["openrouter"], enabled=False)
         self.assertEqual(saved["providers"]["openrouter"], expected)
-        self.assertEqual(creds_path.read_bytes() if creds_path.exists() else None, creds)
-        self.assertNotIn("openrouter/", self.turn("inspect models"))
+        self.assertEqual(
+            creds_path.read_bytes() if creds_path.exists() else None, creds
+        )
+        self.assertFalse(
+            any(model.startswith("openrouter/") for model in self.models())
+        )
         self.assertIn("disabled", self.turn("reject disabled"))
         self.app.restart()
-        self.assertNotIn("openrouter/", self.turn("inspect models"))
+        self.assertFalse(
+            any(model.startswith("openrouter/") for model in self.models())
+        )
         self.toggle(True)
-        self.assertIn("openrouter/router-model", self.turn("inspect models"))
+        self.assertIn("openrouter/router-model", self.models())
         self.assertNotIn("router-secret", json.dumps(self.provider.requests))
 
     def test_toggle_rejects_stale_validator_and_non_boolean(self):

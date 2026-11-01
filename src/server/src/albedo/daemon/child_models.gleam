@@ -6,11 +6,15 @@
 //// answers every request in the daemon, and an endpoint that never answers
 //// once held it for seconds per spawn, failing every request meanwhile.
 
+import albedo/clock
 import albedo/daemon/configuration
 import albedo/daemon/conversation
 import albedo/daemon/session_provider
 import albedo/harness/runtime
 import albedo/text_scalars
+import gleam/dict
+import gleam/erlang/process
+import gleam/int
 import gleam/list
 import gleam/result
 import gleam/string
@@ -57,7 +61,11 @@ pub fn resolve(
     })
   case qualified {
     Ok(#(profile, model)) ->
-      case offers(host, home, profile, model) {
+      case
+        profile.name == parent.provider
+        && model == parent.model
+        || offers(host, home, profile, model)
+      {
         True -> Ok(#(profile, model))
         False -> Error("model is not available from provider " <> profile.name)
       }
@@ -70,11 +78,7 @@ pub fn resolve(
       case offers(host, home, current, model) {
         True -> Ok(#(current, model))
         False ->
-          case
-            list.filter(profiles, fn(profile) {
-              profile.name != current.name && offers(host, home, profile, model)
-            })
-          {
+          case other_offers(host, home, profiles, current, model) {
             [profile] -> Ok(#(profile, model))
             [] -> Ok(#(current, model))
             _ ->
@@ -101,27 +105,97 @@ pub fn resolve_switch(
   }
 }
 
-/// What a session may hand a child: its own model and its provider's models
-/// bare, then every other provider's as "provider/model".
+/// What a session may hand a child, each as "provider/model": its own model,
+/// its own provider's models, then every other provider's.
 pub fn available(
   host: runtime.Runtime,
   home: String,
   info: conversation.Info,
 ) -> List(String) {
   let profiles = configuration.providers(home) |> result.unwrap([])
+  let listings =
+    concurrently(profiles, fn(profile) { listed(host, home, profile) }, [])
+    |> list.zip(profiles, _)
   let #(same, other) =
-    list.partition(profiles, fn(profile) { profile.name == info.provider })
-  let same_models = list.flat_map(same, listed(host, home, _))
-  let other_models =
-    list.flat_map(other, fn(profile) {
-      listed(host, home, profile)
-      |> list.map(fn(model) { profile.name <> "/" <> model })
-    })
+    list.partition(listings, fn(listing) { { listing.0 }.name == info.provider })
+  let qualified = fn(listing: #(configuration.Provider, List(String))) {
+    list.map(listing.1, fn(model) { { listing.0 }.name <> "/" <> model })
+  }
   let current = case same {
     [] -> []
-    _ -> [info.model]
+    _ -> [info.provider <> "/" <> info.model]
   }
-  list.unique(list.append(current, list.append(same_models, other_models)))
+  list.unique(list.append(
+    current,
+    list.flat_map(list.append(same, other), qualified),
+  ))
+}
+
+/// The profiles other than `current` that offer `model`, in profile order. Each
+/// is asked at once, so stalled endpoints cost one wait together.
+fn other_offers(
+  host: runtime.Runtime,
+  home: String,
+  profiles: List(configuration.Provider),
+  current: configuration.Provider,
+  model: String,
+) -> List(configuration.Provider) {
+  let others =
+    list.filter(profiles, fn(profile) { profile.name != current.name })
+  concurrently(
+    others,
+    fn(profile) { offers(host, home, profile, model) },
+    False,
+  )
+  |> list.zip(others, _)
+  |> list.filter_map(fn(asked) {
+    case asked.1 {
+      True -> Ok(asked.0)
+      False -> Error(Nil)
+    }
+  })
+}
+
+/// How long one profile's endpoint may take before it counts as offering
+/// nothing: its own fetch gives up sooner, this bounds a fetch that never does.
+const listing_timeout_ms = 15_000
+
+/// `work` on every item at once, in item order; `fallback` for one that has not
+/// answered by the deadline.
+fn concurrently(items: List(a), work: fn(a) -> b, fallback: b) -> List(b) {
+  let answers = process.new_subject()
+  list.index_map(items, fn(item, index) {
+    process.spawn_unlinked(fn() { process.send(answers, #(index, work(item))) })
+  })
+  let deadline = clock.monotonic_ms() + listing_timeout_ms
+  let received = collect(answers, list.length(items), deadline, dict.new())
+  list.index_map(items, fn(_, index) {
+    dict.get(received, index) |> result.unwrap(fallback)
+  })
+}
+
+fn collect(
+  answers: process.Subject(#(Int, b)),
+  remaining: Int,
+  deadline: Int,
+  received: dict.Dict(Int, b),
+) -> dict.Dict(Int, b) {
+  case remaining {
+    0 -> received
+    _ ->
+      case
+        process.receive(answers, int.max(0, deadline - clock.monotonic_ms()))
+      {
+        Ok(#(index, value)) ->
+          collect(
+            answers,
+            remaining - 1,
+            deadline,
+            dict.insert(received, index, value),
+          )
+        Error(Nil) -> received
+      }
+  }
 }
 
 fn offers(

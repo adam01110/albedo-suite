@@ -16,6 +16,136 @@ import (
 	"github.com/oapi-codegen/runtime"
 )
 
+// ACPActiveTurn defines model for ACPActiveTurn.
+type ACPActiveTurn struct {
+	// AcpInputID The exclusive acp_prompt input of this turn, which session/cancel targets. Null for a turn started by system work (mail, schedule), which stays observable and busy but is never interrupted by the adapter.
+	AcpInputID *ID `json:"acp_input_id" nullable:"true"`
+
+	// TurnID Opaque identity. Never infer a resource type or route from its contents.
+	TurnID ID `json:"turn_id"`
+}
+
+// ACPAttachRequest defines model for ACPAttachRequest.
+type ACPAttachRequest struct {
+	MCPServers []ACPMCPServer `json:"mcp_servers"`
+
+	// Workspace Canonical daemon-host location, local or SSH. Clients do not resolve this path locally.
+	Workspace Workspace `json:"workspace"`
+}
+
+// ACPAttachment defines model for ACPAttachment.
+type ACPAttachment struct {
+	ActiveTurn *ACPActiveTurn `json:"active_turn" nullable:"true"`
+	Cursor     Cursor         `json:"cursor"`
+
+	// HistoryCutoff Position of the newest durable history entry at the same capture as cursor and output_boundaries (0 when there is none). Entries at or before it are history; everything later arrives on the stream after cursor.
+	HistoryCutoff Counter  `json:"history_cutoff"`
+	Lease         ACPLease `json:"lease"`
+
+	// OutputBoundaries For every unfinished live text or thinking message at the cursor, how much had streamed before it. Reconciliation only; the client never emits this content. Installing this capture stands in for the initial snapshot reset of a fresh stream.
+	OutputBoundaries []ACPOutputBoundary `json:"output_boundaries"`
+
+	// PendingInputIDs Accepted ACP inputs not yet consumed, in acceptance order.
+	PendingInputIDs []ID `json:"pending_input_ids"`
+
+	// SessionID Opaque identity. Never infer a resource type or route from its contents.
+	SessionID ID `json:"session_id"`
+}
+
+// ACPEnvVariable defines model for ACPEnvVariable.
+type ACPEnvVariable struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+// ACPLease defines model for ACPLease.
+type ACPLease struct {
+	HeartbeatMs int64 `json:"heartbeat_ms"`
+	LeaseMs     int64 `json:"lease_ms"`
+}
+
+// ACPMCPServer Editor-supplied stdio MCP server. command is an absolute executable run without a shell in the session workspace; env values are literal secrets held only in daemon memory.
+type ACPMCPServer struct {
+	Args    []string `json:"args"`
+	Command string   `json:"command"`
+
+	// Env Names must be unique; duplicates are rejected.
+	Env  []ACPEnvVariable `json:"env"`
+	Name string           `json:"name"`
+}
+
+// ACPMCPServerIdentity Durable stand-in for an overlay server. The fingerprint is a keyed digest of command, args and env; literal values are never stored.
+type ACPMCPServerIdentity struct {
+	Fingerprint string `json:"fingerprint"`
+	Name        string `json:"name"`
+}
+
+// ACPOutputBoundary defines model for ACPOutputBoundary.
+type ACPOutputBoundary struct {
+	// LiveID Opaque identity. Never infer a resource type or route from its contents.
+	LiveID    ID    `json:"live_id"`
+	UTF8Bytes int64 `json:"utf8_bytes"`
+}
+
+// ACPPromptBlock defines model for ACPPromptBlock.
+type ACPPromptBlock = json.RawMessage
+
+// ACPPromptInputRequest Only for ACP sessions, with the attachment token. Forms its own logical turn; no other input joins it and it joins no other turn. Blocks keep their order, metadata and original URIs.
+type ACPPromptInputRequest struct {
+	Blocks []ACPPromptBlock `json:"blocks"`
+	Kind   string           `json:"kind"`
+}
+
+// ACPResourceLinkBlock defines model for ACPResourceLinkBlock.
+type ACPResourceLinkBlock struct {
+	// Annotations Explicit domain payload: tool arguments, tool results, provider-private state, or extension data. JSON values of any type are allowed; no core resource uses this as its envelope.
+	Annotations *DynamicJSON `json:"annotations,omitempty"`
+	Description *string      `json:"description,omitempty" nullable:"true"`
+
+	// Meta Explicit domain payload: tool arguments, tool results, provider-private state, or extension data. JSON values of any type are allowed; no core resource uses this as its envelope.
+	Meta     *DynamicJSON `json:"meta,omitempty"`
+	MimeType *string      `json:"mime_type,omitempty" nullable:"true"`
+	Name     string       `json:"name"`
+	Size     *int64       `json:"size,omitempty" nullable:"true"`
+	Title    *string      `json:"title,omitempty" nullable:"true"`
+	Type     string       `json:"type"`
+	URI      string       `json:"uri"`
+}
+
+// ACPSessionIntent defines model for ACPSessionIntent.
+type ACPSessionIntent struct {
+	Kind       string                 `json:"kind"`
+	MCPServers []ACPMCPServerIdentity `json:"mcp_servers"`
+
+	// Workspace Canonical daemon-host location, local or SSH. Clients do not resolve this path locally.
+	Workspace Workspace `json:"workspace"`
+}
+
+// ACPSessionRequest Creates an ACP-owned session. The overlay is prepared strictly before the creation decision commits (any server failure rejects the creation with 409 mcp_overlay_failed); the durable ACP marker, the initial attachment for the Albedo-Attachment-Token header and the overlay are installed before the first session preparation. Resending the identical request under the same session ID is the recovery path; see robot-docs/acp.md.
+type ACPSessionRequest struct {
+	Kind       string         `json:"kind"`
+	MCPServers []ACPMCPServer `json:"mcp_servers"`
+
+	// Workspace Canonical daemon-host location, local or SSH. Clients do not resolve this path locally.
+	Workspace Workspace `json:"workspace"`
+}
+
+// ACPState Present on ACP-owned sessions. Other clients may read, stop and delete them but not submit input or change execution.
+type ACPState struct {
+	Attachment string `json:"attachment"`
+}
+
+// ACPTextBlock defines model for ACPTextBlock.
+type ACPTextBlock struct {
+	// Annotations Explicit domain payload: tool arguments, tool results, provider-private state, or extension data. JSON values of any type are allowed; no core resource uses this as its envelope.
+	Annotations *DynamicJSON `json:"annotations,omitempty"`
+
+	// Meta Explicit domain payload: tool arguments, tool results, provider-private state, or extension data. JSON values of any type are allowed; no core resource uses this as its envelope.
+	Meta *DynamicJSON `json:"meta,omitempty"`
+	Text string       `json:"text"`
+	Type string       `json:"type"`
+}
+
 // Account defines model for Account.
 type Account struct {
 	Detail string `json:"detail"`
@@ -228,6 +358,9 @@ type ArtifactVersion struct {
 	Files     []ArtifactFile `json:"files"`
 	Version   int64          `json:"version"`
 }
+
+// AttachmentToken 32 random bytes, canonical unpadded base64url (the last character carries no stray bits).
+type AttachmentToken = string
 
 // Auth defines model for Auth.
 type Auth struct {
@@ -1043,11 +1176,29 @@ type FailureEvent struct {
 	Type string     `json:"type"`
 }
 
+// FastMode defines model for FastMode.
+type FastMode struct {
+	Fast    bool   `json:"fast"`
+	Message string `json:"message"`
+	Support struct {
+		Detail *string `json:"detail,omitempty" nullable:"true"`
+		Mode   *string `json:"mode,omitempty" nullable:"true"`
+		Source *string `json:"source,omitempty" nullable:"true"`
+		Status string  `json:"status"`
+	} `json:"support"`
+}
+
 // FileDiff defines model for FileDiff.
 type FileDiff struct {
-	Added   Counter `json:"added"`
-	Diff    string  `json:"diff"`
-	Kind    string  `json:"kind"`
+	Added Counter `json:"added"`
+	Diff  string  `json:"diff"`
+	Kind  string  `json:"kind"`
+
+	// NewText The whole file after the change.
+	NewText *string `json:"new_text,omitempty"`
+
+	// OldText The whole file before the change, null when the change created it. Present together with new_text only when both fit the trace's snapshot budget.
+	OldText *string `json:"old_text,omitempty" nullable:"true"`
 	Path    string  `json:"path"`
 	Removed Counter `json:"removed"`
 }
@@ -1172,9 +1323,12 @@ type HistoryEntry struct {
 	// ThinkingDurationMs Observed thinking duration, when recorded.
 	ThinkingDurationMs *Counter `json:"thinking_duration_ms,omitempty" nullable:"true"`
 	Tool               *struct {
-		Name           string  `json:"name"`
-		ProgressCallID *ID     `json:"progress_call_id" nullable:"true"`
-		Title          *string `json:"title,omitempty" nullable:"true"`
+		Name           string `json:"name"`
+		ProgressCallID *ID    `json:"progress_call_id" nullable:"true"`
+
+		// Status Outcome of the whole call, derived from the stored result exactly as the live tool event's status, so rows recorded before this field have it too.
+		Status string  `json:"status"`
+		Title  *string `json:"title,omitempty" nullable:"true"`
 
 		// ToolCallID Opaque identity. Never infer a resource type or route from its contents.
 		ToolCallID ID `json:"tool_call_id"`
@@ -1454,6 +1608,7 @@ type JJFacts struct {
 
 // JSONContent defines model for JSONContent.
 type JSONContent struct {
+	// Field What the value is. A user entry's `skill` value is the SkillLoad its slash activation loaded.
 	Field string `json:"field"`
 	Kind  string `json:"kind"`
 
@@ -1667,9 +1822,27 @@ type LoginRequest struct {
 	Values   map[string]json.RawMessage `json:"values"`
 }
 
+// MCPAuth A server's OAuth sign-in. none until the server asks for one; needs_sign_in when it asked and albedo has no usable token, signed_in, or signed_out after the user signed out. Start a sign-in with PUT /auth/logins/{login_id} and provider mcp:<server>. Tokens and client secrets never appear.
+type MCPAuth struct {
+	Account *string `json:"account" nullable:"true"`
+
+	// Client configured when the user set a client id, registered when albedo registered itself.
+	Client    *string `json:"client" nullable:"true"`
+	ExpiresAt *string `json:"expires_at" nullable:"true"`
+	Reason    *string `json:"reason" nullable:"true"`
+	Scope     *string `json:"scope" nullable:"true"`
+	State     string  `json:"state"`
+
+	// StepUp The wider scope a signed-in server asked for; signing in again grants it.
+	StepUp *string `json:"step_up" nullable:"true"`
+}
+
 // MCPDefinition defines model for MCPDefinition.
 type MCPDefinition struct {
-	Arguments         []string               `json:"arguments"`
+	Arguments []string `json:"arguments"`
+
+	// Auth A server's OAuth sign-in. none until the server asks for one; needs_sign_in when it asked and albedo has no usable token, signed_in, or signed_out after the user signed out. Start a sign-in with PUT /auth/logins/{login_id} and provider mcp:<server>. Tokens and client secrets never appear.
+	Auth              MCPAuth                `json:"auth"`
 	BearerTokenEnvVar *string                `json:"bearer_token_env_var" nullable:"true"`
 	CallTimeoutMs     int64                  `json:"call_timeout_ms"`
 	Command           *string                `json:"command" nullable:"true"`
@@ -1708,6 +1881,15 @@ type MCPSecretsPatch struct {
 	BearerToken *string            `json:"bearer_token,omitempty" nullable:"true"`
 	Environment map[string]*string `json:"environment,omitempty"`
 	Headers     map[string]*string `json:"headers,omitempty"`
+
+	// Oauth Null signs the server out of its OAuth sign-in.
+	Oauth any `json:"oauth,omitempty" nullable:"true"`
+
+	// OauthClient A client the user registered with the server's authorization server, used instead of registering albedo; null forgets it.
+	OauthClient *struct {
+		ClientID     string  `json:"client_id"`
+		ClientSecret *string `json:"client_secret,omitempty" nullable:"true"`
+	} `json:"oauth_client,omitempty" nullable:"true"`
 }
 
 // MCPSettings defines model for MCPSettings.
@@ -2444,7 +2626,7 @@ type RequestRecordPage struct {
 
 // ResetBatch Leading reset and complete snapshot. Later events, if any, follow the snapshot cursor. Envelope cursor advances through every delivered event.
 //
-// Examples: {"cursor":0,"events":[{"data":{"reason":"initial"},"type":"reset"}],"generation":"J6kYj6IGcXyP3eMIp-WL3A","snapshot":{"active_output":[],"activity":{"latest_answer":null,"latest_input":null,"lines":[],"observed_at":"2026-10-02T14:00:00Z","output_scalars":0,"output_utf8_bytes":0},"activity_at":"2026-10-02T14:00:00Z","address":null,"automatic_name":"New session","closed":false,"composition":{"availability":{},"dependencies":{},"desired_revision":"composition-1","loaded_revision":null,"needs_reload":true,"quarantine":[]},"configuration_resource":{"etag":"\"session-config-1\"","url":"/sessions/01a0fcea-2b00-7000-8000-000000000001?view=configuration","value":{"effort":null,"id":"01a0fcea-2b00-7000-8000-000000000001","model":"example-model","name":"New session","preferences":{"archived":false,"pin_order":null,"pinned":false},"provider_profile":"personal","revision":"config-1","selection":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"workspace":"/workspace/project"}},"created_at":"2026-10-02T14:00:00Z","creation":{"resolved":{"effort":null,"model":"example-model","provider_profile":"personal","workspace":"/workspace/project"},"submitted":{"effort":null,"kind":"new","model":null,"name":null,"provider_profile":null,"workspace":"/workspace/project"}},"current_progress":[],"cursor":{"generation":"J6kYj6IGcXyP3eMIp-WL3A","sequence":0},"depth":0,"effort":null,"family_revision":"family-1","glances":[],"history":{"high_water":0,"items":[],"newer":null,"older":null},"id":"01a0fcea-2b00-7000-8000-000000000001","input_order":0,"kernel":{"build":null,"instance_id":null,"live_job_count":0,"running_jobs":[],"stage":null,"stale":false,"staleness_reasons":[],"state":"none"},"location":{"host":null,"label":null,"path":"/workspace/project","user":null},"model":"example-model","name":"New session","parent_id":null,"pending_inputs":[],"preferences":{"archived":false,"opens":0,"pin_order":null,"pinned":false},"preview":{"text":"","transcript_count":0,"truncated":false},"provider_profile":"personal","revision":"config-1","root_id":"01a0fcea-2b00-7000-8000-000000000001","selection":{"effective":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"overrides":{"extensions":{},"instructions":{},"mcp":{},"skills":{}}},"status":{"blocking_reason":null,"interrupt_requested":false,"phase":"idle","run_id":null},"usage":{"cache_fade":[],"cache_ttl_seconds":null,"cache_write_tokens":null,"cached_prompt_tokens":null,"completion_tokens":null,"context_window_tokens":null,"elapsed_ms":null,"model":null,"observed_at":null,"prompt_tokens":null,"tokens_per_second":null,"total_tokens":null},"workspace":"/workspace/project","workspace_change":null}}
+// Examples: {"cursor":0,"events":[{"data":{"reason":"initial"},"type":"reset"}],"generation":"J6kYj6IGcXyP3eMIp-WL3A","snapshot":{"active_output":[],"activity":{"latest_answer":null,"latest_input":null,"lines":[],"observed_at":"2026-10-02T14:00:00Z","output_scalars":0,"output_utf8_bytes":0},"activity_at":"2026-10-02T14:00:00Z","address":null,"automatic_name":"New session","closed":false,"composition":{"availability":{},"dependencies":{},"desired_revision":"composition-1","loaded_revision":null,"needs_reload":true,"quarantine":[]},"configuration_resource":{"etag":"\"session-config-1\"","url":"/sessions/01a0fcea-2b00-7000-8000-000000000001?view=configuration","value":{"effort":null,"id":"01a0fcea-2b00-7000-8000-000000000001","model":"example-model","name":"New session","preferences":{"archived":false,"pin_order":null,"pinned":false},"provider_profile":"personal","revision":"config-1","selection":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"workspace":"/workspace/project"}},"created_at":"2026-10-02T14:00:00Z","creation":{"resolved":{"effort":null,"model":"example-model","provider_profile":"personal","workspace":"/workspace/project"},"submitted":{"effort":null,"kind":"new","model":null,"name":null,"provider_profile":null,"workspace":"/workspace/project"}},"current_progress":[],"cursor":{"generation":"J6kYj6IGcXyP3eMIp-WL3A","sequence":0},"depth":0,"effort":null,"family_revision":"family-1","glances":[],"history":{"high_water":0,"items":[],"newer":null,"older":null},"id":"01a0fcea-2b00-7000-8000-000000000001","input_order":0,"kernel":{"build":null,"instance_id":null,"live_job_count":0,"running_jobs":[],"stage":null,"stale":false,"staleness_reasons":[],"state":"none"},"location":{"host":null,"label":null,"path":"/workspace/project","user":null},"model":"example-model","name":"New session","parent_id":null,"pending_inputs":[],"preferences":{"archived":false,"opens":0,"pin_order":null,"pinned":false},"preview":{"text":"","transcript_count":0,"truncated":false},"provider_profile":"personal","revision":"config-1","root_id":"01a0fcea-2b00-7000-8000-000000000001","selection":{"effective":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"overrides":{"extensions":{},"instructions":{},"mcp":{},"skills":{}}},"shell_commands":[],"status":{"blocking_reason":null,"interrupt_requested":false,"phase":"idle","run_id":null},"usage":{"cache_fade":[],"cache_ttl_seconds":null,"cache_write_tokens":null,"cached_prompt_tokens":null,"completion_tokens":null,"context_window_tokens":null,"elapsed_ms":null,"model":null,"observed_at":null,"prompt_tokens":null,"tokens_per_second":null,"total_tokens":null},"workspace":"/workspace/project","workspace_change":null}}
 type ResetBatch struct {
 	Cursor Counter        `json:"cursor"`
 	Events []SessionEvent `json:"events"`
@@ -2452,7 +2634,7 @@ type ResetBatch struct {
 	// Generation 128 random bits encoded as unpadded base64url; new for each session actor lifetime.
 	Generation Generation `json:"generation"`
 
-	// Snapshot Examples: {"active_output":[],"activity":{"latest_answer":null,"latest_input":null,"lines":[],"observed_at":"2026-10-02T14:00:00Z","output_scalars":0,"output_utf8_bytes":0},"activity_at":"2026-10-02T14:00:00Z","address":null,"automatic_name":"New session","closed":false,"composition":{"availability":{},"dependencies":{},"desired_revision":"composition-1","loaded_revision":null,"needs_reload":true,"quarantine":[]},"configuration_resource":{"etag":"\"session-config-1\"","url":"/sessions/01a0fcea-2b00-7000-8000-000000000001?view=configuration","value":{"effort":null,"id":"01a0fcea-2b00-7000-8000-000000000001","model":"example-model","name":"New session","preferences":{"archived":false,"pin_order":null,"pinned":false},"provider_profile":"personal","revision":"config-1","selection":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"workspace":"/workspace/project"}},"created_at":"2026-10-02T14:00:00Z","creation":{"resolved":{"effort":null,"model":"example-model","provider_profile":"personal","workspace":"/workspace/project"},"submitted":{"effort":null,"kind":"new","model":null,"name":null,"provider_profile":null,"workspace":"/workspace/project"}},"current_progress":[],"cursor":{"generation":"J6kYj6IGcXyP3eMIp-WL3A","sequence":0},"depth":0,"effort":null,"family_revision":"family-1","glances":[],"history":{"high_water":0,"items":[],"newer":null,"older":null},"id":"01a0fcea-2b00-7000-8000-000000000001","input_order":0,"kernel":{"build":null,"instance_id":null,"live_job_count":0,"running_jobs":[],"stage":null,"stale":false,"staleness_reasons":[],"state":"none"},"location":{"host":null,"label":null,"path":"/workspace/project","user":null},"model":"example-model","name":"New session","parent_id":null,"pending_inputs":[],"preferences":{"archived":false,"opens":0,"pin_order":null,"pinned":false},"preview":{"text":"","transcript_count":0,"truncated":false},"provider_profile":"personal","revision":"config-1","root_id":"01a0fcea-2b00-7000-8000-000000000001","selection":{"effective":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"overrides":{"extensions":{},"instructions":{},"mcp":{},"skills":{}}},"status":{"blocking_reason":null,"interrupt_requested":false,"phase":"idle","run_id":null},"usage":{"cache_fade":[],"cache_ttl_seconds":null,"cache_write_tokens":null,"cached_prompt_tokens":null,"completion_tokens":null,"context_window_tokens":null,"elapsed_ms":null,"model":null,"observed_at":null,"prompt_tokens":null,"tokens_per_second":null,"total_tokens":null},"workspace":"/workspace/project","workspace_change":null}
+	// Snapshot Examples: {"active_output":[],"activity":{"latest_answer":null,"latest_input":null,"lines":[],"observed_at":"2026-10-02T14:00:00Z","output_scalars":0,"output_utf8_bytes":0},"activity_at":"2026-10-02T14:00:00Z","address":null,"automatic_name":"New session","closed":false,"composition":{"availability":{},"dependencies":{},"desired_revision":"composition-1","loaded_revision":null,"needs_reload":true,"quarantine":[]},"configuration_resource":{"etag":"\"session-config-1\"","url":"/sessions/01a0fcea-2b00-7000-8000-000000000001?view=configuration","value":{"effort":null,"id":"01a0fcea-2b00-7000-8000-000000000001","model":"example-model","name":"New session","preferences":{"archived":false,"pin_order":null,"pinned":false},"provider_profile":"personal","revision":"config-1","selection":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"workspace":"/workspace/project"}},"created_at":"2026-10-02T14:00:00Z","creation":{"resolved":{"effort":null,"model":"example-model","provider_profile":"personal","workspace":"/workspace/project"},"submitted":{"effort":null,"kind":"new","model":null,"name":null,"provider_profile":null,"workspace":"/workspace/project"}},"current_progress":[],"cursor":{"generation":"J6kYj6IGcXyP3eMIp-WL3A","sequence":0},"depth":0,"effort":null,"family_revision":"family-1","glances":[],"history":{"high_water":0,"items":[],"newer":null,"older":null},"id":"01a0fcea-2b00-7000-8000-000000000001","input_order":0,"kernel":{"build":null,"instance_id":null,"live_job_count":0,"running_jobs":[],"stage":null,"stale":false,"staleness_reasons":[],"state":"none"},"location":{"host":null,"label":null,"path":"/workspace/project","user":null},"model":"example-model","name":"New session","parent_id":null,"pending_inputs":[],"preferences":{"archived":false,"opens":0,"pin_order":null,"pinned":false},"preview":{"text":"","transcript_count":0,"truncated":false},"provider_profile":"personal","revision":"config-1","root_id":"01a0fcea-2b00-7000-8000-000000000001","selection":{"effective":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"overrides":{"extensions":{},"instructions":{},"mcp":{},"skills":{}}},"shell_commands":[],"status":{"blocking_reason":null,"interrupt_requested":false,"phase":"idle","run_id":null},"usage":{"cache_fade":[],"cache_ttl_seconds":null,"cache_write_tokens":null,"cached_prompt_tokens":null,"completion_tokens":null,"context_window_tokens":null,"elapsed_ms":null,"model":null,"observed_at":null,"prompt_tokens":null,"tokens_per_second":null,"total_tokens":null},"workspace":"/workspace/project","workspace_change":null}
 	Snapshot Session `json:"snapshot"`
 }
 
@@ -2624,6 +2806,8 @@ type Server struct {
 
 // Session defines model for Session.
 type Session struct {
+	// Acp Present only for ACP-owned sessions. Attachment state is read separately from the session capture.
+	Acp                   *ACPState                    `json:"acp,omitempty"`
 	ActiveOutput          []ActiveOutput               `json:"active_output"`
 	Activity              Activity                     `json:"activity"`
 	ActivityAt            *Timestamp                   `json:"activity_at" nullable:"true"`
@@ -2643,6 +2827,7 @@ type Session struct {
 
 	// FamilyRevision Opaque identity. Never infer a resource type or route from its contents.
 	FamilyRevision ID       `json:"family_revision"`
+	Fast           bool     `json:"fast"`
 	Glances        []Glance `json:"glances"`
 
 	// History Examples: {"high_water":0,"items":[],"newer":null,"older":null}
@@ -2668,11 +2853,12 @@ type Session struct {
 	Role     string `json:"role"`
 
 	// RootID Opaque identity. Never infer a resource type or route from its contents.
-	RootID    ID               `json:"root_id"`
-	Selection SessionSelection `json:"selection"`
-	StartedBy *ID              `json:"started_by" nullable:"true"`
-	Status    SessionStatus    `json:"status"`
-	Usage     Usage            `json:"usage"`
+	RootID        ID               `json:"root_id"`
+	Selection     SessionSelection `json:"selection"`
+	ShellCommands []ShellCommand   `json:"shell_commands"`
+	StartedBy     *ID              `json:"started_by" nullable:"true"`
+	Status        SessionStatus    `json:"status"`
+	Usage         Usage            `json:"usage"`
 
 	// Workspace Canonical daemon-host location, local or SSH. Clients do not resolve this path locally.
 	Workspace       Workspace        `json:"workspace"`
@@ -2694,7 +2880,7 @@ type SessionChange struct {
 	} `json:"move" nullable:"true"`
 	Resource SessionConfigurationResource `json:"resource"`
 
-	// Session Examples: {"active_output":[],"activity":{"latest_answer":null,"latest_input":null,"lines":[],"observed_at":"2026-10-02T14:00:00Z","output_scalars":0,"output_utf8_bytes":0},"activity_at":"2026-10-02T14:00:00Z","address":null,"automatic_name":"New session","closed":false,"composition":{"availability":{},"dependencies":{},"desired_revision":"composition-1","loaded_revision":null,"needs_reload":true,"quarantine":[]},"configuration_resource":{"etag":"\"session-config-1\"","url":"/sessions/01a0fcea-2b00-7000-8000-000000000001?view=configuration","value":{"effort":null,"id":"01a0fcea-2b00-7000-8000-000000000001","model":"example-model","name":"New session","preferences":{"archived":false,"pin_order":null,"pinned":false},"provider_profile":"personal","revision":"config-1","selection":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"workspace":"/workspace/project"}},"created_at":"2026-10-02T14:00:00Z","creation":{"resolved":{"effort":null,"model":"example-model","provider_profile":"personal","workspace":"/workspace/project"},"submitted":{"effort":null,"kind":"new","model":null,"name":null,"provider_profile":null,"workspace":"/workspace/project"}},"current_progress":[],"cursor":{"generation":"J6kYj6IGcXyP3eMIp-WL3A","sequence":0},"depth":0,"effort":null,"family_revision":"family-1","glances":[],"history":{"high_water":0,"items":[],"newer":null,"older":null},"id":"01a0fcea-2b00-7000-8000-000000000001","input_order":0,"kernel":{"build":null,"instance_id":null,"live_job_count":0,"running_jobs":[],"stage":null,"stale":false,"staleness_reasons":[],"state":"none"},"location":{"host":null,"label":null,"path":"/workspace/project","user":null},"model":"example-model","name":"New session","parent_id":null,"pending_inputs":[],"preferences":{"archived":false,"opens":0,"pin_order":null,"pinned":false},"preview":{"text":"","transcript_count":0,"truncated":false},"provider_profile":"personal","revision":"config-1","root_id":"01a0fcea-2b00-7000-8000-000000000001","selection":{"effective":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"overrides":{"extensions":{},"instructions":{},"mcp":{},"skills":{}}},"status":{"blocking_reason":null,"interrupt_requested":false,"phase":"idle","run_id":null},"usage":{"cache_fade":[],"cache_ttl_seconds":null,"cache_write_tokens":null,"cached_prompt_tokens":null,"completion_tokens":null,"context_window_tokens":null,"elapsed_ms":null,"model":null,"observed_at":null,"prompt_tokens":null,"tokens_per_second":null,"total_tokens":null},"workspace":"/workspace/project","workspace_change":null}
+	// Session Examples: {"active_output":[],"activity":{"latest_answer":null,"latest_input":null,"lines":[],"observed_at":"2026-10-02T14:00:00Z","output_scalars":0,"output_utf8_bytes":0},"activity_at":"2026-10-02T14:00:00Z","address":null,"automatic_name":"New session","closed":false,"composition":{"availability":{},"dependencies":{},"desired_revision":"composition-1","loaded_revision":null,"needs_reload":true,"quarantine":[]},"configuration_resource":{"etag":"\"session-config-1\"","url":"/sessions/01a0fcea-2b00-7000-8000-000000000001?view=configuration","value":{"effort":null,"id":"01a0fcea-2b00-7000-8000-000000000001","model":"example-model","name":"New session","preferences":{"archived":false,"pin_order":null,"pinned":false},"provider_profile":"personal","revision":"config-1","selection":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"workspace":"/workspace/project"}},"created_at":"2026-10-02T14:00:00Z","creation":{"resolved":{"effort":null,"model":"example-model","provider_profile":"personal","workspace":"/workspace/project"},"submitted":{"effort":null,"kind":"new","model":null,"name":null,"provider_profile":null,"workspace":"/workspace/project"}},"current_progress":[],"cursor":{"generation":"J6kYj6IGcXyP3eMIp-WL3A","sequence":0},"depth":0,"effort":null,"family_revision":"family-1","glances":[],"history":{"high_water":0,"items":[],"newer":null,"older":null},"id":"01a0fcea-2b00-7000-8000-000000000001","input_order":0,"kernel":{"build":null,"instance_id":null,"live_job_count":0,"running_jobs":[],"stage":null,"stale":false,"staleness_reasons":[],"state":"none"},"location":{"host":null,"label":null,"path":"/workspace/project","user":null},"model":"example-model","name":"New session","parent_id":null,"pending_inputs":[],"preferences":{"archived":false,"opens":0,"pin_order":null,"pinned":false},"preview":{"text":"","transcript_count":0,"truncated":false},"provider_profile":"personal","revision":"config-1","root_id":"01a0fcea-2b00-7000-8000-000000000001","selection":{"effective":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"overrides":{"extensions":{},"instructions":{},"mcp":{},"skills":{}}},"shell_commands":[],"status":{"blocking_reason":null,"interrupt_requested":false,"phase":"idle","run_id":null},"usage":{"cache_fade":[],"cache_ttl_seconds":null,"cache_write_tokens":null,"cached_prompt_tokens":null,"completion_tokens":null,"context_window_tokens":null,"elapsed_ms":null,"model":null,"observed_at":null,"prompt_tokens":null,"tokens_per_second":null,"total_tokens":null},"workspace":"/workspace/project","workspace_change":null}
 	Session Session `json:"session"`
 }
 
@@ -2721,11 +2907,14 @@ type SessionCompactedEvent struct {
 	Type     string                `json:"type"`
 }
 
-// SessionConfiguration Examples: {"effort":null,"id":"01a0fcea-2b00-7000-8000-000000000001","model":"example-model","name":null,"preferences":{"archived":false,"pin_order":null,"pinned":false},"provider_profile":"personal","revision":"config-1","selection":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"workspace":"/workspace/project"}
+// SessionConfiguration Examples: {"effort":null,"fast":false,"id":"01a0fcea-2b00-7000-8000-000000000001","model":"example-model","name":null,"preferences":{"archived":false,"pin_order":null,"pinned":false},"provider_profile":"personal","revision":"config-1","selection":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"workspace":"/workspace/project"}
 type SessionConfiguration struct {
 	// ContextWindow Tokens this session compacts against instead of the model's catalogued window. Null uses the model's window.
 	ContextWindow *int64  `json:"context_window,omitempty" nullable:"true"`
 	Effort        *string `json:"effort" nullable:"true"`
+
+	// Fast Provider fast-mode setting; defaults off and may affect billing.
+	Fast bool `json:"fast"`
 
 	// ID Opaque identity. Never infer a resource type or route from its contents.
 	ID    ID  `json:"id"`
@@ -2756,7 +2945,7 @@ type SessionConfigurationResource struct {
 	// URL Daemon-relative URL, including any representation query. No foreign origin or fragment.
 	URL ResourceURL `json:"url"`
 
-	// Value Examples: {"effort":null,"id":"01a0fcea-2b00-7000-8000-000000000001","model":"example-model","name":null,"preferences":{"archived":false,"pin_order":null,"pinned":false},"provider_profile":"personal","revision":"config-1","selection":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"workspace":"/workspace/project"}
+	// Value Examples: {"effort":null,"fast":false,"id":"01a0fcea-2b00-7000-8000-000000000001","model":"example-model","name":null,"preferences":{"archived":false,"pin_order":null,"pinned":false},"provider_profile":"personal","revision":"config-1","selection":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"workspace":"/workspace/project"}
 	Value SessionConfiguration `json:"value"`
 }
 
@@ -2856,6 +3045,9 @@ type SessionLocation struct {
 type SessionMessageEvent struct {
 	Data struct {
 		Entry HistoryEntry `json:"entry"`
+
+		// ReplacesLiveIDs Live message IDs whose streamed text this durable entry represents, in order, as an exact prefix. Empty when nothing of this entry streamed live. Always sent by daemons with capability acp_attachment.
+		ReplacesLiveIDs []ID `json:"replaces_live_ids,omitempty"`
 	} `json:"data"`
 	Sequence Counter `json:"sequence"`
 	Type     string  `json:"type"`
@@ -2897,6 +3089,9 @@ type SessionPatch struct {
 	// ContextWindow Tokens this session compacts against instead of the model's catalogued window. Null uses the model's window.
 	ContextWindow *int64  `json:"context_window,omitempty" nullable:"true"`
 	Effort        *string `json:"effort,omitempty" nullable:"true"`
+
+	// Fast Enable provider fast mode; enabling requires a supported capability and may affect billing.
+	Fast *bool `json:"fast,omitempty"`
 
 	// Model Opaque identity. Never infer a resource type or route from its contents.
 	Model       *ID              `json:"model,omitempty"`
@@ -2962,6 +3157,13 @@ type SessionSelection struct {
 	Overrides SelectionOverrides `json:"overrides"`
 }
 
+// SessionShellCommandEvent defines model for SessionShellCommandEvent.
+type SessionShellCommandEvent struct {
+	Data     ShellCommandResponse `json:"data"`
+	Sequence Counter              `json:"sequence"`
+	Type     string               `json:"type"`
+}
+
 // SessionStatus defines model for SessionStatus.
 type SessionStatus struct {
 	BlockingReason     *SafeReason `json:"blocking_reason" nullable:"true"`
@@ -2989,8 +3191,10 @@ type SessionStatusRead struct {
 	Usage  Usage         `json:"usage"`
 }
 
-// SessionSummary Live fields and cursor are captured together. Extra response fields may be ignored.
+// SessionSummary Session live fields and cursor are captured together. ACP attachment metadata is read separately. Extra response fields may be ignored.
 type SessionSummary struct {
+	// Acp Present only for ACP-owned sessions. Attachment state is read separately from the session capture.
+	Acp             *ACPState      `json:"acp,omitempty"`
 	Activity        Activity       `json:"activity"`
 	ActivityAt      *Timestamp     `json:"activity_at" nullable:"true"`
 	Address         *string        `json:"address" nullable:"true"`
@@ -3001,6 +3205,7 @@ type SessionSummary struct {
 	Cursor          *Cursor        `json:"cursor" nullable:"true"`
 	Depth           int64          `json:"depth"`
 	Effort          *string        `json:"effort" nullable:"true"`
+	Fast            bool           `json:"fast"`
 
 	// ID Opaque identity. Never infer a resource type or route from its contents.
 	ID ID `json:"id"`
@@ -3069,7 +3274,10 @@ type SessionToolEvent struct {
 
 		// Result Explicit domain payload: tool arguments, tool results, provider-private state, or extension data. JSON values of any type are allowed; no core resource uses this as its envelope.
 		Result DynamicJSON `json:"result"`
-		Title  *string     `json:"title,omitempty" nullable:"true"`
+
+		// Status Outcome of the whole call. progress_call_id equals the call_id of any progress for this call, is unique within the session, and exists even when no progress was sent. Always sent by daemons with capability acp_attachment.
+		Status *string `json:"status,omitempty"`
+		Title  *string `json:"title,omitempty" nullable:"true"`
 
 		// ToolCallID Opaque identity. Never infer a resource type or route from its contents.
 		ToolCallID ID         `json:"tool_call_id"`
@@ -3152,6 +3360,40 @@ type SettingsPatch = json.RawMessage
 // SettingsRead defines model for SettingsRead.
 type SettingsRead = json.RawMessage
 
+// ShellCommand defines model for ShellCommand.
+type ShellCommand struct {
+	Command string `json:"command"`
+
+	// Delivery Whether this receipt was included in a model request whose response has started. Pending does not wake an idle agent; unknown is legacy tracking, detached is removed by rewind. Execution status is independent.
+	Delivery   string  `json:"delivery"`
+	Error      *string `json:"error" nullable:"true"`
+	ExitCode   *int64  `json:"exit_code" nullable:"true"`
+	HistorySeq *int64  `json:"history_seq" nullable:"true"`
+
+	// ID Client-generated lowercase UUIDv7. Retained decisions are checked before timestamp expiry.
+	ID          UUIDv7 `json:"id"`
+	Output      string `json:"output"`
+	OutputBytes int64  `json:"output_bytes"`
+	Status      string `json:"status"`
+	Truncated   bool   `json:"truncated"`
+}
+
+// ShellCommandOutput defines model for ShellCommandOutput.
+type ShellCommandOutput struct {
+	NextOffset *int64 `json:"next_offset" nullable:"true"`
+	Text       string `json:"text"`
+}
+
+// ShellCommandRequest defines model for ShellCommandRequest.
+type ShellCommandRequest struct {
+	Command string `json:"command"`
+}
+
+// ShellCommandResponse defines model for ShellCommandResponse.
+type ShellCommandResponse struct {
+	ShellCommand ShellCommand `json:"shell_command"`
+}
+
 // Shutdown defines model for Shutdown.
 type Shutdown struct {
 	// InstanceID Opaque identity. Never infer a resource type or route from its contents.
@@ -3181,6 +3423,44 @@ type SkillInputRequest struct {
 	ClientID        *string `json:"client_id,omitempty"`
 	Kind            string  `json:"kind"`
 }
+
+// SkillLoad A skill a user's slash activation loaded, as the `skill` JSON part of that user entry.
+type SkillLoad struct {
+	Name string `json:"name"`
+
+	// Scope The discovery root a skill came from. Empty for a user activation recorded before scopes were.
+	Scope SkillScope `json:"scope"`
+
+	// Source The installed SKILL.md path.
+	Source string `json:"source"`
+}
+
+// SkillLoadList defines model for SkillLoadList.
+type SkillLoadList struct {
+	// Items First loaded first.
+	Items []SkillLoadSummary `json:"items"`
+}
+
+// SkillLoadSummary One skill a session loaded, by the model or the user, with how often and when.
+type SkillLoadSummary struct {
+	Count int64 `json:"count"`
+
+	// FirstLoadedAt Unix seconds.
+	FirstLoadedAt int64 `json:"first_loaded_at"`
+
+	// LastLoadedAt Unix seconds.
+	LastLoadedAt int64  `json:"last_loaded_at"`
+	Name         string `json:"name"`
+
+	// Scope The discovery root a skill came from. Empty for a user activation recorded before scopes were.
+	Scope SkillScope `json:"scope"`
+
+	// Source The installed SKILL.md path the newest load used.
+	Source string `json:"source"`
+}
+
+// SkillScope The discovery root a skill came from. Empty for a user activation recorded before scopes were.
+type SkillScope = string
 
 // StorageFile defines model for StorageFile.
 type StorageFile struct {
@@ -3256,6 +3536,12 @@ type TargetNotification struct {
 	SessionID ID `json:"session_id"`
 }
 
+// TerminalClose The interactive terminal session was closed and its process group ended.
+type TerminalClose struct {
+	// Closed Opaque identity. Never infer a resource type or route from its contents.
+	Closed ID `json:"closed"`
+}
+
 // TextContent defines model for TextContent.
 type TextContent struct {
 	Kind string `json:"kind"`
@@ -3288,7 +3574,16 @@ type ToolActivity struct {
 	Ms *int64 `json:"ms,omitempty"`
 
 	// Ok Whether the call worked, when it ended while its cell's trace was open.
-	Ok     *bool  `json:"ok,omitempty"`
+	Ok *bool `json:"ok,omitempty"`
+
+	// Skill Where the skill a `skill` activity loaded was found; its name is the target. A cell notes each skill once, when it reads the skill's SKILL.md from the start or runs its command.
+	Skill *struct {
+		// Scope The discovery root a skill came from. Empty for a user activation recorded before scopes were.
+		Scope SkillScope `json:"scope"`
+
+		// Source The installed SKILL.md path.
+		Source string `json:"source"`
+	} `json:"skill,omitempty"`
 	Target string `json:"target"`
 }
 
@@ -3357,8 +3652,11 @@ type Turn struct {
 // UISettings defines model for UISettings.
 type UISettings struct {
 	DismissedNotices []ID `json:"dismissed_notices"`
-	Thinking         bool `json:"thinking"`
-	Tools            bool `json:"tools"`
+
+	// ProxyAllow Networks `albedo proxy` serves to besides this machine, as CIDR or an address whose trailing zero octets stand for any (10.0.0.0 is 10.0.0.0/8).
+	ProxyAllow []string `json:"proxy_allow,omitempty"`
+	Thinking   bool     `json:"thinking"`
+	Tools      bool     `json:"tools"`
 
 	// WebAllow Networks `albedo web` serves to besides this machine, as CIDR or an address whose trailing zero octets stand for any (10.0.0.0 is 10.0.0.0/8).
 	WebAllow []string `json:"web_allow,omitempty"`
@@ -3373,9 +3671,12 @@ type UISettingsChange struct {
 
 // UISettingsPatch defines model for UISettingsPatch.
 type UISettingsPatch struct {
-	DismissedNotices []ID  `json:"dismissed_notices,omitempty"`
-	Thinking         *bool `json:"thinking,omitempty"`
-	Tools            *bool `json:"tools,omitempty"`
+	DismissedNotices []ID `json:"dismissed_notices,omitempty"`
+
+	// ProxyAllow Networks `albedo proxy` serves to besides this machine, as CIDR or an address whose trailing zero octets stand for any (10.0.0.0 is 10.0.0.0/8).
+	ProxyAllow []string `json:"proxy_allow,omitempty"`
+	Thinking   *bool    `json:"thinking,omitempty"`
+	Tools      *bool    `json:"tools,omitempty"`
 
 	// WebAllow Networks `albedo web` serves to besides this machine, as CIDR or an address whose trailing zero octets stand for any (10.0.0.0 is 10.0.0.0/8).
 	WebAllow []string `json:"web_allow,omitempty"`
@@ -3607,6 +3908,9 @@ type WorkspacePreview struct {
 // WorkspaceRead defines model for WorkspaceRead.
 type WorkspaceRead = json.RawMessage
 
+// AttachmentTokenOptional 32 random bytes, canonical unpadded base64url (the last character carries no stray bits).
+type AttachmentTokenOptional = AttachmentToken
+
 // IfMatch Strong opaque validator for the complete canonical representation.
 type IfMatch = ETag
 
@@ -3763,6 +4067,11 @@ type PatchScheduleParams struct {
 	IfMatch IfMatch `json:"If-Match"`
 }
 
+// ListSkillLoadsParams defines parameters for ListSkillLoads.
+type ListSkillLoadsParams struct {
+	SessionID ID `form:"session_id" json:"session_id"`
+}
+
 // ListHooksParams defines parameters for ListHooks.
 type ListHooksParams struct {
 	SessionID *ID    `form:"session_id,omitempty" json:"session_id,omitempty"`
@@ -3904,9 +4213,12 @@ type ListSessionsParams struct {
 	Search      *string    `form:"search,omitempty" json:"search,omitempty"`
 	Archived    *bool      `form:"archived,omitempty" json:"archived,omitempty"`
 	NeedsReload *bool      `form:"needs_reload,omitempty" json:"needs_reload,omitempty"`
-	Sort        *string    `form:"sort,omitempty" json:"sort,omitempty"`
-	Limit       *Limit     `form:"limit,omitempty" json:"limit,omitempty"`
-	Next        *Next      `form:"next,omitempty" json:"next,omitempty"`
+
+	// Acp true lists only ACP-owned sessions, false only the others. Combine with workspace for an exact canonical workspace match.
+	Acp   *bool   `form:"acp,omitempty" json:"acp,omitempty"`
+	Sort  *string `form:"sort,omitempty" json:"sort,omitempty"`
+	Limit *Limit  `form:"limit,omitempty" json:"limit,omitempty"`
+	Next  *Next   `form:"next,omitempty" json:"next,omitempty"`
 }
 
 // DeleteSessionParams defines parameters for DeleteSession.
@@ -3933,12 +4245,36 @@ type PatchSessionParams struct {
 
 	// IfMatch Observed canonical representation validator. Wildcards and weak validators are not accepted.
 	IfMatch IfMatch `json:"If-Match"`
+
+	// AlbedoAttachmentToken Required for kind acp creation and for input or scoped cancellation in an ACP session. Also authorizes model-only configuration patches by an ACP attachment holder. Ordinary creation ignores this header. Input, scoped cancellation, and configuration patches parse and reject malformed supplied values. Not part of the durable intent.
+	AlbedoAttachmentToken *AttachmentTokenOptional `json:"Albedo-Attachment-Token,omitempty"`
 }
 
 // CreateSessionParams defines parameters for CreateSession.
 type CreateSessionParams struct {
 	// IfNoneMatch Conditional creation only.
 	IfNoneMatch IfNoneMatch `json:"If-None-Match"`
+
+	// AlbedoAttachmentToken Required for kind acp creation and for input or scoped cancellation in an ACP session. Also authorizes model-only configuration patches by an ACP attachment holder. Ordinary creation ignores this header. Input, scoped cancellation, and configuration patches parse and reject malformed supplied values. Not part of the durable intent.
+	AlbedoAttachmentToken *AttachmentTokenOptional `json:"Albedo-Attachment-Token,omitempty"`
+}
+
+// ReleaseACPSessionParams defines parameters for ReleaseACPSession.
+type ReleaseACPSessionParams struct {
+	// AlbedoAttachmentToken Per-connection ACP attachment capability, generated by the client. Separate from the daemon bearer token; the daemon keeps only a digest in memory and never returns or logs it.
+	AlbedoAttachmentToken AttachmentToken `json:"Albedo-Attachment-Token"`
+}
+
+// AttachACPSessionParams defines parameters for AttachACPSession.
+type AttachACPSessionParams struct {
+	// AlbedoAttachmentToken Per-connection ACP attachment capability, generated by the client. Separate from the daemon bearer token; the daemon keeps only a digest in memory and never returns or logs it.
+	AlbedoAttachmentToken AttachmentToken `json:"Albedo-Attachment-Token"`
+}
+
+// RenewACPSessionParams defines parameters for RenewACPSession.
+type RenewACPSessionParams struct {
+	// AlbedoAttachmentToken Per-connection ACP attachment capability, generated by the client. Separate from the daemon bearer token; the daemon keeps only a digest in memory and never returns or logs it.
+	AlbedoAttachmentToken AttachmentToken `json:"Albedo-Attachment-Token"`
 }
 
 // GetActiveOutputContentParams defines parameters for GetActiveOutputContent.
@@ -3968,6 +4304,17 @@ type GetContextParams struct {
 	Next    *Next    `form:"next,omitempty" json:"next,omitempty"`
 }
 
+// PatchFastModeApplicationMergePatchPlusJSONBody defines parameters for PatchFastMode.
+type PatchFastModeApplicationMergePatchPlusJSONBody struct {
+	State string `json:"state"`
+}
+
+// PatchFastModeParams defines parameters for PatchFastMode.
+type PatchFastModeParams struct {
+	// IfMatch Observed canonical representation validator. Wildcards and weak validators are not accepted.
+	IfMatch IfMatch `json:"If-Match"`
+}
+
 // GetSessionFileParams defines parameters for GetSessionFile.
 type GetSessionFileParams struct {
 	// Path Absolute on the workspace's machine, relative to the workspace, `~/...` in a local workspace, or the host-prefixed spelling `path` answers with.
@@ -3995,6 +4342,24 @@ type GetHistoryContentParams struct {
 	Next *Next `form:"next,omitempty" json:"next,omitempty"`
 }
 
+// PutInputParams defines parameters for PutInput.
+type PutInputParams struct {
+	// AlbedoAttachmentToken Required for kind acp creation and for input or scoped cancellation in an ACP session. Also authorizes model-only configuration patches by an ACP attachment holder. Ordinary creation ignores this header. Input, scoped cancellation, and configuration patches parse and reject malformed supplied values. Not part of the durable intent.
+	AlbedoAttachmentToken *AttachmentTokenOptional `json:"Albedo-Attachment-Token,omitempty"`
+}
+
+// CancelInputParams defines parameters for CancelInput.
+type CancelInputParams struct {
+	// AlbedoAttachmentToken Required for kind acp creation and for input or scoped cancellation in an ACP session. Also authorizes model-only configuration patches by an ACP attachment holder. Ordinary creation ignores this header. Input, scoped cancellation, and configuration patches parse and reject malformed supplied values. Not part of the durable intent.
+	AlbedoAttachmentToken *AttachmentTokenOptional `json:"Albedo-Attachment-Token,omitempty"`
+}
+
+// GetShellCommandOutputParams defines parameters for GetShellCommandOutput.
+type GetShellCommandOutputParams struct {
+	Offset *int64 `form:"offset,omitempty" json:"offset,omitempty"`
+	Limit  *int64 `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
 // GetSettingsParams defines parameters for GetSettings.
 type GetSettingsParams struct {
 	Group *string `form:"group,omitempty" json:"group,omitempty"`
@@ -4013,6 +4378,27 @@ type GetStorageParams struct {
 	SessionsNext *PageToken `form:"sessions_next,omitempty" json:"sessions_next,omitempty"`
 	FilesNext    *PageToken `form:"files_next,omitempty" json:"files_next,omitempty"`
 	Limit        *Limit     `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
+// AttachTerminalParams defines parameters for AttachTerminal.
+type AttachTerminalParams struct {
+	// Cwd Initial working directory for the terminal session.
+	Cwd *string `form:"cwd,omitempty" json:"cwd,omitempty"`
+
+	// SessionID Existing session ID to derive initial working directory from.
+	SessionID *ID `form:"session_id,omitempty" json:"session_id,omitempty"`
+
+	// Cols Terminal column width (2-500, default 80).
+	Cols *int64 `form:"cols,omitempty" json:"cols,omitempty"`
+
+	// Rows Terminal row height (1-200, default 24).
+	Rows *int64 `form:"rows,omitempty" json:"rows,omitempty"`
+
+	// Restart Whether to restart an existing terminal process group.
+	Restart *bool `form:"restart,omitempty" json:"restart,omitempty"`
+
+	// Shell Command or shell executable to run (defaults to user shell).
+	Shell *string `form:"shell,omitempty" json:"shell,omitempty"`
 }
 
 // GetWorkspacesParams defines parameters for GetWorkspaces.
@@ -4107,8 +4493,17 @@ type PatchSessionApplicationMergePatchPlusJSONRequestBody = SessionChangeRequest
 // CreateSessionJSONRequestBody defines body for CreateSession for application/json ContentType.
 type CreateSessionJSONRequestBody = SessionCreationRequest
 
+// AttachACPSessionJSONRequestBody defines body for AttachACPSession for application/json ContentType.
+type AttachACPSessionJSONRequestBody = ACPAttachRequest
+
+// RenewACPSessionJSONRequestBody defines body for RenewACPSession for application/json ContentType.
+type RenewACPSessionJSONRequestBody = EmptyRequest
+
 // CompactSessionJSONRequestBody defines body for CompactSession for application/json ContentType.
 type CompactSessionJSONRequestBody = CompactionRequest
+
+// PatchFastModeApplicationMergePatchPlusJSONRequestBody defines body for PatchFastMode for application/merge-patch+json ContentType.
+type PatchFastModeApplicationMergePatchPlusJSONRequestBody PatchFastModeApplicationMergePatchPlusJSONBody
 
 // PutInputJSONRequestBody defines body for PutInput for application/json ContentType.
 type PutInputJSONRequestBody = InputRequest
@@ -4127,6 +4522,9 @@ type ReloadSessionJSONRequestBody = ReloadRequest
 
 // RewindSessionJSONRequestBody defines body for RewindSession for application/json ContentType.
 type RewindSessionJSONRequestBody = RewindRequest
+
+// PutShellCommandJSONRequestBody defines body for PutShellCommand for application/json ContentType.
+type PutShellCommandJSONRequestBody = ShellCommandRequest
 
 // RecordVisitJSONRequestBody defines body for RecordVisit for application/json ContentType.
 type RecordVisitJSONRequestBody = EmptyRequest
@@ -4707,6 +5105,13 @@ type ClientInterface interface {
 	// Corresponds with PATCH /extensions/schedule/jobs/{job_id} (the `PatchSchedule` operationId).
 	PatchScheduleWithApplicationMergePatchPlusJSONBody(ctx context.Context, jobID ID, params *PatchScheduleParams, body PatchScheduleApplicationMergePatchPlusJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// ListSkillLoads List the skills a session loaded
+	//
+	// Requires enabled extension skills. Each skill the session's model or user loaded, once, first loaded first; the session's sidebar glance lists the same.
+	//
+	// Corresponds with GET /extensions/skills/loads (the `ListSkillLoads` operationId).
+	ListSkillLoads(ctx context.Context, params *ListSkillLoadsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// ListWebSearchProviders List web search providers in the order a search tries them
 	//
 	// Requires enabled extension web-search. The global order lives in extensions.json.
@@ -4984,7 +5389,7 @@ type ClientInterface interface {
 
 	// PatchSessionWithBody Edit configuration or move workspace
 	//
-	// Use the observed configuration URL and validator. Workspace is a standalone change carrying the observed session family revision. Busy target fails before commit; busy descendants follow a committed parent move at idle. Other configuration fields commit together. No automatic lost-response retry.
+	// Use the observed configuration URL and validator. Workspace is a standalone change carrying the observed session family revision. Busy target fails before commit; busy descendants follow a committed parent move at idle. Other configuration fields commit together. No automatic lost-response retry. An ACP attachment holder may select a model with a patch containing only model and an optional provider_profile; other execution changes remain unavailable to ACP sessions.
 	//
 	// Takes any type of body and a specified content type.
 	//
@@ -4993,7 +5398,7 @@ type ClientInterface interface {
 
 	// PatchSessionWithApplicationMergePatchPlusJSONBody Edit configuration or move workspace
 	//
-	// Use the observed configuration URL and validator. Workspace is a standalone change carrying the observed session family revision. Busy target fails before commit; busy descendants follow a committed parent move at idle. Other configuration fields commit together. No automatic lost-response retry.
+	// Use the observed configuration URL and validator. Workspace is a standalone change carrying the observed session family revision. Busy target fails before commit; busy descendants follow a committed parent move at idle. Other configuration fields commit together. No automatic lost-response retry. An ACP attachment holder may select a model with a patch containing only model and an optional provider_profile; other execution changes remain unavailable to ACP sessions.
 	//
 	// Takes a body of the `application/merge-patch+json` content type.
 	//
@@ -5017,6 +5422,49 @@ type ClientInterface interface {
 	//
 	// Corresponds with PUT /sessions/{session_id} (the `CreateSession` operationId).
 	CreateSession(ctx context.Context, sessionID UUIDv7, params *CreateSessionParams, body CreateSessionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ReleaseACPSession Release this connection's attachment
+	//
+	// Idempotent. Never cancels accepted inputs, the active turn, or the MCP overlay.
+	//
+	// Corresponds with DELETE /sessions/{session_id}/acp-attachment (the `ReleaseACPSession` operationId).
+	ReleaseACPSession(ctx context.Context, sessionID ID, params *ReleaseACPSessionParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// AttachACPSessionWithBody Attach this ACP connection as the session's single writer
+	//
+	// Attach or re-attach with the same token. 409 not_acp_session for a session created without kind acp; 409 workspace_mismatch unless workspace equals the session's canonical workspace exactly; 409 attachment_held while another token holds a live lease (never stolen); 409 session_busy when the session has an active turn and the overlay differs from the installed one (nothing changes); 409 mcp_overlay_conflict for duplicate names or names already configured globally; 409 mcp_overlay_failed when an idle replacement could not be prepared (the previous overlay and attachment stay as they were). 503 overlay_installed_reload_failed means publication succeeded but runtime reload failed; the replacement remains installed. 503 overlay_update_uncertain means publication or reload was not confirmed within 15 seconds and may still complete. An identical reattach retries a failed reload. With editor-mcp enabled, publication awaiting reload blocks turns with 409 overlay_installed_reload_failed. A missing required overlay after restart blocks turns with 409 overlay_reattach_required; the editor must resume and resupply its servers. An empty overlay permits daemon-driven turns after daemon restart, but old editor tokens are invalid. Failed setup releases a newly acquired lease and retains a preexisting same-token lease. An empty list removes only the editor overlay.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with PUT /sessions/{session_id}/acp-attachment (the `AttachACPSession` operationId).
+	AttachACPSessionWithBody(ctx context.Context, sessionID ID, params *AttachACPSessionParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// AttachACPSession Attach this ACP connection as the session's single writer
+	//
+	// Attach or re-attach with the same token. 409 not_acp_session for a session created without kind acp; 409 workspace_mismatch unless workspace equals the session's canonical workspace exactly; 409 attachment_held while another token holds a live lease (never stolen); 409 session_busy when the session has an active turn and the overlay differs from the installed one (nothing changes); 409 mcp_overlay_conflict for duplicate names or names already configured globally; 409 mcp_overlay_failed when an idle replacement could not be prepared (the previous overlay and attachment stay as they were). 503 overlay_installed_reload_failed means publication succeeded but runtime reload failed; the replacement remains installed. 503 overlay_update_uncertain means publication or reload was not confirmed within 15 seconds and may still complete. An identical reattach retries a failed reload. With editor-mcp enabled, publication awaiting reload blocks turns with 409 overlay_installed_reload_failed. A missing required overlay after restart blocks turns with 409 overlay_reattach_required; the editor must resume and resupply its servers. An empty overlay permits daemon-driven turns after daemon restart, but old editor tokens are invalid. Failed setup releases a newly acquired lease and retains a preexisting same-token lease. An empty list removes only the editor overlay.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with PUT /sessions/{session_id}/acp-attachment (the `AttachACPSession` operationId).
+	AttachACPSession(ctx context.Context, sessionID ID, params *AttachACPSessionParams, body AttachACPSessionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// RenewACPSessionWithBody Extend this connection's attachment lease
+	//
+	// 409 attachment_lost when this token no longer holds the attachment (expired, released, or the daemon restarted). Renewal never re-attaches; the client must attach again.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /sessions/{session_id}/acp-attachment/renew (the `RenewACPSession` operationId).
+	RenewACPSessionWithBody(ctx context.Context, sessionID ID, params *RenewACPSessionParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// RenewACPSession Extend this connection's attachment lease
+	//
+	// 409 attachment_lost when this token no longer holds the attachment (expired, released, or the daemon restarted). Renewal never re-attaches; the client must attach again.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /sessions/{session_id}/acp-attachment/renew (the `RenewACPSession` operationId).
+	RenewACPSession(ctx context.Context, sessionID ID, params *RenewACPSessionParams, body RenewACPSessionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetActiveOutputContent Read unfinished output at a captured snapshot cutoff
 	//
@@ -5063,6 +5511,39 @@ type ClientInterface interface {
 	//
 	// Corresponds with GET /sessions/{session_id}/context-window (the `GetContextWindow` operationId).
 	GetContextWindow(ctx context.Context, sessionID ID, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetFastMode Read fast-mode state and provider capability
+	//
+	// Corresponds with GET /sessions/{session_id}/fast-mode (the `GetFastMode` operationId).
+	GetFastMode(ctx context.Context, sessionID ID, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PatchFastModeWithBody Change session fast mode
+	//
+	// Conditional, user-facing configuration change. Requires the session
+	// configuration ETag. Enabling is rejected unless the provider reports
+	// fast mode supported; unknown capability is not inferred. Disabling is
+	// always allowed. `toggle` inverts the state protected by If-Match; replaying
+	// a successful toggle with the old ETag is refused rather than toggling twice.
+	// This setting can affect provider billing.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with PATCH /sessions/{session_id}/fast-mode (the `PatchFastMode` operationId).
+	PatchFastModeWithBody(ctx context.Context, sessionID ID, params *PatchFastModeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PatchFastModeWithApplicationMergePatchPlusJSONBody Change session fast mode
+	//
+	// Conditional, user-facing configuration change. Requires the session
+	// configuration ETag. Enabling is rejected unless the provider reports
+	// fast mode supported; unknown capability is not inferred. Disabling is
+	// always allowed. `toggle` inverts the state protected by If-Match; replaying
+	// a successful toggle with the old ETag is refused rather than toggling twice.
+	// This setting can affect provider billing.
+	//
+	// Takes a body of the `application/merge-patch+json` content type.
+	//
+	// Corresponds with PATCH /sessions/{session_id}/fast-mode (the `PatchFastMode` operationId).
+	PatchFastModeWithApplicationMergePatchPlusJSONBody(ctx context.Context, sessionID ID, params *PatchFastModeParams, body PatchFastModeApplicationMergePatchPlusJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetSessionFile Read a text file in the session's workspace
 	//
@@ -5113,7 +5594,7 @@ type ClientInterface interface {
 	// Takes any type of body and a specified content type.
 	//
 	// Corresponds with PUT /sessions/{session_id}/inputs/{input_id} (the `PutInput` operationId).
-	PutInputWithBody(ctx context.Context, sessionID ID, inputID UUIDv7, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+	PutInputWithBody(ctx context.Context, sessionID ID, inputID UUIDv7, params *PutInputParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// PutInput Admit immutable identified input
 	//
@@ -5122,25 +5603,25 @@ type ClientInterface interface {
 	// Takes a body of the `application/json` content type.
 	//
 	// Corresponds with PUT /sessions/{session_id}/inputs/{input_id} (the `PutInput` operationId).
-	PutInput(ctx context.Context, sessionID ID, inputID UUIDv7, body PutInputJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+	PutInput(ctx context.Context, sessionID ID, inputID UUIDv7, params *PutInputParams, body PutInputJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// CancelInputWithBody Cancel or interrupt only this input
 	//
-	// Never interrupts a later unrelated turn. shared_running leaves a shared turn running; retry only inspects or acts on this same input.
+	// Never interrupts a later unrelated turn. shared_running leaves a shared turn running; retry only inspects or acts on this same input. ACP sessions require the current attachment token.
 	//
 	// Takes any type of body and a specified content type.
 	//
 	// Corresponds with POST /sessions/{session_id}/inputs/{input_id}/cancel (the `CancelInput` operationId).
-	CancelInputWithBody(ctx context.Context, sessionID ID, inputID ID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+	CancelInputWithBody(ctx context.Context, sessionID ID, inputID ID, params *CancelInputParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// CancelInput Cancel or interrupt only this input
 	//
-	// Never interrupts a later unrelated turn. shared_running leaves a shared turn running; retry only inspects or acts on this same input.
+	// Never interrupts a later unrelated turn. shared_running leaves a shared turn running; retry only inspects or acts on this same input. ACP sessions require the current attachment token.
 	//
 	// Takes a body of the `application/json` content type.
 	//
 	// Corresponds with POST /sessions/{session_id}/inputs/{input_id}/cancel (the `CancelInput` operationId).
-	CancelInput(ctx context.Context, sessionID ID, inputID ID, body CancelInputJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+	CancelInput(ctx context.Context, sessionID ID, inputID ID, params *CancelInputParams, body CancelInputJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// InterruptSessionWithBody Interrupt a captured run and waiting prefix
 	//
@@ -5214,6 +5695,43 @@ type ClientInterface interface {
 	// Corresponds with POST /sessions/{session_id}/rewind (the `RewindSession` operationId).
 	RewindSession(ctx context.Context, sessionID ID, body RewindSessionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// GetShellCommand Read a human shell command
+	//
+	// Corresponds with GET /sessions/{session_id}/shell-commands/{command_id} (the `GetShellCommand` operationId).
+	GetShellCommand(ctx context.Context, sessionID ID, commandID UUIDv7, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PutShellCommandWithBody Admit one immutable human shell command
+	//
+	// Durable admission precedes process spawn. Same identity and command returns the original resource before mutable checks; changed intent conflicts. One running command and at most 32 uncommitted outcomes per session. No automatic model turn. Remote workspaces are refused.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with PUT /sessions/{session_id}/shell-commands/{command_id} (the `PutShellCommand` operationId).
+	PutShellCommandWithBody(ctx context.Context, sessionID ID, commandID UUIDv7, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PutShellCommand Admit one immutable human shell command
+	//
+	// Durable admission precedes process spawn. Same identity and command returns the original resource before mutable checks; changed intent conflicts. One running command and at most 32 uncommitted outcomes per session. No automatic model turn. Remote workspaces are refused.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with PUT /sessions/{session_id}/shell-commands/{command_id} (the `PutShellCommand` operationId).
+	PutShellCommand(ctx context.Context, sessionID ID, commandID UUIDv7, body PutShellCommandJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetShellCommandOutput Read retained sanitized shell output
+	//
+	// UTF-8 byte offsets, complete-codepoint pages, next_offset null at the current captured cutoff. Retained output is at most 16 MiB; no terminal controls are stored.
+	//
+	// Corresponds with GET /sessions/{session_id}/shell-commands/{command_id}/output (the `GetShellCommandOutput` operationId).
+	GetShellCommandOutput(ctx context.Context, sessionID ID, commandID UUIDv7, params *GetShellCommandOutputParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// StopShellCommand Request termination of one human shell command
+	//
+	// Stops this command process group only. Response can remain running until cleanup is confirmed; read the same resource for its terminal outcome.
+	//
+	// Corresponds with POST /sessions/{session_id}/shell-commands/{command_id}/stop (the `StopShellCommand` operationId).
+	StopShellCommand(ctx context.Context, sessionID ID, commandID UUIDv7, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// RecordVisitWithBody Count one deliberate opening
 	//
 	// Visit ID is UUIDv7. Same identity increments once; reads and refreshes never count.
@@ -5263,6 +5781,24 @@ type ClientInterface interface {
 	//
 	// Corresponds with GET /storage (the `GetStorage` operationId).
 	GetStorage(ctx context.Context, params *GetStorageParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// CloseTerminal Explicitly close an interactive pseudo-terminal session
+	//
+	// Terminates the pseudo-terminal process group and releases its resources.
+	//
+	// Corresponds with DELETE /terminals/{terminal_id} (the `CloseTerminal` operationId).
+	CloseTerminal(ctx context.Context, terminalID ID, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// AttachTerminal Upgrade to interactive pseudo-terminal session
+	//
+	// WebSocket upgrade endpoint for an interactive terminal. Authenticated by the same bearer token and origin policy as other daemon routes.
+	// Binary frames carry raw terminal PTY bytes. Text frames are JSON objects for control commands:
+	// {type:"ping"}, {type:"input",data:...}, {type:"resize",cols:...,rows:...}, {type:"signal",signal:"SIGINT"|"SIGTERM"|...}, {type:"restart",cols:...,rows:...}.
+	// Server sends {type:"ready",id,cwd,shell,cols,rows,state,exit_code} on attach, binary frames for terminal output (including initial scrollback history),
+	// {type:"exit",exit_code} when the shell process exits, and {type:"pong"} keepalives.
+	//
+	// Corresponds with GET /terminals/{terminal_id} (the `AttachTerminal` operationId).
+	AttachTerminal(ctx context.Context, terminalID ID, params *AttachTerminalParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetWorkspaces Browse recent locations or a directory
 	//
@@ -6401,6 +6937,23 @@ func (c *Client) PatchScheduleWithApplicationMergePatchPlusJSONBody(ctx context.
 	return c.Client.Do(req)
 }
 
+// ListSkillLoads List the skills a session loaded
+//
+// Requires enabled extension skills. Each skill the session's model or user loaded, once, first loaded first; the session's sidebar glance lists the same.
+//
+// Corresponds with GET /extensions/skills/loads (the `ListSkillLoads` operationId).
+func (c *Client) ListSkillLoads(ctx context.Context, params *ListSkillLoadsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListSkillLoadsRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 // ListWebSearchProviders List web search providers in the order a search tries them
 //
 // Requires enabled extension web-search. The global order lives in extensions.json.
@@ -7028,7 +7581,7 @@ func (c *Client) GetSession(ctx context.Context, sessionID ID, params *GetSessio
 
 // PatchSessionWithBody Edit configuration or move workspace
 //
-// Use the observed configuration URL and validator. Workspace is a standalone change carrying the observed session family revision. Busy target fails before commit; busy descendants follow a committed parent move at idle. Other configuration fields commit together. No automatic lost-response retry.
+// Use the observed configuration URL and validator. Workspace is a standalone change carrying the observed session family revision. Busy target fails before commit; busy descendants follow a committed parent move at idle. Other configuration fields commit together. No automatic lost-response retry. An ACP attachment holder may select a model with a patch containing only model and an optional provider_profile; other execution changes remain unavailable to ACP sessions.
 //
 // Takes any type of body and a specified content type.
 //
@@ -7047,7 +7600,7 @@ func (c *Client) PatchSessionWithBody(ctx context.Context, sessionID ID, params 
 
 // PatchSessionWithApplicationMergePatchPlusJSONBody Edit configuration or move workspace
 //
-// Use the observed configuration URL and validator. Workspace is a standalone change carrying the observed session family revision. Busy target fails before commit; busy descendants follow a committed parent move at idle. Other configuration fields commit together. No automatic lost-response retry.
+// Use the observed configuration URL and validator. Workspace is a standalone change carrying the observed session family revision. Busy target fails before commit; busy descendants follow a committed parent move at idle. Other configuration fields commit together. No automatic lost-response retry. An ACP attachment holder may select a model with a patch containing only model and an optional provider_profile; other execution changes remain unavailable to ACP sessions.
 //
 // Takes a body of the `application/merge-patch+json` content type.
 //
@@ -7092,6 +7645,99 @@ func (c *Client) CreateSessionWithBody(ctx context.Context, sessionID UUIDv7, pa
 // Corresponds with PUT /sessions/{session_id} (the `CreateSession` operationId).
 func (c *Client) CreateSession(ctx context.Context, sessionID UUIDv7, params *CreateSessionParams, body CreateSessionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewCreateSessionRequest(c.Server, sessionID, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// ReleaseACPSession Release this connection's attachment
+//
+// Idempotent. Never cancels accepted inputs, the active turn, or the MCP overlay.
+//
+// Corresponds with DELETE /sessions/{session_id}/acp-attachment (the `ReleaseACPSession` operationId).
+func (c *Client) ReleaseACPSession(ctx context.Context, sessionID ID, params *ReleaseACPSessionParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewReleaseACPSessionRequest(c.Server, sessionID, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// AttachACPSessionWithBody Attach this ACP connection as the session's single writer
+//
+// Attach or re-attach with the same token. 409 not_acp_session for a session created without kind acp; 409 workspace_mismatch unless workspace equals the session's canonical workspace exactly; 409 attachment_held while another token holds a live lease (never stolen); 409 session_busy when the session has an active turn and the overlay differs from the installed one (nothing changes); 409 mcp_overlay_conflict for duplicate names or names already configured globally; 409 mcp_overlay_failed when an idle replacement could not be prepared (the previous overlay and attachment stay as they were). 503 overlay_installed_reload_failed means publication succeeded but runtime reload failed; the replacement remains installed. 503 overlay_update_uncertain means publication or reload was not confirmed within 15 seconds and may still complete. An identical reattach retries a failed reload. With editor-mcp enabled, publication awaiting reload blocks turns with 409 overlay_installed_reload_failed. A missing required overlay after restart blocks turns with 409 overlay_reattach_required; the editor must resume and resupply its servers. An empty overlay permits daemon-driven turns after daemon restart, but old editor tokens are invalid. Failed setup releases a newly acquired lease and retains a preexisting same-token lease. An empty list removes only the editor overlay.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with PUT /sessions/{session_id}/acp-attachment (the `AttachACPSession` operationId).
+func (c *Client) AttachACPSessionWithBody(ctx context.Context, sessionID ID, params *AttachACPSessionParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewAttachACPSessionRequestWithBody(c.Server, sessionID, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// AttachACPSession Attach this ACP connection as the session's single writer
+//
+// Attach or re-attach with the same token. 409 not_acp_session for a session created without kind acp; 409 workspace_mismatch unless workspace equals the session's canonical workspace exactly; 409 attachment_held while another token holds a live lease (never stolen); 409 session_busy when the session has an active turn and the overlay differs from the installed one (nothing changes); 409 mcp_overlay_conflict for duplicate names or names already configured globally; 409 mcp_overlay_failed when an idle replacement could not be prepared (the previous overlay and attachment stay as they were). 503 overlay_installed_reload_failed means publication succeeded but runtime reload failed; the replacement remains installed. 503 overlay_update_uncertain means publication or reload was not confirmed within 15 seconds and may still complete. An identical reattach retries a failed reload. With editor-mcp enabled, publication awaiting reload blocks turns with 409 overlay_installed_reload_failed. A missing required overlay after restart blocks turns with 409 overlay_reattach_required; the editor must resume and resupply its servers. An empty overlay permits daemon-driven turns after daemon restart, but old editor tokens are invalid. Failed setup releases a newly acquired lease and retains a preexisting same-token lease. An empty list removes only the editor overlay.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with PUT /sessions/{session_id}/acp-attachment (the `AttachACPSession` operationId).
+func (c *Client) AttachACPSession(ctx context.Context, sessionID ID, params *AttachACPSessionParams, body AttachACPSessionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewAttachACPSessionRequest(c.Server, sessionID, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// RenewACPSessionWithBody Extend this connection's attachment lease
+//
+// 409 attachment_lost when this token no longer holds the attachment (expired, released, or the daemon restarted). Renewal never re-attaches; the client must attach again.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /sessions/{session_id}/acp-attachment/renew (the `RenewACPSession` operationId).
+func (c *Client) RenewACPSessionWithBody(ctx context.Context, sessionID ID, params *RenewACPSessionParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRenewACPSessionRequestWithBody(c.Server, sessionID, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// RenewACPSession Extend this connection's attachment lease
+//
+// 409 attachment_lost when this token no longer holds the attachment (expired, released, or the daemon restarted). Renewal never re-attaches; the client must attach again.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /sessions/{session_id}/acp-attachment/renew (the `RenewACPSession` operationId).
+func (c *Client) RenewACPSession(ctx context.Context, sessionID ID, params *RenewACPSessionParams, body RenewACPSessionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRenewACPSessionRequest(c.Server, sessionID, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -7198,6 +7844,69 @@ func (c *Client) GetContext(ctx context.Context, sessionID ID, params *GetContex
 // Corresponds with GET /sessions/{session_id}/context-window (the `GetContextWindow` operationId).
 func (c *Client) GetContextWindow(ctx context.Context, sessionID ID, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetContextWindowRequest(c.Server, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetFastMode Read fast-mode state and provider capability
+//
+// Corresponds with GET /sessions/{session_id}/fast-mode (the `GetFastMode` operationId).
+func (c *Client) GetFastMode(ctx context.Context, sessionID ID, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetFastModeRequest(c.Server, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PatchFastModeWithBody Change session fast mode
+//
+// Conditional, user-facing configuration change. Requires the session
+// configuration ETag. Enabling is rejected unless the provider reports
+// fast mode supported; unknown capability is not inferred. Disabling is
+// always allowed. `toggle` inverts the state protected by If-Match; replaying
+// a successful toggle with the old ETag is refused rather than toggling twice.
+// This setting can affect provider billing.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with PATCH /sessions/{session_id}/fast-mode (the `PatchFastMode` operationId).
+func (c *Client) PatchFastModeWithBody(ctx context.Context, sessionID ID, params *PatchFastModeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPatchFastModeRequestWithBody(c.Server, sessionID, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PatchFastModeWithApplicationMergePatchPlusJSONBody Change session fast mode
+//
+// Conditional, user-facing configuration change. Requires the session
+// configuration ETag. Enabling is rejected unless the provider reports
+// fast mode supported; unknown capability is not inferred. Disabling is
+// always allowed. `toggle` inverts the state protected by If-Match; replaying
+// a successful toggle with the old ETag is refused rather than toggling twice.
+// This setting can affect provider billing.
+//
+// Takes a body of the `application/merge-patch+json` content type.
+//
+// Corresponds with PATCH /sessions/{session_id}/fast-mode (the `PatchFastMode` operationId).
+func (c *Client) PatchFastModeWithApplicationMergePatchPlusJSONBody(ctx context.Context, sessionID ID, params *PatchFastModeParams, body PatchFastModeApplicationMergePatchPlusJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPatchFastModeRequestWithApplicationMergePatchPlusJSONBody(c.Server, sessionID, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -7317,8 +8026,8 @@ func (c *Client) GetInput(ctx context.Context, sessionID ID, inputID ID, reqEdit
 // Takes any type of body and a specified content type.
 //
 // Corresponds with PUT /sessions/{session_id}/inputs/{input_id} (the `PutInput` operationId).
-func (c *Client) PutInputWithBody(ctx context.Context, sessionID ID, inputID UUIDv7, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewPutInputRequestWithBody(c.Server, sessionID, inputID, contentType, body)
+func (c *Client) PutInputWithBody(ctx context.Context, sessionID ID, inputID UUIDv7, params *PutInputParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPutInputRequestWithBody(c.Server, sessionID, inputID, params, contentType, body)
 	if err != nil {
 		return nil, err
 	}
@@ -7336,8 +8045,8 @@ func (c *Client) PutInputWithBody(ctx context.Context, sessionID ID, inputID UUI
 // Takes a body of the `application/json` content type.
 //
 // Corresponds with PUT /sessions/{session_id}/inputs/{input_id} (the `PutInput` operationId).
-func (c *Client) PutInput(ctx context.Context, sessionID ID, inputID UUIDv7, body PutInputJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewPutInputRequest(c.Server, sessionID, inputID, body)
+func (c *Client) PutInput(ctx context.Context, sessionID ID, inputID UUIDv7, params *PutInputParams, body PutInputJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPutInputRequest(c.Server, sessionID, inputID, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -7350,13 +8059,13 @@ func (c *Client) PutInput(ctx context.Context, sessionID ID, inputID UUIDv7, bod
 
 // CancelInputWithBody Cancel or interrupt only this input
 //
-// Never interrupts a later unrelated turn. shared_running leaves a shared turn running; retry only inspects or acts on this same input.
+// Never interrupts a later unrelated turn. shared_running leaves a shared turn running; retry only inspects or acts on this same input. ACP sessions require the current attachment token.
 //
 // Takes any type of body and a specified content type.
 //
 // Corresponds with POST /sessions/{session_id}/inputs/{input_id}/cancel (the `CancelInput` operationId).
-func (c *Client) CancelInputWithBody(ctx context.Context, sessionID ID, inputID ID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewCancelInputRequestWithBody(c.Server, sessionID, inputID, contentType, body)
+func (c *Client) CancelInputWithBody(ctx context.Context, sessionID ID, inputID ID, params *CancelInputParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCancelInputRequestWithBody(c.Server, sessionID, inputID, params, contentType, body)
 	if err != nil {
 		return nil, err
 	}
@@ -7369,13 +8078,13 @@ func (c *Client) CancelInputWithBody(ctx context.Context, sessionID ID, inputID 
 
 // CancelInput Cancel or interrupt only this input
 //
-// Never interrupts a later unrelated turn. shared_running leaves a shared turn running; retry only inspects or acts on this same input.
+// Never interrupts a later unrelated turn. shared_running leaves a shared turn running; retry only inspects or acts on this same input. ACP sessions require the current attachment token.
 //
 // Takes a body of the `application/json` content type.
 //
 // Corresponds with POST /sessions/{session_id}/inputs/{input_id}/cancel (the `CancelInput` operationId).
-func (c *Client) CancelInput(ctx context.Context, sessionID ID, inputID ID, body CancelInputJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewCancelInputRequest(c.Server, sessionID, inputID, body)
+func (c *Client) CancelInput(ctx context.Context, sessionID ID, inputID ID, params *CancelInputParams, body CancelInputJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCancelInputRequest(c.Server, sessionID, inputID, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -7538,6 +8247,93 @@ func (c *Client) RewindSession(ctx context.Context, sessionID ID, body RewindSes
 	return c.Client.Do(req)
 }
 
+// GetShellCommand Read a human shell command
+//
+// Corresponds with GET /sessions/{session_id}/shell-commands/{command_id} (the `GetShellCommand` operationId).
+func (c *Client) GetShellCommand(ctx context.Context, sessionID ID, commandID UUIDv7, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetShellCommandRequest(c.Server, sessionID, commandID)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PutShellCommandWithBody Admit one immutable human shell command
+//
+// Durable admission precedes process spawn. Same identity and command returns the original resource before mutable checks; changed intent conflicts. One running command and at most 32 uncommitted outcomes per session. No automatic model turn. Remote workspaces are refused.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with PUT /sessions/{session_id}/shell-commands/{command_id} (the `PutShellCommand` operationId).
+func (c *Client) PutShellCommandWithBody(ctx context.Context, sessionID ID, commandID UUIDv7, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPutShellCommandRequestWithBody(c.Server, sessionID, commandID, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PutShellCommand Admit one immutable human shell command
+//
+// Durable admission precedes process spawn. Same identity and command returns the original resource before mutable checks; changed intent conflicts. One running command and at most 32 uncommitted outcomes per session. No automatic model turn. Remote workspaces are refused.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with PUT /sessions/{session_id}/shell-commands/{command_id} (the `PutShellCommand` operationId).
+func (c *Client) PutShellCommand(ctx context.Context, sessionID ID, commandID UUIDv7, body PutShellCommandJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPutShellCommandRequest(c.Server, sessionID, commandID, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetShellCommandOutput Read retained sanitized shell output
+//
+// UTF-8 byte offsets, complete-codepoint pages, next_offset null at the current captured cutoff. Retained output is at most 16 MiB; no terminal controls are stored.
+//
+// Corresponds with GET /sessions/{session_id}/shell-commands/{command_id}/output (the `GetShellCommandOutput` operationId).
+func (c *Client) GetShellCommandOutput(ctx context.Context, sessionID ID, commandID UUIDv7, params *GetShellCommandOutputParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetShellCommandOutputRequest(c.Server, sessionID, commandID, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// StopShellCommand Request termination of one human shell command
+//
+// Stops this command process group only. Response can remain running until cleanup is confirmed; read the same resource for its terminal outcome.
+//
+// Corresponds with POST /sessions/{session_id}/shell-commands/{command_id}/stop (the `StopShellCommand` operationId).
+func (c *Client) StopShellCommand(ctx context.Context, sessionID ID, commandID UUIDv7, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewStopShellCommandRequest(c.Server, sessionID, commandID)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 // RecordVisitWithBody Count one deliberate opening
 //
 // Visit ID is UUIDv7. Same identity increments once; reads and refreshes never count.
@@ -7638,6 +8434,44 @@ func (c *Client) PatchSettingsWithApplicationMergePatchPlusJSONBody(ctx context.
 // Corresponds with GET /storage (the `GetStorage` operationId).
 func (c *Client) GetStorage(ctx context.Context, params *GetStorageParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetStorageRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// CloseTerminal Explicitly close an interactive pseudo-terminal session
+//
+// Terminates the pseudo-terminal process group and releases its resources.
+//
+// Corresponds with DELETE /terminals/{terminal_id} (the `CloseTerminal` operationId).
+func (c *Client) CloseTerminal(ctx context.Context, terminalID ID, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCloseTerminalRequest(c.Server, terminalID)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// AttachTerminal Upgrade to interactive pseudo-terminal session
+//
+// WebSocket upgrade endpoint for an interactive terminal. Authenticated by the same bearer token and origin policy as other daemon routes.
+// Binary frames carry raw terminal PTY bytes. Text frames are JSON objects for control commands:
+// {type:"ping"}, {type:"input",data:...}, {type:"resize",cols:...,rows:...}, {type:"signal",signal:"SIGINT"|"SIGTERM"|...}, {type:"restart",cols:...,rows:...}.
+// Server sends {type:"ready",id,cwd,shell,cols,rows,state,exit_code} on attach, binary frames for terminal output (including initial scrollback history),
+// {type:"exit",exit_code} when the shell process exits, and {type:"pong"} keepalives.
+//
+// Corresponds with GET /terminals/{terminal_id} (the `AttachTerminal` operationId).
+func (c *Client) AttachTerminal(ctx context.Context, terminalID ID, params *AttachTerminalParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewAttachTerminalRequest(c.Server, terminalID, params)
 	if err != nil {
 		return nil, err
 	}
@@ -9875,6 +10709,56 @@ func NewPatchScheduleRequestWithBody(server string, jobID ID, params *PatchSched
 	return req, nil
 }
 
+// NewListSkillLoadsRequest constructs an http.Request for the ListSkillLoads method
+func NewListSkillLoadsRequest(server string, params *ListSkillLoadsParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/extensions/skills/loads")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if queryFrag, err := runtime.StyleParamWithOptions("form", true, "session_id", params.SessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+			return nil, err
+		} else {
+			for _, qp := range strings.Split(queryFrag, "&") {
+				rawQueryFragments = append(rawQueryFragments, qp)
+			}
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
 // NewListWebSearchProvidersRequest constructs an http.Request for the ListWebSearchProviders method
 func NewListWebSearchProvidersRequest(server string) (*http.Request, error) {
 	var err error
@@ -11517,6 +12401,18 @@ func NewListSessionsRequest(server string, params *ListSessionsParams) (*http.Re
 
 		}
 
+		if params.Acp != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "acp", *params.Acp, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "boolean", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
 		if params.Sort != nil {
 
 			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "sort", *params.Sort, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
@@ -11836,6 +12732,17 @@ func NewPatchSessionRequestWithBody(server string, sessionID ID, params *PatchSe
 
 		req.Header.Set("If-Match", headerParam0)
 
+		if params.AlbedoAttachmentToken != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithOptions("simple", false, "Albedo-Attachment-Token", *params.AlbedoAttachmentToken, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Albedo-Attachment-Token", headerParam1)
+		}
+
 	}
 
 	return req, nil
@@ -11895,6 +12802,184 @@ func NewCreateSessionRequestWithBody(server string, sessionID UUIDv7, params *Cr
 		}
 
 		req.Header.Set("If-None-Match", headerParam0)
+
+		if params.AlbedoAttachmentToken != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithOptions("simple", false, "Albedo-Attachment-Token", *params.AlbedoAttachmentToken, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Albedo-Attachment-Token", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewReleaseACPSessionRequest constructs an http.Request for the ReleaseACPSession method
+func NewReleaseACPSessionRequest(server string, sessionID ID, params *ReleaseACPSessionParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/sessions/%s/acp-attachment", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Albedo-Attachment-Token", params.AlbedoAttachmentToken, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("Albedo-Attachment-Token", headerParam0)
+
+	}
+
+	return req, nil
+}
+
+// NewAttachACPSessionRequest calls the generic AttachACPSession builder with application/json body
+func NewAttachACPSessionRequest(server string, sessionID ID, params *AttachACPSessionParams, body AttachACPSessionJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewAttachACPSessionRequestWithBody(server, sessionID, params, "application/json", bodyReader)
+}
+
+// NewAttachACPSessionRequestWithBody constructs an http.Request for the AttachACPSession method, with any body, and a specified content type
+func NewAttachACPSessionRequestWithBody(server string, sessionID ID, params *AttachACPSessionParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/sessions/%s/acp-attachment", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPut, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Albedo-Attachment-Token", params.AlbedoAttachmentToken, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("Albedo-Attachment-Token", headerParam0)
+
+	}
+
+	return req, nil
+}
+
+// NewRenewACPSessionRequest calls the generic RenewACPSession builder with application/json body
+func NewRenewACPSessionRequest(server string, sessionID ID, params *RenewACPSessionParams, body RenewACPSessionJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewRenewACPSessionRequestWithBody(server, sessionID, params, "application/json", bodyReader)
+}
+
+// NewRenewACPSessionRequestWithBody constructs an http.Request for the RenewACPSession method, with any body, and a specified content type
+func NewRenewACPSessionRequestWithBody(server string, sessionID ID, params *RenewACPSessionParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/sessions/%s/acp-attachment/renew", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Albedo-Attachment-Token", params.AlbedoAttachmentToken, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("Albedo-Attachment-Token", headerParam0)
 
 	}
 
@@ -12283,6 +13368,100 @@ func NewGetContextWindowRequest(server string, sessionID ID) (*http.Request, err
 	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
 	if err != nil {
 		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetFastModeRequest constructs an http.Request for the GetFastMode method
+func NewGetFastModeRequest(server string, sessionID ID) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/sessions/%s/fast-mode", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewPatchFastModeRequestWithApplicationMergePatchPlusJSONBody calls the generic PatchFastMode builder with application/merge-patch+json body
+func NewPatchFastModeRequestWithApplicationMergePatchPlusJSONBody(server string, sessionID ID, params *PatchFastModeParams, body PatchFastModeApplicationMergePatchPlusJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPatchFastModeRequestWithBody(server, sessionID, params, "application/merge-patch+json", bodyReader)
+}
+
+// NewPatchFastModeRequestWithBody constructs an http.Request for the PatchFastMode method, with any body, and a specified content type
+func NewPatchFastModeRequestWithBody(server string, sessionID ID, params *PatchFastModeParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/sessions/%s/fast-mode", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPatch, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithOptions("simple", false, "If-Match", params.IfMatch, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("If-Match", headerParam0)
+
 	}
 
 	return req, nil
@@ -12681,18 +13860,18 @@ func NewGetInputRequest(server string, sessionID ID, inputID ID) (*http.Request,
 }
 
 // NewPutInputRequest calls the generic PutInput builder with application/json body
-func NewPutInputRequest(server string, sessionID ID, inputID UUIDv7, body PutInputJSONRequestBody) (*http.Request, error) {
+func NewPutInputRequest(server string, sessionID ID, inputID UUIDv7, params *PutInputParams, body PutInputJSONRequestBody) (*http.Request, error) {
 	var bodyReader io.Reader
 	buf, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
 	}
 	bodyReader = bytes.NewReader(buf)
-	return NewPutInputRequestWithBody(server, sessionID, inputID, "application/json", bodyReader)
+	return NewPutInputRequestWithBody(server, sessionID, inputID, params, "application/json", bodyReader)
 }
 
 // NewPutInputRequestWithBody constructs an http.Request for the PutInput method, with any body, and a specified content type
-func NewPutInputRequestWithBody(server string, sessionID ID, inputID UUIDv7, contentType string, body io.Reader) (*http.Request, error) {
+func NewPutInputRequestWithBody(server string, sessionID ID, inputID UUIDv7, params *PutInputParams, contentType string, body io.Reader) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -12731,22 +13910,37 @@ func NewPutInputRequestWithBody(server string, sessionID ID, inputID UUIDv7, con
 
 	req.Header.Add("Content-Type", contentType)
 
+	if params != nil {
+
+		if params.AlbedoAttachmentToken != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Albedo-Attachment-Token", *params.AlbedoAttachmentToken, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Albedo-Attachment-Token", headerParam0)
+		}
+
+	}
+
 	return req, nil
 }
 
 // NewCancelInputRequest calls the generic CancelInput builder with application/json body
-func NewCancelInputRequest(server string, sessionID ID, inputID ID, body CancelInputJSONRequestBody) (*http.Request, error) {
+func NewCancelInputRequest(server string, sessionID ID, inputID ID, params *CancelInputParams, body CancelInputJSONRequestBody) (*http.Request, error) {
 	var bodyReader io.Reader
 	buf, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
 	}
 	bodyReader = bytes.NewReader(buf)
-	return NewCancelInputRequestWithBody(server, sessionID, inputID, "application/json", bodyReader)
+	return NewCancelInputRequestWithBody(server, sessionID, inputID, params, "application/json", bodyReader)
 }
 
 // NewCancelInputRequestWithBody constructs an http.Request for the CancelInput method, with any body, and a specified content type
-func NewCancelInputRequestWithBody(server string, sessionID ID, inputID ID, contentType string, body io.Reader) (*http.Request, error) {
+func NewCancelInputRequestWithBody(server string, sessionID ID, inputID ID, params *CancelInputParams, contentType string, body io.Reader) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -12784,6 +13978,21 @@ func NewCancelInputRequestWithBody(server string, sessionID ID, inputID ID, cont
 	}
 
 	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.AlbedoAttachmentToken != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Albedo-Attachment-Token", *params.AlbedoAttachmentToken, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Albedo-Attachment-Token", headerParam0)
+		}
+
+	}
 
 	return req, nil
 }
@@ -12972,6 +14181,222 @@ func NewRewindSessionRequestWithBody(server string, sessionID ID, contentType st
 	}
 
 	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewGetShellCommandRequest constructs an http.Request for the GetShellCommand method
+func NewGetShellCommandRequest(server string, sessionID ID, commandID UUIDv7) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithOptions("simple", false, "command_id", commandID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: "uuid"})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/sessions/%s/shell-commands/%s", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewPutShellCommandRequest calls the generic PutShellCommand builder with application/json body
+func NewPutShellCommandRequest(server string, sessionID ID, commandID UUIDv7, body PutShellCommandJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPutShellCommandRequestWithBody(server, sessionID, commandID, "application/json", bodyReader)
+}
+
+// NewPutShellCommandRequestWithBody constructs an http.Request for the PutShellCommand method, with any body, and a specified content type
+func NewPutShellCommandRequestWithBody(server string, sessionID ID, commandID UUIDv7, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithOptions("simple", false, "command_id", commandID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: "uuid"})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/sessions/%s/shell-commands/%s", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPut, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewGetShellCommandOutputRequest constructs an http.Request for the GetShellCommandOutput method
+func NewGetShellCommandOutputRequest(server string, sessionID ID, commandID UUIDv7, params *GetShellCommandOutputParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithOptions("simple", false, "command_id", commandID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: "uuid"})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/sessions/%s/shell-commands/%s/output", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if params.Offset != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "offset", *params.Offset, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.Limit != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "limit", *params.Limit, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewStopShellCommandRequest constructs an http.Request for the StopShellCommand method
+func NewStopShellCommandRequest(server string, sessionID ID, commandID UUIDv7) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithOptions("simple", false, "command_id", commandID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: "uuid"})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/sessions/%s/shell-commands/%s/stop", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
 
 	return req, nil
 }
@@ -13215,6 +14640,161 @@ func NewGetStorageRequest(server string, params *GetStorageParams) (*http.Reques
 		if params.Limit != nil {
 
 			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "limit", *params.Limit, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewCloseTerminalRequest constructs an http.Request for the CloseTerminal method
+func NewCloseTerminalRequest(server string, terminalID ID) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "terminal_id", terminalID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/terminals/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewAttachTerminalRequest constructs an http.Request for the AttachTerminal method
+func NewAttachTerminalRequest(server string, terminalID ID, params *AttachTerminalParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "terminal_id", terminalID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/terminals/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if params.Cwd != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "cwd", *params.Cwd, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.SessionID != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "session_id", *params.SessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.Cols != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "cols", *params.Cols, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.Rows != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "rows", *params.Rows, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.Restart != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "restart", *params.Restart, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "boolean", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.Shell != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "shell", *params.Shell, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
 				return nil, err
 			} else {
 				for _, qp := range strings.Split(queryFrag, "&") {

@@ -9,6 +9,7 @@ import albedo/harness/extension
 import albedo/harness/extension/selection
 import albedo/harness/extensions/bedrock/reasoning
 import albedo/harness/runtime
+import albedo/openai_api/types as albedo_types
 import gleam/dynamic/decode
 import gleam/int
 import gleam/json
@@ -53,6 +54,7 @@ pub fn configured_client(
     state.info.model,
     state.info.protocol,
     state.info.effort,
+    state.info.fast,
   ))
   Ok(#(state, client))
 }
@@ -135,6 +137,87 @@ pub fn profile_effort_override(
     }
     _ -> option.None
   }
+}
+
+/// Read only provider/account/model capability; this never prepares a kernel or sends inference.
+pub fn fast_mode(
+  state: session_state.State(message),
+  provider: String,
+  model: String,
+  protocol: albedo_types.Protocol,
+  effort: option.Option(String),
+) -> extension.FastMode {
+  case configuration.named(state.home, provider) {
+    Error(reason) -> extension.FastUnknown(reason)
+    Ok(profile) ->
+      runtime.fast_mode(
+        state.host,
+        state.info.id,
+        state.home,
+        provider,
+        profile.extension,
+        model,
+        protocol,
+        effort,
+      )
+  }
+}
+
+pub fn read_fast(
+  state: session_state.State(message),
+) -> Result(json.Json, String) {
+  let support =
+    fast_mode(
+      state,
+      state.info.provider,
+      state.info.model,
+      state.info.protocol,
+      state.info.effort,
+    )
+  let #(fields, detail) = case support {
+    extension.FastAvailable(mode, source) -> #(
+      [
+        #("status", json.string("supported")),
+        #("mode", json.string(mode)),
+        #("source", json.string(source)),
+      ],
+      "supported; premium usage or pricing may apply",
+    )
+    extension.FastUnavailable(reason) -> #(
+      [
+        #("status", json.string("unsupported")),
+        #("detail", json.string(reason)),
+      ],
+      reason,
+    )
+    extension.FastUnknown(reason) -> #(
+      [
+        #("status", json.string("unknown")),
+        #("detail", json.string(reason)),
+      ],
+      "support cannot be verified: " <> reason,
+    )
+  }
+  let enabled = case state.info.fast {
+    True -> "on"
+    False -> "off"
+  }
+  Ok(
+    json.object([
+      #("fast", json.bool(state.info.fast)),
+      #("support", json.object(fields)),
+      #(
+        "message",
+        json.string(
+          "fast mode is "
+          <> enabled
+          <> " ("
+          <> detail
+          <> "). Subagents start with fast mode off.",
+        ),
+      ),
+    ]),
+  )
 }
 
 pub fn read_effort(

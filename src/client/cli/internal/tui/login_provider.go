@@ -73,6 +73,24 @@ var customProviders = []customProvider{
 		Optional:      true,
 	},
 	{
+		ID:            "add-perplexity",
+		Label:         "Perplexity",
+		Detail:        "api key · agent api · web search",
+		Extension:     "perplexity",
+		DefaultName:   "perplexity",
+		DefaultURL:    "https://api.perplexity.ai/v1",
+		FixedProtocol: "responses",
+	},
+	{
+		ID:            "add-mistral",
+		Label:         "Mistral",
+		Detail:        "api key · Mistral, Devstral, Magistral models",
+		Extension:     "mistral",
+		DefaultName:   "mistral",
+		DefaultURL:    "https://api.mistral.ai/v1",
+		FixedProtocol: "chat_completions",
+	},
+	{
 		ID:            "add-anthropic",
 		Label:         "Anthropic",
 		Detail:        "api key · console billing · Claude models",
@@ -371,7 +389,7 @@ func (m LoginModel) saveProviderCmd(name string, settings config.Settings) tea.C
 		if err != nil {
 			return providerSavedMsg{Gen: m.Generation, Name: name, Settings: settings, Err: err}
 		}
-		if validated.APIKey != "" && (validated.Extension == "openai" || validated.Extension == "opencode-go") {
+		if validated.APIKey != "" && keyAccountExtensions[validated.Extension] {
 			account, saveErr := daemon.PutKeyAccount(context.Background(), m.Conn, validated.Extension, validated.BaseURL, validated.APIKey, name)
 			if saveErr != nil {
 				return providerSavedMsg{Gen: m.Generation, Name: name, Settings: validated, Err: saveErr}

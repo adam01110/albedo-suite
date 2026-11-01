@@ -5,6 +5,7 @@ import (
 	"albedo/cli/internal/daemon/protocol"
 	"fmt"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -145,7 +146,8 @@ func (m ChatModel) glanceRows(g PageGlance, limit int) []string {
 			mark = "✓"
 		}
 		label := oneLine(item.Text)
-		if item.ID != "" {
+		// a row whose id is its own text (a skill's name) needs no number
+		if item.ID != "" && item.ID != item.Text {
 			label = "#" + item.ID + " " + label
 		}
 		rows = append(rows, style.Render(mark)+" "+ansi.Truncate(label, max(1, m.sidebarWidth()-2), "…"))
@@ -177,6 +179,16 @@ func (m ChatModel) renderFooter() string {
 		{left: []hint{mode, commands, {"ctrl+j", "diffs"}}, right: compact},
 		{left: []hint{mode, commands}, right: compact},
 		{left: []hint{mode}, right: compact},
+	}
+	if slices.ContainsFunc(m.History.Entries(), func(e HistoryEntry) bool { return e.Kind == EntryShell }) {
+		candidates = append([]struct {
+			right string
+			left  []hint
+		}{
+			{left: []hint{sessions, commands, {"ctrl+shift+o", "shell output"}, {"ctrl+shift+x", "stop shell"}}, right: right},
+			{left: []hint{commands, {"ctrl+shift+o", "output"}, {"ctrl+shift+x", "stop"}}, right: compact},
+			{left: []hint{commands, {"ctrl+shift+o", "output"}}, right: compact},
+		}, candidates...)
 	}
 	for _, c := range candidates {
 		left := keyHints(c.left...)

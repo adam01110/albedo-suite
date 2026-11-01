@@ -22,12 +22,14 @@ import albedo/harness/extensions/lsp/extension as lsp
 import albedo/harness/extensions/mail/extension as mail
 import albedo/harness/extensions/mcp/extension as mcp
 import albedo/harness/extensions/memory/extension as memory
+import albedo/harness/extensions/mistral/extension as mistral
 import albedo/harness/extensions/models/extension as models
 import albedo/harness/extensions/notes/extension as notes
 import albedo/harness/extensions/openai/extension as openai
 import albedo/harness/extensions/opencode_go/extension as opencode_go
 import albedo/harness/extensions/opencode_zen/extension as opencode_zen
 import albedo/harness/extensions/paperclips/extension as paperclips
+import albedo/harness/extensions/perplexity/extension as perplexity
 import albedo/harness/extensions/proxy/extension as proxy
 import albedo/harness/extensions/python/extension as python
 import albedo/harness/extensions/questions/extension as questions
@@ -49,11 +51,21 @@ pub type Config {
   Config(extensions: List(extension.Extension), default_enabled: List(String))
 }
 
+/// The installed extensions: a sealed build's cached declarations, or the
+/// constructors' result.
 pub fn defaults() -> Config {
-  installed()
+  case sealed() {
+    Ok(config) -> config
+    Error(Nil) -> declared()
+  }
 }
 
-fn installed() -> Config {
+@external(erlang, "albedo_extension_cache", "load")
+fn sealed() -> Result(Config, Nil)
+
+/// Calls every extension's constructor. Declarations must not capture the
+/// environment: a sealed build caches this value.
+pub fn declared() -> Config {
   Config(
     [
       python.extension(),
@@ -82,6 +94,13 @@ fn installed() -> Config {
       bedrock.extension(),
       claude.extension(),
       vertex.extension(),
+      // Ahead of models.dev: its `perplexity-agent` namespace lists a staler
+      // catalog than the Agent API's own /models, and a catalog that answers
+      // first is the one the picker shows.
+      perplexity.extension(),
+      // Ahead of models.dev: models.dev names no endpoint for Mistral, so this
+      // catalog is what answers at api.mistral.ai.
+      mistral.extension(),
       // Before models.dev so Codex's picker keeps its own series filter, and a
       // generic openai endpoint lists its own /models; api.openai.com still
       // gets models.dev's full catalog.
@@ -97,6 +116,7 @@ fn installed() -> Config {
       lcm.extension(),
       notes.extension(),
       mcp.configured_extension(),
+      mcp.editor_extension(),
       remote.extension(),
       colab.extension(),
       browser.extension(),
@@ -115,8 +135,8 @@ fn installed() -> Config {
       "links", "instructions", "commands", "skills", "paperclips", "artifacts",
       "models", "openai", "codex", "antigravity", "opencode-go", "opencode-zen",
       "bedrock", "claude", "vertex", "rolling", "snapcompact-memory",
-      "lcm-memory", "notes", "remote", "browser", "warm", "exa", "web-search",
-      "questions", "zed",
+      "lcm-memory", "notes", "remote", "browser", "warm", "exa", "perplexity",
+      "mistral", "web-search", "editor-mcp", "questions", "zed",
     ],
   )
 }

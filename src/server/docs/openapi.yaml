@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://spec.openapis.org/oas/3.2/schema/2026-08-30
 # Daemon protocol 3. See http-api-design.md for behavioral semantics.
 openapi: 3.2.1
 info:
@@ -34,12 +35,118 @@ tags:
 - name: paperclips
 - name: artifacts
 - name: web-search
+- name: skills
 - name: schedule
 - name: links
 - name: webhooks
 - name: discord
 - name: proxy
+- name: terminals
 paths:
+  /terminals/{terminal_id}:
+    get:
+      operationId: attachTerminal
+      summary: Upgrade to interactive pseudo-terminal session
+      tags:
+      - terminals
+      description: |-
+        WebSocket upgrade endpoint for an interactive terminal. Authenticated by the same bearer token and origin policy as other daemon routes.
+        Binary frames carry raw terminal PTY bytes. Text frames are JSON objects for control commands:
+        {type:"ping"}, {type:"input",data:...}, {type:"resize",cols:...,rows:...}, {type:"signal",signal:"SIGINT"|"SIGTERM"|...}, {type:"restart",cols:...,rows:...}.
+        Server sends {type:"ready",id,cwd,shell,cols,rows,state,exit_code} on attach, binary frames for terminal output (including initial scrollback history),
+        {type:"exit",exit_code} when the shell process exits, and {type:"pong"} keepalives.
+      parameters:
+      - name: terminal_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ID'
+      - name: cwd
+        in: query
+        required: false
+        description: Initial working directory for the terminal session.
+        schema:
+          type: string
+      - name: session_id
+        in: query
+        required: false
+        description: Existing session ID to derive initial working directory from.
+        schema:
+          $ref: '#/components/schemas/ID'
+      - name: cols
+        in: query
+        required: false
+        description: Terminal column width (2-500, default 80).
+        schema:
+          type: integer
+          minimum: 2
+          maximum: 500
+      - name: rows
+        in: query
+        required: false
+        description: Terminal row height (1-200, default 24).
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 200
+      - name: restart
+        in: query
+        required: false
+        description: Whether to restart an existing terminal process group.
+        schema:
+          type: boolean
+      - name: shell
+        in: query
+        required: false
+        description: Command or shell executable to run (defaults to user shell).
+        schema:
+          type: string
+      responses:
+        '101':
+          description: WebSocket connection established.
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '503':
+          $ref: '#/components/responses/Problem503'
+    delete:
+      operationId: closeTerminal
+      summary: Explicitly close an interactive pseudo-terminal session
+      tags:
+      - terminals
+      description: Terminates the pseudo-terminal process group and releases its resources.
+      parameters:
+      - name: terminal_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ID'
+      responses:
+        '200':
+          description: Terminal session closed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TerminalClose'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '503':
+          $ref: '#/components/responses/Problem503'
   /events:
     get:
       operationId: getEvents
@@ -494,6 +601,13 @@ paths:
         required: false
         schema:
           type: boolean
+      - name: acp
+        in: query
+        required: false
+        description: true lists only ACP-owned sessions, false only the others. Combine with workspace
+          for an exact canonical workspace match.
+        schema:
+          type: boolean
       - name: sort
         in: query
         required: false
@@ -503,6 +617,76 @@ paths:
           default: activity
       - $ref: '#/components/parameters/Limit'
       - $ref: '#/components/parameters/Next'
+  /sessions/{session_id}/fast-mode:
+    parameters:
+    - name: session_id
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/ID'
+    get:
+      operationId: getFastMode
+      summary: Read fast-mode state and provider capability
+      tags: [sessions]
+      responses:
+        '200':
+          description: Current setting and capability observation.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FastMode'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '404':
+          $ref: '#/components/responses/Problem404'
+    patch:
+      operationId: patchFastMode
+      summary: Change session fast mode
+      tags: [sessions]
+      description: |
+        Conditional, user-facing configuration change. Requires the session
+        configuration ETag. Enabling is rejected unless the provider reports
+        fast mode supported; unknown capability is not inferred. Disabling is
+        always allowed. `toggle` inverts the state protected by If-Match; replaying
+        a successful toggle with the old ETag is refused rather than toggling twice.
+        This setting can affect provider billing.
+      parameters:
+      - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [state]
+              properties:
+                state:
+                  type: string
+                  enum: [on, off, toggle]
+      responses:
+        '200':
+          description: Fast-mode state and current provider capability.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FastMode'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '409':
+          $ref: '#/components/responses/Problem409'
+        '412':
+          $ref: '#/components/responses/Problem412'
+        '428':
+          $ref: '#/components/responses/Problem428'
   /sessions/{session_id}:
     get:
       operationId: getSession
@@ -559,6 +743,7 @@ paths:
                       opens: 0
                     current_progress: []
                     active_output: []
+                    shell_commands: []
                     activity:
                       lines: []
                       output_scalars: 0
@@ -761,6 +946,7 @@ paths:
                       opens: 0
                     current_progress: []
                     active_output: []
+                    shell_commands: []
                     activity:
                       lines: []
                       output_scalars: 0
@@ -891,6 +1077,7 @@ paths:
         schema:
           $ref: '#/components/schemas/UUIDv7'
       - $ref: '#/components/parameters/IfNoneMatch'
+      - $ref: '#/components/parameters/AttachmentTokenOptional'
       requestBody:
         required: true
         content:
@@ -942,7 +1129,8 @@ paths:
       description: Use the observed configuration URL and validator. Workspace is a standalone change
         carrying the observed session family revision. Busy target fails before commit; busy descendants follow
         a committed parent move at idle. Other configuration fields commit together. No automatic lost-response
-        retry.
+        retry. An ACP attachment holder may select a model with a patch containing only model
+        and an optional provider_profile; other execution changes remain unavailable to ACP sessions.
       parameters:
       - name: session_id
         in: path
@@ -955,6 +1143,7 @@ paths:
         schema:
           const: configuration
       - $ref: '#/components/parameters/IfMatch'
+      - $ref: '#/components/parameters/AttachmentTokenOptional'
       requestBody:
         required: true
         content:
@@ -1087,6 +1276,184 @@ paths:
             schema:
               $ref: '#/components/schemas/EmptyRequest'
         description: UTF-8 JSON; duplicate keys and unknown fields are rejected.
+  /sessions/{session_id}/shell-commands/{command_id}:
+    put:
+      operationId: putShellCommand
+      summary: Admit one immutable human shell command
+      tags: [sessions]
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ID'
+      - name: command_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/UUIDv7'
+      description: Durable admission precedes process spawn. Same identity and command returns the original resource before mutable checks; changed intent conflicts. One running command and at most 32 uncommitted outcomes per session. No automatic model turn. Remote workspaces are refused.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ShellCommandRequest'
+      responses:
+        '200':
+          description: Current durable shell command resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ShellCommandResponse'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '409':
+          $ref: '#/components/responses/Problem409'
+        '503':
+          $ref: '#/components/responses/Problem503'
+    get:
+      operationId: getShellCommand
+      summary: Read a human shell command
+      tags: [sessions]
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ID'
+      - name: command_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/UUIDv7'
+      responses:
+        '200':
+          description: Current durable shell command resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ShellCommandResponse'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '409':
+          $ref: '#/components/responses/Problem409'
+        '503':
+          $ref: '#/components/responses/Problem503'
+  /sessions/{session_id}/shell-commands/{command_id}/stop:
+    post:
+      operationId: stopShellCommand
+      summary: Request termination of one human shell command
+      tags: [sessions]
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ID'
+      - name: command_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/UUIDv7'
+      description: Stops this command process group only. Response can remain running until cleanup is confirmed; read the same resource for its terminal outcome.
+      responses:
+        '200':
+          description: Current durable shell command resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ShellCommandResponse'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '409':
+          $ref: '#/components/responses/Problem409'
+        '503':
+          $ref: '#/components/responses/Problem503'
+  /sessions/{session_id}/shell-commands/{command_id}/output:
+    get:
+      operationId: getShellCommandOutput
+      summary: Read retained sanitized shell output
+      tags: [sessions]
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ID'
+      - name: command_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/UUIDv7'
+      - name: offset
+        in: query
+        schema:
+          type: integer
+          minimum: 0
+          maximum: 16777216
+          default: 0
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 4
+          maximum: 65536
+          default: 4000
+      description: UTF-8 byte offsets, complete-codepoint pages, next_offset null at the current captured cutoff. Retained output is at most 16 MiB; no terminal controls are stored.
+      responses:
+        '200':
+          description: Current durable shell command resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ShellCommandOutput'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '409':
+          $ref: '#/components/responses/Problem409'
+        '503':
+          $ref: '#/components/responses/Problem503'
   /sessions/{session_id}/inputs/{input_id}:
     put:
       operationId: putInput
@@ -1190,6 +1557,7 @@ paths:
         required: true
         schema:
           $ref: '#/components/schemas/ID'
+      - $ref: '#/components/parameters/AttachmentTokenOptional'
       requestBody:
         required: true
         content:
@@ -1274,13 +1642,16 @@ paths:
           $ref: '#/components/responses/Problem413'
         '415':
           $ref: '#/components/responses/Problem415'
+        '409':
+          $ref: '#/components/responses/Problem409'
         '404':
           $ref: '#/components/responses/Problem404'
         '410':
           $ref: '#/components/responses/Problem410'
       description: Never interrupts a later unrelated turn. shared_running leaves a shared turn running;
-        retry only inspects or acts on this same input.
+        retry only inspects or acts on this same input. ACP sessions require the current attachment token.
       parameters:
+      - $ref: '#/components/parameters/AttachmentTokenOptional'
       - name: input_id
         in: path
         required: true
@@ -1343,6 +1714,144 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/InterruptRequest'
+        description: UTF-8 JSON; duplicate keys and unknown fields are rejected.
+  /sessions/{session_id}/acp-attachment:
+    put:
+      operationId: attachACPSession
+      summary: Attach this ACP connection as the session's single writer
+      tags:
+      - sessions
+      responses:
+        '200':
+          description: Attached. The cursor and active turn are one session-actor capture; follow the stream
+            from the cursor to receive only later events.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ACPAttachment'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '409':
+          $ref: '#/components/responses/Problem409'
+        '413':
+          $ref: '#/components/responses/Problem413'
+        '415':
+          $ref: '#/components/responses/Problem415'
+        '503':
+          $ref: '#/components/responses/Problem503'
+      description: Attach or re-attach with the same token. 409 not_acp_session for a session created without
+        kind acp; 409 workspace_mismatch unless workspace equals the session's canonical workspace exactly;
+        409 attachment_held while another token holds a live lease (never stolen); 409 session_busy when
+        the session has an active turn and the overlay differs from the installed one (nothing changes);
+        409 mcp_overlay_conflict for duplicate names or names already configured globally; 409
+        mcp_overlay_failed when an idle replacement could not be prepared (the previous overlay and
+        attachment stay as they were). 503 overlay_installed_reload_failed means publication succeeded but
+        runtime reload failed; the replacement remains installed. 503 overlay_update_uncertain means
+        publication or reload was not confirmed within 15 seconds and may still complete. An identical
+        reattach retries a failed reload. With editor-mcp enabled, publication awaiting reload blocks turns
+        with 409 overlay_installed_reload_failed. A missing required overlay after restart blocks turns
+        with 409 overlay_reattach_required; the editor must resume and resupply its servers.
+        An empty overlay permits daemon-driven turns after daemon restart, but old editor tokens are invalid.
+        Failed setup releases a newly acquired lease
+        and retains a preexisting same-token lease. An empty list removes only the editor overlay.
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ID'
+      - $ref: '#/components/parameters/AttachmentToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ACPAttachRequest'
+        description: UTF-8 JSON; duplicate keys and unknown fields are rejected.
+    delete:
+      operationId: releaseACPSession
+      summary: Release this connection's attachment
+      tags:
+      - sessions
+      responses:
+        '204':
+          description: Released, or this token held no attachment. Accepted work keeps running.
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '409':
+          $ref: '#/components/responses/Problem409'
+        '503':
+          $ref: '#/components/responses/Problem503'
+      description: Idempotent. Never cancels accepted inputs, the active turn, or the MCP overlay.
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ID'
+      - $ref: '#/components/parameters/AttachmentToken'
+  /sessions/{session_id}/acp-attachment/renew:
+    post:
+      operationId: renewACPSession
+      summary: Extend this connection's attachment lease
+      tags:
+      - sessions
+      responses:
+        '204':
+          description: Lease extended.
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '409':
+          $ref: '#/components/responses/Problem409'
+        '413':
+          $ref: '#/components/responses/Problem413'
+        '415':
+          $ref: '#/components/responses/Problem415'
+        '503':
+          $ref: '#/components/responses/Problem503'
+      description: 409 attachment_lost when this token no longer holds the attachment (expired, released,
+        or the daemon restarted). Renewal never re-attaches; the client must attach again.
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ID'
+      - $ref: '#/components/parameters/AttachmentToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmptyRequest'
         description: UTF-8 JSON; duplicate keys and unknown fields are rejected.
   /sessions/{session_id}/active-output/{content_id}:
     get:
@@ -3429,6 +3938,36 @@ paths:
             schema:
               $ref: '#/components/schemas/WebSearchProviderChangeRequest'
         description: UTF-8 JSON; duplicate keys and unknown fields are rejected.
+  /extensions/skills/loads:
+    get:
+      operationId: listSkillLoads
+      summary: List the skills a session loaded
+      tags:
+      - skills
+      responses:
+        '200':
+          description: Successful result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillLoadList'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '503':
+          $ref: '#/components/responses/Problem503'
+      description: Requires enabled extension skills. Each skill the session's model or user loaded, once, first loaded first; the session's sidebar glance lists the same.
+      parameters:
+      - name: session_id
+        in: query
+        required: true
+        schema:
+          $ref: '#/components/schemas/ID'
   /extensions/schedule/jobs:
     get:
       operationId: listSchedule
@@ -5084,6 +5623,24 @@ components:
       description: Default header only. Each hook may configure another header and prefix. HMAC-SHA256
         over exact raw bytes; bearer is not an alternative.
   parameters:
+    AttachmentToken:
+      name: Albedo-Attachment-Token
+      in: header
+      required: true
+      schema:
+        $ref: '#/components/schemas/AttachmentToken'
+      description: Per-connection ACP attachment capability, generated by the client. Separate from the
+        daemon bearer token; the daemon keeps only a digest in memory and never returns or logs it.
+    AttachmentTokenOptional:
+      name: Albedo-Attachment-Token
+      in: header
+      required: false
+      schema:
+        $ref: '#/components/schemas/AttachmentToken'
+      description: Required for kind acp creation and for input or scoped cancellation in an ACP session.
+        Also authorizes model-only configuration patches by an ACP attachment holder.
+        Ordinary creation ignores this header. Input, scoped cancellation, and configuration patches parse and reject malformed supplied values.
+        Not part of the durable intent.
     IfMatch:
       name: If-Match
       in: header
@@ -5240,6 +5797,15 @@ components:
           schema:
             $ref: '#/components/schemas/Problem'
   schemas:
+    TerminalClose:
+      type: object
+      required:
+      - closed
+      properties:
+        closed:
+          $ref: '#/components/schemas/ID'
+      description: The interactive terminal session was closed and its process group ended.
+      additionalProperties: false
     ID:
       type: string
       minLength: 1
@@ -5829,6 +6395,50 @@ components:
           maxItems: 200
       required: [bearer_token, environment, headers]
       additionalProperties: false
+    MCPAuth:
+      type: object
+      description: A server's OAuth sign-in. none until the server asks for one; needs_sign_in when it
+        asked and albedo has no usable token, signed_in, or signed_out after the user signed out. Start
+        a sign-in with PUT /auth/logins/{login_id} and provider mcp:<server>. Tokens and client
+        secrets never appear.
+      properties:
+        state:
+          type: string
+          enum: [none, needs_sign_in, signed_in, signed_out]
+        account:
+          anyOf:
+          - type: string
+            maxLength: 256
+          - type: 'null'
+        expires_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+        scope:
+          anyOf:
+          - type: string
+            maxLength: 4096
+          - type: 'null'
+        step_up:
+          anyOf:
+          - type: string
+            maxLength: 4096
+          - type: 'null'
+          description: The wider scope a signed-in server asked for; signing in again grants it.
+        reason:
+          anyOf:
+          - type: string
+            maxLength: 4096
+          - type: 'null'
+        client:
+          anyOf:
+          - type: string
+            enum: [configured, registered]
+          - type: 'null'
+          description: configured when the user set a client id, registered when albedo registered itself.
+      required: [state, account, expires_at, scope, step_up, reason, client]
+      additionalProperties: false
     MCPDefinition:
       type: object
       properties:
@@ -5895,8 +6505,10 @@ components:
           maximum: 3600000
         secret_presence:
           $ref: '#/components/schemas/SecretPresence'
+        auth:
+          $ref: '#/components/schemas/MCPAuth'
       required: [enabled, transport, command, arguments, cwd, url, environment, headers, bearer_token_env_var,
-        enabled_tools, disabled_tools, startup_timeout_ms, call_timeout_ms, secret_presence]
+        enabled_tools, disabled_tools, startup_timeout_ms, call_timeout_ms, secret_presence, auth]
       additionalProperties: false
     MCPSecretsPatch:
       type: object
@@ -5924,6 +6536,28 @@ components:
               writeOnly: true
               maxLength: 16384
             - type: 'null'
+        oauth:
+          type: 'null'
+          description: Null signs the server out of its OAuth sign-in.
+        oauth_client:
+          anyOf:
+          - type: object
+            properties:
+              client_id:
+                type: string
+                minLength: 1
+                maxLength: 1024
+              client_secret:
+                anyOf:
+                - type: string
+                  writeOnly: true
+                  maxLength: 4096
+                - type: 'null'
+            required: [client_id]
+            additionalProperties: false
+          - type: 'null'
+          description: A client the user registered with the server's authorization server, used instead
+            of registering albedo; null forgets it.
       writeOnly: true
       additionalProperties: false
     MCPDefinitionPatch:
@@ -6165,6 +6799,15 @@ components:
             minLength: 1
             maxLength: 64
           maxItems: 64
+        proxy_allow:
+          description: Networks `albedo proxy` serves to besides this machine, as CIDR or an address whose
+            trailing zero octets stand for any (10.0.0.0 is 10.0.0.0/8).
+          type: array
+          items:
+            type: string
+            minLength: 1
+            maxLength: 64
+          maxItems: 64
       required: [thinking, tools, dismissed_notices]
       additionalProperties: false
     UISettingsPatch:
@@ -6181,6 +6824,15 @@ components:
           maxItems: 1000
         web_allow:
           description: Networks `albedo web` serves to besides this machine, as CIDR or an address whose
+            trailing zero octets stand for any (10.0.0.0 is 10.0.0.0/8).
+          type: array
+          items:
+            type: string
+            minLength: 1
+            maxLength: 64
+          maxItems: 64
+        proxy_allow:
+          description: Networks `albedo proxy` serves to besides this machine, as CIDR or an address whose
             trailing zero octets stand for any (10.0.0.0 is 10.0.0.0/8).
           type: array
           items:
@@ -6974,6 +7626,8 @@ components:
           - type: string
             maxLength: 100
           - type: 'null'
+        fast:
+          type: boolean
         status:
           $ref: '#/components/schemas/SessionStatus'
         preview:
@@ -6991,9 +7645,13 @@ components:
           anyOf:
           - $ref: '#/components/schemas/Cursor'
           - type: 'null'
-      description: Live fields and cursor are captured together. Extra response fields may be ignored.
+        acp:
+          description: Present only for ACP-owned sessions. Attachment state is read separately from the session capture.
+          $ref: '#/components/schemas/ACPState'
+      description: Session live fields and cursor are captured together. ACP attachment metadata is read separately.
+        Extra response fields may be ignored.
       required: [id, name, automatic_name, workspace, location, parent_id, root_id, address, depth, closed, created_at,
-        activity_at, role, started_by, provider_profile, model, effort, status, preview, preferences, current_progress,
+        activity_at, role, started_by, provider_profile, model, effort, fast, status, preview, preferences, current_progress,
         activity, cursor]
     SessionPage:
       type: object
@@ -7160,6 +7818,29 @@ components:
           additionalProperties: false
       required: [overrides, effective]
       additionalProperties: false
+    FastMode:
+      type: object
+      properties:
+        fast:
+          type: boolean
+        support:
+          type: object
+          properties:
+            status:
+              type: string
+              enum: [supported, unsupported, unknown]
+            mode:
+              type: [string, 'null']
+            source:
+              type: [string, 'null']
+            detail:
+              type: [string, 'null']
+          required: [status]
+          additionalProperties: false
+        message:
+          type: string
+      required: [fast, support, message]
+      additionalProperties: false
     SessionConfiguration:
       type: object
       properties:
@@ -7186,6 +7867,9 @@ components:
           - type: string
             maxLength: 100
           - type: 'null'
+        fast:
+          type: boolean
+          description: Provider fast-mode setting; defaults off and may affect billing.
         context_window:
           description: Tokens this session compacts against instead of the model's catalogued window. Null uses
             the model's window.
@@ -7211,7 +7895,7 @@ components:
           $ref: '#/components/schemas/SelectionOverrides'
         revision:
           $ref: '#/components/schemas/ID'
-      required: [id, name, workspace, provider_profile, model, effort, preferences, selection, revision]
+      required: [id, name, workspace, provider_profile, model, effort, fast, preferences, selection, revision]
       additionalProperties: false
       examples:
       - id: 01a0fcea-2b00-7000-8000-000000000001
@@ -7220,6 +7904,7 @@ components:
         provider_profile: personal
         model: example-model
         effort: null
+        fast: false
         preferences:
           pinned: false
           pin_order: null
@@ -7258,6 +7943,9 @@ components:
           - type: string
             maxLength: 100
           - type: 'null'
+        fast:
+          type: boolean
+          description: Enable provider fast mode; enabling requires a supported capability and may affect billing.
         context_window:
           description: Tokens this session compacts against instead of the model's catalogued window. Null uses
             the model's window.
@@ -7472,6 +8160,7 @@ components:
       - $ref: '#/components/schemas/NewSessionRequest'
       - $ref: '#/components/schemas/ForkSessionRequest'
       - $ref: '#/components/schemas/ChildSessionRequest'
+      - $ref: '#/components/schemas/ACPSessionRequest'
     Creation:
       type: object
       properties:
@@ -7480,6 +8169,7 @@ components:
           - $ref: '#/components/schemas/NewSessionIntent'
           - $ref: '#/components/schemas/ForkSessionIntent'
           - $ref: '#/components/schemas/ChildSessionIntent'
+          - $ref: '#/components/schemas/ACPSessionIntent'
         resolved:
           type: object
           properties:
@@ -7696,7 +8386,7 @@ components:
       properties:
         state:
           type: string
-          enum: [none, booting, attached, reattaching, lost]
+          enum: [none, booting, attached, reattaching, busy, lost]
         stage:
           anyOf:
           - type: string
@@ -7875,6 +8565,11 @@ components:
             $ref: '#/components/schemas/Composition'
           kernel:
             $ref: '#/components/schemas/Kernel'
+          shell_commands:
+            type: array
+            items:
+              $ref: '#/components/schemas/ShellCommand'
+            maxItems: 32
           pending_inputs:
             type: array
             items:
@@ -7897,7 +8592,7 @@ components:
               $ref: '#/components/schemas/Glance'
             maxItems: 16
         required: [creation, revision, family_revision, configuration_resource, workspace_change, selection,
-          composition, kernel, pending_inputs, input_order, usage, history, glances, active_output]
+          composition, kernel, pending_inputs, input_order, usage, history, glances, active_output, shell_commands]
       unevaluatedProperties: false
       x-max-encoded-bytes: 1048576
       examples:
@@ -7936,6 +8631,7 @@ components:
           opens: 0
         current_progress: []
         active_output: []
+        shell_commands: []
         activity:
           lines: []
           output_scalars: 0
@@ -8137,6 +8833,255 @@ components:
         is never repeated to page a result.
       required: [state, deleted_count, remaining_count, deleted_ids, remaining, truncated]
       additionalProperties: false
+    AttachmentToken:
+      type: string
+      pattern: ^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$
+      description: 32 random bytes, canonical unpadded base64url (the last character carries no stray bits).
+    ACPMCPServer:
+      type: object
+      description: Editor-supplied stdio MCP server. command is an absolute executable run without a shell
+        in the session workspace; env values are literal secrets held only in daemon memory.
+      properties:
+        name:
+          type: string
+          pattern: ^[A-Za-z0-9_-]{1,64}$
+        command:
+          type: string
+          minLength: 1
+          maxLength: 4096
+        args:
+          type: array
+          items:
+            type: string
+            maxLength: 32768
+          maxItems: 256
+        env:
+          type: array
+          description: Names must be unique; duplicates are rejected.
+          items:
+            $ref: '#/components/schemas/ACPEnvVariable'
+          maxItems: 128
+      required: [name, command, args, env]
+      additionalProperties: false
+    ACPEnvVariable:
+      type: object
+      properties:
+        name:
+          type: string
+          pattern: ^[A-Za-z_][A-Za-z0-9_]{0,127}$
+        value:
+          type: string
+          maxLength: 32768
+      required: [name, value]
+      additionalProperties: false
+    ACPMCPServerIdentity:
+      type: object
+      description: Durable stand-in for an overlay server. The fingerprint is a keyed digest of command,
+        args and env; literal values are never stored.
+      properties:
+        name:
+          type: string
+          pattern: ^[A-Za-z0-9_-]{1,64}$
+        fingerprint:
+          type: string
+          pattern: ^[A-Za-z0-9_-]{43}$
+      required: [name, fingerprint]
+      additionalProperties: false
+    ACPSessionRequest:
+      type: object
+      properties:
+        kind:
+          const: acp
+        workspace:
+          $ref: '#/components/schemas/Workspace'
+        mcp_servers:
+          type: array
+          items:
+            $ref: '#/components/schemas/ACPMCPServer'
+          maxItems: 32
+      required: [kind, workspace, mcp_servers]
+      additionalProperties: false
+      description: Creates an ACP-owned session. The overlay is prepared strictly before the creation
+        decision commits (any server failure rejects the creation with 409 mcp_overlay_failed); the durable
+        ACP marker, the initial attachment for the Albedo-Attachment-Token header and the overlay are
+        installed before the first session preparation. Resending the identical request under the same
+        session ID is the recovery path; see robot-docs/acp.md.
+    ACPSessionIntent:
+      type: object
+      properties:
+        kind:
+          const: acp
+        workspace:
+          $ref: '#/components/schemas/Workspace'
+        mcp_servers:
+          type: array
+          items:
+            $ref: '#/components/schemas/ACPMCPServerIdentity'
+          maxItems: 32
+      required: [kind, workspace, mcp_servers]
+      additionalProperties: false
+    ACPState:
+      type: object
+      description: Present on ACP-owned sessions. Other clients may read, stop and delete them but not
+        submit input or change execution.
+      properties:
+        attachment:
+          type: string
+          enum: [attached, detached]
+      required: [attachment]
+      additionalProperties: false
+    ACPAttachRequest:
+      type: object
+      properties:
+        workspace:
+          $ref: '#/components/schemas/Workspace'
+        mcp_servers:
+          type: array
+          items:
+            $ref: '#/components/schemas/ACPMCPServer'
+          maxItems: 32
+      required: [workspace, mcp_servers]
+      additionalProperties: false
+    ACPLease:
+      type: object
+      properties:
+        heartbeat_ms:
+          type: integer
+          minimum: 1
+        lease_ms:
+          type: integer
+          minimum: 1
+      required: [heartbeat_ms, lease_ms]
+      additionalProperties: false
+    ACPActiveTurn:
+      type: object
+      properties:
+        turn_id:
+          $ref: '#/components/schemas/ID'
+        acp_input_id:
+          description: The exclusive acp_prompt input of this turn, which session/cancel targets. Null for
+            a turn started by system work (mail, schedule), which stays observable and busy but is never
+            interrupted by the adapter.
+          anyOf:
+          - $ref: '#/components/schemas/ID'
+          - type: 'null'
+      required: [turn_id, acp_input_id]
+      additionalProperties: false
+    ACPAttachment:
+      type: object
+      properties:
+        session_id:
+          $ref: '#/components/schemas/ID'
+        lease:
+          $ref: '#/components/schemas/ACPLease'
+        cursor:
+          $ref: '#/components/schemas/Cursor'
+        active_turn:
+          anyOf:
+          - $ref: '#/components/schemas/ACPActiveTurn'
+          - type: 'null'
+        pending_input_ids:
+          type: array
+          description: Accepted ACP inputs not yet consumed, in acceptance order.
+          items:
+            $ref: '#/components/schemas/ID'
+          maxItems: 32
+        output_boundaries:
+          type: array
+          description: For every unfinished live text or thinking message at the cursor, how much had
+            streamed before it. Reconciliation only; the client never emits this content. Installing this
+            capture stands in for the initial snapshot reset of a fresh stream.
+          items:
+            $ref: '#/components/schemas/ACPOutputBoundary'
+          maxItems: 256
+        history_cutoff:
+          $ref: '#/components/schemas/Counter'
+          description: Position of the newest durable history entry at the same capture as cursor and
+            output_boundaries (0 when there is none). Entries at or before it are history; everything
+            later arrives on the stream after cursor.
+      required: [session_id, lease, cursor, active_turn, pending_input_ids, output_boundaries, history_cutoff]
+      additionalProperties: false
+    ACPOutputBoundary:
+      type: object
+      properties:
+        live_id:
+          $ref: '#/components/schemas/ID'
+        utf8_bytes:
+          type: integer
+          minimum: 0
+      required: [live_id, utf8_bytes]
+      additionalProperties: false
+    ACPTextBlock:
+      type: object
+      properties:
+        type:
+          const: text
+        text:
+          type: string
+          maxLength: 1048576
+        annotations:
+          $ref: '#/components/schemas/DynamicJSON'
+        meta:
+          $ref: '#/components/schemas/DynamicJSON'
+      required: [type, text]
+      additionalProperties: false
+    ACPResourceLinkBlock:
+      type: object
+      properties:
+        type:
+          const: resource_link
+        uri:
+          type: string
+          minLength: 1
+          maxLength: 8192
+        name:
+          type: string
+          maxLength: 4096
+        title:
+          anyOf:
+          - type: string
+            maxLength: 4096
+          - type: 'null'
+        description:
+          anyOf:
+          - type: string
+            maxLength: 16384
+          - type: 'null'
+        mime_type:
+          anyOf:
+          - type: string
+            maxLength: 256
+          - type: 'null'
+        size:
+          anyOf:
+          - type: integer
+            minimum: 0
+          - type: 'null'
+        annotations:
+          $ref: '#/components/schemas/DynamicJSON'
+        meta:
+          $ref: '#/components/schemas/DynamicJSON'
+      required: [type, uri, name]
+      additionalProperties: false
+    ACPPromptBlock:
+      oneOf:
+      - $ref: '#/components/schemas/ACPTextBlock'
+      - $ref: '#/components/schemas/ACPResourceLinkBlock'
+    ACPPromptInputRequest:
+      type: object
+      properties:
+        kind:
+          const: acp_prompt
+        blocks:
+          type: array
+          items:
+            $ref: '#/components/schemas/ACPPromptBlock'
+          minItems: 1
+          maxItems: 256
+      required: [kind, blocks]
+      additionalProperties: false
+      description: Only for ACP sessions, with the attachment token. Forms its own logical turn; no other
+        input joins it and it joins no other turn. Blocks keep their order, metadata and original URIs.
     ImageUpload:
       type: object
       properties:
@@ -8233,6 +9178,7 @@ components:
       - $ref: '#/components/schemas/ContinueInputRequest'
       - $ref: '#/components/schemas/SkillInputRequest'
       - $ref: '#/components/schemas/CommandInputRequest'
+      - $ref: '#/components/schemas/ACPPromptInputRequest'
       x-max-encoded-bytes: 72200000
     Turn:
       type: object
@@ -8263,7 +9209,7 @@ components:
           $ref: '#/components/schemas/ID'
         kind:
           type: string
-          enum: [message, continue, skill, command]
+          enum: [message, continue, skill, command, acp_prompt]
         admission:
           type: string
           enum: [accepted, rejected]
@@ -8537,7 +9483,7 @@ components:
       properties:
         kind:
           type: string
-          enum: [read, search, list, run, web, display, mcp, cua, artifact]
+          enum: [read, search, list, run, web, display, mcp, cua, artifact, skill]
         target:
           type: string
           maxLength: 1000
@@ -8563,7 +9509,69 @@ components:
               minimum: 1
           required: [id, version]
           additionalProperties: false
+        skill:
+          type: object
+          description: Where the skill a `skill` activity loaded was found; its name is the target. A cell notes each skill once, when it reads the skill's SKILL.md from the start or runs its command.
+          properties:
+            scope:
+              $ref: '#/components/schemas/SkillScope'
+            source:
+              type: string
+              maxLength: 1000
+              description: The installed SKILL.md path.
+          required: [scope, source]
+          additionalProperties: false
       required: [kind, target]
+      additionalProperties: false
+    SkillScope:
+      type: string
+      description: The discovery root a skill came from. Empty for a user activation recorded before scopes were.
+      enum: [workspace, user, built-in, '']
+    SkillLoad:
+      type: object
+      description: A skill a user's slash activation loaded, as the `skill` JSON part of that user entry.
+      properties:
+        name:
+          type: string
+        scope:
+          $ref: '#/components/schemas/SkillScope'
+        source:
+          type: string
+          description: The installed SKILL.md path.
+      required: [name, scope, source]
+      additionalProperties: false
+    SkillLoadSummary:
+      type: object
+      description: One skill a session loaded, by the model or the user, with how often and when.
+      properties:
+        name:
+          type: string
+        scope:
+          $ref: '#/components/schemas/SkillScope'
+        source:
+          type: string
+          description: The installed SKILL.md path the newest load used.
+        count:
+          type: integer
+          minimum: 1
+        first_loaded_at:
+          type: integer
+          description: Unix seconds.
+        last_loaded_at:
+          type: integer
+          description: Unix seconds.
+      required: [name, scope, source, count, first_loaded_at, last_loaded_at]
+      additionalProperties: false
+    SkillLoadList:
+      type: object
+      properties:
+        items:
+          type: array
+          maxItems: 256
+          description: First loaded first.
+          items:
+            $ref: '#/components/schemas/SkillLoadSummary'
+      required: [items]
       additionalProperties: false
     FileDiff:
       type: object
@@ -8580,6 +9588,17 @@ components:
           $ref: '#/components/schemas/Counter'
         removed:
           $ref: '#/components/schemas/Counter'
+        old_text:
+          description: The whole file before the change, null when the change created it. Present
+            together with new_text only when both fit the trace's snapshot budget.
+          anyOf:
+          - type: string
+            maxLength: 131072
+          - type: 'null'
+        new_text:
+          type: string
+          maxLength: 131072
+          description: The whole file after the change.
       required: [path, kind, diff, added, removed]
       additionalProperties: false
     FileUnavailable:
@@ -8690,6 +9709,7 @@ components:
         field:
           type: string
           maxLength: 256
+          description: What the value is. A user entry's `skill` value is the SkillLoad its slash activation loaded.
         value:
           $ref: '#/components/schemas/DynamicJSON'
       required: [kind, field, value]
@@ -8746,7 +9766,7 @@ components:
           $ref: '#/components/schemas/Counter'
         kind:
           type: string
-          enum: [user, assistant, thinking, tool_call, tool_result, note, continuation, compaction, image_fit]
+          enum: [user, assistant, thinking, tool_call, tool_result, note, continuation, compaction, image_fit, shell_command]
         turn_type:
           type: string
           enum: [user, agent, webhook, event, scheduled, continue]
@@ -8800,7 +9820,12 @@ components:
                 - type: string
                   maxLength: 160
                 - type: 'null'
-            required: [name, tool_call_id, progress_call_id]
+              status:
+                type: string
+                enum: [completed, failed]
+                description: Outcome of the whole call, derived from the stored result exactly as the live
+                  tool event's status, so rows recorded before this field have it too.
+            required: [name, tool_call_id, progress_call_id, status]
             additionalProperties: false
           - type: 'null'
         thinking_duration_ms:
@@ -10815,6 +11840,81 @@ components:
           $ref: '#/components/schemas/SessionStatus'
       required: [type, sequence, data]
       additionalProperties: false
+    ShellCommandRequest:
+      type: object
+      properties:
+        command:
+          type: string
+          minLength: 1
+          maxLength: 16384
+          x-max-utf8-bytes: 16384
+      required: [command]
+      additionalProperties: false
+    ShellCommand:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/UUIDv7'
+        command:
+          type: string
+          maxLength: 16384
+          x-max-utf8-bytes: 16384
+        status:
+          type: string
+          enum: [running, completed, cancelled, interrupted, failed]
+        exit_code:
+          type: [integer, 'null']
+        output:
+          type: string
+          maxLength: 65536
+          x-max-utf8-bytes: 65536
+        output_bytes:
+          type: integer
+          minimum: 0
+          maximum: 16777216
+        truncated:
+          type: boolean
+        error:
+          type: [string, 'null']
+        history_seq:
+          type: [integer, 'null']
+          minimum: 1
+        delivery:
+          description: Whether this receipt was included in a model request whose response has started. Pending does not wake an idle agent; unknown is legacy tracking, detached is removed by rewind. Execution status is independent.
+          type: string
+          enum: [unknown, pending, delivered, detached]
+      required: [id, command, status, exit_code, output, output_bytes, truncated, error, history_seq, delivery]
+      additionalProperties: false
+    ShellCommandResponse:
+      type: object
+      properties:
+        shell_command:
+          $ref: '#/components/schemas/ShellCommand'
+      required: [shell_command]
+      additionalProperties: false
+    ShellCommandOutput:
+      type: object
+      properties:
+        text:
+          type: string
+          maxLength: 65536
+          x-max-utf8-bytes: 65536
+        next_offset:
+          type: [integer, 'null']
+          minimum: 0
+      required: [text, next_offset]
+      additionalProperties: false
+    SessionShellCommandEvent:
+      type: object
+      properties:
+        type:
+          const: shell_command
+        sequence:
+          $ref: '#/components/schemas/Counter'
+        data:
+          $ref: '#/components/schemas/ShellCommandResponse'
+      required: [type, sequence, data]
+      additionalProperties: false
     SessionInputEvent:
       type: object
       properties:
@@ -10888,6 +11988,14 @@ components:
           properties:
             entry:
               $ref: '#/components/schemas/HistoryEntry'
+            replaces_live_ids:
+              type: array
+              description: Live message IDs whose streamed text this durable entry represents, in order,
+                as an exact prefix. Empty when nothing of this entry streamed live. Always sent by daemons
+                with capability acp_attachment.
+              items:
+                $ref: '#/components/schemas/ID'
+              maxItems: 256
           required: [entry]
           additionalProperties: false
       required: [type, sequence, data]
@@ -10947,6 +12055,12 @@ components:
               anyOf:
               - $ref: '#/components/schemas/ContentReference'
               - type: 'null'
+            status:
+              type: string
+              enum: [completed, failed]
+              description: Outcome of the whole call. progress_call_id equals the call_id of any progress
+                for this call, is unique within the session, and exists even when no progress was sent.
+                Always sent by daemons with capability acp_attachment.
           required: [tool_call_id, progress_call_id, name, arguments, result, trace, content_complete,
             reference]
           additionalProperties: false
@@ -11123,6 +12237,7 @@ components:
       oneOf:
       - $ref: '#/components/schemas/SessionStatusEvent'
       - $ref: '#/components/schemas/SessionInputEvent'
+      - $ref: '#/components/schemas/SessionShellCommandEvent'
       - $ref: '#/components/schemas/SessionTextEvent'
       - $ref: '#/components/schemas/SessionThinkingEvent'
       - $ref: '#/components/schemas/SessionMessageEvent'
@@ -11263,6 +12378,7 @@ components:
             opens: 0
           current_progress: []
           active_output: []
+          shell_commands: []
           activity:
             lines: []
             output_scalars: 0

@@ -107,6 +107,9 @@ type ChatModel struct {
 	// the footer can say how full the context is.
 	window             *int
 	client             *daemon.ChatClient
+	shellIDsByCommand  map[string]string
+	shellOutputLoading map[string]bool
+	shellSubmitting    bool
 	artifactConn       *daemon.Connection
 	openBrowser        func(string)
 	History            *BoundedHistory
@@ -126,6 +129,7 @@ type ChatModel struct {
 	Host                string // the label of a remote workspace's host; "" when local
 	Model               string
 	Effort              string
+	Fast                bool
 	Provider            string
 	CopyStatus          string
 	settledToolLabel    string
@@ -276,6 +280,7 @@ func NewChatModel(session *daemon.Session, client *daemon.ChatClient) ChatModel 
 		Host:         sessionHost(*session),
 		Model:        session.Model,
 		Effort:       session.Effort,
+		Fast:         session.Fast,
 		Provider:     session.Provider,
 		Glances:      session.Glances,
 		client:       client,
@@ -344,6 +349,9 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 }
 
 func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
+	if cmd, handled := m.handleShellResult(msg); handled {
+		return m, cmd
+	}
 	if cmd, handled := m.handleOperationResults(msg); handled {
 		return m, cmd
 	}
@@ -423,7 +431,20 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			return m, m.waitForNextEvent()
 		}
 		before, entries := m.transcript, m.History.Len()
+		refreshShellID := ""
+		if msg.Event.Type == daemon.EventShellCommand && msg.Event.ShellCommand != nil {
+			if at := m.History.Find(msg.Event.ShellCommand.ID); at >= 0 {
+				entry := m.History.Entries()[at]
+				if entry.ShellOutputLoaded && m.Renderer.Open[entryKey(entry)] && msg.Event.ShellCommand.OutputBytes > int64(len(entry.ShellExpandedOutput)) {
+					refreshShellID = entry.ID
+				}
+			}
+		}
 		m.handleStreamEvent(msg.Event)
+		var shellRefresh tea.Cmd
+		if refreshShellID != "" {
+			shellRefresh = m.shellOutputCmd(refreshShellID)
+		}
 		var draw tea.Cmd
 		if m.onlyGrew(before, entries) && time.Since(m.liveDrawn) < m.liveInterval {
 			draw = m.drawLiveLater()
@@ -448,7 +469,7 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 				}
 			}
 		}
-		reconcile = append(reconcile, m.waitForNextEvent(), m.startAnimation(), window, fade, draw)
+		reconcile = append(reconcile, m.waitForNextEvent(), m.startAnimation(), window, fade, draw, shellRefresh)
 		return m, tea.Batch(reconcile...)
 
 	case ChatLiveDrawMsg:

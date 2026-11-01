@@ -18,7 +18,11 @@ pub fn extension() -> extension.Extension {
     [
       extension.ModelsPlugin(catalog.catalog()),
       extension.LoginPlugin(login()),
-      extension.ModelProviderPlugin(extension.ModelProvider("zed", resolve)),
+      extension.ModelProviderPlugin(extension.ModelProvider(
+        "zed",
+        resolve,
+        None,
+      )),
     ],
     extension.no_initialise,
   )
@@ -92,7 +96,7 @@ fn login() -> oauth.Login {
     oauth.Model,
     "zed",
     oauth.Device(native_start),
-    fn(_) { "" },
+    fn(_) { Error("Zed uses native browser sign-in") },
     fn(_, _, _) { Error("Zed uses native browser sign-in") },
     native_account,
   )

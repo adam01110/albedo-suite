@@ -1,6 +1,7 @@
 from typing import cast
 
 from albedo_api import Host, PythonApi, Record
+import albedo_trace
 
 
 class SkillResources(Record):
@@ -53,20 +54,18 @@ class Skills:
         limit: int = 16_384,
     ) -> SkillPage:
         """Read one bounded page from a cataloged skill resource."""
-        return SkillPage(
-            cast(
-                dict,
-                await host(
-                    "skills.read",
-                    {
-                        "name": name,
-                        "resource": resource,
-                        "offset": offset,
-                        "limit": limit,
-                    },
-                ),
-            )
+        page = cast(
+            dict,
+            await host(
+                "skills.read",
+                {"name": name, "resource": resource, "offset": offset, "limit": limit},
+            ),
         )
+        # the daemon names the skill when this read loads it
+        loaded = page.pop("skill", None)
+        if loaded is not None:
+            albedo_trace.skill(loaded)
+        return SkillPage(page)
 
 
 def setup(api: PythonApi) -> dict[str, object]:

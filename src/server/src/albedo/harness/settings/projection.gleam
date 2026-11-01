@@ -39,6 +39,7 @@ type UI {
     tools: Bool,
     dismissed_notices: List(String),
     web_allow: List(String),
+    proxy_allow: List(String),
   )
 }
 
@@ -111,13 +112,20 @@ pub fn ui_group(picker: Dynamic) -> Result(Dynamic, Error) {
       decode.list(text),
     )
     use web_allow <- decode.optional_field("web_allow", [], decode.list(text))
-    decode.success(UI(thinking, tools, notices, web_allow))
+    use proxy_allow <- decode.optional_field(
+      "proxy_allow",
+      [],
+      decode.list(text),
+    )
+    decode.success(UI(thinking, tools, notices, web_allow, proxy_allow))
   }
   use ui <- result.try(
     decode.run(picker, decoder) |> result.replace_error(InvalidValue),
   )
   case
-    list.length(ui.dismissed_notices) <= 1000 && list.length(ui.web_allow) <= 64
+    list.length(ui.dismissed_notices) <= 1000
+    && list.length(ui.web_allow) <= 64
+    && list.length(ui.proxy_allow) <= 64
   {
     False -> Error(InvalidValue)
     True ->
@@ -130,6 +138,10 @@ pub fn ui_group(picker: Dynamic) -> Result(Dynamic, Error) {
             dynamic.list(list.map(ui.dismissed_notices, dynamic.string)),
           ),
           #("web_allow", dynamic.list(list.map(ui.web_allow, dynamic.string))),
+          #(
+            "proxy_allow",
+            dynamic.list(list.map(ui.proxy_allow, dynamic.string)),
+          ),
         ]),
       )
   }
@@ -363,6 +375,7 @@ fn mcp_view(raw: Dynamic, secret: Dynamic) -> Result(Dynamic, Error) {
       list.append(dict.to_list(public), [
         #("environment", environment),
         #("headers", headers),
+        #("auth", auth_view(secret_fields)),
         #(
           "secret_presence",
           object([
@@ -378,6 +391,68 @@ fn mcp_view(raw: Dynamic, secret: Dynamic) -> Result(Dynamic, Error) {
     ),
   )
 }
+
+/// A server's OAuth sign-in as clients show it: `none` until the server asks
+/// for one, then `needs_sign_in`, `signed_in` or `signed_out`. A signed-in
+/// server that asked for a wider scope also names it in `step_up`. Tokens
+/// and client secrets never appear.
+fn auth_view(secret: Dict(String, Dynamic)) -> Dynamic {
+  let text = fn(record, key) {
+    decode.run(record, decode.at([key], decode.string))
+    |> result.map(dynamic.string)
+    |> result.unwrap(null())
+  }
+  let registered =
+    dict.get(secret, "oauth")
+    |> result.try(fn(record) {
+      decode.run(record, decode.at(["registration", "clientId"], decode.string))
+      |> result.replace_error(Nil)
+    })
+  let client = case dict.has_key(secret, "oauthClient"), registered {
+    True, _ -> dynamic.string("configured")
+    False, Ok(_) -> dynamic.string("registered")
+    False, Error(_) -> null()
+  }
+  case dict.get(secret, "oauth") {
+    Error(_) ->
+      object([
+        #("state", dynamic.string("none")),
+        #("account", null()),
+        #("expires_at", null()),
+        #("scope", null()),
+        #("step_up", null()),
+        #("reason", null()),
+        #("client", client),
+      ])
+    Ok(record) -> {
+      let state =
+        decode.run(record, decode.at(["state"], decode.string))
+        |> result.unwrap("needs_sign_in")
+      let expires = case
+        state,
+        decode.run(record, decode.at(["expires"], decode.int))
+      {
+        "signed_in", Ok(ms) -> dynamic.string(native_timestamp(ms))
+        _, _ -> null()
+      }
+      object([
+        #("state", dynamic.string(state)),
+        #("account", case state {
+          "signed_in" -> text(record, "label")
+          _ -> null()
+        }),
+        #("expires_at", expires),
+        #("scope", text(record, "scope")),
+        #("step_up", text(record, "stepUp")),
+        #("reason", text(record, "reason")),
+        #("client", client),
+      ])
+    }
+  }
+}
+
+@external(erlang, "albedo_http_api", "timestamp")
+fn native_timestamp(ms: Int) -> String
 
 fn source_view(
   definition: Dict(String, Dynamic),

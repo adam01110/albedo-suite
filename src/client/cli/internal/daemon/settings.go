@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"time"
 
 	"albedo/cli/internal/config"
 	"albedo/cli/internal/daemon/protocol"
@@ -23,6 +24,7 @@ type UIPreferencesPatch struct {
 type UIPreferences struct {
 	DismissedNotices []string
 	WebAllow         []string
+	ProxyAllow       []string
 	Opens            map[string]int
 	Pinned, Archived []string
 	Thinking, Tools  bool
@@ -59,7 +61,7 @@ func GetSettings(ctx context.Context, conn *Connection) (Settings, error) {
 	for name, server := range wire.MCP.Definitions {
 		enabled := server.Enabled
 		result.MCP[name] = config.MCPServer{Enabled: &enabled, Type: server.Transport, URL: value(server.URL), Command: value(server.Command), Args: server.Arguments, CWD: value(server.Cwd), BearerTokenEnvVar: value(server.BearerTokenEnvVar), Env: sourceValues(server.Environment), Headers: sourceValues(server.Headers), EnabledTools: server.EnabledTools, DisabledTools: server.DisabledTools, StartupTimeoutMs: int(server.StartupTimeoutMs), CallTimeoutMs: int(server.CallTimeoutMs)}
-		result.Credentials.MCP[name] = MCPSecretNames{BearerToken: server.SecretPresence.BearerToken, Headers: server.SecretPresence.Headers, Env: server.SecretPresence.Environment}
+		result.Credentials.MCP[name] = MCPSecretNames{BearerToken: server.SecretPresence.BearerToken, Headers: server.SecretPresence.Headers, Env: server.SecretPresence.Environment, Auth: mcpAuth(server.Auth)}
 	}
 	result.Capabilities = config.CapabilityPrefs{Global: map[string]map[string]bool{"mcp": {}}, Sessions: map[string]map[string]map[string]bool{}}
 	for name := range result.MCP {
@@ -67,7 +69,7 @@ func GetSettings(ctx context.Context, conn *Connection) (Settings, error) {
 			result.Capabilities.Global["mcp"][name] = preference
 		}
 	}
-	result.UI = UIPreferences{DismissedNotices: wire.UI.DismissedNotices, WebAllow: wire.UI.WebAllow, Thinking: wire.UI.Thinking, Tools: wire.UI.Tools, ETag: wire.GroupResources.UI.ETag}
+	result.UI = UIPreferences{DismissedNotices: wire.UI.DismissedNotices, WebAllow: wire.UI.WebAllow, ProxyAllow: wire.UI.ProxyAllow, Thinking: wire.UI.Thinking, Tools: wire.UI.Tools, ETag: wire.GroupResources.UI.ETag}
 	for _, etag := range result.ETags {
 		if etag == "" {
 			return Settings{}, fieldError("settings group validator")
@@ -254,6 +256,30 @@ func SaveMCP(ctx context.Context, conn *Connection, session string, request MCPU
 	}, &change)
 	return applicationResult(change.Application), err
 }
+
+// SignOutMCP drops an MCP server's OAuth tokens; the server stays saved and
+// asks for a sign-in on its next request.
+func SignOutMCP(ctx context.Context, conn *Connection, name, etag string) error {
+	var change protocol.MCPSettingsChange
+	return patchSettingsGroup(ctx, conn, "mcp", etag, map[string]any{
+		"definitions":         map[string]any{name: map[string]any{"secrets": map[string]any{"oauth": nil}}},
+		"validate_connection": false,
+	}, &change)
+}
+
+// StartMCPSignIn starts the daemon's browser sign-in for one MCP server.
+func StartMCPSignIn(ctx context.Context, conn *Connection, name string) (StartedSignIn, error) {
+	return StartProviderLogin(ctx, conn, "mcp:"+name, "browser", nil)
+}
+
+func mcpAuth(wire protocol.MCPAuth) MCPAuth {
+	auth := MCPAuth{State: wire.State, Account: value(wire.Account), Scope: value(wire.Scope), StepUp: value(wire.StepUp), Reason: value(wire.Reason), Client: value(wire.Client)}
+	if at := value(wire.ExpiresAt); at != "" {
+		auth.ExpiresAt, _ = time.Parse(time.RFC3339, at)
+	}
+	return auth
+}
+
 func nonNil[T any](s []T) []T {
 	if s == nil {
 		return []T{}

@@ -58,6 +58,27 @@ type ChatExecuteCommandMsg struct {
 	Args string
 }
 
+type ChatShellSubmitMsg struct {
+	Err                      error
+	Command                  daemon.ShellCommand
+	SessionID, OriginalInput string
+	Generation               int64
+}
+
+type ChatShellOutputMsg struct {
+	Err        error
+	ID, Text   string
+	SessionID  string
+	Generation int64
+}
+
+type ChatShellCancelMsg struct {
+	Err        error
+	Command    daemon.ShellCommand
+	SessionID  string
+	Generation int64
+}
+
 type ChatStreamEventMsg struct {
 	SessionID  string
 	Event      daemon.StreamEvent

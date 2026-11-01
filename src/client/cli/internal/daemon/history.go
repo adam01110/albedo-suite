@@ -64,13 +64,13 @@ func readHistory(ctx context.Context, conn *Connection, session string, params p
 // historyPart is one decoded content part. Decoding once lets reference
 // resolution, rewriting and projection share a single walk of the bytes.
 type historyPart struct {
+	Image     *protocol.ImageMetadata   `json:"image"`
+	Reference protocol.ContentReference `json:"reference"`
 	Kind      string                    `json:"kind"`
 	Text      string                    `json:"text"`
 	Field     string                    `json:"field"`
 	Value     json.RawMessage           `json:"value"`
-	Image     *protocol.ImageMetadata   `json:"image"`
 	Trace     json.RawMessage           `json:"trace"`
-	Reference protocol.ContentReference `json:"reference"`
 }
 
 // historyEntry is a history entry whose content parts are decoded, so the raw
@@ -163,6 +163,20 @@ func historyEntryEvents(entry historyEntry) ([]StreamEvent, error) {
 				if err := json.Unmarshal(part.Value, &event.Source); err != nil {
 					return nil, fieldError("history origin")
 				}
+			case "skill":
+				var load SkillLoad
+				if json.Unmarshal(part.Value, &load) == nil && load.Name != "" {
+					event.Skill = &load
+				}
+			case "shell_command":
+				var command ShellCommand
+				if err := json.Unmarshal(part.Value, &command); err != nil {
+					return nil, fieldError("history shell command")
+				}
+				if err := validShellCommand(command); err != nil {
+					return nil, err
+				}
+				event.ShellCommand = &command
 			case "strategy":
 				_ = json.Unmarshal(part.Value, &event.Strategy)
 			case "evicted_entries":
@@ -189,6 +203,11 @@ func historyEntryEvents(entry historyEntry) ([]StreamEvent, error) {
 		event.SenderSessionID = value(wire.Mail.SenderSessionID)
 	}
 	switch wire.Kind {
+	case "shell_command":
+		if event.ShellCommand == nil || event.ShellCommand.HistorySeq == nil || *event.ShellCommand.HistorySeq != wire.Position {
+			return nil, fieldError("history shell command identity")
+		}
+		event.Type = EventShellCommand
 	case "user":
 		event.Type = EventUser
 		switch event.TurnType {
@@ -220,8 +239,12 @@ func historyEntryEvents(entry historyEntry) ([]StreamEvent, error) {
 		if wire.Tool == nil {
 			return nil, fieldError("history tool")
 		}
+		event.ToolStatus = wire.Tool.Status
 		event.ToolName = wire.Tool.Name
 		event.ProgressCallID = value(wire.Tool.ProgressCallID)
+		if event.ProgressCallID == "" {
+			event.ProgressCallID = wire.Tool.ToolCallID
+		}
 		event.ToolTitle = value(wire.Tool.Title)
 		if event.ToolResult == "" {
 			event.ToolResult = event.Text
@@ -410,6 +433,9 @@ type eventContentReader struct {
 func (reader *eventContentReader) hydrateTool(data *toolEventData) error {
 	reference := data.Reference
 	if reference == nil {
+		if !data.ContentComplete {
+			return fieldError("incomplete tool content")
+		}
 		return nil
 	}
 	parsed, err := url.Parse(reference.URL)

@@ -47,6 +47,9 @@ UPSTREAM_CASES = (
     "provider_timeout_test.py",
     "speechless_test.py",
     "mcp_test.py",
+    "mcp_wire_test.py",
+    "mcp_http_test.py",
+    "mcp_oauth_test.py",
     "operations_lifecycle_test.py",
     "image_limits_test.py",
     "python_test.py:PythonToolsTests.test_a_list_of_edits_applies_all_or_none",
@@ -60,7 +63,7 @@ UPSTREAM_CASES = (
 def synchronize_kernel_upgrade_fixture(
     path,
     *,
-    expected_sha256="5fa6d9069aad0f26c1a615f33a5e98213978932bc0687dbec9ad912ce3e3dab4",
+    expected_sha256="bf1e90c3f6a93c4b61b14fa767042a3e226499548c4ed85b136301dceb297c0c",
 ):
     """Listener readiness precedes asynchronous kernel reattachment after restart."""
     original = "    def test_kernel_upgrade_forces_the_swap_past_a_live_job(self):\n        self.cell(\"import os\\nsurvivor = 41\\nj = run('sleep', '60')\\nos.getpid()\")\n        self.edit_bundle()\n        self.app.restart()\n"
@@ -77,6 +80,23 @@ def synchronize_kernel_upgrade_fixture(
     path.write_text(source.replace(original, original + barrier))
 
 
+def synchronize_skills_catalog_fixture(
+    path,
+    *,
+    expected_sha256="91f82a89139547b2999c4a7af8fa79aa9518a8d682b230bb2e37b90c02fe7b0c",
+):
+    """Skill assertions must not depend on the installed extension count."""
+    original = 'self.route = f"/sessions/{self.session}/catalog"'
+    source_bytes = path.read_bytes()
+    source = source_bytes.decode()
+    if (
+        hashlib.sha256(source_bytes).hexdigest() != expected_sha256
+        or source.count(original) != 1
+    ):
+        raise RuntimeError("skills fixture changed; review its catalog pagination")
+    path.write_text(source.replace(original, original[:-1] + '?kind=skills"'))
+
+
 def prepare_source(upstream, destination, suite):
     shutil.copytree(upstream, destination)
     for entry in destination.rglob("*"):
@@ -87,6 +107,7 @@ def prepare_source(upstream, destination, suite):
 
     cases_directory = destination / "test/e2e"
     synchronize_kernel_upgrade_fixture(cases_directory / "kernel_upgrade_test.py")
+    synchronize_skills_catalog_fixture(cases_directory / "skills_test.py")
     for name in SUITE_CASES:
         shutil.copyfile(suite / "test" / name, cases_directory / name)
     shutil.copytree(

@@ -45,8 +45,8 @@ func Execute(ctx context.Context, args []string, deps Dependencies, streams Stre
 	}
 	root := NewRoot(deps)
 	root.SetIn(streams.In)
-	root.SetOut(preserveFile(output))
-	root.SetErr(preserveFile(errorOutput))
+	root.SetOut(output)
+	root.SetErr(errorOutput)
 	root.SetArgs(args)
 	err := root.ExecuteContext(ctx)
 	if outputErr := output.Err(); outputErr != nil && !errors.Is(err, outputErr) {
@@ -85,19 +85,12 @@ func (w *checkedWriter) Err() error {
 	return w.err
 }
 
-// Bubble Tea uses the output file descriptor to detect size and terminal modes.
-// Keep those methods when tracking writes to an actual file.
-type checkedFile struct {
-	*os.File
-	writer *checkedWriter
-}
-
-func (f *checkedFile) Write(data []byte) (int, error)        { return f.writer.Write(data) }
-func (f *checkedFile) WriteString(value string) (int, error) { return f.writer.Write([]byte(value)) }
-
+// Interactive children need the actual *os.File: os/exec connects any wrapper
+// through a pipe, even one exposing Fd. Keep error tracking on Cobra output and
+// injected writers, but pass terminal files directly to Bubble Tea.
 func preserveFile(writer *checkedWriter) io.Writer {
 	if file, ok := writer.Writer.(*os.File); ok {
-		return &checkedFile{File: file, writer: writer}
+		return file
 	}
 	return writer
 }
@@ -107,6 +100,7 @@ func NewRoot(deps Dependencies) *cobra.Command {
 	var timeout time.Duration
 	root := &cobra.Command{Use: "albedo", Short: "persistent coding sessions", Args: cobra.NoArgs, SilenceErrors: true, SilenceUsage: true}
 	root.CompletionOptions.DisableDefaultCmd = true
+	root.AddCommand(acpCommand(deps.Application))
 	root.Flags().StringVarP(&prompt, "prompt", "p", "", "create a session in cwd and wait for its reply")
 	root.Flags().StringVarP(&session, "session", "s", "", "send the prompt to an existing session")
 	root.Flags().StringVarP(&model, "model", "m", "", "model id or provider/model; requires --prompt")
@@ -141,7 +135,7 @@ func NewRoot(deps Dependencies) *cobra.Command {
 		_, err = fmt.Fprintln(cmd.OutOrStdout(), result.Answer)
 		return err
 	}
-	root.AddCommand(newOpen(deps), newResume(deps), newSessions(deps), newModels(deps), newSend(deps), newStop(deps), newDaemon(deps), newStorage(deps), newLogin(deps), newWeb(deps))
+	root.AddCommand(newOpen(deps), newResume(deps), newSessions(deps), newModels(deps), newSend(deps), newStop(deps), newDaemon(deps), newStorage(deps), newLogin(deps), newWeb(deps), newProxy(deps))
 	return root
 }
 func open(cmd *cobra.Command, deps Dependencies, options app.OpenOptions) error {
@@ -324,7 +318,7 @@ func newDaemon(deps Dependencies) *cobra.Command {
 		_, err = fmt.Fprintf(cmd.OutOrStdout(), "Albedo is running in the background at 127.0.0.1:%d\n", conn.Port())
 		return err
 	}}
-	command.Flags().BoolVar(&stop, "stop", false, "stop the running daemon")
+	command.Flags().BoolVar(&stop, "stop", false, "stop the running daemon and wait for it to exit")
 	command.Flags().BoolVar(&kernels, "kernels", false, "with --stop, end every Python kernel too instead of leaving them for the next daemon: variables are saved and restored, running jobs end")
 	return command
 }

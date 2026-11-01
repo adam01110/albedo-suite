@@ -34,7 +34,7 @@ type TranscriptRenderer struct {
 	// Workspace roots the paths trace rows name.
 	Workspace string
 	BodyWidth int
-	// highlights keeps the chat's colored diff lines; nil keeps none.
+	// highlights keeps the chat's colored code and diff lines; nil keeps none.
 	highlights *highlightCache
 	// live is the reply streaming in, kept as rows so a draw renders only what
 	// arrived. Models are copied by value; the rows belong to the renderer the
@@ -439,6 +439,12 @@ func (r TranscriptRenderer) traceLine(verb, target string, path bool, width int)
 	return fit(verb+" "+r.shortTarget(target, path, width-ansi.StringWidth(verb)-1), "", width)
 }
 
+// skillRow marks where a skill was loaded, by the model's cell or the
+// user's slash command.
+func skillRow(name string, width int) string {
+	return fit("skill · "+oneLine(name), "", width)
+}
+
 func isPath(activity daemon.ToolActivity) bool {
 	return activity.Kind == "read" || activity.Kind == "list"
 }
@@ -500,8 +506,12 @@ func (r TranscriptRenderer) RenderToolTrace(trace *daemon.ToolTrace, flags Displ
 		if act.Kind == "read" && edits(act.Target) {
 			continue
 		}
-		if act.Kind == "artifact" {
+		switch act.Kind {
+		case "artifact":
 			rows = append(rows, DefaultStyles.Faint.Render(artifactRow(act, width)))
+			continue
+		case "skill":
+			rows = append(rows, DefaultStyles.Faint.Render(skillRow(act.Target, width)))
 			continue
 		}
 		rows = append(rows, DefaultStyles.Faint.Render(r.traceLine(act.Kind, act.Target, isPath(act), width)))
@@ -597,6 +607,9 @@ func (r TranscriptRenderer) RenderAfter(before prior, entry HistoryEntry, flags 
 		if entry.Kind == EntryUser {
 			rows = append(rows, r.renderToolImages(entry, width)...)
 		}
+		if entry.Skill != nil {
+			rows = append(rows, markChrome+DefaultStyles.Faint.Render(skillRow(entry.Skill.Name, width)))
+		}
 	case EntryThinking:
 		rows = []string{markChrome + DefaultStyles.Faint.Render("thinking")}
 		if flags.Thinking {
@@ -606,6 +619,8 @@ func (r TranscriptRenderer) RenderAfter(before prior, entry HistoryEntry, flags 
 			}
 			rows = append(rows, r.faintRows(render(entry.Text, width), width)...)
 		}
+	case EntryShell:
+		rows = r.shellCard(entry, width)
 	case EntryTool:
 		if flags.Tools {
 			rows = r.toolCard(entry, flags, width)
@@ -695,6 +710,8 @@ func Compact(entry HistoryEntry, flags DisplayFlags) bool {
 	switch entry.Kind {
 	case EntryTool:
 		return !flags.Tools && len(entry.Images) == 0
+	case EntryShell:
+		return false
 	case EntryThinking:
 		return !flags.Thinking
 	}
@@ -727,7 +744,7 @@ func laneOf(entry HistoryEntry) lane {
 		return laneYou
 	case EntryAssistant, EntryTurnEnd, EntryError:
 		return laneAgent
-	case EntryTool, EntryThinking:
+	case EntryTool, EntryThinking, EntryShell:
 		return laneBusy
 	}
 	return laneNone

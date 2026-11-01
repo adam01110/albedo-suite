@@ -106,8 +106,9 @@ fn fake_provider() -> extension.Extension {
     "credential-free fixture",
     [],
     [
-      extension.ModelProviderPlugin(
-        extension.ModelProvider("bedrock", fn(context) {
+      extension.ModelProviderPlugin(extension.ModelProvider(
+        "bedrock",
+        fn(context) {
           Some(
             Ok(extension.Upstream(
               endpoint: "fixture",
@@ -121,8 +122,9 @@ fn fake_provider() -> extension.Extension {
               images: types.any_images,
             )),
           )
-        }),
-      ),
+        },
+        None,
+      )),
     ],
     extension.no_initialise,
   )
@@ -140,17 +142,23 @@ fn state(home: String, host: runtime.Runtime) -> session_state.State(Nil) {
       conversation.Idle,
       None,
       None,
+      False,
     )
   let ledger = runtime.ledger(host)
   let assert Ok(_) = conversation.create(ledger, info)
   let assert Ok(_) =
     conversation.create(ledger, conversation.Info(..info, id: "parent"))
   session_state.State(
+    shell_commands: [],
+    shell_worker: None,
     active_output: active_output.new(home, info.id, "fixture"),
     info: info,
+    acp: False,
     host: host,
     kernel: None,
     released: None,
+    prepared: None,
+    rest_token: 0,
     home: home,
     self: process.new_subject(),
     history: Some([]),
@@ -169,6 +177,7 @@ fn state(home: String, host: runtime.Runtime) -> session_state.State(Nil) {
     last_touch: 0,
     booting: None,
     workspace_reset: None,
+    workspace_probe: None,
     releasing: None,
     closing: False,
     blocked_until: 0,

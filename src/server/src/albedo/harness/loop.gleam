@@ -47,7 +47,11 @@ pub type Loop {
     model: String,
     effort: Option(String),
     host: runtime.Runtime,
-    kernel: runtime.Session,
+    /// The session's composition: instructions, tools, and hooks.
+    prepared: runtime.Prepared,
+    /// The session's kernel for one tool call, and the notice its arrival
+    /// left for the model; the turn holds no kernel between calls.
+    acquire: fn() -> Result(#(runtime.Session, Option(String)), String),
     pin: Pin,
     upstream: extension.Upstream,
     publish: fn(view.Event) -> Bool,
@@ -58,10 +62,13 @@ pub type Loop {
     progress_finish: fn(String) -> Nil,
     /// Commits inputs at a stage; a model response passes how long the
     /// model thought before it. Answers the shared daemon time and the seq
-    /// of the commit's first assistant row, which the call's request row
-    /// links to.
-    commit: fn(List(types.Input), conversation.Stage, Option(Int)) ->
-      Result(#(Int, Option(Int)), String),
+    /// of its first assistant row, or the identified tool result.
+    commit: fn(
+      List(types.Input),
+      conversation.Stage,
+      Option(Int),
+      Option(conversation.ToolIdentity),
+    ) -> Result(#(Int, Option(Int)), String),
     /// Appends image fit rows ahead of the request that needs them.
     commit_fits: fn(List(transcript.ImageFit)) -> Result(Nil, String),
     record_context: fn(
@@ -104,6 +111,8 @@ pub type Loop {
     spent: Int,
     /// Returns the model switch a parent queued; `run` applies it before a request.
     refresh: fn() -> Result(Option(Selection), String),
+    /// Editor prompts may finish successfully without assistant text.
+    allow_empty_reply: Bool,
   )
 }
 
@@ -213,23 +222,26 @@ fn converse(
     prepared.observation,
     prepared.compacted,
   )
+  // The stream callbacks run in the stream's own process and are copied there
+  // with everything they capture: they take these fields, not the loop state.
+  let #(run_id, publish, progress_delta) = #(
+    state.run_id,
+    state.publish,
+    state.progress_delta,
+  )
   let answer = fn(request: types.Request, original: List(types.Input)) {
     call(
       call_context(state),
       requests.Turn,
       request,
       request_prefix(request, original, prepared.observation),
-      state.publish,
+      publish,
       fn(event) {
         case
-          view.stream_event(
-            state.run_id,
-            state.run_id <> ":" <> int.to_string(step),
-            event,
-          )
+          view.stream_event(run_id, run_id <> ":" <> int.to_string(step), event)
         {
           Some(serialized) ->
-            case state.publish(serialized) {
+            case publish(serialized) {
               True -> types.Continue
               False -> types.Stop
             }
@@ -239,9 +251,7 @@ fn converse(
       fn(attempt, event) {
         case event {
           types.ArgumentsDelta(output_index, name, fragment) ->
-            case
-              state.progress_delta(step, attempt, output_index, name, fragment)
-            {
+            case progress_delta(step, attempt, output_index, name, fragment) {
               True -> types.Continue
               False -> types.Stop
             }
@@ -259,20 +269,25 @@ fn converse(
   // A turn that ends with neither a reply nor a call left the user nothing.
   // Sending the same request again buys another full reasoning pass that
   // likely ends the same way, so the one retry says what went wrong.
-  use called <- result.try(case speechless(answered.1) {
-    False -> Ok(Answered(answered))
-    True -> {
-      let nudge = types.User(speechless_nudge)
-      case state.publish(view.Retry(state.run_id, 2, speechless_retry, 0)) {
-        False -> Error("cancelled")
-        True ->
-          answer(
-            types.Request(..request, input: list.append(request.input, [nudge])),
-            list.append(original, [nudge]),
-          )
+  use called <- result.try(
+    case !state.allow_empty_reply && speechless(answered.1) {
+      False -> Ok(Answered(answered))
+      True -> {
+        let nudge = types.User(speechless_nudge)
+        case state.publish(view.Retry(state.run_id, 2, speechless_retry, 0)) {
+          False -> Error("cancelled")
+          True ->
+            answer(
+              types.Request(
+                ..request,
+                input: list.append(request.input, [nudge]),
+              ),
+              list.append(original, [nudge]),
+            )
+        }
       }
-    }
-  })
+    },
+  )
   use #(row, turn, sent, attempt) <- go_on(state, id, inputs, step, called)
   let cache = fading(state, sent)
   let cache_loss = case row {
@@ -304,10 +319,11 @@ fn converse(
       _ -> conversation.Tool
     },
     turn.thought_ms,
+    None,
   ))
   attach(state, row, seq)
   use _ <- result.try(state.record_usage(completed_usage))
-  let speechless_turn = speechless(turn)
+  let speechless_turn = !state.allow_empty_reply && speechless(turn)
   let state =
     Loop(
       ..state,
@@ -358,7 +374,7 @@ fn converse(
       let added = list.flat_map(ran, fn(item) { item.1 })
       use _ <- result.try(commit_hooked(state, added, conversation.Tool))
       use steering <- result.try(state.drain_steering())
-      use _ <- result.try(state.commit([], conversation.Model, None))
+      use _ <- result.try(state.commit([], conversation.Model, None, None))
       run(
         state,
         id,
@@ -453,7 +469,7 @@ pub fn compact(state: Loop, inputs: List(types.Input)) -> Result(Nil, String) {
   }
   state.report_pin(Some(evicted))
   let instructions = case changed {
-    True -> kernel_instructions(state.kernel)
+    True -> kernel_instructions(state.prepared)
     False -> request_instructions(state)
   }
   // A forced compaction keeps the default options; an ordinary turn sets effort.
@@ -549,8 +565,17 @@ fn run_tool(
       // Drop the running projection before committing the result. A reset
       // racing with that commit must not snapshot the just-finished call.
       state.progress_finish(progress_id)
-      use Invoked(call, output, added, halt) <- result.try(invoked)
-      use _ <- result.try(state.commit([output], conversation.Tool, None))
+      use Invoked(call, output, failed, added, halt) <- result.try(invoked)
+      use #(_, position) <- result.try(state.commit(
+        [output],
+        conversation.Tool,
+        None,
+        Some(conversation.ToolIdentity(
+          progress_id,
+          tool_progress.call_title(call),
+          failed,
+        )),
+      ))
       let _ = case output {
         types.ToolOutput(_, body, images) -> {
           let trace =
@@ -562,15 +587,8 @@ fn run_tool(
               journal.trace(runtime.ledger(state.host), cell)
             })
             |> result.unwrap(None)
-          case
-            conversation.tool_result_position(
-              runtime.ledger(state.host),
-              state.session,
-              state.run_id,
-              call.id,
-            )
-          {
-            Ok(Some(position)) ->
+          case position {
+            Some(position) ->
               state.publish(view.ToolWithImages(
                 call,
                 body,
@@ -578,8 +596,9 @@ fn run_tool(
                 progress_id,
                 position,
                 images,
+                failed,
               ))
-            _ ->
+            None ->
               state.publish(view.Failure(
                 Some(state.run_id),
                 "tool_publication_failed",
@@ -604,6 +623,7 @@ type Invoked {
   Invoked(
     call: types.ToolCall,
     output: types.Input,
+    failed: Bool,
     added: List(types.Input),
     halt: Option(String),
   )
@@ -611,7 +631,7 @@ type Invoked {
 
 fn invoke(state: Loop, call: types.ToolCall) -> Result(Invoked, String) {
   // Before the hooks, so they judge the cell that runs.
-  let call = runtime.as_cell(state.kernel, call)
+  let call = runtime.as_cell(state.prepared, call)
   let asked = hook.Call(call.id, call.name, call.arguments, None)
   let started = requests.now()
   use hook.Answer(calling, _) <- result.try(hooked(state, hook.Calling(asked)))
@@ -620,21 +640,18 @@ fn invoke(state: Loop, call: types.ToolCall) -> Result(Invoked, String) {
       ..call,
       arguments: option.unwrap(calling.arguments, call.arguments),
     )
-  use output <- result.try(case calling.block {
+  use #(#(output, failed), notice) <- result.try(case calling.block {
     Some(reason) ->
-      Ok(
-        types.ToolOutput(
-          call.id,
-          json.to_string(
-            json.object([
-              #("error", json.string("blocked by a hook: " <> reason)),
-            ]),
-          ),
-          [],
-        ),
-      )
+      Ok(#(#(refused(call, "blocked by a hook: " <> reason), True), None))
     None ->
-      runtime.invoke(state.host, state.kernel, call, state.upstream.images)
+      case state.acquire() {
+        // The model hears why and may go on; a cancelled turn stops at its
+        // next checkpoint.
+        Error(why) -> Ok(#(#(refused(call, why), True), None))
+        Ok(#(kernel, notice)) ->
+          runtime.invoke(state.host, kernel, call, state.upstream.images)
+          |> result.map(fn(output) { #(output, notice) })
+      }
   })
   let body = case output {
     types.ToolOutput(_, body, _) -> body
@@ -642,7 +659,7 @@ fn invoke(state: Loop, call: types.ToolCall) -> Result(Invoked, String) {
   }
   let hook.Answer(called, by) =
     runtime.hook(
-      state.kernel,
+      state.prepared,
       hook.Called(
         hook.Call(..asked, arguments: call.arguments),
         body,
@@ -654,17 +671,27 @@ fn invoke(state: Loop, call: types.ToolCall) -> Result(Invoked, String) {
   // A block after the call cannot undo it: its reason is context.
   let added =
     list.flatten([
+      option.values([notice]),
       calling.context,
       option.values([option.map(called.block, hook.input(by, _))]),
       called.context,
     ])
-  Ok(Invoked(call, output, list.map(added, types.User), called.halt))
+  Ok(Invoked(call, output, failed, list.map(added, types.User), called.halt))
+}
+
+/// A call that did not run, answered in the JSON shape tools report errors in.
+fn refused(call: types.ToolCall, message: String) -> types.Input {
+  types.ToolOutput(
+    call.id,
+    json.to_string(json.object([#("error", json.string(message))])),
+    [],
+  )
 }
 
 /// Asks the session's hooks, shows the user their notes, and ends the turn
 /// if one of them asked to.
 fn hooked(state: Loop, event: hook.Event) -> Result(hook.Answer, String) {
-  let answer = runtime.hook(state.kernel, event)
+  let answer = runtime.hook(state.prepared, event)
   note(state, answer.verdict)
   case answer.verdict.halt {
     Some(reason) -> Error("stopped by a hook: " <> reason)
@@ -683,7 +710,7 @@ fn commit_hooked(
 ) -> Result(Nil, String) {
   case inputs {
     [] -> Ok(Nil)
-    _ -> state.commit(inputs, stage, None) |> result.replace(Nil)
+    _ -> state.commit(inputs, stage, None, None) |> result.replace(Nil)
   }
 }
 
@@ -785,7 +812,7 @@ fn prepare(
 ) -> Result(compaction.Prepared, String) {
   runtime.prepare_view_scoped(
     state.host,
-    state.kernel,
+    state.prepared,
     state.model,
     request_source(state.upstream, state.model),
     extension.clean_endpoint(state.upstream.endpoint),
@@ -1165,12 +1192,12 @@ fn accepted_timeout(error: types.Error) -> Bool {
 }
 
 fn request_instructions(state: Loop) -> String {
-  instructions_for(state.pin, state.kernel)
+  instructions_for(state.pin, state.prepared)
 }
 
 /// The system prompt a request carries: the pinned one while a pin holds,
 /// else the kernel's current one.
-fn instructions_for(pin: Pin, kernel: runtime.Session) -> String {
+fn instructions_for(pin: Pin, kernel: runtime.Prepared) -> String {
   case pin {
     Pinned(prompt, _) -> prompt.instructions <> context_text(prompt.context)
     Unpinned -> kernel_instructions(kernel)
@@ -1187,24 +1214,33 @@ fn request(
   request_for(
     state.model,
     state.effort,
-    state.kernel,
+    state.prepared,
+    state.upstream.images,
     instructions,
-    readable(state.upstream.images, history),
+    history,
   )
 }
 
-/// `history` as a model that takes no images can read it: each image becomes
-/// a note in its message. Only the request changes; the transcript keeps the
+/// `instructions` and `history` as a model held to `images` reads them. A
+/// model that takes no images is told so up front, and each image becomes a
+/// note in its message. Only the request changes; the transcript keeps the
 /// images for a model that reads them.
 fn readable(
   images: types.ImageLimits,
+  instructions: String,
   history: List(types.Input),
-) -> List(types.Input) {
+) -> #(String, List(types.Input)) {
   case images.max_images {
-    Some(0) -> list.map(history, without_images)
-    _ -> history
+    Some(0) -> #(
+      instructions <> "\n\n" <> text_only,
+      list.map(history, without_images),
+    )
+    _ -> #(instructions, history)
   }
 }
+
+const text_only =
+  "This model reads text only, so no image reaches it: show_image, view_diff and view_code raise, and screenshots come back without the picture. Review changes with `git diff` and read code with files.read instead."
 
 fn without_images(input: types.Input) -> types.Input {
   case input {
@@ -1225,10 +1261,12 @@ fn omitted_images(images: List(types.Image)) -> String {
 fn request_for(
   model: String,
   effort: Option(String),
-  kernel: runtime.Session,
+  kernel: runtime.Prepared,
+  images: types.ImageLimits,
   instructions: String,
   history: List(types.Input),
 ) -> types.Request {
+  let #(instructions, history) = readable(images, instructions, history)
   types.Request(
     model,
     Some(instructions),
@@ -1239,7 +1277,7 @@ fn request_for(
   )
 }
 
-fn kernel_instructions(kernel: runtime.Session) -> String {
+fn kernel_instructions(kernel: runtime.Prepared) -> String {
   runtime.instructions(kernel) <> context_text(runtime.context(kernel))
 }
 
@@ -1307,13 +1345,31 @@ fn settled(
 /// sent is for the caller to judge, by comparing their prefix identities.
 pub fn rebuild(
   host: runtime.Runtime,
-  kernel: runtime.Session,
+  kernel: runtime.Prepared,
   model: String,
   effort: Option(String),
   pin: Pin,
   upstream: extension.Upstream,
   original: List(types.Input),
 ) -> Result(#(types.Request, requests.Prefix), String) {
+  rebuild_observed(host, kernel, model, effort, pin, upstream, original)
+  |> result.map(fn(rebuilt) { #(rebuilt.0, rebuilt.1) })
+}
+
+/// `rebuild` with what the strategy observed preparing the request, which an
+/// inspector shows beside it.
+pub fn rebuild_observed(
+  host: runtime.Runtime,
+  kernel: runtime.Prepared,
+  model: String,
+  effort: Option(String),
+  pin: Pin,
+  upstream: extension.Upstream,
+  original: List(types.Input),
+) -> Result(
+  #(types.Request, requests.Prefix, Option(compaction.Observation)),
+  String,
+) {
   use prepared <- result.map(runtime.project_view_scoped(
     host,
     kernel,
@@ -1326,8 +1382,13 @@ pub fn rebuild(
   ))
   let history = prepared.inputs
   let instructions = instructions_for(settled(pin, original, history), kernel)
-  let request = request_for(model, effort, kernel, instructions, history)
-  #(request, request_prefix(request, original, prepared.observation))
+  let request =
+    request_for(model, effort, kernel, upstream.images, instructions, history)
+  #(
+    request,
+    request_prefix(request, original, prepared.observation),
+    prepared.observation,
+  )
 }
 
 fn describe(
@@ -1412,9 +1473,10 @@ fn summarize(
     request_for(
       model,
       state.effort,
-      state.kernel,
+      state.prepared,
+      state.upstream.images,
       instructions,
-      readable(state.upstream.images, history),
+      history,
     )
   let summary_request =
     types.Request(

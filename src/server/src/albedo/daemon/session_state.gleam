@@ -10,6 +10,7 @@ import albedo/daemon/events as view
 import albedo/daemon/mail
 import albedo/daemon/operations
 import albedo/daemon/session_activity
+import albedo/daemon/shell_commands
 import albedo/daemon/store
 import albedo/daemon/tool_progress
 import albedo/daemon/transcript
@@ -43,12 +44,21 @@ pub type PendingSwitch {
 pub type State(message) {
   State(
     active_output: active_output.Projection,
+    shell_commands: List(shell_commands.Command),
+    shell_worker: Option(#(String, process.Pid)),
     info: conversation.Info,
+    acp: Bool,
     host: runtime.Runtime,
     kernel: Option(runtime.Session),
     /// The kernel the idle sweep released, whose composition stays prepared
     /// for the next open: its extensions keep hearing the session meanwhile.
     released: Option(runtime.Session),
+    /// The composition the runtime prepared without a kernel, for a turn
+    /// that starts while the session holds none.
+    prepared: Option(runtime.Prepared),
+    /// Bumped at each model request and tool call; a rest timer armed under
+    /// an older value is stale.
+    rest_token: Int,
     home: String,
     self: Subject(message),
     history: Option(List(transcript.Entry)),
@@ -72,6 +82,8 @@ pub type State(message) {
     booting: Option(#(Int, List(message))),
     /// Work parked until the previous workspace's kernel is confirmed stopped.
     workspace_reset: Option(List(message)),
+    /// A remote workspace readiness probe running outside the actor.
+    workspace_probe: Option(String),
     releasing: Option(List(message)),
     closing: Bool,
     blocked_until: Int,
@@ -409,7 +421,7 @@ fn publish(state: State(message), event: view.Event) -> State(message) {
   let observed = view.observe(state.live_activity, event, usage.now())
   let committed_mail = case event {
     view.Input(outcome, _) -> outcome.receipt.delivery == Some("committed")
-    view.Message(entry) -> entry.letter != None
+    view.Message(entry, _) -> entry.letter != None
     _ -> False
   }
   let observed = case committed_mail {
@@ -474,4 +486,19 @@ pub fn unprepared() -> context_snapshot.Snapshot {
   context_snapshot.pending(
     "runtime session has not prepared a provider request",
   )
+}
+
+/// What a turn composes from: the held kernel's, else the released one's,
+/// else one prepared without a kernel, each only for the current workspace.
+pub fn composition(state: State(message)) -> Option(runtime.Prepared) {
+  let current = fn(prepared: runtime.Prepared) {
+    case prepared.cwd == state.info.cwd {
+      True -> Some(prepared)
+      False -> None
+    }
+  }
+  case state.kernel, state.released {
+    Some(kernel), _ | None, Some(kernel) -> current(runtime.prepared(kernel))
+    None, None -> option.then(state.prepared, current)
+  }
 }

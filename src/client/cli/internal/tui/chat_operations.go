@@ -95,16 +95,16 @@ func (m *ChatModel) interruptCmd() tea.Cmd {
 	status := m.Status
 	pending := slices.Clone(m.pendingUsers)
 	return func() tea.Msg {
-		result, err := client.InterruptObservedResult(context.Background(), status)
+		ok, cancelledIDs, err := client.InterruptObserved(context.Background(), status)
 		var cancelled []PendingUserTurn
 		if err == nil {
 			for _, turn := range pending {
-				if slices.Contains(result.CancelledInputIDs, turn.OperationID) {
+				if slices.Contains(cancelledIDs, turn.OperationID) {
 					cancelled = append(cancelled, turn)
 				}
 			}
 		}
-		return ChatInterruptMsg{SessionID: id, Generation: gen, Interrupted: result.State == "requested", Err: err, Cancelled: cancelled}
+		return ChatInterruptMsg{SessionID: id, Generation: gen, Interrupted: ok, Err: err, Cancelled: cancelled}
 	}
 }
 

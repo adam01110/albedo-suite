@@ -261,7 +261,10 @@ func (s *Service) StopDaemon(ctx context.Context, stopKernels bool) error {
 	if err != nil || conn == nil {
 		return err
 	}
-	return daemon.StopDaemon(ctx, conn, stopKernels)
+	if err := daemon.StopDaemon(ctx, conn, stopKernels); err != nil {
+		return err
+	}
+	return daemon.WaitForExit(ctx, conn.Snapshot().Pid)
 }
 func (s *Service) PrepareLogin(ctx context.Context) (PreparedOpen, error) {
 	conn, err := s.Connect(ctx)

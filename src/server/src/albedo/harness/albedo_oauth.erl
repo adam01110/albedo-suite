@@ -4,13 +4,14 @@
 %% tracks the flows; each flow owns its loopback callback listener and ends by
 %% storing the credential in creds.json's accounts under the provider's key.
 
--export([confirm/1, put_key/6, rename_account/4, accounts/2,
+-export([confirm/1, put_key/6, rename_account/4, accounts/2, callback_issuer/0,
          parse_input/1, start_identified/5, get_identified/3, input_identified/5,
-         cancel_identified/3, auth_snapshot/2, remove_account/3]).
+         cancel_identified/3, auth_snapshot/2, account_overview/2, remove_account/3]).
 
 -define(OWNER, albedo_oauth).
 -define(FLOW_TIMEOUT_MS, 300000).
 -define(CALL_MS, 60000).
+-define(ISSUER, albedo_oauth_issuer).
 
 %% Login is the Gleam oauth.Login record:
 %% {login, Provider, Label, Detail, Kind, Store, {callback, Host, Port, Path, Fixed}, Authorize, Exchange, Account}
@@ -247,29 +248,36 @@ run_flow(Owner, Id, {login, Provider, _, _, _, Store, {callback, Host, Port, Pat
             Challenge = base64url(crypto:hash(sha256, Verifier)),
             Redirect = iolist_to_binary(["http://", Host, ":", integer_to_binary(Bound), Path]),
             Grant = {grant, Redirect, State, Verifier, Challenge},
-            Self = self(),
-            spawn_link(fun() -> accept(Socket, Path, Self) end),
-            Owner ! {Id, ready, Authorize(Grant)},
-            albedo_clock:send_after(?FLOW_TIMEOUT_MS, self(), timeout),
-            Settle = settle_fn(Owner, Id),
-            Outcome = wait(State),
-            gen_tcp:close(Socket),
-            case Outcome of
-                {ok, Code} ->
-                    Settle({exchanging, <<"exchanging authorization code">>}),
-                    Progress = fun(Text) -> Settle({exchanging, Text}), nil end,
-                    try Exchange(Grant, Code, Progress) of
-                        {ok, Credential} ->
-                            case Save(Store, Credential, Account) of
-                                {ok, Label} -> Settle({done, Label});
-                                {error, Reason} -> Settle({failed, Reason})
-                            end;
+            case Authorize(Grant) of
+                {ok, Url} -> callback_flow(Owner, Id, Socket, Path, Grant, Url, Exchange, Store, Account, Save);
+                {error, Reason} -> gen_tcp:close(Socket), Owner ! {Id, refused, Reason}
+            end
+    end.
+
+%% Waits for the browser's callback or a pasted code, then trades the code.
+callback_flow(Owner, Id, Socket, Path, {grant, _, State, _, _} = Grant, Url, Exchange, Store, Account, Save) ->
+    Self = self(),
+    spawn_link(fun() -> accept(Socket, Path, Self) end),
+    Owner ! {Id, ready, Url},
+    albedo_clock:send_after(?FLOW_TIMEOUT_MS, self(), timeout),
+    Settle = settle_fn(Owner, Id),
+    Outcome = wait(State),
+    gen_tcp:close(Socket),
+    case Outcome of
+        {ok, Code} ->
+            Settle({exchanging, <<"exchanging authorization code">>}),
+            Progress = fun(Text) -> Settle({exchanging, Text}), nil end,
+            try Exchange(Grant, Code, Progress) of
+                {ok, Credential} ->
+                    case Save(Store, Credential, Account) of
+                        {ok, Label} -> Settle({done, Label});
                         {error, Reason} -> Settle({failed, Reason})
-                    catch Class:Reason ->
-                        Settle({failed, iolist_to_binary(io_lib:format("sign-in failed: ~p:~p", [Class, Reason]))})
                     end;
                 {error, Reason} -> Settle({failed, Reason})
-            end
+            catch Class:Reason ->
+                Settle({failed, iolist_to_binary(io_lib:format("sign-in failed: ~p:~p", [Class, Reason]))})
+            end;
+        {error, Reason} -> Settle({failed, Reason})
     end.
 
 listen(Port, Fixed) ->
@@ -295,9 +303,12 @@ wait(State) ->
                               (maps:get(<<"error_description">>, Query, Error))/binary>>};
                 _ -> wait(State)
             end;
-        {callback, #{<<"code">> := <<_, _/binary>> = Code, <<"state">> := State}} -> {ok, Code};
+        {callback, #{<<"code">> := <<_, _/binary>> = Code, <<"state">> := State} = Query} ->
+            put(?ISSUER, maps:get(<<"iss">>, Query, none)),
+            {ok, Code};
         {callback, _} -> wait(State);
         {input, Text} ->
+            put(?ISSUER, input_issuer(Text)),
             case parse_input(Text) of
                 {<<>>, _} -> {error, <<"missing authorization code">>};
                 {Code, <<>>} -> {ok, Code};
@@ -370,6 +381,26 @@ parse_input(Text0) ->
 query_pair(Q) ->
     Query = maps:from_list(uri_string:dissect_query(Q)),
     {maps:get(<<"code">>, Query, <<>>), maps:get(<<"state">>, Query, <<>>)}.
+
+%% The `iss` a pasted callback url or query string carries (RFC 9207), or none.
+input_issuer(Text0) ->
+    Text = string:trim(unicode:characters_to_binary(Text0)),
+    Query = case uri_string:parse(Text) of
+        #{scheme := _, host := _, query := Q} -> Q;
+        _ -> string:trim(Text, leading, "?#")
+    end,
+    try maps:get(<<"iss">>, maps:from_list(uri_string:dissect_query(Query)), none)
+    catch _:_ -> none
+    end.
+
+%% The `iss` the authorization response carried, for an `exchange` that
+%% checks it (RFC 9207); none when it carried none. Exchange runs in the flow
+%% process that received the response.
+callback_issuer() ->
+    case get(?ISSUER) of
+        Issuer when is_binary(Issuer) -> {some, Issuer};
+        _ -> none
+    end.
 
 %% ---- creds.json accounts ------------------------------------------------
 
@@ -524,6 +555,8 @@ create_identified(Home, Id, Provider, Login0, Intent, Flows) ->
                         true -> Flow#{<<"url">> => Url};
                         false -> exit(Pid, kill), failed_record(Flow, <<"Provider authorization URL is invalid.">>)
                     end;
+                {Id, refused, Reason} ->
+                    finish(Flow#{<<"state">> => <<"failed">>, <<"failure">> => bounded(Reason, 4096)});
                 {Id, failed, Reason} ->
                     Failure = case element(7, Login) of
                         {device, _} when is_binary(Reason), Reason =/= <<>> -> bounded(Reason, 4096);
@@ -601,18 +634,26 @@ store_identified(Id, Home, Store, Credential0, Account, Flows) ->
         true = is_map(Credential0),
         RawId = id(Account, Credential0), true = is_binary(RawId) andalso byte_size(RawId) > 0,
         Creds = albedo_settings_store:read(Home, <<"creds.json">>),
-        Accounts = albedo_settings_store:object(<<"accounts">>, Creds), Values = albedo_credentials:values(Accounts, Store),
-        Previous = [V || V <- Values, id(Account, V) =:= RawId],
-        PublicId = case Previous of [P | _] -> maps:get(<<"_albedo_account_id">>, P, token(16)); [] -> token(16) end,
-        {account, _, Label, Detail, _} = Account(Credential0),
-        Credential = Credential0#{<<"_albedo_account_id">> => PublicId,
-            <<"_albedo_account_meta">> => #{<<"provider">> => maps:get(<<"provider">>, Flow), <<"label">> => bounded(Label, 256), <<"detail">> => bounded(Detail, 4096)}},
-        NewValues = case Previous of [] -> Values ++ [Credential]; _ -> [case id(Account, V) =:= RawId of true -> Credential; false -> V end || V <- Values] end,
+        {PublicId, NextCreds} = stored_credential(Creds, Store, Credential0, Account, RawId, maps:get(<<"provider">>, Flow)),
         Next = finish(Flow#{<<"state">> => <<"complete">>, <<"progress">> => <<>>, <<"failure">> => null, <<"account_ids">> => [PublicId]}),
-        albedo_settings_store:commit_group(Home, #{<<"creds.json">> => Creds#{<<"accounts">> => albedo_credentials:put_values(Accounts, Store, NewValues)},
-            <<"oauth-logins.json">> => Records#{Id => Next}}), Next
+        albedo_settings_store:commit_group(Home, #{<<"creds.json">> => NextCreds, <<"oauth-logins.json">> => Records#{Id => Next}}), Next
     end),
     {{ok, hd(maps:get(<<"account_ids">>, Completed))}, Flows#{Id := Active#{record => Completed}}}.
+
+%% Creds with a signed-in credential in place, and the id it is known by. An
+%% MCP server's sign-in replaces that server's tokens; any other replaces the
+%% account with the same identity or joins the store's accounts.
+stored_credential(Creds, <<"mcp:", Server/binary>> = Store, Credential, _, _, _) ->
+    {Store, albedo_mcp_oauth:signed_in(Creds, Server, Credential)};
+stored_credential(Creds, Store, Credential0, Account, RawId, Provider) ->
+    Accounts = albedo_settings_store:object(<<"accounts">>, Creds), Values = albedo_credentials:values(Accounts, Store),
+    Previous = [V || V <- Values, id(Account, V) =:= RawId],
+    PublicId = case Previous of [P | _] -> maps:get(<<"_albedo_account_id">>, P, token(16)); [] -> token(16) end,
+    {account, _, Label, Detail, _} = Account(Credential0),
+    Credential = Credential0#{<<"_albedo_account_id">> => PublicId,
+        <<"_albedo_account_meta">> => #{<<"provider">> => Provider, <<"label">> => bounded(Label, 256), <<"detail">> => bounded(Detail, 4096)}},
+    NewValues = case Previous of [] -> Values ++ [Credential]; _ -> [case id(Account, V) =:= RawId of true -> Credential; false -> V end || V <- Values] end,
+    {PublicId, Creds#{<<"accounts">> => albedo_credentials:put_values(Accounts, Store, NewValues)}}.
 
 stopped(Flows, Pid) -> maps:map(fun
     (Id, #{pid := P, home := Home, record := Record} = F) when P =:= Pid ->
@@ -653,7 +694,7 @@ rename_account(Home, Logins, Id, Label) ->
 
 put_key(Home, Provider, Id, Endpoint, Key, Label0) ->
     try locked(Home, fun() ->
-        ensure(lists:member(Provider, [<<"openai">>, <<"opencode-go">>]), 400, <<"provider_unknown">>, <<"Key accounts require a key provider.">>),
+        ensure(lists:member(Provider, albedo_key_accounts:providers()), 400, <<"provider_unknown">>, <<"Key accounts require a key provider.">>),
         ensure(re:run(Id, <<"^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$">>, [{capture, none}]) =:= match,
             400, <<"identity_invalid">>, <<"Account identity must be a UUIDv7.">>),
         ensure(byte_size(Key) > 0 andalso byte_size(Key) =< 16384, 400, <<"invalid_request">>, <<"api_key is required.">>),
@@ -708,6 +749,27 @@ auth_snapshot(Home, Logins) ->
         {ok, iolist_to_binary(json:encode(#{<<"providers">> => Providers, <<"accounts">> => account_projection(Home, Logins)}))}
     end) catch throw:{http, S, C, D} -> {error, {S,C,D}}; _:_ -> {error, {503, <<"auth_unavailable">>, <<"Provider account storage is unavailable.">>}} end.
 
+%% The /auth descriptors plus each account's Google project and per-meter
+%% limits, for the model's /accounts; no secret value leaves this module.
+account_overview(Home, Logins) ->
+    try locked(Home, fun() ->
+        Accounts = account_projection(Home, Logins),
+        Stored = albedo_settings_store:object(<<"accounts">>, albedo_settings_store:read(Home, <<"creds.json">>)),
+        Credentials = maps:from_list([{Id, Credential} || Store <- maps:keys(Stored),
+            Credential <- albedo_credentials:values(Stored, Store),
+            #{<<"_albedo_account_id">> := Id} <- [Credential]]),
+        {ok, json:encode([overview(Account, maps:get(maps:get(<<"id">>, Account), Credentials, #{})) || Account <- Accounts])}
+    end) catch throw:{http, _, _, Detail} -> {error, Detail}; _:_ -> {error, <<"Provider account storage is unavailable.">>} end.
+
+overview(Account, Credential) ->
+    Meters = case maps:get(<<"limitedMeters">>, Credential, #{}) of Map when is_map(Map) -> Map; _ -> #{} end,
+    Account#{<<"project">> => case maps:get(<<"projectId">>, Credential, null) of
+            Project when is_binary(Project), Project =/= <<>> -> Project;
+            _ -> null
+        end,
+        <<"limited_meters">> => maps:from_list([{Meter, albedo_http_api:timestamp(Until)}
+            || {Meter, Until} <- maps:to_list(Meters), is_integer(Until), Until > 0])}.
+
 account_projection(Home, Logins) ->
     Creds = albedo_settings_store:read(Home, <<"creds.json">>), Accounts = albedo_settings_store:object(<<"accounts">>, Creds),
     Config = albedo_settings_store:read(Home, <<"config.json">>), Profiles = maps:get(<<"providers">>, Config, #{}),
@@ -737,13 +799,13 @@ account_projection(Home, Logins) ->
             #{<<"_albedo_account_id">> := Id, <<"_albedo_account_meta">> := Meta} <- [Credential]]
     end, lists:sort(maps:keys(Updated))),
     Keys = lists:flatmap(fun(Store) -> key_projection(Store, Updated, Profiles) end,
-        [<<"openai">>, <<"opencode-go">>]),
+        albedo_key_accounts:providers()),
     OAuth ++ Keys ++ env_key_projection(Home, Profiles).
 
 env_key_projection(Home, Profiles) ->
     Endpoints = lists:usort([{maps:get(<<"extension">>, Profile, <<"openai">>),
         maps:get(<<"baseUrl">>, Profile, <<>>)} || {_Name, Profile} <- maps:to_list(Profiles),
-        lists:member(maps:get(<<"extension">>, Profile, <<"openai">>), [<<"openai">>, <<"opencode-go">>])]),
+        lists:member(maps:get(<<"extension">>, Profile, <<"openai">>), albedo_key_accounts:providers())]),
     lists:usort(lists:flatmap(fun({Provider, Endpoint}) ->
         [key_descriptor(Provider, Credential, Profiles) || Credential <- albedo_key_accounts:env(Home, Provider, Endpoint)]
     end, Endpoints)).

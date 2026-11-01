@@ -463,6 +463,7 @@ func (m *AppModel) Update(msg tea.Msg) (model tea.Model, resultCmd tea.Cmd) {
 	case ChatOpenCapabilityPageMsg:
 		if m.ActiveSession != nil {
 			m.CapabilityPage = NewCapabilityPageModel(m.Conn, m.ActiveSession.ID, msg.Kind)
+			m.CapabilityPage.openBrowser = m.openBrowser
 			return m, m.openScreen(AppStateCapabilityPage, &m.CapabilityPage)
 		}
 

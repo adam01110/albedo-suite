@@ -60,6 +60,19 @@ class RunnerTests(unittest.TestCase):
                     ).hexdigest(),
                 )
 
+    def test_skill_fixture_filters_discovery_without_removing_assertions(self):
+        source = 'self.route = f"/sessions/{self.session}/catalog"\nassert original_checks\n'
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "skills_test.py"
+            path.write_text(source)
+            checksum = hashlib.sha256(path.read_bytes()).hexdigest()
+            runner.synchronize_skills_catalog_fixture(path, expected_sha256=checksum)
+            self.assertEqual(
+                path.read_text(), source.replace('/catalog"', '/catalog?kind=skills"')
+            )
+            with self.assertRaisesRegex(RuntimeError, "skills fixture changed"):
+                runner.synchronize_skills_catalog_fixture(path, expected_sha256=checksum)
+
     def test_python_targets_use_the_actual_upstream_filename(self):
         targets = [case for case in runner.UPSTREAM_CASES if ":" in case]
         self.assertEqual(len(targets), 4)

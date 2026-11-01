@@ -96,9 +96,20 @@ func (m LoginModel) acceptProfileName() (LoginModel, tea.Cmd) {
 	return m, m.chooseCredential()
 }
 
-// keyAccounts reports extensions whose API keys are stored as accounts.
+// keyAccountExtensions are the extensions whose API keys are saved as
+// accounts, so one key can be pinned, rotated, or shared by several profiles.
+// Every other provider keeps its key in the profile itself.
+var keyAccountExtensions = map[string]bool{
+	"openai":      true,
+	"opencode-go": true,
+	"perplexity":  true,
+	"mistral":     true,
+}
+
+// keyAccounts reports whether the draft's extension stores its API keys as
+// accounts.
 func (m LoginModel) keyAccounts() bool {
-	return m.Draft.Extension == "openai" || m.Draft.Extension == "opencode-go"
+	return keyAccountExtensions[m.Draft.Extension]
 }
 
 func (m LoginModel) credentialAccounts() []daemon.Account {

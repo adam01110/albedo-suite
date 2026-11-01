@@ -130,7 +130,7 @@ account(C) ->
 %% Native credentials are never sent to a profile-controlled endpoint.
 request(Method, Path, Headers, Body) when Path =:= <<"/client/users/me">>; Path =:= <<"/client/llm_tokens">> ->
     Url = <<?ORIGIN/binary, Path/binary>>,
-    case albedo_openai_transport:open_method(Method, Url,
+    case albedo_openai_transport:open(Method, Url,
             [{<<"content-type">>, <<"application/json">>} | Headers], Body, 15000) of
         {ok, Connection} ->
             albedo_openai_transport:with_connection_discard_errors(Connection, fun() ->

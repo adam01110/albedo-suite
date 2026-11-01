@@ -778,7 +778,9 @@ CREATE INDEX IF NOT EXISTS quota_sample_report
 
 /// The table, before any session or poller starts.
 pub fn initialise(database: store.Store) -> Result(Nil, String) {
-  store.query(database, fn(db) { store.exec(db, schema) })
+  store.query(database, fn(db) {
+    store.transaction(db, fn() { store.exec(db, schema) })
+  })
 }
 
 /// Only readings: one row per limit the report carried, or one row carrying

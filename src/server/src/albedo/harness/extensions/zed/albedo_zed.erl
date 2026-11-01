@@ -221,7 +221,7 @@ retry(Home, Profile, Endpoint, Token, Binding, Run, OnEvent) ->
     after erase(Ref) end.
 
 model_response(Endpoint, Headers) ->
-    case albedo_openai_transport:open_method(<<"GET">>, <<Endpoint/binary, "/models">>,
+    case albedo_openai_transport:open(<<"GET">>, <<Endpoint/binary, "/models">>,
             [{list_to_binary(K), list_to_binary(V)} || {K, V} <- Headers], <<>>, 10000) of
         {ok, Connection} -> albedo_openai_transport:with_connection_discard_errors(Connection, fun() ->
             albedo_zed_auth:read_response(Connection, erlang:monotonic_time(millisecond) + 10000)

@@ -23,6 +23,8 @@ type CapabilityPageModel struct {
 	Prefs                            config.CapabilityPrefs
 	Conn                             *daemon.Connection
 	Form                             *mcpForm
+	SignIn                           *mcpSignIn
+	openBrowser                      func(string)
 	SessionID, Kind                  string
 	Items                            []capabilityItem
 	Revision                         string
@@ -267,6 +269,12 @@ func (m CapabilityPageModel) Update(msg tea.Msg) (CapabilityPageModel, tea.Cmd) 
 		m.Loading, m.Generation = true, nextPageGeneration()
 		return m, tea.Batch(m.loadCmd(m.Generation), func() tea.Msg { return CapabilityPageChangedMsg{} })
 
+	case mcpSignInStartedMsg:
+		return m.signInStarted(msg)
+
+	case mcpSignInPolledMsg:
+		return m.signInPolled(msg)
+
 	case tea.PasteMsg:
 		if m.Form == nil || m.Saving {
 			return m, nil
@@ -293,6 +301,8 @@ func (m CapabilityPageModel) Update(msg tea.Msg) (CapabilityPageModel, tea.Cmd) 
 			return m, nil
 		case m.Form != nil:
 			return m.formKey(msg)
+		case m.SignIn != nil && msg.String() == "esc":
+			return m.cancelSignIn()
 		case msg.String() == "esc" || msg.String() == "ctrl+c" || (msg.String() == "ctrl+d" && m.Kind != "mcp"):
 			return m, func() tea.Msg { return CapabilityPageDoneMsg{} }
 		case m.Loading || m.Saving:
@@ -355,6 +365,14 @@ func (m CapabilityPageModel) listKey(msg tea.KeyPressMsg) (CapabilityPageModel, 
 		if mcp && ok && serverDisabled(item) {
 			return m.enableServer(item)
 		}
+	case "ctrl+l":
+		if mcp && ok && m.SignIn == nil && canSignIn(item) {
+			return m.startSignIn(item)
+		}
+	case "ctrl+u":
+		if mcp && ok && item.Secrets.Auth.State == "signed_in" {
+			m.confirm.ask(actionSignOut, item.ID, "sign out", fmt.Sprintf("Its tools stop working until you sign in again. Sign out of %s?", item.Title))
+		}
 	case "ctrl+t":
 		if !m.ExtensionEnabled {
 			m.confirm.ask(actionEnableExtension, m.Kind, "enable", fmt.Sprintf("Enable the %s extension? This reloads this session to apply it.", m.Kind))
@@ -413,6 +431,8 @@ func (m CapabilityPageModel) confirmed() (CapabilityPageModel, tea.Cmd) {
 		return m.save(m.enableExtensionCmd)
 	case actionDeleteServer:
 		return m.save(func(gen int) tea.Cmd { return m.deleteMCPCmd(target, gen) })
+	case actionSignOut:
+		return m.save(func(gen int) tea.Cmd { return m.signOutCmd(target, gen) })
 	}
 	item, ok := m.itemNamed(target)
 	if !ok {
@@ -589,6 +609,7 @@ func (m CapabilityPageModel) serverDetails(item capabilityItem, asked string, wi
 		}
 	} else {
 		lines = append(lines, factRows("url", server.URL, width)...)
+		lines = append(lines, m.signInRows(item, width)...)
 	}
 	file := "enabled in extensions.json"
 	if serverDisabled(item) {
@@ -657,6 +678,7 @@ func (m CapabilityPageModel) hints(item capabilityItem, ok bool) []hint {
 	if mcp {
 		hints = append(hints, hint{"ctrl+o", "add server"})
 		if ok {
+			hints = append(hints, m.signInHints(item)...)
 			hints = append(hints, hint{"ctrl+e", "edit"}, hint{"ctrl+d", "delete"})
 		}
 	}

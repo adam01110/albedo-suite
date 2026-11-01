@@ -1,8 +1,12 @@
 -module(albedo_mcp).
 -export([check_candidate/3]).
 
--export([prepare_lazy/5, servers/1, load/2, unload/2, prepare/5, definitions/1, context/1, offline/1, observe/3, only/2, observer/1, closer/1,
-         call/3, close/1, url_allowed/1, validate_settings/3, transport_spec/3]).
+-export([prepare_overlay/4, probe_overlay/2]).
+
+-export([prepare_lazy/5, servers/1, load/2, unload/2, prepare/5, definitions/1, context/1, offline/1, sign_in/1, observe/3, only/2, observer/1, closer/1,
+         call/3, close/1, url_allowed/1, validate_settings/3]).
+
+-define(CLIENT, 'albedo@harness@extensions@mcp@client').
 
 -define(DEFAULT_STARTUP_MS, 20000).
 -define(DEFAULT_CALL_MS, 60000).
@@ -229,21 +233,71 @@ lazy_load(Name, Config, Loaded) ->
     catch _:_ -> {{error, unavailable(Name)}, Loaded} end.
 
 %% A live client's independent guard also cleans up if the manager crashes.
-lazy_guard(Manager, Client) ->
+lazy_guard(Manager, #{pid := Pid} = Client) ->
     spawn(fun() ->
         M = erlang:monitor(process, Manager),
-        C = erlang:monitor(process, Client),
+        C = erlang:monitor(process, Pid),
         receive
             {'DOWN', M, process, Manager, _} -> close_client(Client);
-            {'DOWN', C, process, Client, _} -> ok
+            {'DOWN', C, process, Pid, _} -> ok
         end
     end).
+
+%% An editor's servers for one session (see robot-docs/acp.md). Every one
+%% must start and answer discovery, or none is kept: unlike configured
+%% servers, a partial overlay is a failure. `env` values are literal and stay
+%% in memory, passed through the same secrets map creds.json fills.
+prepare_overlay(ServersJson, Workspace, Lookup, Save) ->
+    try
+        Servers = json:decode(ServersJson),
+        true = is_list(Servers),
+        Candidates = [overlay_candidate(Server, Workspace) || Server <- Servers],
+        case join_overlay(Candidates, [], {Lookup, Save}) of
+            {ok, Joined} -> finish(Joined, [], ?DEFAULT_RETRY_MS);
+            Error -> Error
+        end
+    catch
+        _:_ -> {error, <<"editor MCP servers are invalid">>}
+    end.
+
+overlay_candidate(#{<<"name">> := Name, <<"command">> := Command, <<"args">> := Args,
+                    <<"env">> := Env}, Workspace)
+        when is_binary(Name), is_binary(Command), is_list(Args), is_list(Env) ->
+    Literal = maps:from_list([{N, V} || #{<<"name">> := N, <<"value">> := V} <- Env,
+                                        is_binary(N), is_binary(V)]),
+    Config = #{<<"type">> => <<"stdio">>, <<"command">> => Command, <<"args">> => Args,
+               <<"cwd">> => Workspace},
+    {Name, Config, #{<<"env">> => Literal}}.
+
+%% Probe with no saved catalogue or global writes. A rejected candidate owns
+%% no cache entries, and every connection closes before returning its values.
+probe_overlay(ServersJson, Workspace) ->
+    try
+        Candidates = [overlay_candidate(Server, Workspace) || Server <- json:decode(ServersJson)],
+        Cache = {fun(_, _) -> none end, fun(_, _, _) -> nil end},
+        case join_overlay(Candidates, [], Cache) of
+            {ok, Joined} ->
+                try
+                    {ok, [{Name, fingerprint(Config, Secrets), encode_catalogue(Catalogue)}
+                          || {Name, Config, Secrets, Catalogue, _} <- Joined]}
+                after close_joined(Joined) end;
+            Error -> Error
+        end
+    catch _:_ -> {error, <<"editor MCP servers are invalid">>} end.
+
+join_overlay([], Joined, _) -> {ok, lists:reverse(Joined)};
+join_overlay([{Name, Config, Secrets} | Rest], Joined, Cache) ->
+    case join_with_secrets(Name, Config, Secrets, Cache) of
+        {ok, Joining} -> join_overlay(Rest, [Joining | Joined], Cache);
+        _ -> close_joined(Joined), {error, <<"editor MCP server ", Name/binary, " did not start">>}
+    end.
 
 open_servers(Candidates, Preferences, Retry, Cache) ->
     open_servers(Candidates, [], [], Preferences, Retry, Cache).
 
-%% A server that cannot start is left out and named; one that is badly
-%% configured still fails the whole preparation.
+%% A server that cannot start, or that needs the user to sign in, is left
+%% out and named; one that is badly configured still fails the whole
+%% preparation.
 open_servers([], Joined, Offline, _, Retry, _) ->
     finish(lists:reverse(Joined), lists:reverse(Offline), Retry);
 open_servers([{Name, Config} | Rest], Joined, Offline, Preferences, Retry, Cache) ->
@@ -252,7 +306,9 @@ open_servers([{Name, Config} | Rest], Joined, Offline, Preferences, Retry, Cache
         {true, {ok, true}} ->
             case join(Name, Config, Cache) of
                 {ok, Server} -> open_servers(Rest, [Server | Joined], Offline, Preferences, Retry, Cache);
-                {unavailable, _} -> open_servers(Rest, Joined, [{Name, Config} | Offline], Preferences, Retry, Cache);
+                {unavailable, _} -> open_servers(Rest, Joined, [{Name, Config, unavailable} | Offline], Preferences, Retry, Cache);
+                {needs_sign_in, _, Reason} ->
+                    open_servers(Rest, Joined, [{Name, Config, {needs_sign_in, Reason}} | Offline], Preferences, Retry, Cache);
                 {error, Reason} -> close_joined(Joined), {error, Reason}
             end;
         {false, _} -> open_servers(Rest, Joined, Offline, Preferences, Retry, Cache);
@@ -268,39 +324,47 @@ join(Name, Config, {Lookup, Save}) when is_binary(Name), is_map(Config) ->
         true ->
             case albedo_mcp_credentials:server(Name) of
                 {ok, Secrets} ->
-                    Fingerprint = fingerprint(Config, Secrets),
-                    case saved(Lookup(Name, Fingerprint)) of
-                        {ok, Catalogue} ->
-                            {ok, {Name, Config, Secrets, Catalogue, {check, Catalogue, Fingerprint, Save}}};
-                        none ->
-                            case connect(Name, Config, Secrets) of
-                                {ok, Server, Catalogue} ->
-                                    Save(Name, Fingerprint, encode_catalogue(Catalogue)),
-                                    {ok, {Name, Config, Secrets, Catalogue, {connected, Server}}};
-                                Unavailable -> Unavailable
-                            end
-                    end;
+                    join_with_secrets(Name, Config, Secrets, {Lookup, Save});
                 Error -> Error
             end
     end;
 join(_, _, _) -> {error, <<"MCP server configuration is invalid">>}.
 
+join_with_secrets(Name, Config, Secrets, {Lookup, Save}) ->
+    Fingerprint = fingerprint(Config, Secrets),
+    case saved(Lookup(Name, Fingerprint)) of
+        {ok, Catalogue} ->
+            {ok, {Name, Config, Secrets, Catalogue, {check, Catalogue, Fingerprint, Save}}};
+        none ->
+            case connect(Name, Config, Secrets) of
+                {ok, Server, Catalogue} ->
+                    Save(Name, Fingerprint, encode_catalogue(Catalogue)),
+                    {ok, {Name, Config, Secrets, Catalogue, {connected, Server, Fingerprint, Save}}};
+                Unavailable -> Unavailable
+            end
+    end.
+
 %% Close what `join` connected before any connector took it over.
 close_joined(Joined) ->
-    close_servers([Server || {_, _, _, _, {connected, Server}} <- Joined]).
+    close_servers([Server || {_, _, _, _, {connected, Server, _, _}} <- Joined]).
 
-finish(Joined, Offline0, Retry) ->
-    Offline = lists:keysort(1, Offline0),
+finish(Joined, Offline1, Retry) ->
+    Offline0 = lists:keysort(1, Offline1),
+    Offline = [{Name, Config} || {Name, Config, _} <- Offline0],
+    SignIn = [{Name, Reason} || {Name, _, {needs_sign_in, Reason}} <- Offline0],
     Operations = lists:append([Ops || {_, _, _, {Ops, _}, _} <- Joined]),
-    Context = [Text || {_, _, _, {_, Text}, _} <- Joined],
+    Context = [Text || {_, _, _, {_, Text}, _} <- Joined]
+        ++ [<<"MCP server '", Name/binary, "' needs the user to sign in (", Reason/binary,
+              "); its tools join once they sign in from the MCP settings.">> || {Name, Reason} <- SignIn],
     Names = [maps:get(advertised, O) || O <- Operations],
     case length(Operations) =< 512 andalso length(Names) =:= length(lists:usort(Names)) of
         true ->
             Watcher = watch(Offline, Retry),
-            Servers = [link(Name, Config, Secrets, Start, Watcher)
-                       || {Name, Config, Secrets, _, Start} <- Joined],
-            {ok, #{servers => Servers, operations => Operations, offline => [N || {N, _} <- Offline],
-                   watcher => Watcher,
+            Servers = [link(Name, Config, Secrets, Catalogue, Start, Watcher)
+                       || {Name, Config, Secrets, Catalogue, Start} <- Joined],
+            {ok, #{servers => Servers, operations => Operations,
+                   offline => [N || {N, _} <- Offline, not lists:keymember(N, 1, SignIn)],
+                   sign_in => [N || {N, _} <- SignIn], watcher => Watcher,
                    context => iolist_to_binary(lists:join("\n", Context))}};
         false ->
             close_joined(Joined),
@@ -322,22 +386,16 @@ open_server_with_secrets(Name, Config, Secrets) ->
     try
         Startup = positive_ms(maps:get(<<"startupTimeoutMs">>, Config, ?DEFAULT_STARTUP_MS)),
         Call = positive_ms(maps:get(<<"callTimeoutMs">>, Config, ?DEFAULT_CALL_MS)),
-        Spec = transport_spec(Config, Secrets, #{
-            client_info => #{name => <<"albedo">>, version => <<"1">>},
-            protocol_version => auto,
-            probe_timeout => min(Startup, 5000),
-            init_timeout => Startup,
-            request_timeout => Call,
-            ping_interval => infinity
-        }),
-        {ok, Pid} = barrel_mcp_client:start(Spec),
-        case maps:find(lazy_owner, Config) of
-            {ok, Owner} -> lazy_guard(Owner, Pid);
-            error -> ok
-        end,
-        case await_ready(Pid, Startup) of
-            ok -> {ok, #{name => Name, pid => Pid, call_timeout => Call, config => Config}};
-            {error, _} -> close_client(Pid), {unavailable, Name}
+        case ?CLIENT:start(transport(Name, Config, Secrets), Startup) of
+            {ok, Client} ->
+                case maps:find(lazy_owner, Config) of
+                    {ok, Owner} -> lazy_guard(Owner, #{client => Client, pid => ?CLIENT:pid(Client)});
+                    error -> ok
+                end,
+                {ok, #{name => Name, client => Client, pid => ?CLIENT:pid(Client),
+                       call_timeout => Call, config => Config}};
+            {error, {needs_sign_in, Reason}} -> {needs_sign_in, Name, Reason};
+            {error, _} -> {unavailable, Name}
         end
     catch
         _:_ -> {unavailable, Name}
@@ -356,8 +414,10 @@ connect(Name, Config, Secrets) ->
 
 %% Names one server's configuration and credentials, so a saved catalogue
 %% is only trusted for the setup that produced it.
+%% A sign-in's tokens change on every refresh, so they are left out.
 fingerprint(Config, Secrets) ->
-    binary:encode_hex(crypto:hash(sha256, term_to_binary({Config, Secrets}, [deterministic])), lowercase).
+    Stable = maps:remove(<<"oauth">>, Secrets),
+    binary:encode_hex(crypto:hash(sha256, term_to_binary({Config, Stable}, [deterministic])), lowercase).
 
 encode_catalogue({Ops, Text}) -> term_to_binary({?CATALOGUE_VERSION, Ops, Text}).
 
@@ -369,30 +429,32 @@ saved({some, Encoded}) when is_binary(Encoded) ->
     end;
 saved(_) -> none.
 
-transport_spec(#{<<"type">> := <<"http">>, <<"url">> := Url} = Config, Secrets, Spec)
+%% The client's transport: an https server is reached through the provider
+%% transport, verified against albedo_trust's roots. An HTTP server without
+%% an authorization header of its own may sign in with OAuth.
+transport(Name, #{<<"type">> := <<"http">>, <<"url">> := Url} = Config, Secrets)
         when is_binary(Url), byte_size(Url) > 0 ->
     case url_allowed(Url) of true -> ok; false -> erlang:error(unsafe_url) end,
-    Spec#{transport => {http, Url}, auth => none, http_headers => http_headers(Config, Secrets),
-          ssl_options => tls_options()};
-transport_spec(#{<<"type">> := <<"stdio">>, <<"command">> := Command} = Config, Secrets, Spec)
+    Headers = http_headers(Config, Secrets),
+    Auth = case lists:keymember(<<"authorization">>, 1, [{string:lowercase(K), V} || {K, V} <- Headers]) of
+        true -> none;
+        false -> {some, oauth(Name, Url)}
+    end,
+    {http, Url, Headers, Auth};
+transport(_, #{<<"type">> := <<"stdio">>, <<"command">> := Command} = Config, Secrets)
         when is_binary(Command), byte_size(Command) > 0 ->
     Args = string_list(maps:get(<<"args">>, Config, [])),
     Cwd = optional_binary(maps:get(<<"cwd">>, Config, null)),
-    Stdio = #{
-        command => binary_to_list(executable(<<"python3">>)),
-        args => lists:map(fun binary_to_list/1, [launcher(), Cwd, executable(Command) | Args]),
-        env => scoped_env(maps:get(<<"env">>, Config, #{}), maps:get(<<"env">>, Secrets, #{}))
-    },
-    Spec#{transport => {stdio, Stdio}, auth => none};
-transport_spec(_, _, _) -> erlang:error(invalid_transport).
+    {stdio, executable(<<"python3">>), [launcher(), Cwd, executable(Command) | Args],
+     scoped_env(maps:get(<<"env">>, Config, #{}), maps:get(<<"env">>, Secrets, #{}))};
+transport(_, _, _) -> erlang:error(invalid_transport).
 
-%% The OS trust store, as albedo's own HTTP clients use, instead of the certifi
-%% bundle hackney ships: the bundle only changes with a hackney release, so a CA
-%% the platforms have distrusted (eMudhra, 2026-10) stays trusted until then.
-%% barrel_mcp merges these over hackney's defaults, so its peer and hostname
-%% checks stay on, and its OAuth requests use the same store.
-tls_options() ->
-    [{verify, verify_peer}, {cacerts, public_key:cacerts_get()}].
+%% The client.Auth for one server's OAuth sign-in in this daemon's home.
+oauth(Name, Url) ->
+    Home = albedo_extension_settings:home(),
+    {auth,
+     fun(Refused) -> albedo_mcp_oauth:access(Home, Name, Url, Refused) end,
+     fun(Status, Challenge) -> albedo_mcp_oauth:challenged(Home, Name, Url, Status, Challenge) end}.
 
 url_allowed(Url) ->
     try
@@ -470,7 +532,7 @@ required_env(Name) ->
     end.
 
 launcher() ->
-    case code:priv_dir(albedo) of
+    case albedo_code:priv_dir() of
         {error, _} -> erlang:error(no_priv_dir);
         Dir -> unicode:characters_to_binary(filename:join([Dir, "python", "mcp_stdio.py"]))
     end.
@@ -487,38 +549,18 @@ executable(Command) ->
             end
     end.
 
-await_ready(Pid, Timeout) ->
-    Monitor = erlang:monitor(process, Pid),
-    Deadline = erlang:monotonic_time(millisecond) + Timeout,
-    Result = await_ready_loop(Pid, Monitor, Deadline),
-    erlang:demonitor(Monitor, [flush]),
-    Result.
-
-await_ready_loop(Pid, Monitor, Deadline) ->
-    case erlang:monotonic_time(millisecond) >= Deadline of
-        true -> {error, timeout};
-        false ->
-            try barrel_mcp_client:server_capabilities(Pid) of
-                {ok, _} -> ok;
-                {error, not_ready} ->
-                    receive {'DOWN', Monitor, process, Pid, Reason} -> {error, Reason}
-                    after 20 -> await_ready_loop(Pid, Monitor, Deadline)
-                    end;
-                Other -> {error, Other}
-            catch _:Caught -> {error, Caught}
-            end
-    end.
-
-discover(#{name := Name, pid := Pid, call_timeout := Timeout, config := Config}) ->
+discover(#{name := Name, client := Client, call_timeout := Timeout, config := Config}) ->
     Enabled = maps:get(<<"enabledTools">>, Config, null),
     Disabled = maps:get(<<"disabledTools">>, Config, []),
     try
-        {ok, Tools0} = pages(fun(Opts) -> barrel_mcp_client:list_tools(Pid, Opts) end, Timeout),
-        Tools = [T || T <- Tools0, allowed(maps:get(<<"name">>, T, <<>>), Enabled, Disabled)],
+        {ok, Tools0} = ?CLIENT:list(Client, <<"tools/list">>, <<"tools">>, Timeout),
+        Http = maps:get(<<"type">>, Config, undefined) =:= <<"http">>,
+        Tools = [T || T <- Tools0, allowed(maps:get(<<"name">>, T, <<>>), Enabled, Disabled),
+                      not Http orelse mirrorable(Name, T)],
         true = length(Tools) =< 256,
-        Caps = case barrel_mcp_client:server_capabilities(Pid) of {ok, C} when is_map(C) -> C; _ -> #{} end,
-        {Resources, ResourceTemplates} = resources(Pid, Caps, Timeout),
-        Prompts = prompts(Pid, Caps, Timeout),
+        Caps = case ?CLIENT:capabilities(Client) of C when is_map(C) -> C; _ -> #{} end,
+        {Resources, ResourceTemplates} = resources(Client, Caps, Timeout),
+        Prompts = prompts(Client, Caps, Timeout),
         ToolOps = [tool_operation(Name, T, Timeout) || T <- Tools],
         ResourceOps = [resource_operation(Name, Timeout) || Resources =/= [] orelse ResourceTemplates =/= []],
         PromptOps = [prompt_operation(Name, Timeout) || Prompts =/= []],
@@ -527,30 +569,22 @@ discover(#{name := Name, pid := Pid, call_timeout := Timeout, config := Config})
     catch _:_ -> {error, discovery_failed}
     end.
 
-resources(Pid, Caps, Timeout) ->
+resources(Client, Caps, Timeout) ->
     case is_map_key(<<"resources">>, Caps) of
         true ->
-            {ok, Items} = pages(fun(Opts) -> barrel_mcp_client:list_resources(Pid, Opts) end, Timeout),
-            {Items, optional_pages(fun(Opts) -> barrel_mcp_client:list_resource_templates(Pid, Opts) end, Timeout)};
+            {ok, Items} = ?CLIENT:list(Client, <<"resources/list">>, <<"resources">>, Timeout),
+            {Items, optional_list(Client, <<"resources/templates/list">>, <<"resourceTemplates">>, Timeout)};
         false -> {[], []}
     end.
 
-prompts(Pid, Caps, Timeout) ->
+prompts(Client, Caps, Timeout) ->
     case is_map_key(<<"prompts">>, Caps) of
-        true -> optional_pages(fun(Opts) -> barrel_mcp_client:list_prompts(Pid, Opts) end, Timeout);
+        true -> optional_list(Client, <<"prompts/list">>, <<"prompts">>, Timeout);
         false -> []
     end.
 
-optional_pages(Fetch, Timeout) ->
-    case pages(Fetch, Timeout) of {ok, Items} -> Items; _ -> [] end.
-
-pages(Fetch, Timeout) -> pages(Fetch, #{want_cursor => true, timeout => Timeout}, []).
-pages(Fetch, Opts, Acc) ->
-    case Fetch(Opts) of
-        {ok, Items, undefined} -> {ok, lists:append(lists:reverse([Items | Acc]))};
-        {ok, Items, Next} -> pages(Fetch, Opts#{cursor => Next}, [Items | Acc]);
-        Error -> Error
-    end.
+optional_list(Client, Method, Key, Timeout) ->
+    case ?CLIENT:list(Client, Method, Key, Timeout) of {ok, Items} -> Items; _ -> [] end.
 
 allowed(Name, null, Disabled) -> not lists:member(Name, Disabled);
 allowed(Name, Enabled, Disabled) when is_list(Enabled) ->
@@ -564,9 +598,75 @@ operation(Server, Kind, Raw, Timeout, Description, Schema) ->
 
 tool_operation(Server, Tool, Timeout) ->
     Raw = maps:get(<<"name">>, Tool),
-    operation(Server, tool, Raw, Timeout,
-              tool_description(Server, Raw, maps:get(<<"description">>, Tool, <<>>)),
-              safe_schema(maps:get(<<"inputSchema">>, Tool, #{}))).
+    Schema = maps:get(<<"inputSchema">>, Tool, #{}),
+    Operation = operation(Server, tool, Raw, Timeout,
+                          tool_description(Server, Raw, maps:get(<<"description">>, Tool, <<>>)),
+                          safe_schema(Schema)),
+    case param_headers(Schema) of
+        {ok, []} -> Operation;
+        {ok, Headers} -> Operation#{headers => Headers};
+        invalid -> Operation
+    end.
+
+%% A tool over HTTP whose `x-mcp-header` annotations break the 2026-07-28
+%% streamable-http rules ("Schema Extension") is left out, with a warning.
+mirrorable(Server, Tool) ->
+    case param_headers(maps:get(<<"inputSchema">>, Tool, #{})) of
+        {ok, _} -> true;
+        invalid ->
+            logger:warning("MCP server ~ts: tool ~ts has an invalid x-mcp-header and is left out",
+                           [Server, maps:get(<<"name">>, Tool, <<>>)]),
+            false
+    end.
+
+%% The parameters a tool mirrors into headers, as {PropertyPath, Name}: each
+%% on a string, integer, or boolean property reached through `properties`
+%% alone, with token names unique regardless of case.
+param_headers(Schema) ->
+    Found = annotated(Schema, []),
+    Names = [string:lowercase(Name) || {_, Name, _} <- Found],
+    Valid = annotations(Schema) =:= length(Found)
+        andalso lists:all(fun valid_param/1, Found)
+        andalso length(Names) =:= length(lists:usort(Names)),
+    case Valid of
+        true -> {ok, [{Path, Name} || {Path, Name, _} <- Found]};
+        false -> invalid
+    end.
+
+annotated(#{<<"properties">> := Properties}, Path) when is_map(Properties) ->
+    lists:append([annotation(Property, Path ++ [Key]) ++ annotated(Property, Path ++ [Key])
+                  || {Key, Property} <- lists:sort(maps:to_list(Properties)), is_map(Property)]);
+annotated(_, _) -> [].
+
+annotation(#{<<"x-mcp-header">> := Name} = Property, Path) ->
+    [{Path, Name, maps:get(<<"type">>, Property, undefined)}];
+annotation(_, _) -> [].
+
+annotations(Value) when is_map(Value) ->
+    Own = case is_map_key(<<"x-mcp-header">>, Value) of true -> 1; false -> 0 end,
+    Own + annotations(maps:values(Value));
+annotations(Values) when is_list(Values) -> lists:sum([annotations(V) || V <- Values]);
+annotations(_) -> 0.
+
+valid_param({_, Name, Type}) ->
+    is_binary(Name) andalso valid_header(Name)
+        andalso lists:member(Type, [<<"string">>, <<"integer">>, <<"boolean">>]);
+valid_param(_) -> false.
+
+%% The headers one call's arguments fill: a missing or null value sends none.
+param_values(Headers, Arguments) ->
+    [{<<"Mcp-Param-", Name/binary>>, Text}
+     || {Path, Name} <- Headers, Text <- [param_text(at(Path, Arguments))], Text =/= none].
+
+at([], Value) -> Value;
+at([Key | Path], #{} = Map) -> at(Path, maps:get(Key, Map, null));
+at(_, _) -> null.
+
+param_text(Value) when is_binary(Value) -> Value;
+param_text(Value) when is_integer(Value) -> integer_to_binary(Value);
+param_text(true) -> <<"true">>;
+param_text(false) -> <<"false">>;
+param_text(_) -> none.
 
 resource_operation(Server, Timeout) ->
     operation(Server, resource, <<"read_resource">>, Timeout,
@@ -656,7 +756,7 @@ context(#{context := Context}) -> Context.
 only(#{lazy_manager := _} = Handle, _) -> Handle;
 only(#{servers := Servers, operations := Operations}, Advertised) ->
     #{servers => Servers,
-      operations => [maps:with([advertised, server, kind, raw, timeout], O)
+      operations => [maps:with([advertised, server, kind, raw, timeout, headers], O)
                      || O <- Operations, maps:get(advertised, O) =:= Advertised]}.
 
 %% What `observe` needs: the watcher.
@@ -683,9 +783,10 @@ call_owned(#{servers := Servers, operations := Operations}, Advertised, Argument
                 case timed_dispatch(Operation, Server, Arguments, Owner) of
                     {ok, Value} -> encode_result(Value);
                     {error, timeout} -> {error, <<"MCP request timed out; outcome unknown. Inspect effects before any retry.">>};
-                    {error, cancelled} -> {error, <<"MCP request cancelled; outcome unknown. Inspect effects before any retry.">>};
+                    {error, {unauthorized, Reason}} -> {error, needs_sign_in(maps:get(name, Link), Reason)};
                     {error, _} -> {error, <<"MCP request failed; outcome unknown. Inspect effects before any retry.">>}
                 end;
+            {needs_sign_in, Reason} -> {error, needs_sign_in(maps:get(name, Link), Reason)};
             unavailable -> {error, unavailable(maps:get(name, Link))}
         end
     catch
@@ -700,7 +801,7 @@ encode_result(Value) ->
         false -> {error, <<"MCP result exceeded the safe output limit">>}
     end.
 
-timed_dispatch(#{timeout := Timeout} = Operation, #{pid := Pid} = Server, Arguments, Owner) ->
+timed_dispatch(#{timeout := Timeout} = Operation, Server, Arguments, Owner) ->
     Parent = self(),
     {Worker, Monitor} = spawn_monitor(fun() ->
         %% Reconnection and scheduling may outlive the original requester.
@@ -721,19 +822,24 @@ timed_dispatch(#{timeout := Timeout} = Operation, #{pid := Pid} = Server, Argume
     after Timeout + 250 ->
         exit(Worker, kill),
         receive {'DOWN', Monitor, process, Worker, _} -> ok after 100 -> ok end,
-        close_client(Pid),
+        close_client(Server),
         {error, timeout}
     end.
 
-dispatch(#{kind := tool, raw := Raw, timeout := Timeout}, #{pid := Pid}, Arguments) ->
-    barrel_mcp_client:call_tool(Pid, Raw, Arguments, #{timeout => Timeout});
-dispatch(#{kind := resource}, #{pid := Pid}, #{<<"uri">> := Uri}) when is_binary(Uri) ->
-    barrel_mcp_client:read_resource(Pid, Uri);
-dispatch(#{kind := prompt}, #{pid := Pid}, #{<<"name">> := Name} = Args) when is_binary(Name) ->
+dispatch(#{kind := tool, raw := Raw, timeout := Timeout} = Operation, #{client := Client}, Arguments) ->
+    Params = iolist_to_binary(json:encode(#{<<"name">> => Raw, <<"arguments">> => Arguments})),
+    Headers = param_values(maps:get(headers, Operation, []), Arguments),
+    ?CLIENT:request_with(Client, <<"tools/call">>, Params, Headers, Timeout);
+dispatch(#{kind := resource, timeout := Timeout}, Server, #{<<"uri">> := Uri}) when is_binary(Uri) ->
+    request(Server, <<"resources/read">>, #{<<"uri">> => Uri}, Timeout);
+dispatch(#{kind := prompt, timeout := Timeout}, Server, #{<<"name">> := Name} = Args) when is_binary(Name) ->
     PromptArgs = maps:get(<<"arguments">>, Args, #{}),
     true = is_map(PromptArgs),
-    barrel_mcp_client:get_prompt(Pid, Name, PromptArgs);
+    request(Server, <<"prompts/get">>, #{<<"name">> => Name, <<"arguments">> => PromptArgs}, Timeout);
 dispatch(_, _, _) -> {error, invalid_arguments}.
+
+request(#{client := Client}, Method, Params, Timeout) ->
+    ?CLIENT:request(Client, Method, iolist_to_binary(json:encode(Params)), Timeout).
 
 find(Key, Name, Items) ->
     case lists:search(fun(Item) -> maps:get(Key, Item) =:= Name end, Items) of
@@ -754,15 +860,18 @@ close(_) -> nil.
 
 %% One server's connection for one handle. Calls wait while it dials; a
 %% client that drops is dialled again by the next call. A `check` start dials
-%% at once to confirm the saved catalogue, saving and reporting one that
+%% at once to confirm the saved catalogue, and a server that says a list
+%% changed is discovered again; either saves and reports a catalogue that
 %% changed so the watcher can refresh the session.
-link(Name, Config, Secrets, Start, Watcher) ->
+link(Name, Config, Secrets, Catalogue, Start, Watcher) ->
     Wait = positive_ms(maps:get(<<"startupTimeoutMs">>, Config, ?DEFAULT_STARTUP_MS))
          + positive_ms(maps:get(<<"callTimeoutMs">>, Config, ?DEFAULT_CALL_MS)),
     Connector = spawn(fun() ->
-        Dial = #{name => Name, config => Config, secrets => Secrets, watcher => Watcher},
+        {_, _, Fingerprint, Save} = Start,
+        Dial = #{name => Name, config => Config, secrets => Secrets, watcher => Watcher,
+                 known => {Catalogue, Fingerprint, Save}, refresh => idle},
         connector(case Start of
-            {connected, Server} -> held(Dial, Server);
+            {connected, Server, _, _} -> held(Dial, Server);
             {check, _, _, _} = Check -> dial(Dial#{client => none, waiters => []}, Check)
         end)
     end),
@@ -780,8 +889,34 @@ client(#{connector := Connector, wait := Wait}) ->
         unavailable
     end.
 
-held(State, #{pid := Pid} = Server) ->
+held(State, #{client := Client, pid := Pid} = Server) ->
+    Self = self(),
+    ?CLIENT:on_change(Client, fun() -> Self ! {list_changed, Pid}, nil end),
     State#{client => {Server, erlang:monitor(process, Pid)}, waiters => [], dialler => none}.
+
+%% Discovers the held server again in the background; a change reported
+%% meanwhile runs it once more afterwards.
+refresh(#{refresh := idle, client := {Server, _}, known := {Expected, Fingerprint, Save},
+          name := Name, watcher := Watcher} = State) ->
+    Self = self(),
+    spawn(fun() ->
+        Found = case discover(Server) of
+            {ok, Ops, Text} when {Ops, Text} =:= Expected -> none;
+            {ok, Ops, Text} ->
+                Save(Name, Fingerprint, encode_catalogue({Ops, Text})),
+                Watcher ! {changed, Name},
+                {Ops, Text};
+            {error, _} -> none
+        end,
+        Self ! {refreshed, Found}
+    end),
+    State#{refresh := running};
+refresh(#{refresh := running} = State) -> State#{refresh := again};
+refresh(State) -> State.
+
+refreshed(none, State) -> State;
+refreshed(Catalogue, #{known := {_, Fingerprint, Save}} = State) ->
+    State#{known := {Catalogue, Fingerprint, Save}}.
 
 dial(State, Purpose) ->
     Self = self(),
@@ -791,11 +926,11 @@ dial(State, Purpose) ->
 
 dialled(Name, Config, Secrets, {check, Expected, Fingerprint, Save}, Watcher) ->
     case connect(Name, Config, Secrets) of
-        {ok, Server, Expected} -> {ok, Server};
+        {ok, Server, Expected} -> {ok, Server, Expected};
         {ok, Server, Catalogue} ->
             Save(Name, Fingerprint, encode_catalogue(Catalogue)),
             Watcher ! {changed, Name},
-            {ok, Server};
+            {ok, Server, Catalogue};
         _ -> unavailable
     end;
 dialled(Name, Config, Secrets, redial, _) ->
@@ -813,13 +948,31 @@ connector(#{client := Client, waiters := Waiters, dialler := Dialler} = State) -
         {dialled, Dialler, {ok, Server}} ->
             [Alias ! {Alias, {ok, Server}} || Alias <- Waiters],
             connector(held(State, Server));
-        {dialled, Dialler, _} ->
-            [Alias ! {Alias, unavailable} || Alias <- Waiters],
+        {dialled, Dialler, {ok, Server, Catalogue}} ->
+            [Alias ! {Alias, {ok, Server}} || Alias <- Waiters],
+            connector(held(refreshed(Catalogue, State), Server));
+        {list_changed, Pid} ->
+            case Client of
+                {#{pid := Pid}, _} -> connector(refresh(State));
+                _ -> connector(State)
+            end;
+        {refreshed, Found} ->
+            Next = refreshed(Found, State),
+            case maps:get(refresh, State) of
+                again -> connector(refresh(Next#{refresh := idle}));
+                _ -> connector(Next#{refresh := idle})
+            end;
+        {dialled, Dialler, Failed} ->
+            Answer = case Failed of
+                {needs_sign_in, _, Reason} -> {needs_sign_in, Reason};
+                _ -> unavailable
+            end,
+            [Alias ! {Alias, Answer} || Alias <- Waiters],
             connector(State#{waiters => [], dialler => none});
         {'DOWN', Monitor, process, _, _} ->
             connector(State#{client => none});
         stop ->
-            case Client of {#{pid := Pid}, _} -> close_client(Pid); none -> ok end,
+            case Client of {Server, _} -> close_client(Server); none -> ok end,
             drain(Dialler)
     end.
 
@@ -828,15 +981,16 @@ connector(#{client := Client, waiters := Waiters, dialler := Dialler} = State) -
 drain(none) -> ok;
 drain(Dialler) ->
     receive
-        {dialled, Dialler, {ok, #{pid := Pid}}} -> close_client(Pid);
+        {dialled, Dialler, {ok, Server}} -> close_client(Server);
+        {dialled, Dialler, {ok, Server, _}} -> close_client(Server);
         {dialled, Dialler, _} -> ok
     end.
 
-close_servers(Servers) -> lists:foreach(fun(S) -> close_client(maps:get(pid, S)) end, Servers).
+close_servers(Servers) -> lists:foreach(fun close_client/1, Servers).
 
-close_client(Pid) when is_pid(Pid) ->
+close_client(#{client := Client, pid := Pid}) ->
     Monitor = erlang:monitor(process, Pid),
-    try barrel_mcp_client:close(Pid) catch _:_ -> ok end,
+    ?CLIENT:close(Client),
     receive {'DOWN', Monitor, process, Pid, _} -> ok
     after ?CLOSE_MS ->
         exit(Pid, kill),
@@ -864,9 +1018,18 @@ optional_binary(_) -> erlang:error(invalid_value).
 
 unavailable(Name) -> <<"MCP server '", Name/binary, "' is unavailable">>.
 
+%% A request the server refused before running it, for want of a sign-in.
+needs_sign_in(Name, Reason) ->
+    <<"MCP server '", Name/binary, "' needs the user to sign in: ", Reason/binary,
+      ". The request did not run; ask the user to sign in from the MCP settings.">>.
+
 %% The servers that were configured and enabled but could not be reached.
 offline(#{lazy_manager := _}) -> [];
 offline(#{offline := Offline}) -> Offline.
+
+%% The servers left out because they need the user to sign in.
+sign_in(#{lazy_manager := _}) -> [];
+sign_in(#{sign_in := Names}) -> Names.
 
 probe(Name, Config) ->
     case open_server(Name, Config) of
@@ -874,11 +1037,13 @@ probe(Name, Config) ->
         _ -> false
     end.
 
+%% A server that asks for a sign-in is saved, so the user can sign in to it.
 check_candidate(Name, Config, Secrets) ->
     case maps:get(<<"enabled">>, Config, true) of
         false -> {ok, nil};
         true -> case open_server_with_secrets(Name, Config, Secrets) of
             {ok, Server} -> close_servers([Server]), {ok, nil};
+            {needs_sign_in, _, _} -> {ok, nil};
             _ -> {error, unavailable(Name)}
         end
     end.
@@ -977,6 +1142,8 @@ validate_settings(Name, Server, Secret) ->
         true = is_map(Secret),
         maps:foreach(fun
             (<<"bearerToken">>, null) -> ok;
+            (<<"oauth">>, Record) -> true = is_map(Record);
+            (<<"oauthClient">>, #{<<"clientId">> := Id}) -> true = is_binary(Id);
             (<<"bearerToken">>, Token) when is_binary(Token) -> false = contains_newline(Token);
             (Field, null) when Field =:= <<"headers">>; Field =:= <<"env">> -> ok;
             (Field, Changes) when Field =:= <<"headers">>; Field =:= <<"env">> ->

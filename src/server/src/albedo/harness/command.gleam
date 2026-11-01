@@ -78,6 +78,8 @@ pub type StateOp {
   KernelJobs(project: fn(List(kernel.Job), Option(Int)) -> json.Json)
   /// Terminate one background job by id.
   KernelStopJob(id: String)
+  /// Provider accounts as `oauth.account_overview` describes them.
+  Accounts
   /// Run a read against the session's kernel, if it has one, outside the
   /// actor: a read that waits on the kernel must not hold the session up.
   KernelRead(read: fn(Option(kernel.Kernel)) -> Result(json.Json, String))

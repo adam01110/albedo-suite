@@ -28,7 +28,7 @@ const (
 	verbArtifact = "artifact"
 )
 
-var actionMark = regexp.MustCompile(`\x1b_albedo:(copy|open|more|artifact):([A-Za-z0-9._:-]+)\x1b\\`)
+var actionMark = regexp.MustCompile(`\x1b_albedo:(copy|open|more|artifact|cancel):([A-Za-z0-9._:-]+)\x1b\\`)
 
 type rowAction struct{ verb, key string }
 
@@ -45,7 +45,11 @@ func actionOf(row string) (rowAction, bool) {
 // entryKey names an entry by what it says, so the mark on its rows still
 // finds it after the transcript is rebuilt.
 func entryKey(entry HistoryEntry) string {
-	h := fnv1a(fnvOffset64, string(entry.Kind)+"\x00"+entry.ToolName+"\x00"+entry.Text+"\x00"+entry.ToolResult+"\x00"+fmt.Sprint(entry.ToolArgs))
+	shellID := ""
+	if entry.ShellCommand != nil {
+		shellID = entry.ShellCommand.ID
+	}
+	h := fnv1a(fnvOffset64, string(entry.Kind)+"\x00"+entry.ToolName+"\x00"+entry.Text+"\x00"+entry.ToolResult+"\x00"+shellID+"\x00"+fmt.Sprint(entry.ToolArgs))
 	return fmt.Sprintf("%x-%x", entry.Timestamp, h)
 }
 
@@ -73,9 +77,21 @@ func (m *ChatModel) actAtCol(row, col int) tea.Cmd {
 		}
 		m.AddNotice("opening artifact in your browser…")
 		return m.openArtifactAction(act.key, false)
+	case "cancel":
+		return m.cancelShellCommand(act.key)
 	case verbMore:
 		if !m.toggleFold(act.key, row) {
 			m.toggleLookup(act.key, row)
+		} else {
+			for _, entry := range m.History.Entries() {
+				if entry.Kind == EntryShell && entryKey(entry) == act.key {
+					if m.Renderer.Open[act.key] {
+						return m.expandShellEntry(entry)
+					}
+					m.collapseShellEntry(entry)
+					break
+				}
+			}
 		}
 	}
 	return nil
@@ -99,7 +115,7 @@ func copyIconAt(line string, col int) bool {
 func (m *ChatModel) toggleFold(key string, row int) bool {
 	entries := m.History.Entries()
 	at := slices.IndexFunc(entries, func(e HistoryEntry) bool {
-		return (e.Kind == EntryUser || e.Kind == EntryNote || e.Kind == EntryTool) && entryKey(e) == key
+		return (e.Kind == EntryUser || e.Kind == EntryNote || e.Kind == EntryTool || e.Kind == EntryShell) && entryKey(e) == key
 	})
 	if at < 0 {
 		return false
