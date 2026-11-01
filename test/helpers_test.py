@@ -24,13 +24,14 @@ class HelperFixture(unittest.TestCase):
     def write_json(self, path, value):
         path.write_text(json.dumps(value))
 
-    def run_helper(self, name, *arguments):
+    def run_helper(self, name, *arguments, cwd=None):
         return subprocess.run(
             [os.environ[name], *(str(argument) for argument in arguments)],
             capture_output=True,
             text=True,
             timeout=10,
             env={"HOME": str(self.home), "PATH": os.defpath},
+            cwd=cwd,
         )
 
     def assert_succeeded(self, result):
@@ -204,10 +205,17 @@ class McpLauncherTests(HelperFixture):
             "runtimePath": "",
         }
 
-    def launch(self, configuration):
+    def launch(self, configuration, cwd=None):
         launch_file = self.root / "launcher.json"
         self.write_json(launch_file, configuration)
-        return self.run_helper("ALBEDO_MCP_LAUNCHER", launch_file)
+        return self.run_helper("ALBEDO_MCP_LAUNCHER", launch_file, cwd=cwd)
+
+    def write_probe(self, directory, name, marker):
+        directory.mkdir(parents=True, exist_ok=True)
+        probe = directory / name
+        probe.write_text(f"#!/bin/sh\nprintf '%s\\n' {marker} \"$PATH\"\n")
+        probe.chmod(0o755)
+        return probe
 
     def test_arguments_and_secrets_are_literal_and_do_not_shadow_parser_locals(self):
         secret_value = "SECRET_SENTINEL_$literal\ninner-line"
@@ -231,7 +239,7 @@ class McpLauncherTests(HelperFixture):
         self.assertEqual(environment["config"], "PUBLIC_LOCAL_COLLISION")
         self.assertEqual(environment["command"], "not a command")
         self.assertEqual(received_arguments, arguments)
-        self.assertEqual(environment["PATH"], ":/nonexistent")
+        self.assertEqual(environment["PATH"], "/nonexistent")
         self.assertNotIn("SECRET_SENTINEL", (self.root / "launcher.json").read_text())
 
     def test_missing_secret_does_not_execute_command(self):
@@ -257,6 +265,59 @@ class McpLauncherTests(HelperFixture):
                 result = self.launch(configuration)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(result.stdout, "")
+
+    def test_empty_runtime_path_does_not_search_the_working_directory(self):
+        working_directory = self.root / "working directory"
+        self.write_probe(working_directory, "albedo-hijack-probe", "HIJACKED")
+        configuration = self.launch_configuration()
+        configuration["command"] = "albedo-hijack-probe"
+        configuration["args"] = []
+
+        result = self.launch(configuration, cwd=working_directory)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("HIJACKED", result.stdout)
+
+    def test_empty_runtime_path_keeps_explicit_path_verbatim(self):
+        configuration = self.launch_configuration()
+        configuration["environment"] = {"PATH": "/first:/second"}
+
+        result = self.launch(configuration)
+        self.assert_succeeded(result)
+        environment, _ = json.loads(result.stdout)
+        self.assertEqual(environment["PATH"], "/first:/second")
+
+    def test_nonempty_runtime_path_precedes_the_base_path(self):
+        runtime_directory = self.root / "runtime inputs"
+        working_directory = self.root / "working directory"
+        self.write_probe(runtime_directory, "albedo-probe", "RUNTIME_INPUTS")
+        self.write_probe(working_directory, "albedo-probe", "HIJACKED")
+        configuration = self.launch_configuration()
+        configuration["command"] = "albedo-probe"
+        configuration["args"] = []
+        configuration["environment"] = {"PATH": "/base"}
+        configuration["runtimePath"] = str(runtime_directory)
+
+        result = self.launch(configuration, cwd=working_directory)
+        self.assert_succeeded(result)
+        self.assertEqual(
+            result.stdout.splitlines(),
+            ["RUNTIME_INPUTS", f"{runtime_directory}:/base"],
+        )
+
+    def test_runtime_path_alone_has_no_trailing_empty_entry(self):
+        runtime_directory = self.root / "runtime inputs"
+        self.write_probe(runtime_directory, "albedo-probe", "RUNTIME_INPUTS")
+        configuration = self.launch_configuration()
+        configuration["command"] = "albedo-probe"
+        configuration["args"] = []
+        configuration["environment"] = {"PATH": ""}
+        configuration["runtimePath"] = str(runtime_directory)
+
+        result = self.launch(configuration)
+        self.assert_succeeded(result)
+        self.assertEqual(
+            result.stdout.splitlines(), ["RUNTIME_INPUTS", str(runtime_directory)]
+        )
 
 
 if __name__ == "__main__":

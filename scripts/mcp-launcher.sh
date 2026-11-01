@@ -11,7 +11,14 @@ jq -e -s --from-file "@launchConfig@" "$config" >/dev/null
 
 runtime_path=$(jq -r '.runtimePath' "$config")
 base_path=$(jq -r '.environment.PATH // env.PATH' "$config")
-assignments=("PATH=$runtime_path:$base_path")
+# An empty PATH entry means the working directory, so omit empty components.
+if [[ -n "$runtime_path" && -n "$base_path" ]]; then
+  assignments=("PATH=$runtime_path:$base_path")
+elif [[ -n "$runtime_path" ]]; then
+  assignments=("PATH=$runtime_path")
+else
+  assignments=("PATH=$base_path")
+fi
 
 while IFS= read -r -d "" name && IFS= read -r -d "" value; do
   assignments+=("$name=$value")

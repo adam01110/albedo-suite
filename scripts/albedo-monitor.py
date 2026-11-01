@@ -270,7 +270,8 @@ def identity_index(home):
                         credential.get("accountId", credential.get("email"))
                     )
                 elif provider == "openai-codex":
-                    identity = text(credential.get("email")) or text(
+                    # The daemon lowercases Codex's stored email into its label.
+                    identity = text(credential.get("email")).lower() or text(
                         credential.get("accountId")
                     )
                 elif provider == "google-antigravity":
@@ -427,7 +428,7 @@ def snapshot(home, timeout=5.0, start=False):
             result["accounts"] = connected_accounts(
                 auth, server.get("quota"), identities
             )
-            if len(server["quota"]) >= 200:
+            if len(server["quota"]) >= 200 and not result["accounts_error"]:
                 result["accounts_error"] = "quota_may_be_truncated"
         except MonitorError as exc:
             result["accounts_error"] = str(exc)

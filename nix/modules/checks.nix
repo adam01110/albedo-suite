@@ -145,6 +145,7 @@
         export ALBEDO_FORMATTER_SOURCE=$PYTHONPATH
         export ALBEDO_LSP_SOURCE=$PYTHONPATH
         export ALBEDO_QUESTIONS_SOURCE=$PYTHONPATH
+        export ALBEDO_REMOTE_SOURCE=$PYTHONPATH
         export ALBEDO_RTK_SOURCE=$PYTHONPATH
         export ALBEDO_FFF_SOURCE=$PYTHONPATH
         export ALBEDO_FFF_COMMAND=${suitePackages.albedo-fff}/bin/albedo-fff
@@ -159,6 +160,7 @@
         python3 ${../../test}/memory_index_test.py -v
         python3 -m unittest discover -s ${../../test} -p lazy_mcp_python_test.py -v
         python3 ${../../test}/lsp_test.py -v
+        python3 ${../../test}/remote_path_test.py -v
         python3 -m unittest discover -s ${../../test} -p questions_python_test.py -v
         python3 -m unittest discover -s ${../../test} -p rtk_python_test.py -v
         python3 -m unittest discover -s ${../../test} -p rtk_e2e_test.py -v

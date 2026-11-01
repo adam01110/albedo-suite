@@ -185,6 +185,32 @@ class LspTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["ok"])
         self.assertIn("1024", result["error"])
 
+    async def test_invalid_reference_argument_keeps_live_server(self):
+        manager = self.manager()
+        first = await manager.diagnostics("test.nix")
+        self.assertTrue(first["diagnostics"])
+        client = manager.clients["fixture"]
+        pid = client.proc.pid
+        self.assertEqual(manager.servers()[0]["state"], "loaded")
+        with self.assertRaises(ValueError):
+            await manager.references("test.nix", 0, 0, include_declaration="yes")
+        self.assertEqual(manager.servers()[0]["state"], "loaded")
+        self.assertIsNone(client.failure)
+        self.assertEqual(client.proc.pid, pid)
+        self.assertEqual(
+            len([e for e in self.logs() if e["event"] == "textDocument/references"]), 0
+        )
+        references = await manager.references(
+            "test.nix", 0, 0, include_declaration=False
+        )
+        self.assertTrue(references["result"])
+        self.assertEqual(manager.clients["fixture"].proc.pid, pid)
+        self.assertEqual(sum(e["event"] == "START" for e in self.logs()), 1)
+        context = next(
+            e for e in self.logs() if e["event"] == "textDocument/references"
+        )
+        self.assertFalse(context["params"]["context"]["includeDeclaration"])
+
     async def test_deferred_disabled_and_scope(self):
         manager = self.manager(enabled=False)
         manager.record(self.path)

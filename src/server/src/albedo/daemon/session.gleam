@@ -246,6 +246,9 @@ pub type Message {
   InterruptCaptured(Option(String), Int, Subject(Result(Interruption, String)))
   Abort(String)
   Submit(Submission, Subject(Result(Bool, SubmissionError)))
+  /// A turn a user-invoked command submits. It is the person acting again,
+  /// so it clears a workspace block that mail, job wakes and notes wait out.
+  SubmitUserTurn(Submission, Subject(Result(Bool, SubmissionError)))
   CancelInput(
     String,
     Option(acp.Digest),
@@ -1420,6 +1423,7 @@ fn handle(
   // Listing sessions reads their summaries and is not attention.
   let state = case message {
     Submit(..)
+    | SubmitUserTurn(..)
     | ReadCapture(..)
     | ReadStatus(..)
     | ChangeConfiguration(..)
@@ -1697,6 +1701,12 @@ fn handle(
         False, True -> admit(state, submission, reply)
       }
     Submit(submission, reply) -> admit(state, submission, reply)
+    SubmitUserTurn(submission, reply) ->
+      admit(
+        session_state.State(..state, kernel_blocked: False),
+        submission,
+        reply,
+      )
     ReadCommands(reply) -> {
       let host = state.host
       let id = state.info.id
@@ -3034,11 +3044,12 @@ fn command_op(
       runtime.reload_catalogs(host, id) |> result.map(catalogs_json)
     command.Accounts -> oauth.account_overview(home, runtime.logins(host))
     command.ContextPage(section, page) -> context_page(session, section, page)
+    // Only a user invocation submits a turn, so this admission is the person
+    // acting again: it clears a workspace block instead of waiting for one.
     command.Submit(display, text, client) ->
-      submitted(
+      submitted_turn(
         session,
         Submission(display, text, client, turn.Chat, [], None, None),
-        "submitted",
       )
     command.Note(origin, display, text) ->
       submitted(
@@ -3099,6 +3110,17 @@ fn submitted(
   actor.call(session, 10_000, Submit(submission, _))
   |> result.map_error(submission_error)
   |> result.replace(json.object([#(key, json.bool(True))]))
+}
+
+/// One command-routed person's turn: admitted like any other submission, and
+/// reported as `{"submitted": true}` when it lands.
+fn submitted_turn(
+  session: Session,
+  submission: Submission,
+) -> Result(json.Json, String) {
+  actor.call(session, 10_000, SubmitUserTurn(submission, _))
+  |> result.map_error(submission_error)
+  |> result.replace(json.object([#("submitted", json.bool(True))]))
 }
 
 /// `{"reloaded": [catalog, ..], "failed": {catalog: error, ..}}`.

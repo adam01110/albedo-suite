@@ -81,5 +81,97 @@ class LazyMcpPythonTests(unittest.IsolatedAsyncioTestCase):
             await self.mcp.describe("unknown_advertised_name")
 
 
+def operation(server: str, tool: str, name: str) -> dict[str, object]:
+    """One advertised operation, as `mcp.list` returns it."""
+    return {
+        "name": name,
+        "server": server,
+        "kind": "tool",
+        "tool": tool,
+        "description": "untrusted description",
+        "parameters": {
+            "type": "object",
+            "properties": {"message": {"type": "string"}},
+        },
+    }
+
+
+class Catalogue:
+    """A fake host whose catalogue names every operation explicitly."""
+
+    def __init__(self, operations: list[dict[str, object]]) -> None:
+        self.operations = operations
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
+    async def __call__(self, method: str, args: dict[str, object]) -> object:
+        self.calls.append((method, args))
+        if method == "mcp.list":
+            return self.operations
+        if method == "mcp.load":
+            return [
+                item for item in self.operations if item["server"] == args["server"]
+            ]
+        if method == "mcp.unload":
+            return None
+        if method == "mcp.call":
+            for item in self.operations:
+                if args["name"] in (item["name"], f"{item['server']}/{item['tool']}"):
+                    return {
+                        "isError": False,
+                        "content": [{"type": "text", "text": item["name"]}],
+                    }
+            raise AssertionError(args)
+        raise AssertionError(method)
+
+
+class McpSetupTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.catalogue = Catalogue([operation("docs", "echo", "mcp_docs_echo_hash")])
+        self.api = SimpleNamespace(host=self.catalogue, HostError=RuntimeError)
+
+    async def minted(self):
+        return (await setup(self.api))["mcp"]
+
+    async def test_setup_mints_noncolliding_server_and_tools(self):
+        self.catalogue.operations = [
+            operation("docs", "echo", "mcp_docs_echo_hash"),
+            operation("docs", "search", "mcp_docs_search_hash"),
+        ]
+        mcp = await self.minted()
+        self.assertEqual(mcp.docs.name, "docs")
+        echo = await mcp.docs.echo(message="hi")
+        self.assertEqual(echo.content[0].text, "mcp_docs_echo_hash")
+        search = await mcp.docs.search()
+        self.assertEqual(search.content[0].text, "mcp_docs_search_hash")
+
+    async def test_setup_skips_colliding_servers_sharing_a_tool(self):
+        self.catalogue.operations = [
+            operation("my-server", "echo", "mcp_my_server_echo_aaa"),
+            operation("my_server", "echo", "mcp_my_server_echo_bbb"),
+        ]
+        mcp = await self.minted()
+        self.assertFalse(hasattr(mcp, "my_server"))
+        first = await mcp.call("mcp_my_server_echo_aaa")
+        self.assertEqual(first.content[0].text, "mcp_my_server_echo_aaa")
+        second = await mcp.call("mcp_my_server_echo_bbb")
+        self.assertEqual(second.content[0].text, "mcp_my_server_echo_bbb")
+        dashed = await mcp.call("my-server/echo")
+        self.assertEqual(dashed.content[0].text, "mcp_my_server_echo_aaa")
+        underscored = await mcp.call("my_server/echo")
+        self.assertEqual(underscored.content[0].text, "mcp_my_server_echo_bbb")
+
+    async def test_setup_skips_colliding_servers_with_disjoint_tools(self):
+        self.catalogue.operations = [
+            operation("my-server", "echo", "mcp_my_server_echo_aaa"),
+            operation("my_server", "search", "mcp_my_server_search_bbb"),
+            operation("docs", "echo", "mcp_docs_echo_hash"),
+        ]
+        mcp = await self.minted()
+        self.assertFalse(hasattr(mcp, "my_server"))
+        second = await mcp.call("my_server/search")
+        self.assertEqual(second.content[0].text, "mcp_my_server_search_bbb")
+        self.assertEqual(mcp.docs.name, "docs")
+
+
 if __name__ == "__main__":
     unittest.main()

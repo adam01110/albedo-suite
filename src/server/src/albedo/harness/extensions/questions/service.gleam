@@ -119,7 +119,9 @@ fn dispatch(
             ["answer"],
             decode.field("answer", decode.string, decode.success),
           )
-        _ -> api.body(req, [], decode.success(""))
+        // The CLI's dismiss action declares no body, so an empty request is
+        // the answer, not a malformed one.
+        _ -> api.empty_body(req) |> result.map(fn(_) { "" })
       })
       use item <- result.try(
         ledger.finish(

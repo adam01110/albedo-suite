@@ -1256,11 +1256,26 @@ def _encode_arg(value: Any) -> Any:
 
 
 def _remote_path(connection: RemoteConnection, path: str) -> str:
-    """The remote spelling of a workspace path; anything else passes through."""
+    """The remote spelling of a workspace path; anything else passes through.
+
+    Membership is decided by path boundary, not string prefix: a sibling whose
+    name merely starts with the workspace's is not inside it. A workspace at the
+    filesystem root maps nothing, since every absolute path is under root.
+    """
     remote_cwd = connection.target.get("remote_cwd")
-    if remote_cwd and path.startswith(str(Path.cwd())):
-        return str(Path(remote_cwd) / Path(path).relative_to(Path.cwd()))
-    return path
+    if not remote_cwd:
+        return path
+    candidate = Path(path)
+    if not candidate.is_absolute():
+        return path  # the remote kernel's cwd is the workspace already
+    workspace = Path.cwd()
+    if workspace == Path(workspace.anchor):
+        return path
+    try:
+        inside = Path(os.path.normpath(candidate)).relative_to(workspace)
+    except ValueError:
+        return path  # a path outside the workspace keeps its meaning
+    return str(Path(remote_cwd) / inside)
 
 
 class FallbackProcess(asyncio.SubprocessProtocol):

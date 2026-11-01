@@ -299,15 +299,21 @@ expire(Home0, Access0) ->
     albedo_credentials:expire_access(albedo_credentials:creds_path(text(Home0)), ?STORE, binary(Access0)).
 
 %% Per-model SDK metadata takes precedence over the provider's default SDK.
+%% Only a catalog entry for `Model` itself may inherit that default: an absent
+%% entry keeps the documented family routing instead of a provider-wide SDK.
 metadata_route(Home, Model) ->
     Path = filename:join(unicode:characters_to_list(Home), "models.json"),
     Npm = try
         {ok, Body} = file:read_file(Path),
         Catalog = json:decode(Body),
         Provider = maps:get(<<"opencode-go">>, Catalog),
-        Entry = maps:get(Model, maps:get(<<"models">>, Provider, #{}), #{}),
-        maps:get(<<"npm">>, maps:get(<<"provider">>, Entry, #{}),
-                 maps:get(<<"npm">>, Provider, <<>>))
+        case maps:find(Model, maps:get(<<"models">>, Provider, #{})) of
+            {ok, Entry} ->
+                maps:get(<<"npm">>, maps:get(<<"provider">>, Entry, #{}),
+                         maps:get(<<"npm">>, Provider, <<>>));
+            error ->
+                <<>>
+        end
     catch _:_ -> <<>> end,
     case Npm of
         <<"@ai-sdk/anthropic">> -> <<"messages">>;

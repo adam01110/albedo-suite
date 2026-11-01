@@ -458,6 +458,10 @@ class Lsp:
         path = Path(os.path.abspath(Path(path).expanduser()))
         if not path.is_relative_to(self.cwd):
             return
+        resolved = path.resolve()
+        # Keep workspace escapes visible to the batch validator.
+        if resolved.is_relative_to(self.cwd):
+            path = resolved
         if path not in self.pending and len(self.pending) >= 1024:
             self.overflow = True
             return
@@ -665,6 +669,9 @@ class Lsp:
         character=None,
         include_declaration=True,
     ):
+        # Reject caller arguments before startup, which is terminal on failure.
+        if method == "references" and type(include_declaration) is not bool:
+            raise ValueError("include_declaration must be boolean")
         path, config = self.select(path, server)
         # Validate before startup without retaining file text in the wait queue.
         self.snapshot(path, method, line, character)
@@ -714,8 +721,6 @@ class Lsp:
                     if position is not None:
                         params["position"] = position
                     if method == "references":
-                        if type(include_declaration) is not bool:
-                            raise ValueError("include_declaration must be boolean")
                         params["context"] = {"includeDeclaration": include_declaration}
                     result = await client.request("textDocument/" + method, params)
                 return {

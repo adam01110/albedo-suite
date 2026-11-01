@@ -45,6 +45,17 @@ def messages_reply(tool=False):
     )
 
 
+GEMINI_EVENT = {
+    "candidates": [
+        {
+            "content": {"role": "model", "parts": [{"text": "go-reply"}]},
+            "finishReason": "STOP",
+        }
+    ],
+    "usageMetadata": {"promptTokenCount": 4, "candidatesTokenCount": 2},
+}
+
+
 class GoProvider(Provider):
     def __init__(self, script):
         super().__init__(
@@ -79,12 +90,40 @@ class GoProvider(Provider):
             super()._get(self)
 
 
+class GeminiProvider(GoProvider):
+    """Serves the Vertex stream the Gemini route reads: the shared fake provider
+    always ends a stream with `[DONE]`, which Vertex events do not accept."""
+
+    def _post(owner, self):
+        owner.headers.append(dict(self.headers))
+        request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        owner.requests.append(
+            {
+                "path": self.path,
+                "authorization": self.headers.get("Authorization"),
+                "model": request.get("model"),
+                "request": request,
+            }
+        )
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        self.wfile.write(f"data: {json.dumps(GEMINI_EVENT)}\n\n".encode())
+        self.wfile.flush()
+
+
 @exclusive
 class OpenCodeGoE2ETests(unittest.TestCase):
     def start(
-        self, model, script=None, key="go-test-key", metadata=None, providers=None
+        self,
+        model,
+        script=None,
+        key="go-test-key",
+        metadata=None,
+        providers=None,
+        provider_class=GoProvider,
     ):
-        provider = GoProvider(
+        provider = provider_class(
             script
             or (
                 lambda _: (
@@ -264,6 +303,38 @@ class OpenCodeGoE2ETests(unittest.TestCase):
         self.assertIn("go-reply", self.turn(session))
         self.assertTrue(self.provider.requests[-1]["path"].endswith("/messages"))
 
+    def test_unlisted_model_keeps_family_route(self):
+        # A provider-wide SDK must not capture models the catalog does not list.
+        metadata = {
+            "opencode-go": {
+                "name": "OpenCode Go",
+                "npm": "@ai-sdk/openai-compatible",
+                "models": {"glm-5.2": {}},
+            }
+        }
+        for model, suffix, reply in [
+            ("gpt-5.7-unlisted", "/responses", text("go-reply")),
+            ("claude-5-unlisted", "/messages", messages_reply()),
+            ("gemini-5-unlisted", ":streamGenerateContent?alt=sse", None),
+        ]:
+            with self.subTest(model=model):
+                gemini = reply is None
+                session = self.start(
+                    model,
+                    None if gemini else (lambda _, reply=reply: reply),
+                    metadata=metadata,
+                    provider_class=GeminiProvider if gemini else GoProvider,
+                )
+                self.app.prompt(session, "reply").close()
+                self.app.idle(session)
+                self.assertTrue(
+                    self.provider.requests
+                    and self.provider.requests[-1]["path"].endswith(suffix),
+                    self.provider.requests,
+                )
+                self.assertIn("go-reply", json.dumps(self.app.history(session)))
+                self.assert_session_headers(session)
+
     def test_provider_sdk_default_and_unknown_sdk_fallback(self):
         for sdk, model, suffix, reply in [
             ("@ai-sdk/anthropic", "fixture-model", "/messages", messages_reply()),
@@ -273,7 +344,7 @@ class OpenCodeGoE2ETests(unittest.TestCase):
                 session = self.start(
                     model,
                     lambda _, reply=reply: reply,
-                    metadata={"opencode-go": {"npm": sdk, "models": {}}},
+                    metadata={"opencode-go": {"npm": sdk, "models": {model: {}}}},
                 )
                 self.assertIn("go-reply", self.turn(session))
                 self.assertTrue(self.provider.requests[-1]["path"].endswith(suffix))

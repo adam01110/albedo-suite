@@ -896,7 +896,8 @@ class Files:
     ) -> Text:
         """Replace one exact, unique string, or apply a list of (old, new)
         pairs in order: all of them or, when one misses, none. A miss reports
-        what is actually there."""
+        what is actually there. `$ALBEDO_HOME/creds.json` is refused, as for
+        `read`."""
         if isinstance(old_str, str):
             if new_str is None:
                 raise ValueError("new_str is required with one old_str")
@@ -914,6 +915,7 @@ class Files:
                 f"line_hint must be a line number, not {type(line_hint).__name__}"
             )
         target = Path(path).expanduser()
+        _refuse_secrets([target])
         if not target.exists():
             raise FileNotFoundError(_missing(target, path))
         target = target.resolve()
@@ -937,8 +939,10 @@ class Files:
 
     @hook.reported("files.write", {"path": "file_path", "content": "content"})
     def write(self, path: str, content: str) -> Text:
-        """Create or replace a whole file. Use `edit` to change part of one."""
+        """Create or replace a whole file. Use `edit` to change part of one.
+        `$ALBEDO_HOME/creds.json` is refused, as for `read`."""
         target = Path(path).expanduser()
+        _refuse_secrets([target])
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
         _record_edit(target)

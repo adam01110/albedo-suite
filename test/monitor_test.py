@@ -553,6 +553,71 @@ class MonitorTest(unittest.TestCase):
             },
         )
 
+    def test_codex_mixed_case_email_matches_daemon_label(self):
+        self.auth_value["accounts"] = [
+            {"id": "pub1", "provider": "codex", "label": "ChatGPT"}
+        ]
+        self.write(
+            "creds.json",
+            {
+                "accounts": {
+                    "openai-codex": {
+                        "_albedo_account_id": "pub1",
+                        "email": "User@Example.com",
+                        "accountId": "acct-uuid",
+                    }
+                }
+            },
+        )
+        # The daemon publishes the lowercased stored email as the quota identity.
+        self.server_value["quota"] = [
+            {
+                "provider": "openai-codex",
+                "account_id": "user@example.com",
+                "used_percent": 40,
+                "status": "ok",
+                "limit_id": "primary",
+                "observed_at": "2099-01-01T00:00:00Z",
+            }
+        ]
+        self.assertEqual(
+            monitor.identity_index(self.home),
+            ({("openai-codex", "pub1"): "user@example.com"}, ""),
+        )
+        result = self.snapshot()
+        account = result["accounts"][0]
+        self.assertEqual(account["error"], "")
+        self.assertEqual(account["windows"][0]["remaining_percent"], 60)
+        self.assertEqual(result["accounts_error"], "")
+
+    def test_identity_error_survives_quota_truncation_warning(self):
+        self.auth_value["accounts"] = [
+            {"id": "pub1", "provider": "codex", "label": "ChatGPT"}
+        ]
+        self.server_value["quota"] = [
+            {
+                "provider": "openai-codex",
+                "account_id": "acct",
+                "limit_id": "limit-" + str(index),
+                "used_percent": 10,
+                "status": "ok",
+                "sequence": index,
+                "observed_at": "2099-01-01T00:00:00Z",
+            }
+            for index in range(200)
+        ]
+        (self.home / "creds.json").write_text("credential-canary")
+        result = self.snapshot()
+        self.assertTrue(result["online"])
+        self.assertEqual(result["accounts_error"], "account_identity_unavailable")
+        self.assertEqual(
+            [account["error"] for account in result["accounts"]],
+            ["quota_identity_unavailable"],
+        )
+        json.dumps(result, allow_nan=False)
+        self.write("creds.json", {"accounts": {}})
+        self.assertEqual(self.snapshot()["accounts_error"], "quota_may_be_truncated")
+
     def test_auth_failure_preserves_sessions(self):
         with patch.object(
             monitor.Client,

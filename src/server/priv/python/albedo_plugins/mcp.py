@@ -127,6 +127,15 @@ def _mintable(name: str, taken: set[str]) -> bool:
     )
 
 
+def _shared_servers(operations: list[Operation]) -> set[str]:
+    """Server identifiers that more than one raw name normalises onto."""
+    owners: dict[str, set[str]] = {}
+    for item in operations:
+        raw = str(item.get("server", ""))
+        owners.setdefault(_identifier(raw), set()).add(raw)
+    return {name for name, names in owners.items() if len(names) > 1}
+
+
 def _method(mcp: Mcp, item: Operation) -> Callable[..., Coroutine[Any, Any, Record]]:
     name = cast(str, item["name"])
     schema = cast(dict[str, object], item.get("parameters") or {})
@@ -155,14 +164,19 @@ class Server:
 
 async def setup(api: PythonApi) -> dict[str, object]:
     """Mint `mcp.<server>.<tool>` from the boot catalogue; an operation whose
-    identifiers clash or are not mintable stays reachable through mcp.call."""
+    identifiers clash with another server's, or are not mintable, stays
+    reachable through mcp.call."""
     mcp = Mcp(api.host)
+    operations = cast(list[Operation], await api.host("mcp.list", {}))
+    shared = _shared_servers(operations)
     servers: dict[str, Server] = {}
-    for item in cast(list[Operation], await api.host("mcp.list", {})):
+    for item in operations:
         server = _identifier(str(item.get("server", "")))
         tool = _identifier(str(item.get("tool", "")))
-        if not _mintable(server, set(dir(mcp))) or not _mintable(
-            tool, set(dir(Server))
+        if (
+            server in shared
+            or not _mintable(server, set(dir(mcp)))
+            or not _mintable(tool, set(dir(Server)))
         ):
             continue
         holder = servers.setdefault(server, Server(str(item["server"])))

@@ -5,6 +5,7 @@ from collections import OrderedDict
 import os
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -26,9 +27,11 @@ class RtkRoutingTests(unittest.TestCase):
         )
         if not extension.exists():
             self.skipTest("source overlay is unavailable")
-        instructions = extension.read_text().split("const instructions =", 1)[1].split(
-            "pub fn extension", 1
-        )[0]
+        instructions = (
+            extension.read_text()
+            .split("const instructions =", 1)[1]
+            .split("pub fn extension", 1)[0]
+        )
         self.assertNotIn("rtk", instructions.lower())
 
     def test_supported_grammar(self):
@@ -147,12 +150,93 @@ class JobWaitForTests(unittest.IsolatedAsyncioTestCase):
         await job.stop()
 
     async def test_wait_for_split_utf8_yields_until_character_completes(self):
-        job = await self.partial_job(
-            "time.sleep(0.2); os.write(1, b'\\xa9 ready\\n')"
-        )
+        job = await self.partial_job("time.sleep(0.2); os.write(1, b'\\xa9 ready\\n')")
         self.assertEqual(await job.wait_for("é ready", timeout=2), "é ready")
         await job
         self.assertEqual(job.exit_code, 0)
+
+
+class RestoredJobTests(unittest.IsolatedAsyncioTestCase):
+    """A finished job that a restarted kernel restored from its spill file."""
+
+    async def asyncSetUp(self):
+        from rtk_e2e_test import albedo_capture, plugin
+
+        self.plugin = plugin
+        self.temp = tempfile.TemporaryDirectory(prefix="restored job ")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        # The kernel's own step: job output outlives it in this directory.
+        albedo_capture.prune_spills(str(self.root / "spill"))
+        self.addCleanup(albedo_capture.prune_spills, "")
+        state = patch.multiple(
+            plugin,
+            create=True,
+            loop=asyncio.get_running_loop(),
+            capture_factory=lambda id: albedo_capture.Capture(id, "job"),
+            preview_limit=65536,
+            send=lambda _frame: None,
+            host=None,
+            watch_output=None,
+            forget_output=None,
+            jobs={},
+            active={},
+            retained=OrderedDict(),
+            owed={},
+            announcer=None,
+        )
+        state.start()
+        self.addCleanup(state.stop)
+
+    async def asyncTearDown(self):
+        await self.plugin.close()
+        if self.plugin.announcer is not None:
+            self.plugin.announcer.cancel()
+            await asyncio.gather(self.plugin.announcer, return_exceptions=True)
+
+    async def restored_job(self):
+        job = self.plugin.run(
+            sys.executable,
+            "-u",
+            "-c",
+            "print('hello')",
+            env=dict(os.environ),
+            timeout=30,
+        )
+        await job
+        self.assertEqual(job.exit_code, 0, job.tail())
+        book = self.plugin.save_jobs(str(self.root / "state"))
+        self.assertEqual([saved["id"] for saved in book], [job.id])
+        # What a kernel restart does to the finished jobs it kept.
+        self.plugin.jobs.clear()
+        self.plugin.active.clear()
+        self.plugin.retained.clear()
+        self.plugin.restore_jobs(book, {})
+        restored = self.plugin.jobs[job.id]
+        self.assertEqual(restored.exit_code, 0)
+        self.assertEqual(restored.tail().strip(), "hello")
+        return restored
+
+    async def test_restored_job_keeps_inert_routing_state(self):
+        job = await self.restored_job()
+        self.assertFalse(job._routed)
+        self.assertEqual(job.requested_argv, job.argv)
+        self.assertEqual(job.requested_command, job.command)
+        self.assertEqual(job._executed_argv, job.argv)
+
+    async def test_restored_job_pipe_reports_retention(self):
+        job = await self.restored_job()
+        with self.assertRaisesRegex(ValueError, "wrote more than it retains"):
+            job.pipe(sys.executable, "-c", "pass", env=dict(os.environ))
+        self.assertEqual(list(self.plugin.jobs), [job.id])
+
+    async def test_restored_job_stdin_reports_retention(self):
+        job = await self.restored_job()
+        with self.assertRaisesRegex(ValueError, "wrote more than it retains"):
+            self.plugin.run(
+                sys.executable, "-c", "pass", stdin=job, env=dict(os.environ)
+            )
+        self.assertEqual(list(self.plugin.jobs), [job.id])
 
 
 if __name__ == "__main__":

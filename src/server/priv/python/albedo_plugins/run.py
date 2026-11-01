@@ -735,6 +735,10 @@ class Job(JobOutput):
             list(cast(list[str], saved["argv"])),
             str(saved["command"]),
         )
+        # Nothing is left to route: the process went with the old kernel.
+        job.requested_argv = list(job.argv)
+        job.requested_command, job._executed_argv = job.command, list(job.argv)
+        job._routed = False
         job.process, job.group, job._hooked = None, None, None
         job.exit_code = cast("int | None", saved["exit_code"])
         job.timed_out = bool(saved["timed_out"])

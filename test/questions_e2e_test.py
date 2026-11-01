@@ -6,7 +6,7 @@ import unittest
 from urllib.error import HTTPError
 from urllib.parse import urlencode
 
-from harness import Albedo, Provider, exclusive, python, text
+from harness import Albedo, Provider, exclusive, python, text, wait_until
 
 
 @exclusive
@@ -50,6 +50,10 @@ class QuestionsTests(unittest.TestCase):
         with self.app.api(self.route) as response:
             return json.load(response)
 
+    def snapshot(self):
+        with self.app.api(f"/sessions/{self.session}?tail=0") as response:
+            return json.load(response)
+
     def ask(self):
         self.turn(
             "q = await ask_user('Which deployment?', options=['staging', 'production'])\nassert q.status == 'pending'"
@@ -87,6 +91,68 @@ class QuestionsTests(unittest.TestCase):
         self.assertEqual(self.pending()["items"][0], item)
         result = self.action(item, action="cancel")
         self.assertEqual(result["resource"]["value"]["status"], "cancelled")
+        self.assertEqual(self.pending()["items"], [])
+
+    def test_dismiss_accepts_the_empty_body_the_cli_sends(self):
+        # The declared dismiss action has no fields, so the CLI posts no body
+        # while still announcing JSON: an empty request is the request.
+        item = self.ask()
+        url = item["url"].replace("?", "/cancel?", 1)
+        with self.app.api(
+            url,
+            method="POST",
+            headers={"If-Match": item["etag"]},
+        ) as response:
+            dismissed = json.load(response)
+        self.assertEqual(dismissed["resource"]["value"]["status"], "cancelled")
+        self.assertEqual(self.pending()["items"], [])
+
+    def test_dismiss_accepts_an_empty_body_without_a_json_content_type(self):
+        item = self.ask()
+        url = item["url"].replace("?", "/cancel?", 1)
+        with self.app.api(
+            url,
+            method="POST",
+            headers={"If-Match": item["etag"], "Content-Type": ""},
+        ) as response:
+            dismissed = json.load(response)
+        self.assertEqual(dismissed["resource"]["value"]["status"], "cancelled")
+        self.assertEqual(self.pending()["items"], [])
+
+    def test_answer_after_restoring_the_workspace_retries_the_blocked_kernel(self):
+        workspace = self.app.workspace / "project"
+        workspace.mkdir()
+        self.session = self.app.session(workspace)
+        self.route = "/extensions/questions/items?" + urlencode(
+            {"session_id": self.session}
+        )
+        item = self.ask()
+        # A daemon restart leaves the session without a kernel, so a missing
+        # workspace blocks its next input instead of starting a turn.
+        self.app.restart()
+        saved = workspace.with_name("saved-project")
+        workspace.rename(saved)
+        self.app.prompt(self.session, "blocked input").close()
+        wait_until(
+            lambda: self.snapshot()["status"]["blocking_reason"] is not None,
+            20,
+            "a missing workspace did not block the session",
+        )
+        before = len(self.provider.requests)
+        saved.rename(workspace)
+        answered = self.action(item)
+        self.assertEqual(answered["notification"]["state"], "queued")
+        # Answering is the person acting again, so it retries the kernel that
+        # the missing workspace blocked; nothing retried it on its own.
+        wait_until(
+            lambda: len(self.provider.requests) > before,
+            20,
+            "the answer did not retry the blocked kernel",
+        )
+        snapshot = self.app.idle(self.session, timeout=60)
+        self.assertIsNone(snapshot["status"]["blocking_reason"], snapshot["status"])
+        self.assertEqual(snapshot["kernel"]["state"], "attached")
+        self.assertIn("Answer: staging", json.dumps(self.app.history(self.session)))
         self.assertEqual(self.pending()["items"], [])
 
     def test_invalid_answer_and_stale_or_racing_answers_are_rejected(self):

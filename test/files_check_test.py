@@ -341,6 +341,75 @@ class FilesCheckTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["formatting"]["error"], "😀" * 16384)
         self.assertTrue(result["pending"]["formatting"])
 
+    async def test_secret_store_is_refused_by_read_edit_and_write(self):
+        home = self.root / "albedo-home"
+        home.mkdir()
+        creds = home / "creds.json"
+        creds.write_text(
+            json.dumps({"fake": {"refresh": "rt-fake", "refresh2": "rt-fake"}})
+        )
+        link = self.root / "linked-creds.json"
+        link.symlink_to(creds)
+        plain = home / "settings.json"
+        plain.write_text("keep\n")
+        with patch.dict(os.environ, {"ALBEDO_HOME": str(home)}):
+            with self.assertRaises(PermissionError):
+                self.fs.read(str(creds))
+            # A duplicated match is what prints surrounding credential lines.
+            with self.assertRaises(PermissionError):
+                self.fs.edit(str(creds), "rt-fake", "replaced")
+            with self.assertRaises(PermissionError):
+                self.fs.edit(str(link), "rt-fake", "replaced")
+            with self.assertRaises(PermissionError):
+                self.fs.write(str(creds), "REPLACED\n")
+            with self.assertRaises(PermissionError):
+                self.fs.write(str(link), "REPLACED\n")
+            self.fs.write(str(plain), "other\n")
+            self.assertEqual(plain.read_text(), "other\n")
+        self.assertEqual(creds.read_text().count("rt-fake"), 2)
+        self.assertNotIn("REPLACED", creds.read_text())
+
+    async def test_symlink_edit_and_write_track_the_canonical_file(self):
+        manager = self.lsp()
+        real = self.root / "real.py"
+        real.write_text("alpha\n")
+        link = self.root / "link.py"
+        link.symlink_to(real)
+        self.fs.edit(str(link), "alpha", "beta")
+        self.assertEqual(real.read_text(), "beta\n")
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(set(formatter._pending), {real})
+        self.assertEqual(set(manager.pending), {real})
+        result = await self.fs.check()
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["paths"], [str(real)])
+        self.assertEqual(real.read_text(), "BETA\n")
+        self.assertFalse(formatter._pending)
+        self.assertFalse(manager.pending)
+        self.fs.write(str(link), "gamma\n")
+        self.assertEqual(real.read_text(), "gamma\n")
+        self.assertEqual(set(formatter._pending), {real})
+        self.assertEqual(set(manager.pending), {real})
+        result = await self.fs.check()
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(real.read_text(), "GAMMA\n")
+        self.assertFalse(formatter._pending)
+        self.assertFalse(manager.pending)
+
+    async def test_symlink_escape_remains_visible_to_checks(self):
+        manager = self.lsp()
+        with tempfile.TemporaryDirectory() as outside:
+            real = Path(outside) / "outside.py"
+            real.write_text("before\n")
+            link = self.root / "escape.py"
+            link.symlink_to(real)
+            self.fs.write(str(link), "after\n")
+            self.assertIn(link, formatter._pending)
+            self.assertIn(link, manager.pending)
+            result = await self.fs.check()
+            self.assertFalse(result["ok"], result)
+            self.assertIn("without symlinks", result["error"])
+
     async def test_invalid_paths_rejected_without_enrollment(self):
         path = self.write()
         link = self.root / "link.py"
