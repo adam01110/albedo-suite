@@ -1,10 +1,10 @@
 -module(albedo_opencode_go).
 %% OpenCode Go provider: OpenCode Console RFC 8628 device OAuth, live /models
-%% discovery with disk cache, non-chat entitlement filtering, and key/account
+%% discovery, non-chat entitlement filtering, and key/account
 %% pool resolution.
 
 -include_lib("kernel/include/file.hrl").
--export([models/2, cached_models/1, cached_models/2, reload/1, fetch_models/2,
+-export([models/2, fetch_models/2,
          device_start/0, device_start/1, account/1, accounts/1, expire/2,
          access/3, limited/4, metadata_route/2, owns_endpoint/2]).
 
@@ -12,7 +12,6 @@
 -define(DEFAULT_CONSOLE_URL, <<"https://opencode.ai/console">>).
 -define(CLIENT_ID, <<"opencode-cli">>).
 -define(STORE, <<"opencode-go">>).
--define(CACHE_MAX_AGE_MS, 3600000). %% 1 hour
 -define(FETCH_TIMEOUT_MS, 10000).
 -define(REFRESH_SKEW_MS, 60000).
 -define(EXPIRY_MARGIN_MS, 60000).
@@ -325,37 +324,23 @@ metadata_route(Home, Model) ->
 
 %% ---- models catalog -----------------------------------------------------
 
-%% Only the selected endpoint's cache participates in discovery or lookup.
-cached_models(Home0) ->
-    Home = text(Home0),
-    cached_models(Home, <<>>).
+%% The entitled model IDs for OpenCode Go. The host caches them
+%% (albedo_model_lists).
+models(Home, Endpoint) ->
+    fetch_live(text(Home), binary(Endpoint)).
 
-cached_models(Home0, Endpoint0) ->
-    Home = text(Home0),
-    read_cache(cache_path(Home, catalog_endpoint(Home, binary(Endpoint0)))).
-
-models(Home0, Endpoint0) ->
-    Home = text(Home0),
+%% Only a credential configured for Endpoint may list its models: another
+%% profile's key never reaches it. An empty Endpoint means the first
+%% credential's own endpoint.
+fetch_live(Home, Endpoint0) ->
     Endpoint = catalog_endpoint(Home, binary(Endpoint0)),
-    CachePath = cache_path(Home, Endpoint),
-    case is_cache_fresh(CachePath) andalso read_cache(CachePath) of
-        {ok, Ids} when Ids =/= [] -> {ok, Ids};
-        _ -> refresh_or_default(Home, Endpoint, CachePath)
-    end.
-
-reload(Home0) ->
-    Home = text(Home0),
-    Keys = catalog_keys(Home),
-    Endpoints = lists:usort([catalog_endpoint(Home, <<>>) |
-        [resolve_base_url(Url) || #{<<"baseUrl">> := Url} <- Keys]]),
-    reload_endpoints(Home, Endpoints).
-
-reload_endpoints(_, []) -> {ok, nil};
-reload_endpoints(Home, [Endpoint | Rest]) ->
-    case fetch_live(Home, Endpoint, cache_path(Home, Endpoint)) of
-        {ok, _} -> reload_endpoints(Home, Rest);
-        Error -> Error
-    end.
+    Keys = [Key || #{<<"baseUrl">> := Url} = Key <- catalog_keys(Home),
+                   resolve_base_url(Url) =:= Endpoint],
+    ApiKey = case Keys of
+        [#{<<"apiKey">> := Key} | _] -> Key;
+        [] -> <<>>
+    end,
+    fetch_models(Endpoint, ApiKey).
 
 %% Resolve each profile before the rotation pool's key-only deduplication.
 catalog_keys(Home) ->
@@ -383,37 +368,6 @@ catalog_endpoint(Home, <<>>) ->
         [] -> ?DEFAULT_BASE_URL
     end;
 catalog_endpoint(_, Endpoint) -> resolve_base_url(Endpoint).
-
-cache_path(Home, Endpoint) ->
-    Hash = binary:encode_hex(crypto:hash(sha256, Endpoint)),
-    filename:join(Home, "opencode-go-models-" ++ binary_to_list(Hash) ++ ".json").
-
-refresh_or_default(Home, Endpoint, CachePath) ->
-    case fetch_live(Home, Endpoint, CachePath) of
-        {ok, Ids} -> {ok, Ids};
-        {error, _} -> fallback_cache_or_default(CachePath)
-    end.
-
-%% Never send a credential from another endpoint to an explicitly requested URL.
-fetch_live(Home, Endpoint, CachePath) ->
-    Keys = [Key || #{<<"baseUrl">> := Url} = Key <- catalog_keys(Home),
-                   resolve_base_url(Url) =:= Endpoint],
-    ApiKey = case Keys of
-        [#{<<"apiKey">> := Key} | _] -> Key;
-        [] -> <<>>
-    end,
-    case fetch_models(Endpoint, ApiKey) of
-        {ok, Ids} ->
-            _ = write_cache(CachePath, Ids),
-            {ok, Ids};
-        Error -> Error
-    end.
-
-fallback_cache_or_default(CachePath) ->
-    case read_cache(CachePath) of
-        {ok, Ids} when Ids =/= [] -> {ok, Ids};
-        _ -> {ok, []}
-    end.
 
 %% Live GET to ${BaseUrl}/models with optional Bearer auth.
 fetch_models(BaseUrl0, ApiKey0) ->
@@ -457,26 +411,6 @@ is_chat_model(Id) when is_binary(Id) ->
         _ -> false
     end;
 is_chat_model(_) -> false.
-
-is_cache_fresh(Path) ->
-    case albedo_credentials:read_json(Path) of
-        {ok, #{<<"time">> := Time}} when is_integer(Time) ->
-            Age = erlang:system_time(millisecond) - Time,
-            Age >= 0 andalso Age < ?CACHE_MAX_AGE_MS;
-        _ -> false
-    end.
-
-read_cache(Path) ->
-    case albedo_credentials:read_json(Path) of
-        {ok, #{<<"ids">> := List}} when is_list(List) ->
-            {ok, [Id || Id <- List, is_binary(Id)]};
-        {ok, _} -> {error, invalid};
-        Error -> Error
-    end.
-
-write_cache(Path, Ids) ->
-    albedo_credentials:write(Path, json:encode(#{
-        <<"time">> => erlang:system_time(millisecond), <<"ids">> => Ids})).
 
 %% ---- key & OAuth account pool -------------------------------------------
 

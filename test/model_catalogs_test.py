@@ -1,23 +1,23 @@
 """Provider model lists: each provider's own list reaches the picker and reloads.
 
-`/reload models` refetches the sign-in providers' cached catalogs. A catalog
-that cannot be fetched (Codex, Antigravity, and Claude are never signed in
-here) keeps its previous list: the reload still succeeds and names
-it rather than reporting it refreshed. Claude's picker shows whatever the
+The host caches every provider's fetched list: a saved list answers at once,
+also after a restart, while a fresh one is fetched behind it. `/reload models`
+refetches the list of every saved profile and the models.dev catalog; a list
+that cannot be fetched keeps what was saved, never the catalog's fallback, and
+is named rather than reported refreshed. Claude's picker shows whatever the
 Anthropic Models API listed, newest first, with the API's own limits and
 efforts, so a model released after albedo shipped is offered without an
-update. A generic openai profile lists what its own endpoint's /models serves. Every list is served on loopback or seeded on disk, so no live network
+update. Every list is served on loopback or seeded on disk, so no live network
 is reached. The class writes the shared home's list caches and models
 settings, so it is exclusive and removes the caches again.
 """
 
-import hashlib
 import json
-import time
+import shutil
 import unittest
 import urllib.parse
 
-from harness import Albedo, Provider, exclusive, operation_id, text
+from harness import Albedo, Provider, exclusive, operation_id, text, wait_until
 
 MODELS_CATALOG = {
     "fixture": {
@@ -41,6 +41,13 @@ MODELS_CATALOG = {
             }
         },
     },
+    # OpenCode Go's fallback before its own list lands, which must never
+    # replace a list it fetched.
+    "opencode-go": {
+        "id": "opencode-go",
+        "name": "OpenCode Go",
+        "models": {"glm-from-models-dev": {"id": "glm-from-models-dev"}},
+    },
     # Must not hide what a generic openai endpoint's own /models serves.
     "openai": {
         "id": "openai",
@@ -61,6 +68,8 @@ OPENCODE_ZEN_MODELS = {
 }
 
 GATEWAY_MODELS = {"data": [{"id": "local-b"}, {"id": "local-a"}]}
+
+FIXTURE_MODELS = {"data": [{"id": "fixture-model"}]}
 
 # As the Anthropic Models API answered, newest first; neither id is one
 # albedo or models.dev knows.
@@ -86,7 +95,7 @@ CLAUDE_MODELS = [
 @exclusive
 class ModelCatalogReloadTests(unittest.TestCase):
     def setUp(self):
-        self.provider = Provider(lambda _request: text("ok"))
+        self.provider = Provider(lambda _request: text("ok"), catalog=FIXTURE_MODELS)
         self.addCleanup(self.provider.close)
         self.catalog = Provider(lambda _request: text("ok"), catalog=MODELS_CATALOG)
         self.addCleanup(self.catalog.close)
@@ -100,16 +109,6 @@ class ModelCatalogReloadTests(unittest.TestCase):
         self.addCleanup(self.opencode_zen.close)
 
         def prepare(app):
-            # Fresh on disk, so nothing but an explicit reload refetches them.
-            endpoint_hash = (
-                hashlib.sha256(self.opencode_go.url.encode()).hexdigest().upper()
-            )
-            (app.home / f"opencode-go-models-{endpoint_hash}.json").write_text(
-                json.dumps({"time": int(time.time() * 1000), "ids": ["glm-stale"]})
-            )
-            (app.home / "opencode-zen-models.json").write_text(
-                json.dumps(["glm-stale-free"])
-            )
             (app.home / "claude-models.json").write_text(json.dumps(CLAUDE_MODELS))
             (app.home / "models.json").unlink(missing_ok=True)
             app.write_extensions({"models": {"url": self.catalog.url + "/models.json"}})
@@ -141,17 +140,10 @@ class ModelCatalogReloadTests(unittest.TestCase):
             },
         )
         self.app.__enter__()
-        endpoint_hash = (
-            hashlib.sha256(self.opencode_go.url.encode()).hexdigest().upper()
+        self.addCleanup((self.app.home / "claude-models.json").unlink, missing_ok=True)
+        self.addCleanup(
+            shutil.rmtree, self.app.home / "model-lists", ignore_errors=True
         )
-        go_cache = self.app.home / f"opencode-go-models-{endpoint_hash}.json"
-        self.addCleanup(go_cache.unlink, missing_ok=True)
-        for name in (
-            "opencode-go-models.json",
-            "opencode-zen-models.json",
-            "claude-models.json",
-        ):
-            self.addCleanup((self.app.home / name).unlink, missing_ok=True)
         self.addCleanup(self.app.__exit__, None, None, None)
 
     def listed(self, provider, endpoint=""):
@@ -176,37 +168,45 @@ class ModelCatalogReloadTests(unittest.TestCase):
         return self.listed("opencode-zen", self.opencode_zen.url)
 
     def test_reload_models_refetches_provider_lists_and_names_failures(self):
-        self.assertEqual(
-            [item["id"] for item in self.opencode_go_listed()], ["glm-stale"]
-        )
-        self.assertEqual(
-            [item["id"] for item in self.opencode_zen_listed()], ["glm-stale-free"]
-        )
-        outcome = self.reload("models")
-        catalogs = {item["provider"]: item for item in outcome["models"]}
-        self.assertNotIn("alibaba", catalogs)
-        self.assertEqual(catalogs["opencode-go"]["state"], "refreshed")
-        self.assertEqual(catalogs["opencode-zen"]["state"], "refreshed")
-        self.assertEqual(catalogs["models"]["state"], "refreshed")
-        self.assertEqual(
-            {"codex", "antigravity", "claude"},
-            {name for name, item in catalogs.items() if item["state"] == "failed"},
-        )
-        self.assertTrue(catalogs["claude"]["failure"])
+        def ids(items):
+            return [item["id"] for item in items]
+
         # Non-chat entitlements stay filtered, as on any other fetch.
-        self.assertEqual(
-            [item["id"] for item in self.opencode_go_listed()], ["glm-5.3-flash"]
-        )
+        self.assertEqual(ids(self.opencode_go_listed()), ["glm-5.3-flash"])
         # Zen's free tier reaches the picker, which is the point of fetching
         # its own list: models.dev lists a `-free` id the gateway may retire.
         self.assertEqual(
-            [item["id"] for item in self.opencode_zen_listed()],
-            ["deepseek-v4-pro", "glm-5.3-flash-free"],
+            ids(self.opencode_zen_listed()), ["deepseek-v4-pro", "glm-5.3-flash-free"]
         )
-        # A failed reload keeps the list it had.
+        self.opencode_go.catalog = None
+        self.opencode_zen.catalog = {"data": [{"id": "kimi-free"}]}
+        # A saved list answers until it is old or reloaded.
         self.assertEqual(
-            [item["id"] for item in self.listed("claude")],
-            ["claude-fixture-6", "claude-fixture-small"],
+            ids(self.opencode_zen_listed()), ["deepseek-v4-pro", "glm-5.3-flash-free"]
+        )
+
+        outcome = self.reload("models")
+        catalogs = {item["provider"]: item for item in outcome["models"]}
+        # Only catalogs with something to fetch report: no profile here signs
+        # in to Codex, Antigravity, or Claude.
+        self.assertEqual(
+            {name: item["state"] for name, item in catalogs.items()},
+            {
+                "models": "refreshed",
+                "openai": "refreshed",
+                "opencode-go": "failed",
+                "opencode-zen": "refreshed",
+                # The suite's Zed catalog refetches its own list.
+                "zed": "refreshed",
+            },
+        )
+        self.assertTrue(catalogs["opencode-go"]["failure"])
+        self.assertEqual(ids(self.opencode_zen_listed()), ["kimi-free"])
+        # A failed fetch keeps the saved list, not models.dev's fallback.
+        self.assertEqual(ids(self.opencode_go_listed()), ["glm-5.3-flash"])
+        # Claude was never fetched: its facts file answers.
+        self.assertEqual(
+            ids(self.listed("claude")), ["claude-fixture-6", "claude-fixture-small"]
         )
 
     def test_generic_openai_endpoint_lists_its_own_models(self):
@@ -216,6 +216,31 @@ class ModelCatalogReloadTests(unittest.TestCase):
         self.assertEqual(
             [item["id"] for item in self.listed("openai", gateway.url + "/")],
             ["local-a", "local-b"],
+        )
+        gateway.catalog = {"data": [{"id": "uncached-change"}]}
+        self.assertEqual(
+            [item["id"] for item in self.listed("openai", gateway.url)],
+            ["local-a", "local-b"],
+        )
+
+    def test_generic_openai_endpoint_answers_from_its_saved_list(self):
+        gateway = Provider(lambda _request: text("ok"), catalog=GATEWAY_MODELS)
+        self.addCleanup(gateway.close)
+
+        def listed():
+            return [item["id"] for item in self.listed("openai", gateway.url)]
+
+        self.assertEqual(listed(), ["local-a", "local-b"])
+        gateway.catalog = {"data": [{"id": "local-c"}]}
+        # Saved lists turn stale after 3 s instead of 5 minutes.
+        self.app.restart(
+            prepare=lambda app: app.env.update(ALBEDO_TEST_TIME_SCALE="100")
+        )
+        # After the restart the saved list answers from disk without waiting
+        # for the endpoint, and once stale it is refetched behind the caller.
+        self.assertEqual(listed(), ["local-a", "local-b"])
+        wait_until(
+            lambda: listed() == ["local-c"], 10, "the saved list was never refreshed"
         )
 
     def test_claude_picker_offers_the_api_list_with_its_facts(self):
@@ -234,6 +259,26 @@ class ModelCatalogReloadTests(unittest.TestCase):
         )
         # No effort listed means the model takes none, not a guessed default.
         self.assertEqual(small["efforts"], [])
+
+
+# exclusive: boots a fresh home whose settings name a loopback catalog
+@exclusive
+class ModelCatalogWarmTests(unittest.TestCase):
+    def test_a_fresh_home_fetches_the_catalog_on_its_first_boot(self):
+        catalog = Provider(lambda _request: text("ok"), catalog=MODELS_CATALOG)
+        self.addCleanup(catalog.close)
+
+        def prepare(app):
+            app.write_extensions(
+                {"models": {"url": catalog.url + "/models.json", "refreshHours": 24}}
+            )
+
+        with Albedo(prepare=prepare) as app:
+            cached = app.home / "models.json"
+            wait_until(cached.exists, 20, "the first boot never fetched the catalog")
+            self.assertIn(
+                "fixture-model", json.loads(cached.read_text())["fixture"]["models"]
+            )
 
 
 # exclusive: seeds global models catalog; several tests restart the daemon

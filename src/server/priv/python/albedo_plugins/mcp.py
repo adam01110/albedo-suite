@@ -13,20 +13,11 @@ from typing import Any, cast
 import keyword
 import re
 
-from albedo_api import Host, PythonApi, Record
+from albedo_api import Host, PythonApi, Record, nested_record as _record
 import albedo_trace
 from albedo_plugins import hook
 
 Operation = dict[str, object]
-
-
-def _record(value: object) -> object:
-    """A result as nested records, so `r.content[0].text` reads."""
-    if isinstance(value, dict):
-        return Record({key: _record(item) for key, item in value.items()})
-    if isinstance(value, list):
-        return [_record(item) for item in value]
-    return value
 
 
 def _named(operations: list[Operation], name: str) -> list[Operation]:

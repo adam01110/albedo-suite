@@ -200,21 +200,23 @@ cross-protocol replay, Gemini routing, OpenCode Zen, Discord, `/config`, native
 artifacts, push kernel/sidebar status and demand-driven terminal rendering.
 Go's provider extension uses pristine upstream code; the suite no longer
 replaces the daemon's profile protocol selection. Narrow Go wire/catalog
-additions preserve SDK-metadata
-routing and endpoint-scoped one-hour discovery caches. Package checks exercise
-native Go rotation, OAuth organization headers and all four wire routes.
+additions keep SDK-metadata routing on native host model lists: the host
+caches each endpoint's list, refreshes it behind the caller once 5 minutes old
+and keeps the saved list when a refetch fails. Package checks exercise native Go
+rotation, OAuth organization headers and all four wire routes.
 The current upstream binds request rotation to explicitly selected accounts
 (`accountIds`); catalog discovery still inspects configured profiles without
 sending credentials to another endpoint. Legacy Alibaba profiles migrate
 to OpenAI-compatible profiles through upstream's account migration.
 
-The November update moves the base to `9587b706c9bf3898962f8c2bda3bf63310420e7e`.
+The November update moves the base to `154c6911d6a491aeeecacf26a06b6ae8c4bc70e1`.
 It retains native ACP, shell commands, kernel pooling/standby, fast provider modes,
 Mistral and Perplexity providers, and HTTP MCP/OAuth. Lazy MCP uses upstream's
 native client rather than the removed Barrel dependency. The Zed transport uses
 native method selection; its temporary transport shim is retired. Formatting,
 LSP, questions, FFF/RTK and provider availability remain suite features. Child
 model listings follow upstream's profile-qualified names and concurrent discovery.
+The base adds a repetition watch that notes a turn reusing the same bindings.
 The suite seals installed daemon builds after fixup, matching upstream's build
 identity fast path, and verifies the seal against installed bytes.
 

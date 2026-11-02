@@ -209,9 +209,6 @@ func validateModelID(m string) error {
 	return nil
 }
 
-// searchKey folds case and separators, so "gpt.5" finds "gpt-5.1".
-const searchSeparators = " -_.:/"
-
 func (m ModelPickerModel) highlighted() (modelRow, bool) {
 	if m.cursor < 0 || m.cursor >= len(m.rows) {
 		return modelRow{}, false

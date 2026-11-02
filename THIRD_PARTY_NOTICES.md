@@ -1,7 +1,7 @@
 # Source attribution
 
 The files under `src/server/` and `src/client/` replace files from Albedo at
-revision `9587b706c9bf3898962f8c2bda3bf63310420e7e`,
+revision `154c6911d6a491aeeecacf26a06b6ae8c4bc70e1`,
 <https://tangled.org/okami.mom/albedo>. Albedo is copyright 2026 albedo contributors
 (okami.mom, ptr.pet, aly.codes and other contributors), licensed under MPL 2.0;
 the license is retained in `LICENSES/albedo-MPL-2.0.txt`. Updated source

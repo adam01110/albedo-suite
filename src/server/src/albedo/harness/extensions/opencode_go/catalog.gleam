@@ -3,20 +3,18 @@
 
 import albedo/harness/extension
 import albedo/harness/extensions/models/extension as models
+import albedo/harness/model_lists
 import albedo/harness/settings
 import gleam/bool
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 
 pub const default_base_url = "https://opencode.ai/inference/go/v1"
 
 pub fn catalog() -> extension.ModelCatalog {
-  extension.ModelCatalog(
-    lookup,
-    list_models,
-    Some(fn() { reload(settings.home()) }),
-  )
+  extension.ModelCatalog(lookup, list_models, None)
 }
 
 fn lookup(id: String, at: Option(String)) -> Option(extension.ModelInfo) {
@@ -26,8 +24,8 @@ fn lookup(id: String, at: Option(String)) -> Option(extension.ModelInfo) {
   }
   use <- bool.guard(!is_opencode_go_endpoint, None)
 
-  let home = settings.home()
   let target_endpoint = option.unwrap(at, default_base_url)
+  let listed = model_lists.saved("opencode-go", list_key(at))
   let base =
     extension.ModelInfo(
       ..extension.blank_model(id, "opencode-go"),
@@ -40,7 +38,7 @@ fn lookup(id: String, at: Option(String)) -> Option(extension.ModelInfo) {
       use <- bool.guard(
         at == None
           && models.lookup_provider("anthropic", id) != None
-          && result.is_error(cached_models(home, target_endpoint)),
+          && result.is_error(listed),
         None,
       )
       Some(
@@ -53,10 +51,7 @@ fn lookup(id: String, at: Option(String)) -> Option(extension.ModelInfo) {
       )
     }
     None -> {
-      let cached_ids =
-        cached_models(home, target_endpoint)
-        |> result.unwrap([])
-      use <- bool.guard(!list.contains(cached_ids, id), None)
+      use <- bool.guard(!list.contains(result.unwrap(listed, []), id), None)
       Some(models.complete_model(base, Some(target_endpoint)))
     }
   }
@@ -65,22 +60,27 @@ fn lookup(id: String, at: Option(String)) -> Option(extension.ModelInfo) {
 @external(erlang, "albedo_opencode_go", "owns_endpoint")
 fn owns_endpoint(home: String, endpoint: String) -> Bool
 
-fn list_models(provider: String, endpoint: Option(String)) -> List(String) {
+fn list_models(
+  provider: String,
+  endpoint: Option(String),
+) -> extension.Listing {
   case provider {
-    "opencode-go" ->
-      case models(settings.home(), option.unwrap(endpoint, "")) {
-        Ok([_, ..] as ids) -> ids
-        _ -> models.list("opencode-go", None)
-      }
-    _ -> []
+    "opencode-go" -> {
+      let home = settings.home()
+      extension.Remote(
+        list_key(endpoint),
+        fn() { models(home, option.unwrap(endpoint, "")) },
+        models.list("opencode-go", None),
+      )
+    }
+    _ -> extension.Unlisted
   }
+}
+
+/// Lists are kept per endpoint; no endpoint means the default one.
+fn list_key(endpoint: Option(String)) -> String {
+  string.remove_suffix(option.unwrap(endpoint, default_base_url), "/")
 }
 
 @external(erlang, "albedo_opencode_go", "models")
 fn models(home: String, endpoint: String) -> Result(List(String), String)
-
-@external(erlang, "albedo_opencode_go", "cached_models")
-fn cached_models(home: String, endpoint: String) -> Result(List(String), String)
-
-@external(erlang, "albedo_opencode_go", "reload")
-fn reload(home: String) -> Result(Nil, String)

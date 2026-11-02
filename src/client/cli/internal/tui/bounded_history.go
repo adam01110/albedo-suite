@@ -148,9 +148,7 @@ func NewBoundedHistory(maxEntries int, maxBytes int64) *BoundedHistory {
 }
 
 func (h *BoundedHistory) Len() int                { return len(h.entries) }
-func (h *BoundedHistory) TotalBytes() int64       { return h.totalBytes }
 func (h *BoundedHistory) EvictedCount() int       { return h.evictedEntries }
-func (h *BoundedHistory) EvictedBytes() int64     { return h.evictedBytes }
 func (h *BoundedHistory) Entries() []HistoryEntry { return h.entries }
 
 func (h *BoundedHistory) TruncationNotice() string {

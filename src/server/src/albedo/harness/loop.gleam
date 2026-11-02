@@ -5,6 +5,7 @@ import albedo/daemon/conversation
 import albedo/daemon/events as view
 import albedo/daemon/image_fit
 import albedo/daemon/message_content
+import albedo/daemon/note
 import albedo/daemon/projection
 import albedo/daemon/requests
 import albedo/daemon/store
@@ -19,9 +20,11 @@ import albedo/harness/compaction
 import albedo/harness/extension
 import albedo/harness/extensions/python/cells as journal
 import albedo/harness/hook
+import albedo/harness/repetition
 import albedo/harness/runtime
 import albedo/openai_api/types
 import albedo/text_scalars
+import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/int
 import gleam/io
@@ -113,6 +116,9 @@ pub type Loop {
     refresh: fn() -> Result(Option(Selection), String),
     /// Editor prompts may finish successfully without assistant text.
     allow_empty_reply: Bool,
+    /// Whether this turn's steps keep calling the same bindings with nearly
+    /// the same code.
+    repeats: repetition.Watch,
   )
 }
 
@@ -371,7 +377,17 @@ fn converse(
         }),
       )
       let results = list.map(ran, fn(item) { item.0 })
-      let added = list.flat_map(ran, fn(item) { item.1 })
+      let #(repeats, repeated) =
+        repetition.step(
+          state.repeats,
+          list.filter_map(ran, fn(item) { item.2 }),
+        )
+      let added =
+        list.append(
+          list.flat_map(ran, fn(item) { item.1 }),
+          repeating(repeated),
+        )
+      let state = Loop(..state, repeats:)
       use _ <- result.try(commit_hooked(state, added, conversation.Tool))
       use steering <- result.try(state.drain_steering())
       use _ <- result.try(state.commit([], conversation.Model, None, None))
@@ -541,7 +557,7 @@ pub fn background(
 /// Start a tool only after its running projection is acknowledged. Remove
 /// that projection before committing and publishing the tool result. Hooks
 /// may refuse the call or rewrite its arguments; what they add for the model
-/// comes back beside the result.
+/// comes back beside the result, and so does the cell a python call ran.
 fn run_tool(
   state: Loop,
   run_id: String,
@@ -549,7 +565,10 @@ fn run_tool(
   attempt: Int,
   output_index: Int,
   call: types.ToolCall,
-) -> Result(#(types.Input, List(types.Input)), String) {
+) -> Result(
+  #(types.Input, List(types.Input), Result(repetition.Cell, Nil)),
+  String,
+) {
   let progress_id =
     tool_progress.progress_id(
       generation: state.generation,
@@ -576,17 +595,10 @@ fn run_tool(
           failed,
         )),
       ))
+      let saved = saved_trace(state, output)
       let _ = case output {
         types.ToolOutput(_, body, images) -> {
-          let trace =
-            json.parse(
-              body,
-              decode.field("cell_id", decode.string, decode.success),
-            )
-            |> result.map(fn(cell) {
-              journal.trace(runtime.ledger(state.host), cell)
-            })
-            |> result.unwrap(None)
+          let trace = option.map(saved, types.encode_value)
           case position {
             Some(position) ->
               state.publish(view.ToolWithImages(
@@ -610,9 +622,58 @@ fn run_tool(
       }
       case halt {
         Some(reason) -> Error("stopped by a hook: " <> reason)
-        None -> Ok(#(output, added))
+        None -> Ok(#(output, added, ran_cell(call, saved)))
       }
     }
+  }
+}
+
+/// The trace the kernel saved for the cell a tool result names.
+fn saved_trace(state: Loop, output: types.Input) -> Option(Dynamic) {
+  case output {
+    types.ToolOutput(_, body, _) ->
+      json.parse(body, decode.field("cell_id", decode.string, decode.success))
+      |> option.from_result
+      |> option.then(journal.saved_trace(runtime.ledger(state.host), _))
+    _ -> None
+  }
+}
+
+/// The cell a python call ran, for the repetition watch: its code and the
+/// bindings its saved trace says it called.
+fn ran_cell(
+  call: types.ToolCall,
+  saved: Option(Dynamic),
+) -> Result(repetition.Cell, Nil) {
+  case call.name {
+    "python" -> {
+      use code <- result.map(
+        json.parse(
+          call.arguments,
+          decode.field("code", decode.string, decode.success),
+        )
+        |> result.replace_error(Nil),
+      )
+      let calls = case saved {
+        Some(trace) ->
+          decode.run(trace, decode.at(["calls"], decode.list(decode.string)))
+          |> result.unwrap([])
+        None -> []
+      }
+      repetition.Cell(code, calls)
+    }
+    _ -> Error(Nil)
+  }
+}
+
+/// The note that tells the model, and the user who sees it in the
+/// transcript, that the turn's steps keep repeating.
+fn repeating(repeated: Option(repetition.Repeated)) -> List(types.Input) {
+  case repeated {
+    None -> []
+    Some(repeated) -> [
+      types.User(note.wrap("repetition", repetition.note(repeated))),
+    ]
   }
 }
 

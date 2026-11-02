@@ -1,11 +1,19 @@
 """OpenCode Go routing and discovery against an isolated scripted endpoint."""
 
+import hashlib
 import json
 import time
 import unittest
 from urllib.parse import quote
 
-from harness import Albedo, Provider, Reply, error, exclusive, text
+from harness import Albedo, Provider, Reply, error, exclusive, text, wait_until
+
+
+def saved_list(home, owner, endpoint):
+    """The host's saved model list for one catalog and endpoint."""
+    listed = endpoint[:-1] if endpoint.endswith("/") else endpoint
+    key = owner.encode() + b"\0" + listed.encode()
+    return home / "model-lists" / (hashlib.sha256(key).hexdigest() + ".json")
 
 
 def messages_reply(tool=False):
@@ -269,7 +277,7 @@ class OpenCodeGoE2ETests(unittest.TestCase):
                 snapshot["activity"],
             )
 
-    def test_live_discovery_and_cached_failure(self):
+    def test_live_discovery_and_saved_list(self):
         self.start("glm-5.2")
         path = "/models?provider=opencode-go&endpoint=" + quote(
             self.provider.url, safe=""
@@ -281,15 +289,32 @@ class OpenCodeGoE2ETests(unittest.TestCase):
             {"glm-5.2", "minimax-m2.7", "gpt-5.6-luna"},
         )
         self.assertEqual(len(self.provider.gets), 1)
-        caches = list(self.app.home.glob("opencode-go-models-*.json"))
-        self.assertEqual(len(caches), 1)
-        cache = json.loads(caches[0].read_text())
-        cache["time"] = 0
-        caches[0].write_text(json.dumps(cache))
-        self.provider.fail_catalog = True
+        saved = saved_list(self.app.home, "opencode-go", self.provider.url)
+        contents = json.loads(saved.read_text())
+        self.assertEqual(contents["owner"], "opencode-go")
+        self.assertIsInstance(contents["fetched"], int)
+        self.assertEqual(
+            set(contents["ids"]), {"glm-5.2", "minimax-m2.7", "gpt-5.6-luna"}
+        )
+        # A saved list answers for five minutes without asking the endpoint.
+        self.provider.catalog = {"data": [{"id": "newer-model"}]}
         with self.app.api(path) as response:
             self.assertEqual(json.load(response)["items"], models["items"])
-        self.assertEqual(len(self.provider.gets), 2)
+        self.assertEqual(len(self.provider.gets), 1)
+        # An old list is refetched behind the caller, and a failed fetch keeps it.
+        saved.write_text(json.dumps({**contents, "fetched": 0}))
+        self.app.restart()
+        self.provider.fail_catalog = True
+        asked = len(self.provider.gets)
+        with self.app.api(path) as response:
+            self.assertEqual(json.load(response)["items"], models["items"])
+        wait_until(
+            lambda: len(self.provider.gets) == asked + 1,
+            10,
+            "the saved list was never refetched",
+        )
+        with self.app.api(path) as response:
+            self.assertEqual(json.load(response)["items"], models["items"])
 
     def test_per_model_sdk_overrides_documented_route(self):
         metadata = {
@@ -361,20 +386,34 @@ class OpenCodeGoE2ETests(unittest.TestCase):
             second = json.load(response)["items"]
         self.assertEqual({item["id"] for item in second}, {"other-model"})
         self.assertNotEqual(first, second)
-        self.assertEqual(len(list(self.app.home.glob("opencode-go-models-*.json"))), 2)
+        for endpoint, ids in (
+            (self.provider.url, {row["id"] for row in first}),
+            (other.url, {"other-model"}),
+        ):
+            saved = json.loads(
+                saved_list(self.app.home, "opencode-go", endpoint).read_text()
+            )
+            self.assertEqual(saved["owner"], "opencode-go")
+            self.assertEqual(set(saved["ids"]), ids)
+        self.assertEqual(len(list((self.app.home / "model-lists").glob("*.json"))), 2)
         self.assertEqual(len(other.gets), 1)
         self.assertNotIn(
             "authorization",
             {key.lower(): value for key, value in other.get_headers[0].items()},
         )
+        # An old list is refetched behind the caller, and a failed fetch keeps it.
+        saved = saved_list(self.app.home, "opencode-go", other.url)
+        saved.write_text(json.dumps({**json.loads(saved.read_text()), "fetched": 0}))
+        self.app.restart()
         other.fail_catalog = True
-        for cache in self.app.home.glob("opencode-go-models-*.json"):
-            contents = json.loads(cache.read_text())
-            contents["time"] = 0
-            cache.write_text(json.dumps(contents))
+        asked = len(other.gets)
         with self.app.api(path + quote(other.url, safe="")) as response:
             self.assertEqual(json.load(response)["items"], second)
-        self.assertEqual(len(other.gets), 2)
+        wait_until(
+            lambda: len(other.gets) == asked + 1,
+            10,
+            "the saved list was never refetched",
+        )
 
     def test_same_key_at_two_configured_endpoints_keeps_catalog_auth(self):
         other = GoProvider(lambda _: text("go-reply"))
@@ -408,7 +447,12 @@ class OpenCodeGoE2ETests(unittest.TestCase):
             if provider is other:
                 self.assertEqual(items[0]["id"], "custom-model")
                 self.assertEqual(items[0]["default_context_tokens"], 12345)
-        self.assertEqual(len(list(self.app.home.glob("opencode-go-models-*.json"))), 2)
+        for provider in (self.provider, other):
+            saved = json.loads(
+                saved_list(self.app.home, "opencode-go", provider.url).read_text()
+            )
+            self.assertEqual(saved["owner"], "opencode-go")
+        self.assertEqual(len(list((self.app.home / "model-lists").glob("*.json"))), 2)
 
     def test_rejected_key_is_explained(self):
         session = self.start("glm-5.2", lambda _: error(401, "bad key"))

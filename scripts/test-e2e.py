@@ -42,6 +42,7 @@ UPSTREAM_CASES = (
     "idle_reap_test.py",
     "job_wake_test.py",
     "kernel_upgrade_test.py",
+    "repetition_test.py",
     "rewind_test.py",
     "traces_test.py",
     "provider_timeout_test.py",

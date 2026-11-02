@@ -9,7 +9,7 @@ pub const endpoint = "https://cloud.zed.dev"
 pub fn catalog() -> extension.ModelCatalog {
   extension.ModelCatalog(
     lookup,
-    list_models,
+    fn(provider, at) { extension.Local(list_models(provider, at)) },
     Some(fn() { reload(settings.home()) }),
   )
 }

@@ -9631,6 +9631,14 @@ components:
           maxItems: 16
         truncated:
           type: boolean
+        calls:
+          type: array
+          description: The session bindings the cell's code calls (`files.find`, `run`), sorted.
+            Absent for a cell replayed from inside another.
+          items:
+            type: string
+            maxLength: 1000
+          maxItems: 64
       required: [activities, changes, truncated]
       additionalProperties: false
     ActiveOutput:

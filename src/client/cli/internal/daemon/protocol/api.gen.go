@@ -3601,9 +3601,12 @@ type ToolProgress struct {
 
 // ToolTrace defines model for ToolTrace.
 type ToolTrace struct {
-	Activities []ToolActivity    `json:"activities"`
-	Changes    []json.RawMessage `json:"changes"`
-	Truncated  bool              `json:"truncated"`
+	Activities []ToolActivity `json:"activities"`
+
+	// Calls The session bindings the cell's code calls (`files.find`, `run`), sorted. Absent for a cell replayed from inside another.
+	Calls     []string          `json:"calls,omitempty"`
+	Changes   []json.RawMessage `json:"changes"`
+	Truncated bool              `json:"truncated"`
 }
 
 // TraceContent defines model for TraceContent.
