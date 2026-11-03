@@ -113,9 +113,7 @@ func vimUndo(m *ChatModel, input vimInput, before vimSnapshot, msg tea.KeyPressM
 	return nil
 }
 func vimCommandMenu(m *ChatModel, input vimInput, before vimSnapshot, msg tea.KeyPressMsg) tea.Cmd {
-	m.vimPosition(0)
-	m.vimBeginInsert(before)
-	return m.updateComposer(msg, nil)
+	return func() tea.Msg { return ChatOpenWorkspaceMsg{} }
 }
 func (m *ChatModel) vimRemember(s vimSnapshot) {
 	if s.text == m.TextArea.Value() {
@@ -175,10 +173,14 @@ func (m *ChatModel) vimDelete(start, end int) {
 	m.syncLayout()
 }
 
-func (m *ChatModel) vimApplyOperator(operator string, span vimRange, before vimSnapshot) {
+func (m *ChatModel) vimApplyOperator(operator string, span vimRange, before vimSnapshot) tea.Cmd {
 	if operator == "y" {
 		m.vim.register, m.vim.linewise = span.register, span.linewise
-		return
+		text := span.register
+		if span.linewise {
+			text += "\n"
+		}
+		return m.copied(text)
 	}
 	m.vimDelete(span.start, span.end)
 	if span.linewise {
@@ -189,4 +191,5 @@ func (m *ChatModel) vimApplyOperator(operator string, span vimRange, before vimS
 	} else {
 		m.vimRemember(before)
 	}
+	return nil
 }

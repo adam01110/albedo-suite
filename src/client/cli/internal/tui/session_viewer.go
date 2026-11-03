@@ -533,6 +533,14 @@ func (m SessionViewer) Update(msg tea.Msg) (SessionViewer, tea.Cmd) {
 				return SessionDeleteMsg{ID: id, Condition: daemon.SessionCondition{ETag: s.ETag, FamilyRevision: s.FamilyRevision}}
 			}
 		}
+		if !m.navigation.editing {
+			if msg.String() == "n" {
+				return m, func() tea.Msg { return ChatNewSessionMsg{} }
+			}
+			if chord := map[string]rune{"r": 'r', "p": 's', "a": 'a', "x": 'x', "f": 'f'}[msg.String()]; chord != 0 {
+				msg = tea.KeyPressMsg{Code: chord, Mod: tea.ModCtrl}
+			}
+		}
 		var done bool
 		msg, done = m.navigation.key(msg, &m.SearchInput, false)
 		if done {
@@ -543,7 +551,7 @@ func (m SessionViewer) Update(msg tea.Msg) (SessionViewer, tea.Cmd) {
 			return m, nil
 		}
 		switch key := msg.String(); {
-		case key == "ctrl+d" && m.ArchiveView:
+		case key == "ctrl+x" && m.ArchiveView:
 			if item, ok := m.Highlighted(); ok {
 				m.confirm.ask("delete", item.ID, "delete", sessionDeletePrompt)
 			}

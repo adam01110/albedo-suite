@@ -171,33 +171,43 @@ func (m ChatModel) glanceRows(g sidebarGlance, limit int) []string {
 func (m ChatModel) renderFooter() string {
 	width := m.chatWidth()
 	right, compact := m.contextStat()
-	commands := hint{"/", "commands"}
-	sessions := hint{"←", "sessions"}
+	commands := hint{"F2", "workspace"}
+	sessions := hint{"tab", "transcript"}
+	if m.reader.active {
+		sessions = hint{"tab", "composer"}
+	}
 	modeStyle := DefaultStyles.You
 	if !m.vim.normal {
 		modeStyle = DefaultStyles.Success
 	}
 	mode := hint{modeStyle.Bold(true).Render(m.vimMode()), ""}
+	focus := strings.TrimPrefix(m.readerStatus(), m.vimMode()+" · ")
+	if m.reader.searching {
+		return ansi.Truncate(m.readerStatus(), width, "…")
+	}
+	if width >= 60 && m.reader.active {
+		mode.does = focus
+	}
 	candidates := []struct {
 		right string
 		left  []hint
 	}{
-		{left: []hint{sessions, mode, commands, {"shift+↑↓", "your messages"}, {"ctrl+j", "diffs"}, {"ctrl+o", "agents"}}, right: right},
-		{left: []hint{sessions, mode, commands, {"ctrl+j", "diffs"}, {"ctrl+o", "agents"}}, right: right},
+		{left: []hint{sessions, mode, {"ctrl+s", "sessions"}, commands, {"F1", "keys"}, {"ctrl+j", "diffs"}, {"ctrl+o", "agents"}}, right: right},
+		{left: []hint{sessions, mode, {"ctrl+s", "sessions"}, commands, {"ctrl+j", "diffs"}, {"ctrl+o", "agents"}}, right: right},
 		{left: []hint{sessions, mode, commands, {"ctrl+o", "agents"}}, right: compact},
-		{left: []hint{sessions, mode, commands}, right: compact},
+		{left: []hint{sessions, mode, commands, {"ctrl+s", "sessions"}}, right: compact},
 		{left: []hint{mode, commands, {"ctrl+j", "diffs"}}, right: compact},
-		{left: []hint{mode, commands}, right: compact},
-		{left: []hint{mode}, right: compact},
+		{left: []hint{mode, commands, {"ctrl+s", "sessions"}}, right: compact},
+		{left: []hint{mode, {"ctrl+s", "sessions"}}, right: compact},
 	}
 	if slices.ContainsFunc(m.History.Entries(), func(e HistoryEntry) bool { return e.Kind == EntryShell }) {
 		candidates = append([]struct {
 			right string
 			left  []hint
 		}{
-			{left: []hint{sessions, commands, {"ctrl+shift+o", "shell output"}, {"ctrl+shift+x", "stop shell"}}, right: right},
-			{left: []hint{commands, {"ctrl+shift+o", "output"}, {"ctrl+shift+x", "stop"}}, right: compact},
-			{left: []hint{commands, {"ctrl+shift+o", "output"}}, right: compact},
+			{left: []hint{mode, sessions, commands, {"ctrl+shift+o", "shell output"}, {"ctrl+shift+x", "stop shell"}}, right: right},
+			{left: []hint{mode, commands, {"ctrl+shift+o", "output"}, {"ctrl+shift+x", "stop"}}, right: compact},
+			{left: []hint{mode, commands, {"ctrl+shift+o", "output"}}, right: compact},
 		}, candidates...)
 	}
 	for _, c := range candidates {
@@ -206,7 +216,7 @@ func (m ChatModel) renderFooter() string {
 			return left + strings.Repeat(" ", gap) + c.right
 		}
 	}
-	return ansi.Truncate(keyHints(mode), width, "…")
+	return ansi.Truncate(keyHints(hint{mode.key, ""}), width, "…")
 }
 
 // contextStat is how much of the prompt was read from cache, fading as the

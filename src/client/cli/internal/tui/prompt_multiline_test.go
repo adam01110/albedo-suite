@@ -44,7 +44,7 @@ func frame(t *testing.T, m ChatModel, height int) []string {
 	if !strings.Contains(lines[len(lines)-2], "─") {
 		t.Fatalf("expected the separator above the footer, got %q", lines[len(lines)-2])
 	}
-	if !strings.Contains(lines[len(lines)-1], "/ commands") {
+	if !strings.Contains(lines[len(lines)-1], "F2 workspace") {
 		t.Fatalf("expected the footer last, got %q", lines[len(lines)-1])
 	}
 	return lines

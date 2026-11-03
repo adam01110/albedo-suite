@@ -190,7 +190,7 @@ func (m AgentsViewModel) key(msg tea.KeyPressMsg) (AgentsViewModel, tea.Cmd) {
 			return m, nil
 		}
 		text := strings.TrimSpace(m.input.Value())
-		if text == "" {
+		if text == "" || browsing {
 			if n.session.ID == "" {
 				n.session = daemon.Session{ID: n.id, Title: n.name, Model: n.model}
 			}

@@ -153,6 +153,9 @@ func (m PickerModel) Update(msg tea.Msg) (PickerModel, tea.Cmd) {
 				return m, nil
 			}
 		}
+		if m.navigation.move(msg, &m.Cursor, len(m.Filtered), m.Height) {
+			return m, nil
+		}
 		key := msg.String()
 		if !m.WithSearch {
 			switch key {
@@ -214,6 +217,6 @@ func (m PickerModel) View() string {
 		b.WriteString(m.navigation.filterLine(m.SearchInput))
 	}
 	b.WriteByte('\n')
-	b.WriteString(keyHints(hint{"↑↓", "select"}, hint{"enter", "choose"}, hint{"esc", "cancel"}))
+	b.WriteString(keyHints(hint{"j/k", "select"}, hint{"l/enter", "choose"}, hint{"h/esc", "cancel"}))
 	return b.String()
 }

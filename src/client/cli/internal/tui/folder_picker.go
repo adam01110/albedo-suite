@@ -399,6 +399,9 @@ func (m FolderPicker) Update(msg tea.Msg) (FolderPicker, tea.Cmd) {
 		if done {
 			return m, nil
 		}
+		if m.navigation.move(msg, &m.cursor, len(m.rows), m.Height) {
+			return m, m.follow()
+		}
 		if !m.navigation.editing {
 			if original == "h" {
 				msg = tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift}

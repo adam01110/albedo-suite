@@ -17,6 +17,11 @@ import (
 
 func questionPage(t *testing.T, options []string, status int) (PageViewModel, *[]string) {
 	t.Helper()
+	return questionPageWithCount(t, options, status, 1)
+}
+
+func questionPageWithCount(t *testing.T, options []string, status, count int) (PageViewModel, *[]string) {
+	t.Helper()
 	if options == nil {
 		options = []string{}
 	}
@@ -46,16 +51,26 @@ func questionPage(t *testing.T, options []string, status int) (PageViewModel, *[
 			map[string]any{"id": "cancel", "label": "dismiss", "keyboard_hint": "ctrl+d", "confirmation": "Dismiss this question?", "fields": []any{}, "operation": operation("cancel", "dismissQuestion")},
 		},
 	}}
+	rows := make([]any, 0, count)
+	for i := 1; i <= count; i++ {
+		id := fmt.Sprint(i)
+		item := map[string]any{"url": "/extensions/questions/items/" + id + "?session_id=s", "etag": `"question-` + id + `-1"`, "value": map[string]any{
+			"id": id, "session_id": "s", "question": "Where should deployment " + id + " go?", "options": options, "status": "pending", "revision": 1,
+		}}
+		rows = append(rows, map[string]any{"id": id, "text": "Deployment " + id, "badge": "pending", "tone": "warning", "detail": "Where should deployment " + id + " go?", "resource": item})
+	}
+	payload["page"].(map[string]any)["rows"] = rows
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method == "GET" {
 			_ = json.NewEncoder(w).Encode(payload)
 			return
 		}
-		if r.URL.Path != "/extensions/questions/items/1/answer" && r.URL.Path != "/extensions/questions/items/1/cancel" {
+		parts := strings.Split(r.URL.Path, "/")
+		if len(parts) != 6 || (parts[5] != "answer" && parts[5] != "cancel") {
 			t.Errorf("wrong target: %s", r.URL)
 		}
-		if r.URL.Query().Get("session_id") != "s" || r.Header.Get("If-Match") != `"question-1-1"` {
+		if r.URL.Query().Get("session_id") != "s" || r.Header.Get("If-Match") != `"question-`+parts[4]+`-1"` {
 			t.Errorf("lost session or ETag: %s %v", r.URL, r.Header)
 		}
 		if strings.HasSuffix(r.URL.Path, "/answer") {
@@ -108,7 +123,7 @@ func TestQuestionsPagePickSuggestedAnswer(t *testing.T) {
 	if m.Mode != modeQuestionAnswers || len(m.questionAnswers.rows) != 3 {
 		t.Fatal("suggestions not offered")
 	}
-	if !strings.Contains(ansi.Strip(m.View()), "Type your own answer") {
+	if !strings.Contains(ansi.Strip(m.View()), "Write your own answer") {
 		t.Fatal("custom answer missing")
 	}
 	questionPageKey(&m, tea.KeyDown, 0)
@@ -142,14 +157,14 @@ func TestQuestionsPageCustomAnswerAndBack(t *testing.T) {
 	}
 	m, _ = m.Update(tea.PasteMsg{Content: "custom deployment"})
 	questionPageKey(&m, tea.KeyEscape, 0)
-	if m.Mode != modeQuestionAnswers || m.TextInput.Value() != "custom deployment" {
+	if m.Mode != modeQuestionAnswers || m.questionAnswers.editor.Value() != "custom deployment" {
 		t.Fatal("back lost custom draft")
 	}
 	questionPageKey(&m, 'e', tea.ModCtrl)
-	if m.TextInput.Value() != "custom deployment" {
+	if m.questionAnswers.editor.Value() != "custom deployment" {
 		t.Fatal("custom draft not restored")
 	}
-	result := questionPageKey(&m, tea.KeyEnter, 0)().(pageActionExecutedMsg)
+	result := questionPageKey(&m, tea.KeyEnter, tea.ModCtrl)().(pageActionExecutedMsg)
 	if result.Err != nil || len(*answers) != 1 || (*answers)[0] != "custom deployment" {
 		t.Fatalf("custom answer: %v %v", *answers, result.Err)
 	}
@@ -158,11 +173,13 @@ func TestQuestionsPageCustomAnswerAndBack(t *testing.T) {
 func TestQuestionsPageNoOptionsAndDismiss(t *testing.T) {
 	m, answers := questionPage(t, nil, 200)
 	questionPageKey(&m, tea.KeyEnter, 0)
-	if m.Mode != modeText || m.questionAnswers != nil {
+	if m.Mode != modeText || m.questionAnswers == nil {
 		t.Fatal("no-options question did not open text entry")
 	}
 	questionPageKey(&m, tea.KeyEscape, 0)
-	questionPageKey(&m, 'd', tea.ModCtrl)
+	questionPageKey(&m, 'a', tea.ModCtrl)
+	questionPageKey(&m, 'j', 0)
+	questionPageKey(&m, 'l', 0)
 	if m.Mode != modeConfirm || len(*answers) != 0 {
 		t.Fatal("dismiss requires confirmation")
 	}
@@ -170,7 +187,9 @@ func TestQuestionsPageNoOptionsAndDismiss(t *testing.T) {
 	if m.Mode != modeBrowse || len(*answers) != 0 {
 		t.Fatal("escape dismissed question")
 	}
-	questionPageKey(&m, 'd', tea.ModCtrl)
+	questionPageKey(&m, 'a', tea.ModCtrl)
+	questionPageKey(&m, 'j', 0)
+	questionPageKey(&m, 'l', 0)
 	result := questionPageKey(&m, tea.KeyEnter, 0)().(pageActionExecutedMsg)
 	if result.Err != nil || len(*answers) != 1 || (*answers)[0] != "dismissed" {
 		t.Fatalf("dismiss: %v %v", *answers, result.Err)
@@ -211,7 +230,7 @@ func TestQuestionsPageLongOptionsScrollAndResize(t *testing.T) {
 				t.Fatalf("width overflow: %q", row)
 			}
 		}
-		if !strings.Contains(view, "Type your") {
+		if !strings.Contains(view, "Write your") {
 			t.Fatal("last selected choice did not scroll into view")
 		}
 	}

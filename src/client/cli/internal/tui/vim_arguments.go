@@ -1,12 +1,15 @@
 package tui
 
-import "unicode"
+import (
+	tea "charm.land/bubbletea/v2"
+	"unicode"
+)
 
 // Capture literal arguments before parsing counts or normal-mode commands.
-func (m *ChatModel) vimAwaitArgument(input vimInput) bool {
+func (m *ChatModel) vimAwaitArgument(input vimInput) (tea.Cmd, bool) {
 	key := input.key
 	if input.operator != "" && input.operator != "d" && input.operator != "c" && input.operator != "y" {
-		return false
+		return nil, false
 	}
 	if key == ";" || key == "," {
 		if m.vim.lastFind != "" {
@@ -14,34 +17,34 @@ func (m *ChatModel) vimAwaitArgument(input vimInput) bool {
 			if key == "," {
 				input.key = map[string]string{"f": "F", "F": "f", "t": "T", "T": "t"}[input.key]
 			}
-			m.vimFind(input, m.vim.lastChar, true)
+			return m.vimFind(input, m.vim.lastChar, true), true
 		}
-		return true
+		return nil, true
 	}
 	if key == "f" || key == "F" || key == "t" || key == "T" || (input.operator == "" && key == "r") || (input.operator != "" && (key == "i" || key == "a")) {
 		m.vim.argument = &input
-		return true
+		return nil, true
 	}
-	return false
+	return nil, false
 }
 
-func (m *ChatModel) vimArgument(input vimInput, key string) {
+func (m *ChatModel) vimArgument(input vimInput, key string) tea.Cmd {
 	chars := []rune(key)
 	if len(chars) != 1 {
-		return
+		return nil
 	}
 	if input.key == "i" || input.key == "a" {
 		before := m.vimSnapshot()
 		if span, ok := vimTextObject([]rune(before.text), before.pos, chars[0], input.key == "a", input.count); ok {
-			m.vimApplyOperator(input.operator, span, before)
+			return m.vimApplyOperator(input.operator, span, before)
 		}
-		return
+		return nil
 	}
 	if input.key == "r" {
 		before := m.vimSnapshot()
 		_, end := vimBounds([]rune(before.text), before.pos)
 		if end-before.pos < input.count {
-			return
+			return nil
 		}
 		text := []rune(before.text)
 		for i := before.pos; i < before.pos+input.count; i++ {
@@ -51,12 +54,12 @@ func (m *ChatModel) vimArgument(input vimInput, key string) {
 		m.vimPosition(before.pos + input.count - 1)
 		m.vimRemember(before)
 		m.syncLayout()
-		return
+		return nil
 	}
-	m.vimFind(input, chars[0], false)
+	return m.vimFind(input, chars[0], false)
 }
 
-func (m *ChatModel) vimFind(input vimInput, char rune, repeat bool) {
+func (m *ChatModel) vimFind(input vimInput, char rune, repeat bool) tea.Cmd {
 	before := m.vimSnapshot()
 	text := []rune(before.text)
 	start, end := vimBounds(text, before.pos)
@@ -74,7 +77,7 @@ func (m *ChatModel) vimFind(input vimInput, char rune, repeat bool) {
 			target += direction
 		}
 		if target < start || target >= end {
-			return
+			return nil
 		}
 	}
 	if !repeat {
@@ -85,7 +88,7 @@ func (m *ChatModel) vimFind(input vimInput, char rune, repeat bool) {
 	}
 	if input.operator == "" {
 		m.vimPosition(target)
-		return
+		return nil
 	}
 	a, b := min(before.pos, target), max(before.pos, target)
 	if direction > 0 {
@@ -96,9 +99,9 @@ func (m *ChatModel) vimFind(input vimInput, char rune, repeat bool) {
 		b++
 	}
 	if a == b {
-		return
+		return nil
 	}
-	m.vimApplyOperator(input.operator, vimRange{a, b, false, string(text[a:b])}, before)
+	return m.vimApplyOperator(input.operator, vimRange{a, b, false, string(text[a:b])}, before)
 }
 
 func vimTextObject(text []rune, pos int, object rune, around bool, count int) (vimRange, bool) {

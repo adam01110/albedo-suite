@@ -166,32 +166,19 @@ func (m *ChatModel) handleVim(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		if len([]rune(msg.Text)) == 1 {
 			key = msg.Text
 		}
-		m.vimArgument(input, key)
-		return nil, true
+		return m.vimArgument(input, key), true
 	}
 	if m.vim.accumulateCount(key) {
 		return nil, true
 	}
 	input := m.vim.takeInput(key)
-	if m.vimAwaitArgument(input) {
-		return nil, true
+	if cmd, handled := m.vimAwaitArgument(input); handled {
+		return cmd, true
 	}
-	if m.vimPending(input) {
-		return nil, true
+	if cmd, handled := m.vimPending(input); handled {
+		return cmd, true
 	}
 	before := m.vimSnapshot()
-	if before.text == "" {
-		switch key {
-		case "h":
-			return func() tea.Msg { return ChatBackToSessionsMsg{} }, true
-		case "j":
-			m.scrollBy(input.count)
-			return nil, true
-		case "k":
-			m.scrollBy(-input.count)
-			return nil, true
-		}
-	}
 	if command, ok := vimCommands[key]; ok {
 		return command(m, input, before, msg), true
 	}
@@ -205,20 +192,20 @@ func (m *ChatModel) handleVim(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 	return nil, true
 }
 
-func (m *ChatModel) vimPending(input vimInput) bool {
+func (m *ChatModel) vimPending(input vimInput) (tea.Cmd, bool) {
 	pending := input.operator
 	if pending == "" {
-		return false
+		return nil, false
 	}
 	if pending == "g" {
 		if input.key == "g" {
 			m.vimPosition(vimLineTarget([]rune(m.TextArea.Value()), "gg", input.count))
 		}
-		return true
+		return nil, true
 	}
 	if len(pending) == 2 {
 		if input.key != "g" {
-			return true
+			return nil, true
 		}
 		input.operator, input.key = pending[:1], "gg"
 	}
@@ -227,11 +214,11 @@ func (m *ChatModel) vimPending(input vimInput) bool {
 		if input.explicit {
 			m.vim.operatorCount = input.count
 		}
-		return true
+		return nil, true
 	}
 	before := m.vimSnapshot()
 	if span, ok := vimOperatorRange([]rune(before.text), before.pos, input); ok {
-		m.vimApplyOperator(input.operator, span, before)
+		return m.vimApplyOperator(input.operator, span, before), true
 	}
-	return true
+	return nil, true
 }

@@ -369,7 +369,7 @@ func (m ContextInspectorModel) Update(msg tea.Msg) (ContextInspectorModel, tea.C
 func (m ContextInspectorModel) readerKey(msg tea.KeyPressMsg) (ContextInspectorModel, tea.Cmd) {
 	d := m.Detail
 	switch msg.String() {
-	case "esc", "ctrl+c", "ctrl+d":
+	case "esc", "ctrl+c", "q":
 		m.Detail = nil
 		m.Generation = nextPageGeneration()
 	case "r":
@@ -378,6 +378,14 @@ func (m ContextInspectorModel) readerKey(msg tea.KeyPressMsg) (ContextInspectorM
 		d.scroll(-1)
 	case "down", "j":
 		d.scroll(1)
+	case "ctrl+u":
+		d.scroll(-max(1, d.visible/2))
+	case "ctrl+d":
+		d.scroll(max(1, d.visible/2))
+	case "home":
+		d.Scroll = 0
+	case "end", "G":
+		d.Scroll = max(0, len(d.wrapped)-d.visible)
 	case "pgup":
 		d.scroll(-max(1, d.visible))
 	case "pgdown":

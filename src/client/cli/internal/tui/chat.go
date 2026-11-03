@@ -182,6 +182,7 @@ type ChatModel struct {
 	Viewport    pane
 
 	transcript         transcriptState
+	reader             transcriptNavigation
 	vim                vimState
 	TextArea           textarea.Model
 	burstRowsKey       burstRowsKey
