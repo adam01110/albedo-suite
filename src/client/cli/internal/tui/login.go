@@ -485,7 +485,8 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 
 			// A name that is a sign-in provider — or a saved profile for one —
 			// signs in instead of asking for an api key, unless the profile
-			// keeps a key or this is that extension's api-key flow.
+			// keeps a key or this is that extension's api-key flow. A
+			// browser-only provider always signs in, key or no key.
 			flow := m.Draft.Extension
 			extension := name
 			saved, known := m.Profiles.Providers[name]
@@ -495,7 +496,7 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 			} else {
 				m.useNamedGoProvider(name)
 			}
-			if login, ok := m.signInFor(extension); ok && !hasKey(m.Draft) && extension != flow {
+			if login, ok := m.signInFor(extension); ok && (browserOnly(extension) || !hasKey(m.Draft)) && extension != flow {
 				if !known {
 					m.Draft = signInDraft(extension)
 				}

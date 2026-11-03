@@ -80,13 +80,7 @@ pub fn exchange(
       },
       payload: fn(event: sse.Event) { Ok(event.data) },
       body: fn(headers) {
-        case
-          list.any(headers, fn(header) {
-            string.lowercase(header.0)
-            == "x-zed-server-supports-status-messages"
-            && string.lowercase(header.1) == "true"
-          })
-        {
+        case supports_status_messages(headers) {
           True -> stream_http.Pump
           False ->
             stream_http.Refuse(
@@ -112,6 +106,14 @@ pub fn exchange(
       }
     },
   )
+}
+
+/// Zed only checks that the server advertises the capability, whatever value
+/// it carries; its absence means the stream has no status envelopes.
+pub fn supports_status_messages(headers: List(#(String, String))) -> Bool {
+  list.any(headers, fn(header) {
+    string.lowercase(header.0) == "x-zed-server-supports-status-messages"
+  })
 }
 
 fn framing_error(error: sse.Error) -> types.Error {

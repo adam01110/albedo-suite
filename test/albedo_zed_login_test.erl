@@ -13,12 +13,17 @@ run() ->
     Server = spawn_link(fun() -> fixture(Listen) end),
     try
         crypto_cases(),
+        callback_cases(),
         identity_cases(),
+        status_cases(),
+        quota_cases(),
+        catalog_cases(),
+        catalog_account_retry_cases(),
         confirmation_cases(),
         unpolled_expiry_cases(),
         refresh_cases(),
         transport_cases(),
-        io:format("Zed login: crypto, identity, confirmation, persistence/logout, expiry, refresh isolation/concurrency, retry and bounded redirect refusal passed~n")
+        io:format("Zed login: crypto, callback contract, identity, status envelopes, catalog token refresh, confirmation, persistence/logout, expiry, refresh isolation/concurrency, retry and bounded redirect refusal passed~n")
     after unlink(Server), exit(Server, kill), gen_tcp:close(Listen), ets:delete(Table) end,
     nil.
 
@@ -68,6 +73,15 @@ fixture_request(Socket) ->
         malformed -> {200, <<>>, <<"not-json">>};
         expired_header -> {400, <<"x-zed-expired-token: true\r\n">>, <<"expired">>};
         outdated_header -> {400, <<"x-zed-outdated-token: true\r\n">>, <<"outdated">>};
+        quota when Path =:= <<"/client/users/me">> ->
+            {200, <<>>, <<"{\"plan\":{\"usage\":{\"edit_predictions\":{\"used\":25,\"limit\":100}}}}">>};
+        models_denied when Path =:= <<"/models">> -> {401, <<>>, <<"denied">>};
+        models_failing when Path =:= <<"/models">> -> {500, <<>>, <<"catalog unavailable">>};
+        models_unauthorized when Path =:= <<"/models">> ->
+            case ets:update_counter(zed_login_fixture, models_attempt, {2, 1}, {models_attempt, 0}) of
+                1 -> {401, <<>>, <<"stale token">>};
+                _ -> {200, <<>>, catalog_response(Auth)}
+            end;
         _ ->
             [Id | _] = binary:split(Auth, <<" ">>),
             case Path of
@@ -76,8 +90,7 @@ fixture_request(Socket) ->
                     {200, <<>>, json:encode(identity_response(N))};
                 <<"/models">> ->
                     true = binary:match(Auth, <<"Bearer ">>) =:= {0,7},
-                    {200, <<>>, json:encode(#{<<"models">> => [#{<<"id">> => <<"browser-fixture-model">>,
-                        <<"provider">> => <<"anthropic">>, <<"max_token_count">> => 10000}]})};
+                    {200, <<>>, catalog_response(Auth)};
                 <<"/completions">> ->
                     true = binary:match(Auth, <<"Bearer ">>) =:= {0,7},
                     Attempt = ets:update_counter(zed_login_fixture, inference_attempt, {2,1}, {inference_attempt,0}),
@@ -107,6 +120,23 @@ request_headers(Socket, Acc) ->
 mode() -> case ets:lookup(zed_login_fixture, mode) of [{mode, Mode}] -> Mode; [] -> normal end.
 mode(M) -> ets:insert(zed_login_fixture, {mode, M}).
 
+%% The catalog the fixture serves: a selectable model, a disabled one with the
+%% account's reason, and a model whose entry does and does not support thinking.
+catalog_response(_Auth) ->
+    json:encode(#{<<"models">> => [
+        #{<<"id">> => <<"browser-fixture-model">>, <<"provider">> => <<"anthropic">>,
+          <<"max_token_count">> => 10000, <<"supports_thinking">> => true,
+          <<"supported_effort_levels">> => [#{<<"value">> => <<"high">>}]},
+        #{<<"id">> => <<"disabled-fixture-model">>, <<"provider">> => <<"anthropic">>,
+          <<"is_disabled">> => true, <<"disabled_reason">> => <<"not enabled for this plan">>},
+        #{<<"id">> => <<"thinking-off-fixture-model">>, <<"provider">> => <<"open_ai">>,
+          <<"supports_thinking">> => false,
+          <<"supported_effort_levels">> => [#{<<"value">> => <<"high">>}, #{<<"value">> => <<"low">>}]},
+        #{<<"id">> => <<"thinking-on-fixture-model">>, <<"provider">> => <<"open_ai">>,
+          <<"supports_thinking">> => true,
+          <<"supported_effort_levels">> => [#{<<"value">> => <<"high">>}, #{<<"value">> => <<"low">>}]}
+    ]}).
+
 identity_response(N) ->
     Id = integer_to_binary(N), Org = <<"org-", Id/binary>>,
     #{<<"user">> => #{<<"legacy_user_id">> => N, <<"github_login">> => <<"github-", Id/binary>>, <<"username">> => <<"user-", Id/binary>>},
@@ -126,17 +156,183 @@ crypto_cases() ->
     {error, _} = albedo_zed_auth:decrypt(K, <<"42">>, <<"malformed">>),
     {error, _} = albedo_zed_auth:decrypt(K, <<"42\r\n">>, Cipher),
     Legacy = base64:encode(public_key:encrypt_public(<<"legacy">>, P, [{rsa_padding,rsa_pkcs1_padding}]), #{mode => urlsafe}),
-    {error, _} = albedo_zed_auth:decrypt(K, <<"42">>, Legacy).
+    {ok, {<<"42">>, <<"legacy">>}} = albedo_zed_auth:decrypt(K, <<"42">>, Legacy),
+    Unpadded = base64:encode(public_key:encrypt_public(<<"editor-test-secret">>, P,
+        [{rsa_padding,rsa_pkcs1_oaep_padding},{rsa_oaep_md,sha256},{rsa_mgf1_md,sha256}]), #{mode => urlsafe, padding => false}),
+    {ok, {<<"42">>, <<"editor-test-secret">>}} = albedo_zed_auth:decrypt(K, <<"42">>, Unpadded).
 
 encrypt(Public, Token) -> base64:encode(public_key:encrypt_public(Token, Public,
     [{rsa_padding,rsa_pkcs1_oaep_padding},{rsa_oaep_md,sha256},{rsa_mgf1_md,sha256}]), #{mode=>urlsafe}).
 
+%% The callback path and its extra parameters are not part of the contract, and
+%% the browser is answered with zed.dev's success page, as the editor is.
+callback_cases() ->
+    Home = home(),
+    L = login(),
+    try
+        {Id, Initial} = start(Home),
+        {_, Reply} = callback(Initial, <<"61">>, Initial, <<"127.0.0.1">>, {127,0,0,1}, <<"/native_app_signin">>,
+            <<"Origin: https://cloud.zed.dev\r\nSec-Fetch-Site: cross-site\r\n">>),
+        <<"HTTP/1.1 302", _/binary>> = Reply,
+        nomatch = binary:match(Reply, <<"200 OK">>),
+        true = binary:match(Reply, <<"Location: https://zed.dev/native_app_signin_succeeded\r\n">>) =/= nomatch,
+        _ = await_state(Home, Id, <<"confirming">>),
+        {ok, _} = albedo_oauth:cancel_identified(Home, Id, [L]),
+        %% A callback that cannot be decrypted is answered 404 and the attempt stays waiting.
+        {Rejected, RejectedInitial} = start(Home),
+        {WrongId, WrongInitial} = start(Home),
+        {_, NotFound} = callback(RejectedInitial, <<"62">>, WrongInitial, <<"127.0.0.1">>, {127,0,0,1}, <<"/">>, <<>>),
+        <<"HTTP/1.1 404", _/binary>> = NotFound,
+        <<"waiting">> = state(get(Home, Rejected)), no_accounts(Home),
+        {ok, _} = albedo_oauth:cancel_identified(Home, Rejected, [L]),
+        {ok, _} = albedo_oauth:cancel_identified(Home, WrongId, [L]),
+        %% localhost can resolve to ::1, so both loopback addresses reach the attempt.
+        {V6, V6Initial} = start(Home),
+        case gen_tcp:connect({0,0,0,0,0,0,0,1}, port_of(V6Initial), [binary, {active, false}, inet6], 1000) of
+            {ok, Probe} ->
+                gen_tcp:close(Probe),
+                {_, V6Reply} = callback(V6Initial, <<"63">>, V6Initial, <<"[::1]">>, {0,0,0,0,0,0,0,1}, <<"/">>, <<>>),
+                <<"HTTP/1.1 302", _/binary>> = V6Reply,
+                _ = await_state(Home, V6, <<"confirming">>),
+                {ok, _} = albedo_oauth:cancel_identified(Home, V6, [L]);
+            {error, _} -> ok
+        end
+    after file:del_dir_r(Home) end.
+
+port_of(Flow) ->
+    #{<<"url">> := Url} = json:decode(Flow),
+    #{query := Query} = uri_string:parse(Url),
+    binary_to_integer(maps:get(<<"native_app_port">>, maps:from_list(uri_string:dissect_query(Query)))).
+
 identity_cases() ->
     R = identity_response(42),
-    {ok, _} = albedo_zed_auth:identity(<<"42">>, <<"secret">>, R),
-    {error, _} = albedo_zed_auth:identity(<<"43">>, <<"secret">>, R),
+    {ok, #{<<"organization_id">> := <<"org-42">>}} = albedo_zed_auth:identity(<<"42">>, <<"secret">>, R),
+    %% Documented GetAuthenticatedUserResponse fields, including is_personal.
+    Documented = #{<<"user">> => #{<<"legacy_user_id">> => 42, <<"id_v2">> => <<"user_v2">>,
+                                    <<"metrics_id">> => <<"metrics">>, <<"username">> => <<"user-42">>,
+                                    <<"github_login">> => <<"github-42">>, <<"avatar_url">> => <<"https://example.invalid/a.png">>,
+                                    <<"name">> => null, <<"is_staff">> => false},
+                    <<"organizations">> => [#{<<"id">> => <<"org-42">>, <<"name">> => <<"Personal">>,
+                                               <<"is_personal">> => true}],
+                    <<"feature_flags">> => [], <<"default_organization_id">> => <<"org-42">>},
+    {ok, #{<<"organization_id">> := <<"org-42">>}} = albedo_zed_auth:identity(<<"42">>, <<"secret">>, Documented),
+    %% default_organization_id is optional: the single personal organization stands in.
+    Absent = maps:remove(<<"default_organization_id">>, Documented),
+    {ok, #{<<"organization_id">> := <<"org-42">>}} = albedo_zed_auth:identity(<<"42">>, <<"secret">>, Absent),
+    {ok, #{<<"organization_id">> := <<"org-42">>}} =
+        albedo_zed_auth:identity(<<"42">>, <<"secret">>, Documented#{<<"default_organization_id">> => null}),
+    %% `organizations` is `#[serde(default)]`: an omitted list cannot contradict
+    %% the account's own default, so the default stands.
+    {ok, #{<<"organization_id">> := <<"org-42">>}} =
+        albedo_zed_auth:identity(<<"42">>, <<"secret">>, Documented#{<<"organizations">> => []}),
+    {ok, #{<<"organization_id">> := <<"org-42">>}} =
+        albedo_zed_auth:identity(<<"42">>, <<"secret">>, maps:remove(<<"organizations">>, Documented)),
+    %% No default and no organization at all is still refused.
+    {error, _} = albedo_zed_auth:identity(<<"42">>, <<"secret">>,
+        (maps:remove(<<"default_organization_id">>, Documented))#{<<"organizations">> => []}),
+    %% A foreign default is refused.
+    {error, _} = albedo_zed_auth:identity(<<"42">>, <<"secret">>, Documented#{<<"default_organization_id">> => <<"foreign-org">>}),
+    {error, _} = albedo_zed_auth:identity(<<"42">>, <<"secret">>,
+        Absent#{<<"organizations">> => [#{<<"id">> => <<"org-42">>}, #{<<"id">> => <<"org-43">>}]}),
+    %% The editor takes the callback's user id as the credential identity
+    %% rather than comparing it with the account document.
+    {ok, #{<<"user_id">> := <<"43">>}} = albedo_zed_auth:identity(<<"43">>, <<"secret">>, R),
     {error, _} = albedo_zed_auth:identity(<<"42">>, <<"secret">>, R#{<<"default_organization_id">> => <<"foreign-org">>}),
+    {error, <<"Zed account identity could not be verified">>} = albedo_zed_auth:identity(<<"42">>, <<"secret">>, #{}),
     {error, _} = albedo_zed_auth:request(<<"GET">>, <<"https://untrusted.invalid">>, [], <<>>).
+
+%% The editor drops a status it does not recognise and keeps reading; a failed
+%% status still fails the turn.
+status_cases() ->
+    {ok, <<>>} = albedo_zed:unwrap(<<"{\"status\":\"unknown\"}">>),
+    {ok, <<>>} = albedo_zed:unwrap(<<"{\"status\":{\"a_later_status\":{\"detail\":1}}}">>),
+    {ok, <<"stream_ended">>} = albedo_zed:unwrap(<<"{\"status\":\"stream_ended\"}">>),
+    {ok, <<>>} = albedo_zed:unwrap(<<"{\"status\":\"started\"}">>),
+    {error, <<"quota exhausted">>} =
+        albedo_zed:unwrap(<<"{\"status\":{\"failed\":{\"message\":\"quota exhausted\"}}}">>),
+    {error, _} = albedo_zed:unwrap(<<"{\"nothing\":true}">>),
+    {error, _} = albedo_zed:unwrap(<<"not json">>).
+
+quota_cases() ->
+    mode(quota),
+    nil = suite_zed_login_test:quota_case(),
+    [{_, 1}] = ets:lookup(zed_login_fixture,
+        {<<"/client/users/me">>, <<"42 quota-fixture-secret">>}),
+    mode(normal).
+
+%% Discovery refreshes a rejected account token once, as the editor's
+%% authenticated request path does, and reports a second rejection as the
+%% credential problem it is.
+catalog_cases() ->
+    Home = home(),
+    try
+        C = (credential(<<"71">>, <<"catalog-account">>))#{
+            <<"jwt">> => jwt(erlang:system_time(second)+3600, 1, <<"71">>),
+            <<"jwt_expires">> => erlang:system_time(second)+3600},
+        configure(Home, [C], #{<<"catalog">> => profile(<<"catalog-account">>)}),
+        Key = <<"albedo:zed:account:catalog-account">>,
+        ets:insert(zed_login_fixture, {models_attempt, 0}),
+        mode(models_unauthorized),
+        {ok, Listed} = albedo_zed:models(Home, Key),
+        true = lists:member(<<"browser-fixture-model">>, Listed),
+        %% One rejection, one refresh through the account's own credential, one retry.
+        [{models_attempt, 2}] = ets:lookup(zed_login_fixture, models_attempt),
+        [{_, 1}] = ets:lookup(zed_login_fixture, {<<"/client/llm_tokens">>, <<"71 editor-test-secret">>}),
+        %% The refreshed token is cached, so discovery does not ask again.
+        {ok, _} = albedo_zed:models(Home, Key),
+        [{models_attempt, 2}] = ets:lookup(zed_login_fixture, models_attempt),
+        %% A disabled entry is not selectable, and routing says why.
+        false = lists:member(<<"disabled-fixture-model">>, Listed),
+        {ok, {_, Token}} = albedo_zed:access(Home, <<"catalog">>),
+        {error, Disabled} = albedo_zed:route(Home, <<"https://cloud.zed.dev">>, Token, <<"disabled-fixture-model">>),
+        true = binary:match(Disabled, <<"not enabled for this plan">>) =/= nomatch,
+        none = albedo_zed:lookup(Home, <<"https://cloud.zed.dev">>, <<"disabled-fixture-model">>),
+        %% A model whose catalog entry has thinking off offers no effort, so no
+        %% encoder asks for reasoning it cannot use.
+        {some, Off} = albedo_zed:lookup(Home, <<"https://cloud.zed.dev">>, <<"thinking-off-fixture-model">>),
+        [] = element(11, Off),
+        {some, On} = albedo_zed:lookup(Home, <<"https://cloud.zed.dev">>, <<"thinking-on-fixture-model">>),
+        [<<"high">>, <<"low">>] = element(11, On),
+        %% A token rejected after its refresh is a credential problem.
+        mode(models_denied),
+        {error, Denied} = albedo_zed:reload(Home),
+        nomatch = binary:match(Denied, <<"could not reach">>),
+        true = binary:match(Denied, <<"/login zed">>) =/= nomatch,
+        %% A failing catalog reports its status rather than as unreachable.
+        mode(models_failing),
+        {error, Failing} = albedo_zed:reload(Home),
+        true = binary:match(Failing, <<"HTTP 500">>) =/= nomatch,
+        mode(normal),
+        ets:insert(zed_login_fixture, {models_attempt, 0})
+    after mode(normal), file:del_dir_r(Home) end.
+
+catalog_account_retry_cases() ->
+    lists:foreach(fun(Kind) ->
+        Home = home(),
+        try
+            Exp = erlang:system_time(second) + 3600,
+            OneToken = jwt(Exp, 99, <<"81">>), TwoToken = jwt(Exp, 99, <<"82">>),
+            One = (credential(<<"81">>, <<"retry-one">>))#{<<"jwt">> => OneToken, <<"jwt_expires">> => Exp},
+            Two = (credential(<<"82">>, <<"retry-two">>))#{<<"jwt">> => TwoToken, <<"jwt_expires">> => Exp},
+            configure(Home, [One, Two], #{<<"one">> => profile(<<"retry-one">>), <<"two">> => profile(<<"retry-two">>)}),
+            ets:delete(zed_login_fixture, {<<"/client/llm_tokens">>, <<"81 editor-test-secret">>}),
+            ets:delete(zed_login_fixture, {<<"/client/llm_tokens">>, <<"82 editor-test-secret">>}),
+            ets:insert(zed_login_fixture, {models_attempt, 0}),
+            mode(models_unauthorized),
+            case Kind of
+                account -> {ok, _} = albedo_zed:models(Home, <<"albedo:zed:account:retry-two">>);
+                profile -> {ok, _} = albedo_zed:models(Home, <<"albedo:zed:profile:two">>);
+                route -> {ok, <<"anthropic">>} = albedo_zed:route(Home, <<"https://cloud.zed.dev">>, TwoToken, <<"browser-fixture-model">>)
+            end,
+            [{models_attempt, 2}] = ets:lookup(zed_login_fixture, models_attempt),
+            [] = ets:lookup(zed_login_fixture, {<<"/client/llm_tokens">>, <<"81 editor-test-secret">>}),
+            [{_, 1}] = ets:lookup(zed_login_fixture, {<<"/client/llm_tokens">>, <<"82 editor-test-secret">>}),
+            {ok, OneToken} = albedo_zed_auth:access(Home, <<"one">>),
+            {ok, Fresh} = albedo_zed_auth:access(Home, <<"two">>),
+            true = Fresh =/= TwoToken,
+            [{last, {'GET', <<"/models">>, <<"Bearer ", Fresh/binary>>, <<>>}}] = ets:lookup(zed_login_fixture, last)
+        after mode(normal), file:del_dir_r(Home) end
+    end, [account, profile, route]).
 
 home() ->
     Home = list_to_binary(filename:join("/tmp", "zed-login-home-" ++ integer_to_list(erlang:unique_integer([positive])))),
@@ -182,6 +378,10 @@ await_stored_state(Home, Id, Expected, Deadline) ->
 callback(Flow, User) -> callback(Flow, User, Flow, <<"127.0.0.1">>).
 
 callback(Flow, User, KeyFlow, Host) ->
+    {Port, _} = callback(Flow, User, KeyFlow, Host, {127,0,0,1}, <<"/">>, <<>>),
+    Port.
+
+callback(Flow, User, KeyFlow, Host, Address, Target, Extra) ->
     #{<<"url">> := Url} = json:decode(Flow),
     #{query := Q} = uri_string:parse(Url),
     Params = maps:from_list(uri_string:dissect_query(Q)),
@@ -192,9 +392,17 @@ callback(Flow, User, KeyFlow, Host) ->
     Public = public_key:der_decode('RSAPublicKey', base64:decode(maps:get(<<"native_app_public_key">>, KeyParams), #{mode=>urlsafe})),
     Cipher = encrypt(Public, <<"editor-test-secret">>),
     Query = uri_string:compose_query([{<<"user_id">>,User},{<<"access_token">>,Cipher}]),
-    {ok, Socket} = gen_tcp:connect({127,0,0,1},Port,[binary,{active,false}],1000),
-    gen_tcp:send(Socket,["GET /?",Query," HTTP/1.1\r\nHost: ",Host,":",integer_to_binary(Port),"\r\n\r\n"]),
-    {ok, _} = gen_tcp:recv(Socket,0,2000), gen_tcp:close(Socket), Port.
+    {ok, Socket} = gen_tcp:connect(Address,Port,[binary,{active,false}],1000),
+    gen_tcp:send(Socket,["GET ",Target,"?",Query," HTTP/1.1\r\nHost: ",Host,":",integer_to_binary(Port),"\r\n",Extra,"\r\n"]),
+    Reply = response(Socket, <<>>),
+    gen_tcp:close(Socket),
+    {Port, Reply}.
+
+response(Socket, Acc) ->
+    case gen_tcp:recv(Socket, 0, 3000) of
+        {ok, Bytes} -> response(Socket, <<Acc/binary, Bytes/binary>>);
+        _ -> Acc
+    end.
 
 no_accounts(Home) ->
     case albedo_credentials:accounts(albedo_credentials:creds_path(Home)) of
@@ -241,9 +449,10 @@ confirmation_cases() ->
         RecordsPath = filename:join(Home,<<"oauth-logins.json">>),
         {ok, R0} = albedo_credentials:read(RecordsPath),
         ok = albedo_credentials:write(RecordsPath,R0#{Expired := (maps:get(Expired,R0))#{<<"expires">> := 0}}),
-        <<"expired">> = state(get(Home,Expired)), no_accounts(Home),
-        mode(wrong_identity), {Wrong, WrongInitial} = start(Home), callback(WrongInitial,<<"42">>),
-        _ = await_state(Home,Wrong,<<"failed">>), no_accounts(Home), mode(normal)
+        <<"expired">> = state(get(Home,Expired)), no_accounts(Home)
+        %% A differing legacy_user_id is no longer refused: the credential keeps
+        %% the callback's user id, as the editor's does (identity_cases).
+
     after file:del_dir_r(Home) end.
 
 credential(Id, Public) ->
@@ -312,18 +521,69 @@ refresh_cases() ->
         {error,_} = albedo_zed_auth:access(Home,<<"one">>), mode(normal),
         configure(Home,[One,Two],#{<<"ambiguous">> => #{<<"extension">> => <<"zed">>}}),
         {error,_} = albedo_zed_auth:access(Home,<<"ambiguous">>),
+        %% Browser sign-in is the only credential: a profile apiKey, a daemon
+        %% ZED_TOKEN and a custom endpoint are each refused, never used.
+        configure(Home,[One],#{<<"keyed">> => (profile(<<"one-account">>))#{<<"apiKey">> => <<"manual-jwt">>}}),
+        {error, Keyed} = albedo_zed:access(Home,<<"keyed">>),
+        true = binary:match(Keyed, <<"apiKey">>) =/= nomatch,
+        true = binary:match(Keyed, <<"/login zed">>) =/= nomatch,
+        nomatch = binary:match(Keyed, <<"manual-jwt">>),
+        {error, KeyedCatalog} = albedo_zed:models(Home,<<"albedo:zed:profile:keyed">>),
+        true = binary:match(KeyedCatalog, <<"apiKey">>) =/= nomatch,
         configure(Home,[One],#{<<"custom">> => (profile(<<"one-account">>))#{<<"baseUrl">> => <<"https://untrusted.invalid">>}}),
-        {error,_} = albedo_zed:access(Home,<<"custom">>),
-        Manual = (profile(<<"one-account">>))#{<<"baseUrl">> => <<"https://custom.invalid">>, <<"apiKey">> => <<"manual-jwt">>},
-        configure(Home,[One],#{<<"custom">> => Manual}),
-        {ok,{<<"https://custom.invalid">>,<<"manual-jwt">>}} = albedo_zed:access(Home,<<"custom">>)
-    after file:del_dir_r(Home) end.
+        {error, Custom} = albedo_zed:access(Home,<<"custom">>),
+        true = binary:match(Custom, <<"https://cloud.zed.dev">>) =/= nomatch,
+        configure(Home,[One],#{<<"zed">> => profile(<<"one-account">>)}),
+        {ok,{<<"https://cloud.zed.dev">>,_}} = albedo_zed:access(Home,<<"zed">>),
+        os:putenv("ZED_TOKEN", "environment-jwt"),
+        {error, Env} = albedo_zed:access(Home,<<"zed">>),
+        true = binary:match(Env, <<"ZED_TOKEN">>) =/= nomatch,
+        true = binary:match(Env, <<"/login zed">>) =/= nomatch,
+        nomatch = binary:match(Env, <<"environment-jwt">>),
+        %% Two leftovers at once name the first refusal only: apiKey, then
+        %% ZED_TOKEN, then the endpoint.
+        Both = (profile(<<"one-account">>))#{<<"apiKey">> => <<"manual-jwt">>,
+            <<"baseUrl">> => <<"https://untrusted.invalid">>},
+        configure(Home,[One],#{<<"both">> => Both}),
+        {error, KeyFirst} = albedo_zed:access(Home,<<"both">>),
+        true = binary:match(KeyFirst, <<"apiKey">>) =/= nomatch,
+        nomatch = binary:match(KeyFirst, <<"ZED_TOKEN">>),
+        nomatch = binary:match(KeyFirst, <<"untrusted.invalid">>),
+        configure(Home,[One],#{<<"both">> => (profile(<<"one-account">>))#{<<"baseUrl">> => <<"https://untrusted.invalid">>}}),
+        {error, TokenFirst} = albedo_zed:access(Home,<<"both">>),
+        true = binary:match(TokenFirst, <<"ZED_TOKEN">>) =/= nomatch,
+        nomatch = binary:match(TokenFirst, <<"untrusted.invalid">>),
+        true = os:unsetenv("ZED_TOKEN"),
+        {ok,{<<"https://cloud.zed.dev">>,_}} = albedo_zed:access(Home,<<"zed">>),
+        %% The catalog's model info names its limits, endpoint and source, and
+        %% advertises no environment credential for Zed.
+        {some, {model_info, <<"browser-fixture-model">>, <<"zed">>, {some, 10000}, none,
+            none, [<<"text">>], {some, <<"https://cloud.zed.dev">>}, [],
+            <<"Zed /models">>, [<<"high">>]}} =
+            albedo_zed:lookup(Home, <<"https://cloud.zed.dev">>, <<"browser-fixture-model">>),
+        %% A token the transport cannot send is not a credential.
+        true = albedo_zed:usable(<<"inference-jwt">>),
+        false = albedo_zed:usable(<<>>),
+        false = albedo_zed:usable(<<"inference
+jwt">>),
+        false = albedo_zed:usable(<<"inference
+jwt">>),
+        false = albedo_zed:usable(not_a_binary)
+    after os:unsetenv("ZED_TOKEN"), file:del_dir_r(Home) end.
 
 transport_cases() ->
     Headers = [{<<"authorization">>,<<"42 editor-test-secret">>}],
-    lists:foreach(fun(M) ->
-        mode(M), {error,_} = albedo_zed_auth:request(<<"GET">>,<<"/client/users/me">>,Headers,<<>>)
-    end,[redirect,oversized,malformed]),
+    %% Each transport failure keeps its own diagnosis instead of collapsing
+    %% into one generic transport error.
+    mode(redirect),
+    {error, Redirect} = albedo_zed_auth:request(<<"GET">>,<<"/client/users/me">>,Headers,<<>>),
+    true = binary:match(Redirect, <<"redirects are refused">>) =/= nomatch,
+    mode(oversized),
+    {error, Oversized} = albedo_zed_auth:request(<<"GET">>,<<"/client/users/me">>,Headers,<<>>),
+    true = binary:match(Oversized, <<"size or time budget">>) =/= nomatch,
+    mode(malformed),
+    {error, Malformed} = albedo_zed_auth:request(<<"GET">>,<<"/client/users/me">>,Headers,<<>>),
+    true = binary:match(Malformed, <<"Invalid Zed account JSON">>) =/= nomatch,
     Home = home(),
     try
         C = (credential(<<"73">>,<<"redirect-account">>))#{
@@ -361,7 +621,8 @@ clean_home_inference(Home, PublicId) ->
     %% This home began empty; the browser callback is the only credential source.
     ok = albedo_credentials:write(filename:join(Home,<<"config.json">>),
         #{<<"active">> => <<"browser">>, <<"providers">> => #{<<"browser">> => profile(PublicId)}}),
-    {ok,[<<"browser-fixture-model">>]} = albedo_zed:models(Home,<<"albedo:zed:account:",PublicId/binary>>),
+    {ok,[<<"browser-fixture-model">>,<<"thinking-off-fixture-model">>,<<"thinking-on-fixture-model">>]} =
+        albedo_zed:models(Home,<<"albedo:zed:account:",PublicId/binary>>),
     put(browser_events,[]),
     OnEvent = fun(E) -> put(browser_events,[E|get(browser_events)]), continue end,
     Run = fun(Endpoint,Token,Emit) ->

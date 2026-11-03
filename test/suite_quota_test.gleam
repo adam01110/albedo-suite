@@ -1,6 +1,7 @@
 import albedo/clock
 import albedo/daemon/quota
 import albedo/daemon/store
+import albedo/harness/extensions/zed/quota as zed_quota
 import albedo/harness/usage_feed
 import gleam/erlang/process
 import gleam/io
@@ -83,6 +84,182 @@ fn report() -> usage_feed.Report {
     ],
     None,
   )
+}
+
+
+// ---- the Zed account reading -------------------------------------------
+
+/// The credential the poller hands a Zed account: its stored access token and
+/// the legacy user id the endpoint pairs with it.
+fn zed_credential() -> json.Json {
+  json.object([
+    #("kind", json.string("oauth")),
+    #("access", json.string("access-token")),
+    #("accountId", json.string("42")),
+  ])
+}
+
+/// Zed's own account payload, nested the way the service nests it.
+fn zed_body(used: json.Json, limit: json.Json) -> String {
+  json.object([
+    #("plan", json.object([
+      #("usage", json.object([
+        #("edit_predictions", json.object([#("used", used), #("limit", limit)])),
+      ])),
+    ])),
+  ])
+  |> json.to_string
+}
+
+fn zed_reads(body: String) -> fn(json.Json) -> Result(#(Int, String), String) {
+  fn(_) { Ok(#(200, body)) }
+}
+
+fn zed_status(status: Int) -> fn(json.Json) -> Result(#(Int, String), String) {
+  fn(_) { Ok(#(status, "")) }
+}
+
+fn read_zed(body: String) -> usage_feed.Report {
+  let assert Ok(report) = zed_quota.fetch_with(zed_credential(), zed_reads(body))
+  report
+}
+
+fn read_zed_status(status: Int) -> usage_feed.Report {
+  let assert Ok(report) = zed_quota.fetch_with(zed_credential(), zed_status(status))
+  report
+}
+
+fn zed_readings() -> Nil {
+  // A count against a numeric limit is that share of the limit, and nothing
+  // else is claimed: no window, no reset, no plan.
+  let counted = read_zed(zed_body(json.int(30), json.string("120")))
+  assert counted.error == None
+  assert counted.plan == None
+  let assert [limit] = counted.limits
+  assert limit.id == "edit-predictions"
+  assert limit.label == "Edit predictions"
+  assert limit.used_percent == Some(25.0)
+  assert limit.window_label == None
+  assert limit.window_seconds == None
+  assert limit.resets_at == None
+  assert limit.status == "ok"
+  let assert Some(scope) = limit.scope
+  assert string.contains(scope, "edit-prediction")
+  assert string.contains(scope, "not hosted-model spend")
+
+  // Over its limit stays the raw percentage; a reading is never clamped or
+  // turned into a remaining budget.
+  let assert [over] = read_zed(zed_body(json.int(60), json.string("40"))).limits
+  assert over.used_percent == Some(150.0)
+
+  // "unlimited" is an answer, not a full bar: no percentage is invented.
+  let unlimited = read_zed(zed_body(json.int(7), json.string("unlimited")))
+  assert unlimited.error == None
+  let assert [open] = unlimited.limits
+  assert open.used_percent == None
+  assert open.status == "unlimited"
+  assert open.resets_at == None
+  assert open.window_seconds == None
+
+  // A payload without the reading, or with a count that has no usable limit,
+  // reports an error instead of a zero reading.
+  let cases = [
+    #("a payload without the reading", "{}"),
+    #(
+      "a reading without a count",
+      zed_body(json.null(), json.string("120")),
+    ),
+    #("a reading without a limit", zed_body(json.int(3), json.null())),
+    #("a zero limit", zed_body(json.int(3), json.string("0"))),
+    #("a negative count", zed_body(json.int(-1), json.string("120"))),
+    #("an unreadable limit", zed_body(json.int(3), json.string("some"))),
+    #("no JSON at all", "<html>"),
+  ]
+  list.each(cases, fn(entry) {
+    let report = read_zed(entry.1)
+    assert report.limits == []
+    assert report.error != None
+  })
+
+  // A rejected credential is a reading's failure, and says what to do about it.
+  let expired = read_zed_status(401)
+  assert expired.limits == []
+  assert expired.error
+    == Some(
+      "Zed rejected the stored account credential (HTTP 401); sign in again with /login zed",
+    )
+  assert read_zed_status(403).error != None
+  let assert Some(redirect) = read_zed_status(302).error
+  assert string.contains(redirect, "redirected")
+  let assert Some(unavailable) = read_zed_status(503).error
+  assert string.contains(unavailable, "HTTP 503")
+}
+
+/// Zed is the one provider read here rather than by the core, so the choice
+/// itself is what this pins.
+fn zed_feed_dispatch() -> Nil {
+  let zed = usage_feed.Report(None, None, None, [], Some("zed reading"))
+  let core = usage_feed.Report(None, None, None, [], Some("core reading"))
+  let zed_feed: fn(json.Json) -> Result(usage_feed.Report, String) = fn(_) {
+    Ok(zed)
+  }
+  let core_feed: quota.Fetch = fn(_, _, _) { Ok(core) }
+  assert quota.feed("zed", zed_credential(), 0, zed_feed, core_feed) == Ok(zed)
+  assert quota.feed("anthropic", zed_credential(), 0, zed_feed, core_feed)
+    == Ok(core)
+}
+
+fn await_rows(db: store.Store, deadline: Int) -> List(quota.Sample) {
+  case quota.latest(db) {
+    Ok([]) -> {
+      assert clock.monotonic_ms() < deadline as "the Zed reading was recorded"
+      clock.sleep(10)
+      await_rows(db, deadline)
+    }
+    Ok(rows) -> rows
+    Error(message) -> panic as message
+  }
+}
+
+/// /quota lists the Zed account as edit-prediction usage: the poller stores the
+/// label, the percentage, and no window or reset the service never reported.
+fn zed_poller() -> Nil {
+  let db = database()
+  let polls = process.new_subject()
+  let body = zed_body(json.int(30), json.string("120"))
+  let assert Ok(started) =
+    quota.start_with(
+      "fixture",
+      db,
+      fn(provider, credential, now) {
+        let report =
+          quota.feed(
+            provider,
+            credential,
+            now,
+            fn(credential) { zed_quota.fetch_with(credential, zed_reads(body)) },
+            fn(_, _, _) { Error("the core has no Zed feed") },
+          )
+        process.send(polls, Nil)
+        report
+      },
+      fn(_) { [quota.Target("zed", "okami", zed_credential())] },
+      fn() { quota.Settings(600, 120, True) },
+      1000,
+    )
+  let assert Ok(Nil) = process.receive(polls, 1500)
+  let assert [sample] = await_rows(db, clock.monotonic_ms() + 1500)
+  assert sample.provider == "zed"
+  assert sample.account == "okami"
+  assert sample.limit_id == "edit-predictions"
+  assert sample.label == "Edit predictions"
+  assert sample.used_percent == Some(25.0)
+  assert sample.window_label == None
+  assert sample.window_seconds == None
+  assert sample.resets_at == None
+  assert sample.error == None
+  stop(started.pid)
+  store.close(db)
 }
 
 fn stop(pid: process.Pid) -> Nil {
@@ -230,10 +407,13 @@ fn scheduling() -> Nil {
 pub fn main() -> Nil {
   projection()
   scheduling()
+  zed_readings()
+  zed_feed_dispatch()
   startup_and_crash()
   poll_timeout()
   discovery_timeout()
+  zed_poller()
   io.println(
-    "Quota projection, immediate startup, deadlines, crash recovery and schedule tests passed",
+    "Quota projection, startup, deadlines, crash recovery, schedule and Zed account reading tests passed",
   )
 }

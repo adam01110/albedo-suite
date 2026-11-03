@@ -141,15 +141,18 @@
           (old.postCheck or "")
           + ''
             go test ./internal/app ./internal/cli ./internal/webui -count=1
+            # The whole daemon package: a test without a name filter cannot be
+            # left out of every check.
+            go test ./internal/daemon -count=1
             go test ./internal/tui -run '^TestBase16' -count=1 -v
             go test ./internal/tui -run '^TestVim' -count=1 -v
             go test ./internal/tui -run '^TestNavigation' -count=1 -v
             go test ./internal/tui -run '^TestContext' -count=1 -v
             go test ./internal/tui -run '^TestQuota' -count=1 -v
-            go test ./internal/tui ./internal/daemon -run '^TestProviderAvailability' -count=1 -v
-            go test ./internal/tui ./internal/daemon -run '^(TestSuiteEscape|TestInterrupt)' -count=1 -v
+            go test ./internal/tui -run '^TestProviderAvailability' -count=1 -v
+            go test ./internal/tui -run '^(TestSuiteEscape|TestInterrupt)' -count=1 -v
             go test ./internal/tui -run '^(TestOpenCodeGo|TestZed)' -count=1 -v
-            go test ./internal/tui ./internal/daemon -run '^TestToolImages' -count=1 -v
+            go test ./internal/tui -run '^TestToolImages' -count=1 -v
             ${pkgs.lib.optionalString showDiffs "go test ./internal/tui -run '^TestDefaultDiffVisibility$' -count=1 -v"}
           '';
       }));

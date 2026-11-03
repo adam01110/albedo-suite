@@ -1,9 +1,12 @@
 -module(albedo_zed_auth).
 -include_lib("public_key/include/public_key.hrl").
--export([catalog_endpoint/3, access_account/2, binding/2, start/0, account/1, access/2, reject/3, decrypt/3, identity/3,
-         request/4, read_response/2, jwt_expiry/1]).
+-export([catalog_endpoint/3, access_account/2, accounts/1, binding/2, start/0, account/1, access/2, reject/3, refresh_rejected_token/2, decrypt/3,
+         identity/3, request/4, read_response/2, read_body/2, jwt_expiry/1]).
 
 -define(ORIGIN, <<"https://cloud.zed.dev">>).
+-define(SIGN_IN, <<"https://zed.dev/native_app_signin">>).
+-define(SUCCEEDED, <<"https://zed.dev/native_app_signin_succeeded">>).
+-define(ATTEMPT_MS, 300000).
 -define(LIMIT, 1048576).
 
 start() ->
@@ -12,43 +15,60 @@ start() ->
         Public = #'RSAPublicKey'{modulus = Private#'RSAPrivateKey'.modulus,
                                  publicExponent = Private#'RSAPrivateKey'.publicExponent},
         Encoded = base64:encode(public_key:der_encode('RSAPublicKey', Public), #{mode => urlsafe}),
-        {ok, Listen} = gen_tcp:listen(0, [binary, {active, false}, {ip, {127,0,0,1}},
-                                        {packet, http_bin}, {packet_size, 8192}]),
-        {ok, {_, Port}} = inet:sockname(Listen),
+        {V4, V6, Port} = listen(),
         Query = uri_string:compose_query([{<<"native_app_port">>, integer_to_binary(Port)},
                                          {<<"native_app_public_key">>, Encoded}]),
-        Url = <<"https://zed.dev/native_app_signin?", Query/binary>>,
-        Deadline = erlang:monotonic_time(millisecond) + 300000,
+        Url = <<?SIGN_IN/binary, "?", Query/binary>>,
+        Deadline = erlang:monotonic_time(millisecond) + ?ATTEMPT_MS,
+        Listeners = [L || L <- [V4, V6], is_port(L)],
         Complete = fun(Progress) ->
             try
-                case callback(Listen, Private, Port, Deadline) of
-                    {ok, {Id, Token}} ->
-                        Progress(<<"Validating Zed account identity">>),
-                        case request(<<"GET">>, <<"/client/users/me">>, auth(Id, Token), <<>>) of
-                            {ok, Response} ->
-                                case identity(Id, Token, Response) of
-                                    {ok, Credential} ->
-                                        {account, _, Label, Detail, _} = account(Credential),
-                                        case albedo_oauth:confirm(<<"Zed account: ", Label/binary, " (", Detail/binary, ")">>) of
-                                            {ok, nil} -> {ok, Credential};
-                                            Error -> Error
-                                        end;
-                                    Error -> Error
-                                end;
-                            Error -> Error
-                        end;
+                case callback(Listeners, Private, Port, Deadline) of
+                    {ok, {Id, Token}} -> verify(Id, Token, Progress);
                     Error -> Error
                 end
-            after gen_tcp:close(Listen) end
+            after close(Listeners) end
         end,
-        {ok, {Url, <<"Sign in at zed.dev, then verify and confirm the account shown here. Do not share the sign-in URL.">>, Complete}}
+        {ok, {Url, <<"Sign in at zed.dev with your Zed account, then confirm the account shown here. No Zed editor is needed. Do not share the sign-in URL.">>, Complete}}
     catch _:_ -> {error, <<"Could not start Zed browser sign-in">>} end.
+
+%% Both loopback addresses share one port, so a browser resolving localhost to
+%% ::1 reaches the same attempt. The IPv6 socket is optional.
+listen() ->
+    Options = [binary, {active, false}, {packet, http_bin}, {packet_size, 8192}, {reuseaddr, true}],
+    {ok, V4} = gen_tcp:listen(0, [{ip, {127,0,0,1}} | Options]),
+    {ok, {_, Port}} = inet:sockname(V4),
+    V6 = case gen_tcp:listen(Port, [inet6, {ip, {0,0,0,0,0,0,0,1}}, {ipv6_v6only, true} | Options]) of
+        {ok, Listen} -> Listen;
+        _ -> undefined
+    end,
+    {V4, V6, Port}.
+
+close(Listen) ->
+    [gen_tcp:close(L) || L <- Listen, is_port(L)],
+    ok.
+
+verify(Id, Token, Progress) ->
+    Progress(<<"Validating Zed account identity">>),
+    case request(<<"GET">>, <<"/client/users/me">>, auth(Id, Token), <<>>) of
+        {ok, Response} ->
+            case identity(Id, Token, Response) of
+                {ok, Credential} ->
+                    {account, _, Label, Detail, _} = account(Credential),
+                    case albedo_oauth:confirm(<<"Zed account: ", Label/binary, " (", Detail/binary, ")">>) of
+                        {ok, nil} -> {ok, Credential};
+                        Error -> Error
+                    end;
+                Error -> Error
+            end;
+        Error -> Error
+    end.
 
 callback(Listen, Private, Port, Deadline) ->
     Left = Deadline - erlang:monotonic_time(millisecond),
     case Left > 0 of
         false -> {error, <<"Zed browser sign-in expired">>};
-        true -> case gen_tcp:accept(Listen, min(Left, 1000)) of
+        true -> case accept(Listen, min(Left, 250)) of
             {ok, Socket} ->
                 Result = try serve(Socket, Private, Port) catch _:_ -> {error, invalid_callback} end,
                 gen_tcp:close(Socket),
@@ -58,24 +78,41 @@ callback(Listen, Private, Port, Deadline) ->
         end
     end.
 
+accept([Listen], Wait) -> gen_tcp:accept(Listen, max(Wait, 0));
+accept([Listen | Rest], Wait) ->
+    case gen_tcp:accept(Listen, max(Wait, 0)) of
+        {ok, Socket} -> {ok, Socket};
+        {error, timeout} -> accept(Rest, 0);
+        Error -> Error
+    end.
+
+%% The callback path and its extra query parameters are not part of the
+%% contract; only the encrypted user_id/access_token pair is.
 serve(Socket, Private, Port) ->
     Result = case gen_tcp:recv(Socket, 0, 1000) of
         {ok, {http_request, 'GET', {abs_path, Target}, _}} ->
             Headers = headers(Socket, 32, #{}),
-            Hosts = [<<"127.0.0.1:", (integer_to_binary(Port))/binary>>, <<"localhost:", (integer_to_binary(Port))/binary>>],
-            true = lists:member(maps:get(<<"host">>, Headers, <<>>), Hosts),
-            false = maps:is_key(<<"origin">>, Headers),
-            #{path := <<"/">>, query := Query} = uri_string:parse(Target),
-            Pairs = uri_string:dissect_query(Query),
-            2 = length(Pairs),
-            #{<<"user_id">> := Id, <<"access_token">> := Cipher} = maps:from_list(Pairs),
+            true = loopback(maps:get(<<"host">>, Headers, <<>>), Port),
+            Query = maps:get(query, uri_string:parse(Target), <<>>),
+            Params = maps:from_list(uri_string:dissect_query(Query)),
+            #{<<"user_id">> := Id, <<"access_token">> := Cipher} = Params,
             decrypt(Private, Id, Cipher);
         _ -> {error, invalid_callback}
     end,
-    Text = <<"Return to albedo to verify the account and confirm sign-in.">>,
-    gen_tcp:send(Socket, [<<"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\nContent-Length: ">>,
-                         integer_to_binary(byte_size(Text)), <<"\r\n\r\n">>, Text]),
+    respond(Socket, Result),
     Result.
+
+loopback(Host, Port) ->
+    P = integer_to_binary(Port),
+    lists:member(Host, [<<"127.0.0.1:", P/binary>>, <<"localhost:", P/binary>>, <<"[::1]:", P/binary>>]).
+
+%% A rejected callback answers 404 and the attempt keeps waiting; a decrypted
+%% one sends the browser to zed.dev's success page, as the editor does.
+respond(Socket, {ok, _}) ->
+    gen_tcp:send(Socket, [<<"HTTP/1.1 302 Found\r\nLocation: ">>, ?SUCCEEDED,
+                          <<"\r\nContent-Length: 0\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n\r\n">>]);
+respond(Socket, _) ->
+    gen_tcp:send(Socket, <<"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n">>).
 
 headers(_, 0, _) -> error(too_many_headers);
 headers(Socket, Left, Acc) ->
@@ -95,11 +132,20 @@ decrypt(Private, Id, Cipher) ->
         true = is_binary(Cipher) andalso byte_size(Cipher) =< 512,
         Bytes = base64:decode(Cipher, #{mode => urlsafe, padding => false}),
         256 = byte_size(Bytes),
-        Token = public_key:decrypt_private(Bytes, Private,
-            [{rsa_padding, rsa_pkcs1_oaep_padding}, {rsa_oaep_md, sha256}, {rsa_mgf1_md, sha256}]),
+        Token = token(Bytes, Private),
         true = safe(Token),
         {ok, {Id, Token}}
     catch _:_ -> {error, <<"Invalid Zed callback">>} end.
+
+%% Current servers encrypt with OAEP-SHA256; the editor still accepts the older
+%% PKCS#1 v1.5 format, so both decrypt.
+token(Bytes, Private) ->
+    try
+        public_key:decrypt_private(Bytes, Private,
+            [{rsa_padding, rsa_pkcs1_oaep_padding}, {rsa_oaep_md, sha256}, {rsa_mgf1_md, sha256}])
+    catch _:_ ->
+        public_key:decrypt_private(Bytes, Private, [{rsa_padding, rsa_pkcs1_padding}])
+    end.
 
 safe(B) when is_binary(B), byte_size(B) > 0, byte_size(B) =< 16384 ->
     re:run(B, <<"^[!-~]+$">>, [{capture, none}]) =:= match;
@@ -107,18 +153,42 @@ safe(_) -> false.
 
 auth(Id, Token) -> [{<<"authorization">>, <<Id/binary, " ", Token/binary>>}].
 
+%% GetAuthenticatedUserResponse: user.legacy_user_id identifies the account the
+%% callback named, and default_organization_id is optional.
 identity(Id, Token, Response) ->
     try
-        #{<<"user">> := #{<<"legacy_user_id">> := N, <<"github_login">> := Login,
-                           <<"username">> := Username},
-          <<"default_organization_id">> := Organization, <<"organizations">> := Organizations} = Response,
-        Id = integer_to_binary(N), true = safe(Token),
-        true = safe(Login), true = safe(Username), true = safe(Organization),
-        true = lists:any(fun(O) -> maps:get(<<"id">>, O, null) =:= Organization end, Organizations),
+        %% `organizations` is `#[serde(default)]` in the account schema, so an
+        %% account may omit it, and the editor takes the callback's user id as
+        %% the credential identity instead of comparing account documents.
+        #{<<"user">> := User} = Response,
+        Organizations = maps:get(<<"organizations">>, Response, []),
+        #{<<"github_login">> := Login} = User,
+        Username = maps:get(<<"username">>, User, Login),
+        true = is_list(Organizations),
+        true = safe(Token) andalso safe(Login) andalso safe(Username),
+        Organization = organization(maps:get(<<"default_organization_id">>, Response, null), Organizations),
+        true = safe(Organization),
         {ok, #{<<"type">> => <<"oauth">>, <<"user_id">> => Id, <<"access_token">> => Token,
                <<"github_login">> => Login, <<"username">> => Username,
                <<"organization_id">> => Organization}}
-    catch _:_ -> {error, <<"Zed account identity or default organization could not be verified">>} end.
+    catch _:_ -> {error, <<"Zed account identity could not be verified">>} end.
+
+%% The account's default organization when it names one of its organizations,
+%% otherwise its only personal one, so an account without a default still signs in.
+organization(Default, Organizations) when is_list(Organizations) ->
+    Ids = [Id || #{<<"id">> := Id} <- Organizations, is_binary(Id)],
+    case Default of
+        Id when is_binary(Id), Id =/= <<>> ->
+            %% With no organization list to contradict it, the account's own
+            %% default stands; otherwise it must be one of the account's.
+            true = Ids =:= [] orelse lists:member(Id, Ids),
+            Id;
+        _ ->
+            case [Id || #{<<"id">> := Id, <<"is_personal">> := true} <- Organizations, is_binary(Id)] of
+                [Id] -> Id;
+                [] -> case Ids of [Id] -> Id; _ -> error(no_default_organization) end
+            end
+    end.
 
 account(C) ->
     Id = maps:get(<<"user_id">>, C, <<>>),
@@ -147,6 +217,9 @@ read_response(Connection, Deadline) ->
             {error, iolist_to_binary(io_lib:format("Zed account service returned HTTP ~B (redirects are refused)", [Status]))};
         _ -> {error, <<"Invalid Zed account response">>}
     end.
+
+%% The body of a 200 answer, for callers that read the status themselves.
+read_body(Connection, Deadline) -> body(Connection, Deadline, [], 0).
 
 body(Connection, Deadline, Chunks, Size) ->
     case albedo_openai_transport:receive_until(Connection, Deadline) of
@@ -245,6 +318,22 @@ reject(Home, Profile, Jwt) ->
         end, nil
     end, fun() -> nil end).
 
+%% Refresh the account that owned the rejected JWT, never a profile selected
+%% later by endpoint. An ambiguous or superseded credential fails closed.
+refresh_rejected_token(Home, Token) ->
+    albedo_settings_lock:with_lock(Home, fun() ->
+        Path = albedo_credentials:creds_path(Home),
+        case albedo_credentials:accounts(Path) of
+            {ok, Accounts} ->
+                Values = albedo_credentials:values(Accounts, <<"zed">>),
+                case [C || #{<<"jwt">> := Jwt} = C <- Values, Jwt =:= Token] of
+                    [C] -> refresh_token(Home, Accounts, C, erlang:system_time(second));
+                    _ -> {error, <<"Zed account changed during model discovery">>}
+                end;
+            _ -> {error, <<"Zed credential store is unavailable">>}
+        end
+    end, fun() -> {error, <<"Zed credential store is busy">>} end).
+
 catalog_endpoint(Home, Profile, Ordinary) ->
     case albedo_credentials:config(Home) of
         {ok, #{<<"providers">> := Ps}} ->
@@ -267,18 +356,40 @@ access_account(Home, Id) ->
         end
     end, fun() -> {error, <<"Zed credential store is busy">>} end).
 
-binding(Home, Profile) ->
-    case albedo_credentials:config(Home) of
-        {ok, #{<<"providers">> := Ps}} ->
-            P = maps:get(Profile, Ps, #{}),
-            case maps:get(<<"apiKey">>, P, <<>>) =:= <<>> andalso string:trim(os:getenv("ZED_TOKEN", "")) =:= "" of
-                true -> native_binding(Home, Profile);
-                false -> none
-            end;
-        _ -> none
+%% Every stored Zed account as the quota poller needs it: the label /login
+%% shows, the legacy user id, and the access token the account endpoint
+%% authenticates with. That endpoint takes the stored token, not the inference
+%% JWT, so polling renews nothing: it must not spend a token exchange on an
+%% account nobody is inferring with.
+accounts(Home) ->
+    albedo_settings_lock:with_lock(Home, fun() ->
+        case albedo_credentials:accounts(albedo_credentials:creds_path(Home)) of
+            {ok, Accounts} ->
+                lists:filtermap(fun entry/1, albedo_credentials:values(Accounts, <<"zed">>));
+            _ -> []
+        end
+    end, fun() -> [] end).
+
+entry(C) ->
+    Id = maps:get(<<"user_id">>, C, <<>>),
+    Access = maps:get(<<"access_token">>, C, <<>>),
+    Label = label(C),
+    case Label =/= <<>> andalso safe(Id) andalso safe(Access) of
+        true -> {true, #{<<"label">> => Label, <<"accountId">> => Id, <<"access">> => Access}};
+        false -> false
     end.
 
-native_binding(Home, Profile) ->
+%% A renamed account keeps that name, as it does everywhere else it is shown.
+label(C) ->
+    case [L || K <- [<<"label">>, <<"github_login">>, <<"username">>],
+               L <- [maps:get(K, C, <<>>)], is_binary(L), L =/= <<>>] of
+        [L | _] -> L;
+        [] -> <<>>
+    end.
+
+%% Browser sign-in is the only credential, so every Zed profile refreshes the
+%% same way; a profile without one has nothing to refresh.
+binding(Home, Profile) ->
     case albedo_credentials:accounts(albedo_credentials:creds_path(Home)) of
         {ok, Accounts} ->
             case selected(Home, Profile, albedo_credentials:values(Accounts, <<"zed">>)) of

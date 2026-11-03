@@ -30,6 +30,10 @@ pub type Route {
   GeminiRoute
 }
 
+/// The detail type a replayed turn carries provider-issued reasoning items
+/// under, so the next Responses request can send them back.
+const reasoning_detail = "openai.reasoning"
+
 /// Which upstream route OpenCode Go uses for `model`.
 pub fn route(model: String) -> Route {
   case metadata_route(settings.home(), model) {
@@ -166,6 +170,10 @@ fn responses_input(input: Input) -> Result(List(Input), Error) {
               "replayed assistant message is not portable",
             )),
           )
+          use reasoning_items <- result.try(list.try_map(
+            recorded_reasoning(message.details),
+            responses_replay_item,
+          ))
           let text_inputs = case message.text {
             "" -> []
             text -> [Assistant(text)]
@@ -174,15 +182,44 @@ fn responses_input(input: Input) -> Result(List(Input), Error) {
             message.calls,
             responses_call_item,
           ))
-          list.append(text_inputs, call_inputs)
+          list.append(reasoning_items, list.append(text_inputs, call_inputs))
         }
       }
     other -> Ok([other])
   }
 }
 
-fn detail_decoder() -> decode.Decoder(Option(Nil)) {
-  decode.success(None)
+type Recorded {
+  Recorded(items: List(json.Json))
+}
+
+fn detail_decoder() -> decode.Decoder(Option(Recorded)) {
+  use kind <- decode.field("type", decode.string)
+  use items <- decode.optional_field("items", [], decode.list(decode.dynamic))
+  decode.success(case kind == reasoning_detail {
+    True -> Some(Recorded(list.map(items, types.encode_value)))
+    False -> None
+  })
+}
+
+/// The reasoning items a turn recorded, in the order the provider issued
+/// them: a reasoning item comes before the message it precedes.
+fn recorded_reasoning(details: List(Recorded)) -> List(json.Json) {
+  details
+  |> list.filter_map(fn(detail) {
+    case detail {
+      Recorded(items) -> Ok(items)
+    }
+  })
+  |> list.flatten
+}
+
+fn responses_replay_item(item: json.Json) -> Result(Input, Error) {
+  json.parse(json.to_string(item), types.replay_decoder(Responses))
+  |> result.map(Replay)
+  |> result.replace_error(InvalidRequest(
+    "could not replay a recorded reasoning item",
+  ))
 }
 
 fn responses_call_item(call: types.ToolCall) -> Result(Input, Error) {
@@ -264,9 +301,27 @@ fn responses_turn_to_chat(
     "" -> json.null()
     _ -> json.string(text)
   }
+  // The provider's reasoning items are kept whole: encrypted reasoning only
+  // continues a conversation if the next request sends it back.
+  let reasoning =
+    turn.output
+    |> list.filter(fn(item) { responses_item_kind(item) == "reasoning" })
+    |> list.map(types.replay_json)
+  let details = case reasoning {
+    [] -> None
+    items ->
+      Some(
+        json.preprocessed_array([
+          json.object([
+            #("type", json.string(reasoning_detail)),
+            #("items", json.preprocessed_array(items)),
+          ]),
+        ]),
+      )
+  }
   use item <- result.map(
     json.parse(
-      json.to_string(replay.message(content, thinking, None, calls)),
+      json.to_string(replay.message(content, thinking, details, calls)),
       types.replay_decoder(ChatCompletions),
     )
     |> result.map_error(fn(error) {
@@ -293,6 +348,11 @@ fn responses_item_text(item: types.ReplayItem) -> String {
   )
   |> result.unwrap([])
   |> string.concat
+}
+
+fn responses_item_kind(item: types.ReplayItem) -> String {
+  types.inspect_item(item, decode.field("type", decode.string, decode.success))
+  |> result.unwrap("")
 }
 
 fn responses_item_thinking(item: types.ReplayItem) -> String {

@@ -1147,3 +1147,43 @@ func TestQuotaRowsFromTheDaemonsOwnLabels(t *testing.T) {
 		}
 	})
 }
+
+// A Zed account's only reading is account-level edit-prediction usage, so the
+// row names that and shows no window or reset: the service reports neither, and
+// hosted-model spend belongs to /zed-budget.
+func TestQuotaZedAccountRow(t *testing.T) {
+	used := 25.0
+	zed := daemon.QuotaObservation{
+		Provider: "zed", AccountID: "okami", LimitID: "edit-predictions", Label: "Edit predictions",
+		UsedPercent: &used, Status: "ok", Source: "poll",
+		ObservedAt: quotaNow.Add(-time.Minute).Format(time.RFC3339),
+	}
+	m := NewQuotaModel(nil)
+	m.SetSize(120, 30)
+	m, _ = m.Update(quotaLoadedMsg{Gen: m.Generation, At: quotaNow, Readings: []daemon.QuotaObservation{zed}})
+	if len(m.shown) != 1 {
+		t.Fatalf("one zed reading should be one row, got %d", len(m.shown))
+	}
+	row := m.entry(zed)
+	if row.section != "zed · okami" {
+		t.Fatalf("row section = %q, want the zed account", row.section)
+	}
+	if row.name != "Edit predictions" {
+		t.Fatalf("row name = %q, want the edit-prediction reading", row.name)
+	}
+	if row.desc != "" {
+		t.Fatalf("row desc = %q, want no window", row.desc)
+	}
+	tag := ansi.Strip(row.tag)
+	if !strings.Contains(tag, "75% left") || strings.Contains(tag, "in ") {
+		t.Fatalf("row tag = %q, want the remaining share and no reset", tag)
+	}
+	view := ansi.Strip(m.View())
+	if !strings.Contains(view, "zed · okami") || !strings.Contains(view, "Edit predictions") {
+		t.Fatalf("the zed account should be listed:\n%s", view)
+	}
+	pane := ansi.Strip(strings.Join(m.details(zed, 60), "\n"))
+	if strings.Contains(pane, "resets") || strings.Contains(pane, "window") {
+		t.Fatalf("the pane should claim neither a refresh window nor a reset:\n%s", pane)
+	}
+}

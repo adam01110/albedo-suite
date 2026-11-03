@@ -30,6 +30,20 @@ func signInDraft(provider string) config.Settings {
 	return config.Settings{Extension: provider, Protocol: providerProtocol(provider)}
 }
 
+// browserOnly reports the extensions whose only credential is a stored sign-in
+// account: their profiles never offer, keep, or describe an api key.
+func browserOnly(extension string) bool { return extension == "zed" }
+
+// signedInDraft is the profile a sign-in saves. A browser-only provider holds
+// its credential in the daemon's store, so a key the profile still carries is
+// dropped here instead of being saved again.
+func signedInDraft(settings config.Settings, extension string) config.Settings {
+	if browserOnly(extension) {
+		settings.APIKey, settings.HasKey = "", false
+	}
+	return settings
+}
+
 // profilesOf lists, by name, the profiles an extension runs.
 func (m LoginModel) profilesOf(extension string) []string {
 	var names []string
@@ -324,11 +338,12 @@ func (m LoginModel) highlightedProfile() (string, bool) {
 }
 
 // editable reports a profile whose credential /login can change: a sign-in
-// profile's account, or the endpoint and key of one set up by hand.
+// profile's account, a browser-only profile even when it still carries a key, or
+// the endpoint and key of one set up by hand.
 func (m LoginModel) editable(name string) bool {
 	settings := m.Profiles.Providers[name]
 	extension := cmp.Or(settings.Extension, "openai")
-	if _, signIn := m.signInFor(extension); signIn && !hasKey(settings) {
+	if _, signIn := m.signInFor(extension); signIn && (browserOnly(extension) || !hasKey(settings)) {
 		return true
 	}
 	return slices.ContainsFunc(customProviders, func(p customProvider) bool { return p.Extension == extension })
@@ -345,7 +360,7 @@ func (m *LoginModel) editCredential(name string) tea.Cmd {
 	m.SelectedAccount = nil
 	m.Error = ""
 	m.CredentialTicks = nil
-	if _, signIn := m.signInFor(settings.Extension); m.keyAccounts() || (signIn && !hasKey(settings)) {
+	if _, signIn := m.signInFor(settings.Extension); m.keyAccounts() || (signIn && (browserOnly(settings.Extension) || !hasKey(settings))) {
 		return m.chooseCredential()
 	}
 	return m.askEndpoint()

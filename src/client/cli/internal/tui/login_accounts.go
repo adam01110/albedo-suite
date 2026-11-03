@@ -141,9 +141,13 @@ func (m *LoginModel) buildChoosePicker() {
 }
 
 // profileDetail is a profile's one-line summary: what it runs and how it
-// authenticates.
+// authenticates. A browser-only provider has no api-key form, so a key it still
+// carries is reported as unused rather than as its credential.
 func (m LoginModel) profileDetail(settings config.Settings, extension string) string {
 	detail := cmp.Or(settings.Model, "no model yet") + " · " + extension
+	if browserOnly(extension) && hasKey(settings) {
+		return detail + " · stored key unused"
+	}
 	if _, signIn := m.signInFor(extension); signIn && hasKey(settings) {
 		return detail + " · API key"
 	}
@@ -167,6 +171,8 @@ func (m LoginModel) profileFacts(settings config.Settings, extension string) []l
 		facts = append(facts, loginFact{"rotates", strings.Join(labels, ", ")})
 	case settings.AccountID != nil:
 		facts = append(facts, loginFact{"account", m.accountLabel(*settings.AccountID)})
+	case hasKey(settings) && browserOnly(extension):
+		facts = append(facts, loginFact{"key", "stored but unused; enter signs in"})
 	case hasKey(settings):
 		facts = append(facts, loginFact{"key", "held by the daemon"})
 	case signIn:
@@ -352,8 +358,11 @@ func (m LoginModel) removeCmd(target removal) tea.Cmd {
 }
 
 func (m LoginModel) selectAccountCmd(account daemon.Account) tea.Cmd {
+	// A browser-only profile's only credential is an account, so choosing one
+	// also clears a key left from the removed manual-token path.
+	clearKey := browserOnly(m.Profiles.Providers[m.Name].Extension)
 	return m.reloadCmd(func(ctx context.Context) error {
-		return daemon.SelectProfileAccount(ctx, m.Conn, m.Name, account, m.Profiles)
+		return daemon.SelectProfileAccount(ctx, m.Conn, m.Name, account, m.Profiles, clearKey)
 	})
 }
 
@@ -446,6 +455,7 @@ func flowNote(flow string) string {
 // to the profile Name, drafted in Draft.
 func (m *LoginModel) startSignIn(login daemon.SignIn) tea.Cmd {
 	m.Provider = login.Provider
+	m.Draft = signedInDraft(m.Draft, cmp.Or(m.Draft.Extension, login.Provider))
 	m.Generation = nextPageGeneration()
 	m.LoginFields = slices.Clone(login.Fields)
 	m.LoginValues = map[string]json.RawMessage{}

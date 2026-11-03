@@ -130,12 +130,22 @@ func patchSettingsGroup(ctx context.Context, conn *Connection, group, etag strin
 	})
 }
 func SaveProvider(ctx context.Context, conn *Connection, name string, profile config.Settings, etag string) error {
-	return saveProvider(ctx, conn, name, profile, etag, false)
+	return saveProvider(ctx, conn, name, profile, etag, false, false)
 }
 func SaveAndSelectProvider(ctx context.Context, conn *Connection, name string, profile config.Settings, etag string) error {
-	return saveProvider(ctx, conn, name, profile, etag, true)
+	return saveProvider(ctx, conn, name, profile, etag, true, false)
 }
-func saveProvider(ctx context.Context, conn *Connection, name string, profile config.Settings, etag string, selectDefault bool) error {
+
+// SaveSignedInProvider saves the profile a browser sign-in produced and removes a
+// saved api key the profile still carries: an omitted key is kept by the daemon,
+// so a provider whose only credential is a stored sign-in account sends an
+// explicit null. Without a clear, the leftover key refuses every later turn and
+// the refusal's instruction to sign in again cannot take effect.
+func SaveSignedInProvider(ctx context.Context, conn *Connection, name string, profile config.Settings, etag string, selectDefault bool) error {
+	return saveProvider(ctx, conn, name, profile, etag, selectDefault, true)
+}
+
+func saveProvider(ctx context.Context, conn *Connection, name string, profile config.Settings, etag string, selectDefault, clearKey bool) error {
 	// Nullable patch fields must be emitted to clear saved overrides. Generated
 	// optional pointers omit nil and would preserve those overrides instead.
 	profilePatch := map[string]any{
@@ -149,6 +159,8 @@ func saveProvider(ctx context.Context, conn *Connection, name string, profile co
 	}
 	if profile.APIKey != "" {
 		profilePatch["api_key"] = profile.APIKey
+	} else if clearKey {
+		profilePatch["api_key"] = nil
 	}
 	body := map[string]any{"profiles": map[string]any{name: profilePatch}}
 	if selectDefault {

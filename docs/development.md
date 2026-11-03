@@ -131,6 +131,38 @@ The `kernel-workspace` flake check runs the real-daemon regression cases in
 `test/kernel_workspace_e2e_test.py`, including the former retry deadline and
 recovery after restoring or moving a workspace.
 
+## Typed Responses input items
+
+`src/albedo/openai_api/request.gleam` is a suite source replacement. Upstream's
+Responses encoder writes messages it builds itself as `{"role": ..., "content":
+...}` input items; a strict endpoint parses the input as a `type`-tagged union
+and rejects the request before any model sees it (Zed's cloud answers
+`missing field 'type'`). The replacement adds the `message` discriminator and
+encodes message text as typed content parts (`input_text`, `output_text`,
+`input_image`), which is what Zed's own client sends and what the Responses
+schema documents. Locally built Chat Completions messages, and every other
+encoder, are unchanged. Replayed items are already typed and pass through
+verbatim.
+
+The replacement also stops claiming OpenAI strict mode for a tool whose schema
+cannot satisfy it: strict requires every object level to set
+`additionalProperties: false` and to list every property as required, and the
+built-in tools take optional parameters. "Every object level" means every schema
+reachable through `properties`, `patternProperties`, `additionalProperties`,
+`items`, `prefixItems`, `anyOf`, `oneOf`, `allOf`, `not`, `if`/`then`/`else`,
+`dependentSchemas`, `$defs` and `definitions`; a schema that nests an object
+behind one of those keywords and omits the rule is sent non-strict. The claim is
+emitted only when the schema meets those rules, so a provider that enforces them
+no longer refuses the whole request (`Invalid schema for function 'python': ...
+'required' is required to be supplied and to be an array including every key in
+properties`). `test/suite_zed_test.gleam` pins both the rules and the traversal.
+
+OpenCode Go's Responses route shares this encoder and gets the same typed items.
+The server package runs `test/suite_zed_test.gleam`, which asserts every family's
+`provider_request` field by field and fails when an input item or a message
+content part loses its discriminator. Remove this source replacement, its
+baseline checksum and its inventory entry when upstream emits typed items.
+
 ## Temporary Codex error decoding
 
 `src/server/src/albedo/openai_api/responses.gleam` retains upstream support for
@@ -218,7 +250,8 @@ The current upstream binds request rotation to explicitly selected accounts
 sending credentials to another endpoint. Legacy Alibaba profiles migrate
 to OpenAI-compatible profiles through upstream's account migration.
 
-The November update moves the base to `154c6911d6a491aeeecacf26a06b6ae8c4bc70e1`.
+The November base is `ff9d6dc0b83d4ee917f0e4b4dbf365a42684364d`, which replaced
+`154c6911d6a491aeeecacf26a06b6ae8c4bc70e1`.
 It retains native ACP, shell commands, kernel pooling/standby, fast provider modes,
 Mistral and Perplexity providers, and HTTP MCP/OAuth. Lazy MCP uses upstream's
 native client rather than the removed Barrel dependency. The Zed transport uses
@@ -264,8 +297,9 @@ errors roll back. No files outside the existing overlay are copied into `src`.
 
 The manifests are generated from pristine candidate bytes. The existing
 `sourceFiles` inventory continues to list the server overlay (including its
-suite-only additions); the whole-source NAR hash pins the pristine candidate
-tree without a second file inventory. Generated `__pycache__` directories and
+suite-only additions); client replacements are tracked by
+`upstream/client.sha256` alone and never appear in it. The whole-source NAR hash
+pins the pristine candidate tree without a second file inventory. Generated `__pycache__` directories and
 `.pyc` files are excluded from overlay discovery and inventories. The package's
 source hash assertion, checksum guards, original
 NUR post-patch hooks and both package variants remain intact. Equal Albedo

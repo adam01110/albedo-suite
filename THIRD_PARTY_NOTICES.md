@@ -11,9 +11,9 @@ same Classpath exception to its modifications.
 
 Suite-authored code, packaging, modules, helpers, tests and documentation are
 copyright 2026 Adam0 and licensed under the same AGPL-3.0-only with Classpath
-exception, except where third-party notices specify otherwise. This license
-update and the suite modifications described below are dated 2026-11-02.
-Earlier versions retain their original licenses.
+exception, except where third-party notices specify otherwise. The license update
+is dated 2026-11-02 and the suite modifications described below are dated
+2026-11-03. Earlier versions retain their original licenses.
 
 The previous upstream pin was `154c6911d6a491aeeecacf26a06b6ae8c4bc70e1`,
 licensed under MPL 2.0. Original MPL-covered portions retained from that source
@@ -30,6 +30,7 @@ questions, mandatory RTK command filtering and FFF search,
 a native Zed provider using existing protocol adapters and bounded NDJSON framing,
 Zed browser callback/account confirmation and account-scoped inference JWT renewal,
 narrow native OAuth confirmation and native HTTP transport integration,
+explicit opt-in browser-session Zed USD budget inspection,
 OpenCode Go SDK-metadata routing and endpoint-scoped discovery caches on the
 native OAuth, account rotation and portable wire implementation,
 recoverable kernel startup failures with workspace validation,

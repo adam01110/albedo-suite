@@ -11980,7 +11980,7 @@ components:
           $ref: '#/components/schemas/Timestamp'
         state:
           type: string
-          enum: [waiting, exchanging, complete, failed, cancelled, expired]
+          enum: [waiting, exchanging, confirming, complete, failed, cancelled, expired]
         instructions:
           anyOf:
           - type: string

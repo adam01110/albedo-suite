@@ -2,12 +2,15 @@
 ////
 //// One poller for the whole daemon owns the schedule. Every account albedo
 //// can see is polled on its own cadence: each OAuth account in a provider's
-//// rotation pool, and each API-key profile whose base url names a feed. Never
-//// two polls of one account at once; a limit at or above 80 percent, or one
+//// rotation pool, and each API-key profile whose base url names a feed. Zed is
+//// the one provider Albedo reads itself: the core has no Zed feed, so its
+//// accounts are polled for account-level edit-prediction usage. Never two
+//// polls of one account at once; a limit at or above 80 percent, or one
 //// resetting within fifteen minutes, moves that account onto the busy
 //// cadence; a failure backs off. Credentials come from the same readers and
 //// refreshers the request path uses, so polling refreshes tokens the way
-//// requests do.
+//// requests do; Zed's account reading authenticates with the stored access
+//// token as it stands, so polling renews no inference token.
 ////
 //// Only readings are stored — percentages, windows, reset times, statuses and
 //// errors exactly as the feed reported them, never anything derived. Phase 2
@@ -19,6 +22,7 @@ import gleam/erlang/atom
 
 import albedo/daemon/configuration
 import albedo/daemon/store
+import albedo/harness/extensions/zed/quota as zed_quota
 import albedo/harness/settings
 import albedo/harness/usage_feed.{type Limit, type Report}
 import gleam/dict.{type Dict}
@@ -86,6 +90,7 @@ fn enumerate(home: String) -> List(Target) {
     oauth_targets("anthropic", claude_accounts(home)),
     oauth_targets("openai-codex", codex_accounts(home)),
     oauth_targets("google-antigravity", antigravity_accounts(home)),
+    oauth_targets("zed", zed_accounts(home)),
     opencode_go_targets(opencode_go_accounts(home)),
     profile_targets(home),
   ])
@@ -102,6 +107,9 @@ fn antigravity_accounts(home: String) -> List(Dynamic)
 
 @external(erlang, "albedo_opencode_go", "accounts")
 fn opencode_go_accounts(home: String) -> List(Dynamic)
+
+@external(erlang, "albedo_zed_auth", "accounts")
+fn zed_accounts(home: String) -> List(Dynamic)
 
 /// A stored OAuth account: the label the provider's own identity logic gives
 /// it, plus the provide-usage credential fields.
@@ -344,14 +352,40 @@ type State {
   )
 }
 
+/// A provider's feed: the core's, except Zed, which the core has no feed for
+/// and Albedo reads itself. Both are passed so the choice is a value, not a
+/// hard-wired call.
+pub fn feed(
+  provider: String,
+  credential: json.Json,
+  now: Int,
+  zed: fn(json.Json) -> Result(Report, String),
+  core: Fetch,
+) -> Result(Report, String) {
+  case provider {
+    "zed" -> zed(credential)
+    _ -> core(provider, credential, now)
+  }
+}
+
 /// One poller for the whole daemon. It starts with the daemon, restarts under
-/// its supervisor, and polls each account it can see on its own cadence.
+/// its supervisor, and polls each account it can see on its own cadence. The
+/// daemon passes the core's feed; Zed is read here regardless.
 pub fn start(
   home: String,
   database: store.Store,
   fetch: Fetch,
 ) -> Result(actor.Started(Subject(Message)), actor.StartError) {
-  start_with(home, database, fetch, enumerate, load_settings, 120_000)
+  start_with(
+    home,
+    database,
+    fn(provider, credential, now) {
+      feed(provider, credential, now, zed_quota.fetch, fetch)
+    },
+    enumerate,
+    load_settings,
+    120_000,
+  )
 }
 
 /// Dependency-injected poller for isolated lifecycle tests.

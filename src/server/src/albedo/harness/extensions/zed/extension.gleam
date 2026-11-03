@@ -1,4 +1,7 @@
+import albedo/harness/client_api
+import albedo/harness/command
 import albedo/harness/extension
+import albedo/harness/extensions/zed/budget
 import albedo/harness/extensions/zed/catalog
 import albedo/harness/extensions/zed/stream
 import albedo/harness/extensions/zed/wire
@@ -7,6 +10,7 @@ import albedo/harness/rotation
 import albedo/openai_api/types
 import gleam/dict.{type Dict}
 import gleam/dynamic.{type Dynamic}
+import gleam/http
 import gleam/option.{type Option, None, Some}
 import gleam/result
 
@@ -16,6 +20,30 @@ pub fn extension() -> extension.Extension {
     "Zed hosted models over its native streaming API",
     ["models"],
     [
+      extension.CommandPlugin([
+        command.resource(
+          "/zed-budget",
+          "Show USD hosted-model budget for the explicitly configured Zed browser billing session, not the selected inference account.",
+          [],
+        ),
+      ]),
+      extension.ClientPlugin([
+        client_api.Command(
+          "/zed-budget",
+          client_api.Read,
+          [],
+          client_api.operation_defaults(
+            "readZedBudget",
+            http.Get,
+            "/extensions/zed/budget",
+            200,
+          ),
+        ),
+      ]),
+      extension.ServicePlugin(extension.Service(
+        fn(_, _) { extension.Admission(extension.DaemonToken, 0) },
+        budget.handle,
+      )),
       extension.ModelsPlugin(catalog.catalog()),
       extension.LoginPlugin(login()),
       extension.ModelProviderPlugin(extension.ModelProvider(
@@ -60,9 +88,7 @@ fn resolve(
     fn(error) {
       case error {
         types.HttpError(401, _) ->
-          Some(
-            "Zed rejected the token; sign in again with /login zed, or update your explicit manual JWT",
-          )
+          Some("Zed rejected the token; sign in again with /login zed")
         types.HttpError(451, _) ->
           Some("Zed does not allow requests from this network region")
         _ -> None

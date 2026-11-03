@@ -24,6 +24,7 @@
       } ''
         export PYTHONDONTWRITEBYTECODE=1
         export ALBEDO_UPDATER=${../../scripts/update-upstream.py}
+        export ALBEDO_SUITE_SOURCE=${../..}
         python3 -m unittest discover -s ${../../test} -p upstream_update_test.py -v
         touch $out
       '';
@@ -47,6 +48,18 @@
     checks.opencode-go = runCommand "albedo-opencode-go-tests" {nativeBuildInputs = [pkgs.python311];} ''
       export ERL_AFLAGS="-public_key cacerts_path '\"${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt\"'"
       python3 ${../../scripts/test-e2e.py} --source ${runtime.server.src} --suite ${../..} --package ${runtime} --case opencode_go_e2e_test.py
+      touch $out
+    '';
+
+    checks.zed-budget = runCommand "albedo-zed-budget-tests" {nativeBuildInputs = [pkgs.beam29Packages.erlang];} ''
+      export ERL_AFLAGS="-public_key cacerts_path '\"${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt\"'"
+      cp ${../../src/server/src/albedo/harness/extensions/zed/albedo_zed_budget.erl} albedo_zed_budget.erl
+      cp ${runtime.server.src}/src/albedo/harness/albedo_http.erl .
+      cp ${runtime.server.src}/src/albedo/harness/albedo_lock.erl .
+      cp ${runtime.server.src}/src/albedo/harness/albedo_trust.erl .
+      cp ${../../test/fixtures/zed_budget}/*.erl .
+      erlc -Werror -o . *.erl
+      erl +S 2:2 -noshell -pa . -eval 'zed_budget_tests:run(), halt().'
       touch $out
     '';
 

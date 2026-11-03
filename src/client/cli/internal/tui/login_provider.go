@@ -63,16 +63,6 @@ var customProviders = []customProvider{
 		Optional:      true,
 	},
 	{
-		ID:            "add-zed",
-		Label:         "Zed",
-		Detail:        "subscription · Zed JWT",
-		Extension:     "zed",
-		DefaultName:   "zed",
-		DefaultURL:    "https://cloud.zed.dev",
-		FixedProtocol: "chat_completions",
-		Optional:      true,
-	},
-	{
 		ID:            "add-perplexity",
 		Label:         "Perplexity",
 		Detail:        "api key · agent api · web search",
@@ -281,14 +271,14 @@ func (m *LoginModel) startCustomProvider(p customProvider) tea.Cmd {
 	return m.promptInput("", false)
 }
 
-// useProfile re-selects a saved profile: a sign-in provider with no accounts
-// left cannot run without an api key, so it signs in first.
+// Browser-only providers must replace legacy keys, but a signed-in profile can
+// be selected without authorizing another account.
 func (m *LoginModel) useProfile(name string, settings config.Settings) tea.Cmd {
 	if !settings.IsEnabled() {
 		m.Status = "provider is disabled; press ctrl+t to enable it"
 		return nil
 	}
-	if login, ok := m.signInFor(settings.Extension); ok && !hasKey(settings) && m.signedOut(settings.Extension) {
+	if login, ok := m.signInFor(settings.Extension); ok && ((browserOnly(settings.Extension) && hasKey(settings)) || (!hasKey(settings) && m.signedOut(settings.Extension))) {
 		m.Name, m.Draft = name, settings
 		return m.startSignIn(login)
 	}
@@ -381,6 +371,9 @@ func (m LoginModel) saveProviderCmd(name string, settings config.Settings) tea.C
 			if err != nil {
 				return err
 			}
+			if browserOnly(validated.Extension) {
+				return daemon.SaveSignedInProvider(ctx, m.Conn, name, validated, m.Profiles.ETag, false)
+			}
 			return daemon.SaveProvider(ctx, m.Conn, name, validated, m.Profiles.ETag)
 		})
 	}
@@ -397,7 +390,11 @@ func (m LoginModel) saveProviderCmd(name string, settings config.Settings) tea.C
 			validated.AccountID = &account.ID
 			validated.APIKey = ""
 		}
-		err = daemon.SaveAndSelectProvider(context.Background(), m.Conn, name, validated, m.Profiles.ETag)
+		if browserOnly(validated.Extension) {
+			err = daemon.SaveSignedInProvider(context.Background(), m.Conn, name, validated, m.Profiles.ETag, true)
+		} else {
+			err = daemon.SaveAndSelectProvider(context.Background(), m.Conn, name, validated, m.Profiles.ETag)
+		}
 		return providerSavedMsg{Gen: m.Generation, Name: name, Settings: validated, Err: err}
 	}
 }

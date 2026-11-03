@@ -22,6 +22,27 @@ u = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(u)
 
 
+def suite_root():
+    """The checkout, when the runner copied only this file into a store path."""
+    return Path(os.environ.get("ALBEDO_SUITE_SOURCE", Path(__file__).resolve().parents[1]))
+
+
+class ManifestTests(unittest.TestCase):
+    """The committed pin has to be what its own updater would write."""
+
+    def test_committed_inventory_is_the_server_overlay(self):
+        root = suite_root()
+        pin = json.loads((root / "upstream/pin.json").read_text())
+        self.assertEqual(pin["sourceFiles"], u.files(root / "src/server"))
+        # A client replacement belongs in the client manifest, not in this one.
+        baselines = {
+            line.split("  ", 1)[1]
+            for line in (root / "upstream/client.sha256").read_text().splitlines()
+        }
+        self.assertTrue(baselines)
+        self.assertFalse(baselines & set(pin["sourceFiles"]))
+
+
 class UpdateTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
