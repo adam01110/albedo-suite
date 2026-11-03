@@ -130,6 +130,7 @@
       };
     in
       withSuiteNotices (package.overrideAttrs (old: {
+        nativeCheckInputs = (old.nativeCheckInputs or []) ++ [pkgs.zoxide];
         postPatch =
           ''
             sha256sum --check ${../../upstream/client.sha256}
@@ -154,6 +155,7 @@
             go test ./internal/tui -run '^(TestOpenCodeGo|TestZed)' -count=1 -v
             go test ./internal/tui -run '^TestToolImages' -count=1 -v
             go test ./internal/tui -run '^TestActivity' -count=1 -v
+            go test ./internal/tui -run '^TestZoxide' -count=1 -v
             ${pkgs.lib.optionalString showDiffs "go test ./internal/tui -run '^TestDefaultDiffVisibility$' -count=1 -v"}
           '';
       }));

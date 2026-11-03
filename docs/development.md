@@ -131,6 +131,19 @@ The `kernel-workspace` flake check runs the real-daemon regression cases in
 `test/kernel_workspace_e2e_test.py`, including the former retry deadline and
 recovery after restoring or moving a workspace.
 
+## Zoxide folder suggestions
+
+With `zoxide` on the CLI's `PATH`, `/cd` includes matching directories from its
+existing database after recent session folders, without duplicates. Bare words
+use `zoxide query --list` with zoxide's ranking and multi-word matching; explicit
+paths and SSH locations retain normal browsing. `/cd words` also resolves a
+zoxide shortcut when no relative directory with that name exists. Queries are
+debounced in the picker and bounded
+by a one-second timeout. Successful local `/cd` moves run `zoxide add`; failed
+moves and remote locations do not update the database. Missing zoxide or an empty
+database leaves the existing picker usable. The integration runs only when the
+CLI and daemon share a machine; it does not query remote zoxide databases.
+
 ## Typed Responses input items
 
 `src/albedo/openai_api/request.gleam` is a suite source replacement. Upstream's

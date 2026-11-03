@@ -170,6 +170,7 @@ type FolderPicker struct {
 	listed   string
 	notice   string
 	sessions []daemon.Session
+	zoxide   map[string][]string
 
 	rows               []folderRow
 	input              textinput.Model
@@ -207,6 +208,7 @@ func NewFolderPicker(src folderSource, session daemon.Session, retry *WorkspaceR
 		session:            session,
 		retry:              retry,
 		src:                src,
+		zoxide:             map[string][]string{},
 		Tick:               tea.Tick,
 		listings:           map[string]*folderListMsg{},
 		repos:              map[string]*daemon.Repo{},
@@ -246,11 +248,31 @@ func (m *FolderPicker) Close() {
 }
 
 func (m FolderPicker) Init() tea.Cmd {
-	return tea.Batch(m.loadSessionsCmd(), m.loadHostsCmd(), m.fetch(), m.previewCmd())
+	return tea.Batch(m.loadSessionsCmd(), m.loadHostsCmd(), m.fetch(), m.previewCmd(), m.zoxideCmd())
 }
 
 func (m FolderPicker) Update(msg tea.Msg) (FolderPicker, tea.Cmd) {
 	switch msg := msg.(type) {
+	case zoxideTickMsg:
+		if msg.Gen != m.sessionsGeneration {
+			return m, nil
+		}
+		if msg.Query != m.input.Value() {
+			delete(m.asked, "zoxide:"+msg.Query)
+			return m, nil
+		}
+		ctx, gen, query := m.readCtx, m.sessionsGeneration, msg.Query
+		return m, func() tea.Msg {
+			return zoxideFoldersMsg{Gen: gen, Query: query, Paths: queryZoxide(ctx, query)}
+		}
+	case zoxideFoldersMsg:
+		if msg.Gen != m.sessionsGeneration {
+			return m, nil
+		}
+		m.zoxide[msg.Query] = msg.Paths
+		if msg.Query == m.input.Value() {
+			m.rebuild()
+		}
 	case folderSessionsMsg:
 		if msg.Gen != m.sessionsGeneration {
 			return m, nil
@@ -429,7 +451,7 @@ func (m FolderPicker) Update(msg tea.Msg) (FolderPicker, tea.Cmd) {
 // follow asks for what the list now shows: the listing, repositories and
 // the preview, and warms the hosts it reaches.
 func (m *FolderPicker) follow() tea.Cmd {
-	return tea.Batch(m.fetch(), m.previewCmd(), m.warmShown())
+	return tea.Batch(m.fetch(), m.previewCmd(), m.warmShown(), m.zoxideCmd())
 }
 
 // hostPollEvery is how often a warming host is asked again.
