@@ -63,7 +63,7 @@ func (m ChatModel) jobRows() []PageRow {
 }
 
 // activeGlances lists the sidebar's sections in order, leaving out empty ones:
-// the extensions' glances (active work), then background jobs past their grace.
+// extensions, background jobs past their grace, then passive activity.
 func (m ChatModel) activeGlances() []PageGlance {
 	var glances []PageGlance
 	for _, g := range m.Glances {
@@ -73,6 +73,9 @@ func (m ChatModel) activeGlances() []PageGlance {
 	}
 	if rows := m.jobRows(); len(rows) > 0 {
 		glances = append(glances, PageGlance{Title: "background jobs", Rows: rows})
+	}
+	if rows := m.activityRows(); len(rows) > 0 {
+		glances = append(glances, PageGlance{Title: "activity", Rows: rows})
 	}
 	return glances
 }

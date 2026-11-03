@@ -153,6 +153,7 @@
             go test ./internal/tui -run '^(TestSuiteEscape|TestInterrupt)' -count=1 -v
             go test ./internal/tui -run '^(TestOpenCodeGo|TestZed)' -count=1 -v
             go test ./internal/tui -run '^TestToolImages' -count=1 -v
+            go test ./internal/tui -run '^TestActivity' -count=1 -v
             ${pkgs.lib.optionalString showDiffs "go test ./internal/tui -run '^TestDefaultDiffVisibility$' -count=1 -v"}
           '';
       }));

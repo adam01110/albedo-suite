@@ -86,6 +86,11 @@ func (m *ChatModel) forgetProgress(callID string) *daemon.ToolProgress {
 
 func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 	defer m.reseedMood()
+	defer func() {
+		if m.sidebarWidth() != m.layoutSidebar {
+			m.SetSize(m.Width, m.Height)
+		}
+	}()
 	if evt.EntryID != "" {
 		if index := m.History.Find(evt.EntryID); index >= 0 {
 			entry := m.History.Entries()[index]
@@ -111,10 +116,13 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 			}
 			entry.Seq = evt.Position
 			entry.facts = nil
+			entry.activity = nil
 			m.appendSettledEntry(entry)
 			return
 		}
 	}
+	opensTurn := evt.Type == daemon.EventUser && (m.transcript.turn == nil || evt.Source == "" || evt.Source == "chat")
+	m.observeActivity(evt)
 	retireAll := evt.Type == daemon.EventRetry || evt.Type == daemon.EventError || evt.Type == daemon.EventInterrupted || evt.Type == daemon.EventTurnCompleted && evt.Source != ""
 	var anchor readingAnchor
 	retired := false
@@ -135,7 +143,12 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 	}
 	if evt.Replayed {
 		// Replayed events do not describe current activity; preserve live status.
-		defer func(live daemon.AgentStatus) { m.Status = live }(m.Status)
+		defer func(live daemon.AgentStatus, stopped, stopping, failed bool, progress map[string]*daemon.ToolProgress, order []string, label, thought string) {
+			m.Status = live
+			m.Stopped, m.Stopping, m.TurnFailed = stopped, stopping, failed
+			m.progressByCallID, m.progressOrder = progress, order
+			m.settledToolLabel, m.ThoughtProgressText = label, thought
+		}(m.Status, m.Stopped, m.Stopping, m.TurnFailed, m.progressByCallID, m.progressOrder, m.settledToolLabel, m.ThoughtProgressText)
 	}
 	watchedThought := !m.transcript.thinkingSince.IsZero()
 	entries := m.transcript.apply(evt, m.AgentName)
@@ -215,8 +228,10 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 	case daemon.EventRetry:
 		m.clearAction()
 	case daemon.EventUser:
-		m.Stopped, m.TurnFailed = false, false
-		m.clearAction()
+		if !evt.Replayed && opensTurn {
+			m.Stopped, m.TurnFailed = false, false
+			m.clearAction()
+		}
 		if !evt.Replayed {
 			m.ClearNotices()
 		}
@@ -263,7 +278,9 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 			}
 		}
 	case daemon.EventMessage, daemon.EventTurnCompleted:
-		m.clearAction()
+		if !evt.Replayed {
+			m.clearAction()
+		}
 		if evt.Type == daemon.EventTurnCompleted {
 			m.Stopping = false
 			if evt.Source == "interrupted" {

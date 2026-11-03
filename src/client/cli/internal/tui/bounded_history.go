@@ -30,6 +30,8 @@ type HistoryEntry struct {
 	SenderSessionID string
 	Images          []daemon.ImageMetadata
 	ToolArgs        map[string]any
+	// activity caches only the safe compact row, never another result body.
+	activity *PageRow
 	// facts is what this entry contributes to a grouped row, computed once
 	// when the entry settles. Targets stay as recorded; naming is at render.
 	facts               *entryFacts

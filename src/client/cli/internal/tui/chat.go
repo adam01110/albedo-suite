@@ -94,12 +94,14 @@ type liveRowsKey struct {
 const liveFrame = 120 * time.Millisecond
 
 type ChatModel struct {
-	streamCtx        context.Context
-	Usage            *daemon.Usage
-	progressByCallID map[string]*daemon.ToolProgress
-	progressOrder    []string
-	eventChan        chan streamDelivery
-	streamStopped    bool
+	streamCtx         context.Context
+	Usage             *daemon.Usage
+	progressByCallID  map[string]*daemon.ToolProgress
+	progressOrder     []string
+	activityEnded     bool
+	activityRemainder PageRow
+	eventChan         chan streamDelivery
+	streamStopped     bool
 	// Images and Pastes are what was pasted into the composer as markers.
 	Images promptImages
 	Pastes promptPastes
@@ -397,6 +399,7 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			live := m.latestProgress() != nil || m.settledToolLabel != "" || m.ThoughtProgressText != "" || m.transcript.activeKind != StreamKindNone || m.transcript.turn != nil && m.transcript.turn.begun()
 			if live && (!m.Status.Running || m.Status.Idle) {
 				m.settleActiveStream()
+				m.observeActivity(daemon.StreamEvent{Type: daemon.EventTurnCompleted})
 				m.clearAction()
 				if m.transcript.turn != nil && m.transcript.turn.begun() {
 					for _, entry := range m.transcript.closeTurn(false) {
@@ -522,6 +525,7 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		if msg.SessionID != m.SessionID || msg.Generation != m.Generation || m.streamStopped {
 			return m, nil
 		}
+		m.observeActivity(daemon.StreamEvent{Type: daemon.EventRetry})
 		m.clearAction()
 		if msg.Recovering {
 			m.AddNotice(fmt.Sprintf("Stream data could not be read; refreshing history: %v", msg.Err))
@@ -535,6 +539,7 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 
 	case ChatStreamClosedMsg:
 		if msg.SessionID == m.SessionID && msg.Generation == m.Generation {
+			m.observeActivity(daemon.StreamEvent{Type: daemon.EventRetry})
 			m.clearAction()
 			m.refreshViewportContent()
 		}
