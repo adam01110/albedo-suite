@@ -60,6 +60,7 @@ const (
 	modeChoice
 	modeConfirm
 	modeActions
+	modeQuestionAnswers
 )
 
 type PageViewModel struct {
@@ -77,6 +78,7 @@ type PageViewModel struct {
 	FieldIndex, ActionIndex int
 	FormValues              map[string]json.RawMessage
 	Busy                    bool
+	questionAnswers         *questionAnswerList
 }
 
 func NewPageViewModel(conn *daemon.Connection, sessionID, command string) PageViewModel {
@@ -95,6 +97,9 @@ func (m *PageViewModel) SetSize(width, height int) {
 	m.pageStatus.SetSize(width, height)
 	m.listView.setSize(width, height)
 	m.fitInput()
+	if m.questionAnswers != nil {
+		m.questionAnswers.setSize(width, height)
+	}
 }
 
 // fitInput gives the text field the room its prompt leaves on the row.
@@ -187,6 +192,7 @@ func (m *PageViewModel) ask(act PageAction) {
 
 // cancelPrompt drops whatever a prompt or question was collecting.
 func (m *PageViewModel) cancelPrompt() {
+	m.questionAnswers = nil
 	m.Mode, m.CurrentAction, m.FormValues, m.FieldIndex = modeBrowse, nil, nil, 0
 	m.TextInput.Reset()
 	m.confirm.dismiss()
@@ -215,10 +221,15 @@ func (m *PageViewModel) runAction(act PageAction, entered string) tea.Cmd {
 			return m.promptField(act)
 		}
 	}
+	row := m.currentRow()
+	if m.questionAnswers != nil {
+		row = &m.questionAnswers.row
+	}
+	m.questionAnswers = nil
 	m.Mode, m.CurrentAction = modeBrowse, nil
 	m.Busy, m.Error, m.Notice = true, "", ""
 	m.Generation = nextPageGeneration()
-	cmd := m.executeActionCmd(act, m.currentRow(), m.Generation)
+	cmd := m.executeActionCmd(act, row, m.Generation)
 	m.TextInput.Reset()
 	m.FormValues = nil
 	m.FieldIndex = 0
@@ -301,6 +312,9 @@ func (m PageViewModel) Update(msg tea.Msg) (PageViewModel, tea.Cmd) {
 		m.TextInput, cmd = m.TextInput.Update(msg)
 		return m, cmd
 	}
+	if m.Mode == modeQuestionAnswers {
+		return m, nil
+	}
 	cmd := m.listView.update(msg)
 	return m, cmd
 }
@@ -332,6 +346,10 @@ func (m PageViewModel) keyPress(msg tea.KeyPressMsg) (PageViewModel, tea.Cmd) {
 		if m.Mode == modeBrowse {
 			return m, func() tea.Msg { return PageCancelMsg{} }
 		}
+		if m.Mode == modeText && m.questionAnswers != nil {
+			m.Mode = modeQuestionAnswers
+			return m, nil
+		}
 		m.cancelPrompt()
 		return m, nil
 	}
@@ -352,6 +370,8 @@ func (m PageViewModel) keyPress(msg tea.KeyPressMsg) (PageViewModel, tea.Cmd) {
 		m.TextInput.Reset()
 		cmd := m.runAction(act, val)
 		return m, cmd
+	case modeQuestionAnswers:
+		return m.questionAnswerKey(msg)
 	case modeChoice:
 		return m.choiceKey(key)
 	case modeActions:
@@ -377,6 +397,9 @@ func (m PageViewModel) browseKey(msg tea.KeyPressMsg) (PageViewModel, tea.Cmd) {
 			m.Mode, m.ActionIndex = modeActions, 0
 		}
 		return m, nil
+	}
+	if key == "enter" && m.Command == "/questions" {
+		key = "ctrl+e"
 	}
 	if act, ok := m.chord(key); ok {
 		if act.Confirm {
@@ -465,6 +488,9 @@ func (m *PageViewModel) promptField(act PageAction) tea.Cmd {
 		m.Mode = modeChoice
 		m.ChoiceIndex = daemon.FormChoiceDefault(field)
 		return nil
+	}
+	if m.Command == "/questions" && act.Operation.OperationID == "answerQuestion" && field.Name == "answer" && field.Type == "text" {
+		return m.openQuestionAnswers()
 	}
 	m.Mode = modeText
 	m.fitInput()

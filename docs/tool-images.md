@@ -8,7 +8,7 @@ block shows image dimensions and a compact inline preview.
 Click **enlarge images** to expand it; click **show less** to restore its size.
 Image rows are excluded from text selection and copying.
 
-This initial version uses Kitty Unicode placeholders in Kitty and Ghostty,
+Previews use Kitty Unicode placeholders in Kitty and Ghostty,
 including tmux with `set -g allow-passthrough on`. Other terminals retain image
 metadata without receiving graphics escapes. Sixel is not implemented.
 PNG and JPEG previews decode locally; WebP currently retains metadata only.
@@ -30,10 +30,10 @@ To try the build from this checkout without changing system configuration:
 nix run .#albedo-defaults
 ```
 
-Live tool-result previews require the new daemon and client together. Sent
-attachment previews and history previews work with the pinned upstream daemon.
+Live tool-result previews require both the suite daemon and client.
 
-Checks:
+Run the focused client tests in a writable copy of the pinned upstream source
+with the suite overlays applied, not directly in this sparse repository:
 
 ```console
 go test ./internal/tui ./internal/daemon -run '^TestToolImages' -count=1 -v

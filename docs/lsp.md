@@ -2,8 +2,7 @@
 
 This is a temporary compatibility layer for the pinned Albedo version, not a
 long-term editor framework. It is disabled by default. Personal server choices
-stay in Infra. [Retirement notes](development.md#temporary-compatibility-
-layers) identify its files and shared wiring.
+stay in Infra. [Retirement notes](development.md#temporary-compatibility-layers) identify its files and shared wiring.
 
 ## Configure
 
@@ -60,7 +59,7 @@ data, not instructions.
 Each operation reads the current file from disk and sends full-text `didOpen`
 or `didChange` notifications when needed. Results describe that snapshot, not
 later external edits. Dynamic capability registration is not implemented.
-Tools do not edit files, use unsaved editor buffers, apply server workspace
+Tools do not edit files, use unsaved editor buffers or apply server workspace
 edits. Servers start on explicit operations or `files.check()`, never
 on `servers()` or session setup. Paths must stay within the local workspace;
 symlink escapes are rejected. A server is attached to one project root at a

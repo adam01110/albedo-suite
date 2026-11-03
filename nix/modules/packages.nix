@@ -156,6 +156,7 @@
             go test ./internal/tui -run '^TestToolImages' -count=1 -v
             go test ./internal/tui -run '^TestActivity' -count=1 -v
             go test ./internal/tui -run '^TestZoxide' -count=1 -v
+            go test ./internal/tui -run '^TestQuestions' -count=1 -v
             ${pkgs.lib.optionalString showDiffs "go test ./internal/tui -run '^TestDefaultDiffVisibility$' -count=1 -v"}
           '';
       }));

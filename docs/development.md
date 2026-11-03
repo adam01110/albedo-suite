@@ -14,37 +14,19 @@ in use.
 
 ## Updating upstream
 
-Compare each replacement with its old upstream version to identify the suite's
-changes. Then compare old and new upstream versions to identify upstream changes
-that the replacement must retain.
-
-Merge both sets of changes before updating the pin and checksums. Do not change
-a checksum merely to make a failing check pass. New files have no individual
-baseline checksum. The whole-source hash still pins their upstream base.
+Follow the [maintenance guide](agent-maintenance.md#updating-to-newer-albedo)
+for source merges, pin/checksum rules and verification. The
+[automated updater](#automated-sparse-upstream-updates) prepares a candidate;
+it does not replace compatibility review.
 
 ## Packaged licenses and source
 
-Both suite variants and their server/client/renderer outputs include
-`share/doc/albedo-suite/` with the AGPL-3.0-only license and Classpath exception,
-attribution, preserved third-party and historical MPL notices, and
-[corresponding source instructions](package-sources.md). The source links retain
-the exact suite and pristine upstream snapshots in the package closure.
-The standalone web package similarly includes `share/doc/albedo-web/`, web source
-and npm dependency notices. The FFF adapter retains the same AGPL license and
-exception and readable source alongside the separate MIT dependency licenses.
-
-Distribute the complete closure, including its referenced source snapshots, or
-supply corresponding source and notices separately when extracting binaries or
-browser assets, using a source-delivery method permitted by the applicable
-licenses. Retained original MPL-covered portions still require their MPL notices
-and covered source. For modified versions supporting remote network interaction,
-AGPL section 13 requires a prominent, no-charge network offer of the exact
-Corresponding Source to those users. Nix store source links do not implement
-that offer; operators must provide it. The Classpath exception covers independent
-linked modules, not modifications to Albedo itself.
-`checks.package-licenses` checks metadata, installed notices, source links,
-pristine checksums and Python overlay/source correspondence; it does not verify
-an operator's network source offer.
+Packages retain licenses, attribution and exact source snapshots under
+`share/doc/albedo-suite/`; the standalone web package uses
+`share/doc/albedo-web/`. See [corresponding source](package-sources.md) for
+rebuild, distribution and network source-offer requirements.
+`checks.package-licenses` verifies installed notices and source correspondence,
+not an operator's network source offer.
 
 ## Checks
 
@@ -69,41 +51,25 @@ treefmt run.
 ## Daemon tests
 
 ```console
-python3 scripts/test-e2e.py \
-  --source /path/to/pinned/upstream \
-  --package /nix/store/...-albedo-git-...
+python3 scripts/test-e2e.py --source /path/to/pinned/upstream --package /path/to/built/package
 ```
 
-The package exposes its pinned source through `.src`. The runner copies that
-source into a writable temporary directory and uses the supplied binaries.
-It runs formatter, LSP, lazy and eager MCP, operation lifecycle, and streaming replay
-and user-question cases plus OpenCode Go routing/discovery and RTK/FFF daemon
-checks, plus upstream cache-miss, provider-timeout, speechless-response,
-context-window, hooks, rewind, trace, job output, kernel restoration/upgrade
-and provider-catalog regressions, plus native direnv environments, atomic file
-edits, job text/readiness,
-kernel working-directory changes, image limits, artifacts, durable history,
-push session status and detached-kernel recovery, plus native event follows,
-profile renaming, session names and daemon-managed web lifecycle.
-Additional supervised RTK
-and FFF integration tests run in the flake Python check against the packaged
-runtime.
+Use the selected package's `server.src` and actual built output, not an
+installed package from another pin. The runner copies the source into a
+writable temporary directory and uses the supplied binaries. `SUITE_CASES` and
+`UPSTREAM_CASES` in `scripts/test-e2e.py` are the authoritative case lists.
+Use `--case <name>` for focused work; omit it for the full upstream-update run.
 
-FFF searches share one daemon-owned worker for local sessions and one per SSH
-target for remote sessions. Workers start on demand, retain at most four root
-indexes, and exit after 60 seconds without a search. Search requests, including
-queue time, have a 30-second worker deadline. Closing a session does not stop
-another session's search worker. FFF is not listed as a session background job.
-The Python adapter only calls the managed `files.fff` RPC; the daemon talks to
-`albedo-fff --stdio` over versioned, newline-delimited JSON. There is no standalone
-Unix-socket or per-kernel worker path. `test/fff_test.py` exercises all search
-semantics through the production Erlang registry and stdin worker using a small
-isolated RPC bridge; `test/fff_stdio_test.py` checks protocol bounds, four-root
-eviction, idle exit and watchdog deadlines with a fake native SDK.
+Tests use fake providers, temporary homes and local servers. They do not
+activate your configuration, read your credentials or contact live providers.
+The runner adjusts two checksum-guarded upstream fixtures: it waits for kernel
+reattachment before testing a forced upgrade and filters skill discovery to
+avoid extension-count-dependent pagination. Changed fixtures require review.
 
-The tests use fake providers, temporary homes and local stdio servers. They do
-not activate your configuration, read your credentials or contact live
-providers.
+Additional supervised RTK/FFF tests run in the flake Python check.
+`test/fff_test.py` exercises search through the production Erlang registry;
+`test/fff_stdio_test.py` checks protocol bounds, root eviction, idle exit and
+watchdog deadlines. See [RTK and FFF](tool-parity.md) for worker behavior.
 
 ## Agent context
 
@@ -146,8 +112,8 @@ CLI and daemon share a machine; it does not query remote zoxide databases.
 
 ## Typed Responses input items
 
-`src/albedo/openai_api/request.gleam` is a suite source replacement. Upstream's
-Responses encoder writes messages it builds itself as `{"role": ..., "content":
+`src/server/src/albedo/openai_api/request.gleam` replaces the upstream Responses
+encoder, which writes messages it builds itself as `{"role": ..., "content":
 ...}` input items; a strict endpoint parses the input as a `type`-tagged union
 and rejects the request before any model sees it (Zed's cloud answers
 `missing field 'type'`). The replacement adds the `message` discriminator and
@@ -189,19 +155,6 @@ The server package runs `test/suite_codex_error_test.gleam` during its check pha
 Remove this source replacement, its baseline checksum and inventory entry, and
 its package check when upstream handles these envelopes without dumping raw
 payloads.
-
-The offline runner adds one readiness barrier to the pinned forced-kernel-upgrade
-fixture: daemon listener readiness does not imply asynchronous kernel reattachment
-has finished. It waits for an idle session, no pending inputs and an attached
-kernel, then asserts the stale bundle and single live job before the original
-single upgrade request. It does not retry a 409, change product admission rules
-or weaken the forced-swap assertions. A changed fixture fails closed for review.
-
-The pinned skill-symlink fixture filters catalog discovery with `kind=skills`.
-Suite extensions push skill candidates beyond the first default 50-row page;
-filtering tests the same discovery, activation, symlink and reload assertions
-without depending on the installed extension count. A checksum guard rejects
-changed upstream fixtures instead of silently applying the adjustment.
 
 ## Job readiness
 
@@ -247,42 +200,25 @@ and source inventories, and rerun disabled-feature, ordinary streaming and MCP
 regressions against the native implementation. No runtime data migration is
 required by either layer; their settings are additive public configuration.
 
-## Native provider and web integration
+## Provider and web integration
 
-The current base includes native OpenCode Go OAuth, account rotation, portable
-cross-protocol replay, Gemini routing, OpenCode Zen, Discord, `/config`, native
-artifacts, push kernel/sidebar status and demand-driven terminal rendering.
-Go's provider extension uses pristine upstream code; the suite no longer
-replaces the daemon's profile protocol selection. Narrow Go wire/catalog
-additions keep SDK-metadata routing on native host model lists: the host
-caches each endpoint's list, refreshes it behind the caller once 5 minutes old
-and keeps the saved list when a refetch fails. Package checks exercise native Go
-rotation, OAuth organization headers and all four wire routes.
-The current upstream binds request rotation to explicitly selected accounts
-(`accountIds`); catalog discovery still inspects configured profiles without
-sending credentials to another endpoint. Legacy Alibaba profiles migrate
-to OpenAI-compatible profiles through upstream's account migration.
+The pristine upstream provider handles OpenCode Go OAuth, account rotation and
+protocol selection. Suite wire/catalog additions preserve SDK-metadata routing;
+package checks exercise rotation, OAuth organization headers and all four wire
+routes. See [provider configuration](configuration.md#opencode-go).
 
-The November base is `ff9d6dc0b83d4ee917f0e4b4dbf365a42684364d`, which replaced
-`154c6911d6a491aeeecacf26a06b6ae8c4bc70e1`.
-It retains native ACP, shell commands, kernel pooling/standby, fast provider modes,
-Mistral and Perplexity providers, and HTTP MCP/OAuth. Lazy MCP uses upstream's
-native client rather than the removed Barrel dependency. The Zed transport uses
-native method selection; its temporary transport shim is retired. Formatting,
-LSP, questions, FFF/RTK and provider availability remain suite features. Child
-model listings follow upstream's profile-qualified names and concurrent discovery.
-The base adds a repetition watch that notes a turn reusing the same bindings.
-The suite seals installed daemon builds after fixup, matching upstream's build
-identity fast path, and verifies the seal against installed bytes.
+`upstream/pin.json` records the current Albedo revision; `flake.lock` records
+NUR. Do not maintain a second pin history here. Lazy MCP uses upstream's native
+client, and Zed uses native transport method selection.
 
 NUR does not yet bundle the native web assets. `nix/modules/web.nix` builds the
 pinned upstream web client with upstream's dependency hash; both suite packages
-set `ALBEDO_WEB_DIST` on the CLI wrapper. Retire that packaging bridge when NUR
-supplies its own web derivation and wrapper. No web source is replaced.
+set `ALBEDO_WEB_DIST` on the CLI wrapper. Retire that bridge when NUR supplies
+its own web derivation and wrapper. No web source is replaced.
 
-`albedo web` now serves through a daemon-owned child and keeps running after the
-command exits; `--stop` disables it. The packaging tests use `--foreground --local`
-to keep their listener isolated and verify per-command `ALBEDO_WEB_DIST` overrides.
+`albedo web` serves through a daemon-owned child and keeps running after the
+command exits; `--stop` disables it. Packaging tests use `--foreground --local`
+to isolate the listener and verify per-command `ALBEDO_WEB_DIST` overrides.
 Managed serving uses the daemon's environment, not an invoking CLI's override.
 
 ## Automated sparse upstream updates
@@ -312,8 +248,9 @@ The manifests are generated from pristine candidate bytes. The existing
 `sourceFiles` inventory continues to list the server overlay (including its
 suite-only additions); client replacements are tracked by
 `upstream/client.sha256` alone and never appear in it. The whole-source NAR hash
-pins the pristine candidate tree without a second file inventory. Generated `__pycache__` directories and
-`.pyc` files are excluded from overlay discovery and inventories. The package's
+pins the pristine candidate tree without a second file inventory. Generated
+`__pycache__` directories and `.pyc` files are excluded from overlay discovery
+and inventories. The package's
 source hash assertion, checksum guards, original
 NUR post-patch hooks and both package variants remain intact. Equal Albedo
 revision/hash is a no-op, even if NUR moved: packaging-only NUR updates require

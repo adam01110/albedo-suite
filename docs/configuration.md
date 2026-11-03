@@ -116,7 +116,7 @@ Configure the commands and file suffixes you need. The formatter uses project
 treefmt configuration first, then `nix fmt`, then the suffix chains.
 
 It tracks local `files.write` and `files.edit` calls. Format shell, standard
-library Python and remote edits explicitly. [Deferred formatting](formatter.md)
+library Python and remote edits explicitly. [Explicit file checks](formatter.md)
 explains file staging, retries and cancellation.
 
 ## LSP

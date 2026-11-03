@@ -43,7 +43,10 @@ Python sessions call `files.fff` RPC, and the daemon uses the worker's private
 stdin/stdout JSON protocol (`--stdio`). There is no Unix-socket fallback or
 per-kernel worker. Each worker caches at most four root indexes. Search refreshes
 the index before returning results; the worker does not trust watcher updates
-alone.
+alone. Workers start on demand and exit after 60 seconds without a search.
+Requests, including queue time, have a 30-second worker deadline. Closing one
+session does not stop another session's worker; workers are not session
+background jobs.
 
 FFF cannot include hidden or ignored files in its index. `hidden=True` and
 `ignored=True` are explicit errors, not quiet empty results. Unsupported search
@@ -66,15 +69,6 @@ when changing RTK. The upstream checksum gate also covers replaced run/files
 modules and their tool instructions. An Albedo update must merge upstream
 changes before refreshing those checksums.
 
-The motivating benchmark found RTK retained three failure messages in 728 bytes,
-where a 924-byte native tail retained two. FFF exact/content searches were faster
-on a warm 1500-file synthetic corpus, but excluded bridge and refresh overhead.
-Those results establish different capabilities, not production-wide speedups.
-
-A packaged Python-adapter check on the same 1500-file corpus included IPC and
-refresh overhead (11 requests, median of the last 10, 100-result cap): exact
-search 3.0 ms versus native 8.6 ms; content search 2.3 ms versus native 10.7 ms.
-The first exact search took 68 ms. Unfiltered paths took 54 ms versus native
-9.4 ms; fuzzy search took 57 ms with no equivalent native operation. Broad
-listings still materialize 1000 native metadata records: smaller pages change
-FFF tie ordering, so the suite retains the fixed page size for stable prefixes.
+Broad path listings materialize 1000 native metadata records before applying
+the requested result cap. Smaller native pages change FFF tie ordering; the
+fixed page size preserves stable prefixes.

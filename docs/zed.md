@@ -30,80 +30,31 @@ sends `native_app_port` and `native_app_public_key` only; the editor's optional
 `system_id` is omitted because Albedo has no editor system identity, and zed.dev
 forwards that parameter only when it is present.
 
-### Observed browser path
+### Callback security and remote use
 
-Inspected unauthenticated on 2026-11-03:
+The browser must reach the daemon's loopback listener. A browser on another
+machine needs an explicitly arranged tunnel; Albedo does not expose the
+listener on the network or provide a callback-paste bypass. Both loopback
+address families share one port. Attempts expire after five minutes;
+cancellation closes the listener and discards pending credentials.
 
-1. `GET https://zed.dev/native_app_signin?-query` returns 200. Its client script
-   reads `native_app_port`, `native_app_public_key` and the optional `system_id`,
-   sets the `zed_signup_redirect` cookie, and navigates to
-   `https://cloud.zed.dev/frontend/auth/sign_in?next=%2Fapi%2Fauth%2Fcallback%2Fnative_app...`.
-2. That route redirects to GitHub OAuth
-   (`github.com/login?client_id=Iv1.7e72654f487b56be&return_to=%2Flogin%2Foauth%2Fauthorize...redirect_uri=https%3A%2F%2Fcloud.zed.dev%2Ffrontend%2Fauth%2Fgithub%2Fcallback`).
-   A browser with no zed.dev session stops here, on GitHub's sign-in page.
-3. After GitHub authorization, the session-authenticated callback
-   `https://cloud.zed.dev/frontend/api/auth/callback/native_app?native_app_port=..&native_app_public_key=..`
-   encrypts the account's access token for that public key and redirects the
-   browser to the loopback listener.
-4. The listener answers `302` to `https://zed.dev/native_app_signin_succeeded`,
-   which renders "Authentication Successful".
+The listener requires a loopback `Host`, accepts arbitrary callback paths and
+extra query parameters, and decrypts callbacks with a fresh RSA-2048 key using
+OAEP-SHA256 or legacy PKCS#1 v1.5 padding. Malformed or undecryptable callbacks
+receive `404` without ending the attempt. A valid callback redirects to
+`https://zed.dev/native_app_signin_succeeded`.
 
-Nothing in that page or its scripts checks for an installed editor. The dead
-paths are `https://zed.dev/api/auth/callback/native_app` (HTTP 404) and
-`https://cloud.zed.dev/api/auth/callback/native_app` (`Not Found`); the `/frontend`
-callback answers `401 unauthorized` without a zed.dev session. A browser whose
-`next` resolves to a dead path reports the 404 of zed issue #28932, which is a
-zed.dev-side failure for specific accounts, not an editor requirement.
+The protocol has no verified sender signature or state/nonce echo. Encryption
+binds a callback to its receiver, **not** its sender; identity confirmation is
+required before saving any credential. Keep the sign-in URL private and cancel
+if the validated identity is not yours. Browser `Origin` headers are not required
+because a top-level redirect may omit them.
 
-Steps 1, 2 and 4 were observed live, step 4 against Albedo's own listener; step
-3's authenticated redirect was not, because it needs a Zed account that this
-integration must not use. What is verified instead is the receiving side, against
-the editor's own contract: any
-callback path with any extra query parameters, `user_id` plus a base64url
-ciphertext of the access token decrypted with RSA-OAEP-SHA256 or the older
-PKCS#1 v1.5 padding, and a `302` to the success page. Both loopback addresses share
-one port, so a browser resolving `localhost` to `::1` reaches the same attempt.
-`test/albedo_zed_login_test.erl` drives that contract over a real loopback socket.
-
-The browser must reach the daemon's loopback listener. This works directly when
-they run on the same machine. A browser on another machine cannot complete the
-remote daemon's loopback callback without an explicitly arranged tunnel; Albedo
-does not expose that listener on the network or provide a callback-paste bypass.
-Attempts expire after five minutes, and cancellation closes the listener and
-discards pending credentials. The editor gives its own attempt 100 seconds; the
-longer window is deliberate, so a sign-in that needs a password manager or a
-second factor is not lost.
-
-The listener checks the `Host` header and accepts any callback path, and a
-callback that does not decrypt is answered `404` while the attempt keeps
-waiting. The editor answers `302` before parsing anything, checks no `Host`, and
-aborts the whole sign-in on malformed parameters. Each is deliberate: the
-stricter sender check keeps another local process from finishing the attempt, and
-the tolerant receiver keeps a mistyped or unrelated request from ending it.
-
-The callback protocol has no verified state/nonce echo or sender signature.
-Fresh RSA-2048 OAEP-SHA256 keys bind each encrypted callback to its receiver and
-attempt, **not** to its sender. A callback that does not decrypt is answered `404`
-and the attempt keeps waiting, so a wrong or hostile request never reports success
-and never ends the flow early. The listener is loopback-only, requires a loopback
-`Host`, and returns at expiry, on cancel, or when the flow is abandoned rather than
-waiting forever. Keep the official sign-in URL private; the local listener never
-serves that URL or its public-key material to web origins.
-
-The listener accepts any callback path and any extra query parameters, and it
-does not reject a browser `Origin` or `Sec-Fetch-Site` header. Both are
-deliberate: zed.dev owns the path and may append parameters, and a browser
-top-level redirect carries no `Origin` at all. The check that matters is the
-ciphertext: only the attempt's own RSA key decrypts it, so a cross-site page can
-make the browser *reach* the listener but cannot make it report an identity. A
-decrypted callback only shows an identity for the user to confirm, and nothing is
-stored before that confirmation, so a forged callback costs the user one
-cancelled confirmation screen rather than a credential.
-
-If zed.dev's own callback fails, the failure is at zed.dev: Albedo cannot complete
-that hop for the account, and no other credential can stand in. Albedo never
-stores a credential the callback did not deliver and never substitutes another
-account's identity.
+Unauthenticated browser checks observed the sign-in page, GitHub redirect and
+Albedo's success redirect, not the authenticated zed.dev callback. Offline
+loopback tests verify the receiving contract; they do not establish live account
+sign-in. A failure at zed.dev's callback cannot be repaired by substituting
+another credential or account.
 
 ### One authentication path
 
@@ -330,49 +281,21 @@ and [firsthand billing report](https://github.com/steipete/CodexBar/issues/3172)
 
 ## Verification and sources
 
-`test/suite_zed_test.gleam` covers request controls, each model family's
-`provider_request` field by field (Anthropic messages, Responses input items and
-their `type`, Gemini parts and function responses, Chat Completions messages),
-replayed signed thinking, model-issued and absent Gemini signatures, tool-result
-media placement, conditional encrypted reasoning with its replay, thinking/usage
-reduction with exact totals, the strict-schema rules and every schema-bearing
-keyword they are checked behind, the Codex policy branch, status failures, the
-capability header and NDJSON chunk boundaries. `test/suite_zed_login_test.gleam`
-and its Erlang fixture exercise RSA callback decryption with both paddings,
-permissive callback paths and query parameters, the 302 success answer, wrong
-attempts and malformed ciphertext, loopback `localhost`/`::1` reachability,
-validated identity including an account without a default organization,
-revision-bound confirmation, cancellation/expiry,
-persistence/logout, account/organization cache isolation, concurrent renewal,
-malformed JWT caches, pre-output 401 retry and expired/outdated headers. Its
-clean-home case creates credentials only through the browser callback, confirms,
-persists, discovers models and completes inference after a token refresh. It also
-refuses a profile `apiKey`, a daemon `ZED_TOKEN` and a custom base URL, and checks
-that the catalog advertises no environment credential. Public
-HTTPS URLs are mapped to isolated HTTP fixtures only by test-loaded transport
-code. Production has no test origin, credential injection or origin override
-setting: the loopback HTTP base URLs described above are the only allowance, and
-they still send the profile's own credential.
-`test/suite_quota_test.gleam` covers the Zed account reading: a numeric limit
-becomes a used percentage, `unlimited` carries none, a payload without a usable
-reading is an error rather than a zero, a rejected credential says so, and the
-poller records the row `/quota` lists. `test/zed_e2e_test.py` exercises native
-HTTP streaming, thinking/usage reduction, a split multibyte reply and tool replay
-through an isolated daemon whose credential store is seeded with a browser-signed
-account. It drives one GenerateContent turn on the Gemini route end to end,
-asserts that a profile `apiKey`, a daemon `ZED_TOKEN` and a custom base URL are
-each refused before any request, checks that the `/zed-budget` route rejects
-other methods, query parameters and paths, and clears a stored `apiKey` with the
-save a browser sign-in issues so the refused profile then infers with its stored
-account. Tests use fake
-credentials and local fixtures, not the user's Zed account. The same daemon suite
-verifies `/zed-budget` discovery/invocation without a billing cookie and rejects
-invalid configuration without contacting billing. `checks.zed-budget` runs offline transport fixtures against the
-production billing reader, covering USD/unknown/zero/over-limit values, schema
-errors, credential isolation, redirects, expired sessions, response bounds,
-caching and source labeling. Those fixtures stand in for the HTTP client, so the
-reader's branching and the options it passes are verified, not the installed
-`hackney`'s own redirect, pooling or TLS behaviour.
+Tests use fake credentials and local fixtures, not the user's Zed account:
+
+| Tests | Coverage |
+| --- | --- |
+| `test/suite_zed_test.gleam` | Native request shapes, typed Responses items, strict schemas, thinking/signature replay, usage and NDJSON failures. |
+| `test/suite_zed_login_test.gleam` and its Erlang fixture | Loopback decryption, identity confirmation, expiry/cancel, persistence, account isolation, JWT renewal and rejected legacy credentials/origins. |
+| `test/suite_quota_test.gleam` | Numeric/unlimited edit-prediction readings, unusable payloads and rejected credentials. |
+| `test/zed_e2e_test.py` | Isolated daemon streaming, tool replay, Gemini routing, credential refusal and budget-page discovery without a billing cookie. |
+| `checks.zed-budget` | Billing value validation, credential isolation, redirect refusal, bounds, caching and source labels. |
+
+Login tests map public HTTPS URLs to local fixtures using test-loaded transport
+code. Production has no origin override or credential-injection setting; only
+the loopback HTTP base URLs described above are permitted. Billing fixtures
+verify reader decisions and HTTP options, not the installed HTTP client's TLS,
+redirect or connection-pooling behavior.
 
 Protocol references:
 
@@ -382,7 +305,8 @@ Protocol references:
 - [RSA OAEP protocol](https://github.com/zed-industries/zed/blob/main/crates/rpc/src/auth.rs)
 - [Cloud account and token client](https://github.com/zed-industries/zed/blob/main/crates/cloud_api_client/src/cloud_api_client.rs)
 - [Account/organization/token schema](https://github.com/zed-industries/zed/blob/main/crates/cloud_api_types/src/cloud_api_types.rs)
-- [Public browser sign-in route](https://zed.dev/native_app_signin) and its callback route, inspected unauthenticated on 2026-11-03
+- [Public browser sign-in route](https://zed.dev/native_app_signin) and its
+  callback route, inspected unauthenticated on 2026-11-03
 - [Account-specific 404 after sign-in](https://github.com/zed-industries/zed/issues/28932), closed as not planned
 - [Loopback redirect reported as not received](https://github.com/zed-industries/zed/issues/57693)
 - [zed2cli reference only at 51e20772](https://github.com/6yte96/zed2cli/tree/51e20772373fe926a23a6027e328554c17bebe3a)

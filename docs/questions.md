@@ -1,8 +1,8 @@
 # User questions
 
 The suite adds a default-enabled `questions` extension. It uses Albedo's
-existing resource-page UI, sidebar and authenticated services, not a terminal
-stdin read or a blocking daemon actor.
+authenticated services, durable ledger and full-page `/questions` UI, not a
+terminal stdin read or a blocking daemon actor.
 
 ```python
 q = await ask_user("Where should this deploy?", options=["staging", "production"])
@@ -11,9 +11,22 @@ q = await ask_user("Where should this deploy?", options=["staging", "production"
 
 The tool records a question and returns immediately. End the turn rather than
 polling or continuing work that needs the answer. Tell the user to open
-`/questions`. The sidebar shows pending questions for the current session.
-The page accepts a free-text answer with `ctrl+e`; options are suggestions,
-not restrictions. `ctrl+d` dismisses a question after confirmation.
+`/questions`; the sidebar shows pending questions for the current session.
+
+Select a question and press Enter or `ctrl+e` to answer. Suggested answers appear
+as a full-page vertical list. Arrow keys or `j`/`k` move between options; Enter
+submits the selected answer. Number keys select an option without submitting it.
+Long lists scroll, and the detail pane shows the question and selected answer.
+
+Choose "Type your own answer", or press `ctrl+e` in the answer list, for free
+text. Questions without suggestions open text entry directly. Escape returns
+from text entry to the options, then to the question list without dismissing
+anything. `ctrl+d` in the question list dismisses after confirmation. Chat drafts
+and attachments are untouched; there is no inline chooser or `ctrl+q` binding.
+
+Options are suggestions, not restrictions. All answers use the displayed
+question's ETag and the existing page action; stale answers are rejected rather
+than silently overwriting another client's response.
 Answering or dismissing submits a user turn to the **asking session**, which resumes
 when available. No model-accessible answer operation exists.
 

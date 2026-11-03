@@ -9,9 +9,6 @@ Visual mode, dot-repeat, macros, buffer search and Ex commands are absent.
 There is no meaningful percentage of "full Vim" implemented; the tables below
 list the supported surface rather than implying full compatibility.
 
-This describes the suite source, including the latest Normal-mode startup and
-literal-argument changes. An installed client needs those changes deployed before
-it has that behavior; editing this repository does not update a running client.
 Both suite packages include the same Vim support.
 
 ## Modes and application keys

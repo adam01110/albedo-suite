@@ -1,3 +1,5 @@
+<!-- rumdl-disable MD033 MD041 -->
+
 <div align="center">
 
 # albedo-suite
@@ -25,13 +27,16 @@ providers, skills and SOPS declarations stay in Infra.
 | [Lazy MCP](docs/lazy-mcp.md) | Connect to a server when explicitly requested, rather than at session startup. |
 | [Explicit file checks](docs/formatter.md) | Format tracked files and collect diagnostics in one `files.check()` call. |
 | [Local LSP](docs/lsp.md) | Start a language server on an explicit diagnostics or navigation call. |
-| [User questions](docs/questions.md) | Record questions, answer in `/questions`, and resume the asking session. |
+| [User questions](docs/questions.md) | Answer durable questions inline or through `/questions` and resume the asking session. |
 | [Monitor snapshots](docs/monitor.md) | Export running-agent status and cached connected-account quotas without starting the daemon. |
 | [RTK and FFF](docs/tool-parity.md) | Filter supported commands through RTK and replace file search with FFF. |
 | [Zed provider](docs/zed.md) | Native hosted-model streaming with tool choice, thinking, effort and usage. |
+| [Provider availability](docs/provider-availability.md) | Disable or re-enable saved profiles with Ctrl+T in `/login`. |
 | CLI resume | `albedo resume` without an ID reopens the newest non-archived session in the current directory. |
 | [Vim editing](docs/vim.md) | Modal composer motions and edits, with the current mode in the footer. |
 | [TUI activity](docs/activity-sidebar.md) | Show passive current and recent tool activity below background jobs. |
+| [Image previews](docs/tool-images.md) | Display attachments and tool-returned images in supported terminals. |
+| [Prompt context](docs/prompt-context.md) | Keep startup references compact and retrieve full API docs explicitly. |
 | CLI diffs | Show diffs by default when enabled. The existing toggle still works. |
 | Home Manager | Install Albedo and merge settings while preserving runtime authentication. |
 
@@ -45,8 +50,7 @@ what to remove.
 
 ## Usage
 
-Add the flake input. This repository has not been published, so use a local
-checkout:
+Add the flake input using a local checkout:
 
 ```nix
 inputs.albedo-suite = {
@@ -92,8 +96,9 @@ Edit the files under `src/` directly. There are no patch files. NUR supplies the
 pinned upstream build, and checksum checks reject changed upstream files before
 the suite copies its replacements into that build.
 
-[Development details](docs/development.md) cover upstream updates and daemon
-tests. [Third-party notices](THIRD_PARTY_NOTICES.md) record source attribution.
+[Development details](docs/development.md) cover checks, daemon tests and the
+upstream updater. Read the [maintenance guide](docs/agent-maintenance.md) before
+changing suite behavior or updating upstream.
 
 ## License
 

@@ -26,7 +26,8 @@ retain their own terms.
 
 Modifications add opt-in lazy MCP lifecycle/bindings, explicit staged formatting
 and local LSP batch checks, isolated local LSP compatibility tools, durable user
-questions, mandatory RTK command filtering and FFF search,
+questions with selectable full-page answers, mandatory RTK command filtering and
+FFF search,
 a native Zed provider using existing protocol adapters and bounded NDJSON framing,
 Zed browser callback/account confirmation and account-scoped inference JWT renewal,
 narrow native OAuth confirmation and native HTTP transport integration,
