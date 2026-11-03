@@ -79,6 +79,36 @@ func (m ChatModel) activityRows() []PageRow {
 	return rows
 }
 
+// activityCount uses the transcript's turn total so history eviction and the
+// six-row display limit do not stop the counter.
+func (m ChatModel) activityCount() int {
+	completed := 0
+	if m.transcript.turn != nil {
+		completed = m.transcript.turn.tools
+	} else if m.History != nil {
+		entries := m.History.Entries()
+		for i := len(entries) - 1; i >= 0; i-- {
+			e := entries[i]
+			if e.Kind == EntryTurnEnd {
+				completed = max(completed, e.Tools)
+				break
+			}
+			if e.Kind == EntryUser && (e.Source == "" || e.Source == "chat") {
+				break
+			}
+			if e.Kind == EntryTool {
+				completed++
+			}
+		}
+	}
+	pending := len(m.progressOrder)
+	if pending == 0 && (m.activityRemainder.Text != "" ||
+		(m.Status.Running && !m.Status.Idle && !m.Stopped && !m.TurnFailed && !m.activityEnded)) {
+		pending = 1
+	}
+	return completed + pending
+}
+
 // Python status is an invocation outcome, never a subprocess exit-code verdict.
 func activityResult(e HistoryEntry) (string, PageTone) {
 	if e.ToolName == "python" {

@@ -6,7 +6,9 @@ there is no model-maintained plan, extra request, setting or persistent log.
 
 Up to six content rows show the current phase or three active calls plus an
 additional-call count, followed by recent tool invocations from the latest turn.
-Settled actions remain visible while idle. A new user turn clears them; mail
+The activity counter includes the full latest-turn total, not just the six
+visible rows, and is also used in the narrow-screen footer. Settled actions
+remain visible while idle. A new user turn clears them; mail
 injected into an existing turn does not. Replayed settled tools can reconstruct
 recent rows, but replayed progress never becomes live work. Older history paging
 preserves the latest turn.

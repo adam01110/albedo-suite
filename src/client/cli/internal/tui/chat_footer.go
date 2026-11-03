@@ -62,20 +62,27 @@ func (m ChatModel) jobRows() []PageRow {
 	return rows
 }
 
-// activeGlances lists the sidebar's sections in order, leaving out empty ones:
-// extensions, background jobs past their grace, then passive activity.
-func (m ChatModel) activeGlances() []PageGlance {
-	var glances []PageGlance
+// sidebarGlance separates the total activity count from its visible rows.
+type sidebarGlance struct {
+	PageGlance
+	total int
+}
+
+func (g sidebarGlance) count() int { return max(g.total, len(g.Rows)) }
+
+// activeGlances lists nonempty extensions, background jobs, then activity.
+func (m ChatModel) activeGlances() []sidebarGlance {
+	var glances []sidebarGlance
 	for _, g := range m.Glances {
 		if len(g.Rows) > 0 {
-			glances = append(glances, g)
+			glances = append(glances, sidebarGlance{PageGlance: g})
 		}
 	}
 	if rows := m.jobRows(); len(rows) > 0 {
-		glances = append(glances, PageGlance{Title: "background jobs", Rows: rows})
+		glances = append(glances, sidebarGlance{PageGlance: PageGlance{Title: "background jobs", Rows: rows}})
 	}
 	if rows := m.activityRows(); len(rows) > 0 {
-		glances = append(glances, PageGlance{Title: "activity", Rows: rows})
+		glances = append(glances, sidebarGlance{PageGlance: PageGlance{Title: "activity", Rows: rows}, total: m.activityCount()})
 	}
 	return glances
 }
@@ -89,7 +96,7 @@ func (m ChatModel) glanceCounts() []string {
 	}
 	var counts []string
 	for _, g := range omitted {
-		counts = append(counts, fmt.Sprintf("%s %d", g.Title, len(g.Rows)))
+		counts = append(counts, fmt.Sprintf("%s %d", g.Title, g.count()))
 	}
 	// a stale kernel is swapped before the next turn unless a job keeps it
 	if m.Status.KernelStale && m.backgroundJobCount() > 0 {
@@ -102,7 +109,7 @@ func (m ChatModel) glanceCounts() []string {
 // within the viewport's height. A glance with no room for its title and one
 // row is returned as omitted. The stack is cached on what it draws from; see
 // frameCache.glances.
-func (m ChatModel) sidebarRows() ([]string, []PageGlance) {
+func (m ChatModel) sidebarRows() ([]string, []sidebarGlance) {
 	if m.frame != nil {
 		block := m.frame.glances(m)
 		return block.rows, block.omitted
@@ -111,9 +118,9 @@ func (m ChatModel) sidebarRows() ([]string, []PageGlance) {
 }
 
 // buildSidebar stacks the sidebar's rows without consulting the frame cache.
-func (m ChatModel) buildSidebar() ([]string, []PageGlance) {
+func (m ChatModel) buildSidebar() ([]string, []sidebarGlance) {
 	var rows []string
-	var omitted []PageGlance
+	var omitted []sidebarGlance
 	room := m.Viewport.Height()
 	for _, g := range m.activeGlances() {
 		gap := min(1, len(rows))
@@ -132,12 +139,12 @@ func (m ChatModel) buildSidebar() ([]string, []PageGlance) {
 
 // glanceRows renders a glance's title and rows in at most limit rows, one
 // line per row.
-func (m ChatModel) glanceRows(g PageGlance, limit int) []string {
+func (m ChatModel) glanceRows(g sidebarGlance, limit int) []string {
 	shown := min(limit-1, len(g.Rows))
 	if len(g.Rows) > shown {
 		shown = limit - 2
 	}
-	rows := []string{DefaultStyles.Faint.Render(fmt.Sprintf("%s · %d", g.Title, len(g.Rows)))}
+	rows := []string{DefaultStyles.Faint.Render(fmt.Sprintf("%s · %d", g.Title, g.count()))}
 	for _, item := range g.Rows[:shown] {
 		mark, style := "○", DefaultStyles.Faint
 		switch item.Tone {

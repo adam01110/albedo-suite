@@ -412,7 +412,7 @@ type frameCache struct {
 // not fit the height, and the column as padded for the frame.
 type sidebarBlock struct {
 	rows    []string
-	omitted []PageGlance
+	omitted []sidebarGlance
 	column  []string
 }
 
@@ -429,22 +429,22 @@ func (c *frameCache) forgetComposer() {
 // mutated in place (a job's tone, a row's text), and a key that aliased it
 // would compare the change with itself.
 type sidebarKey struct {
-	glances []PageGlance
+	glances []sidebarGlance
 	width   int
 	height  int
 }
 
 // same compares a stored key with what the model would build one from now.
-func (k sidebarKey) same(glances []PageGlance, width, height int) bool {
+func (k sidebarKey) same(glances []sidebarGlance, width, height int) bool {
 	return k.width == width && k.height == height &&
 		sameGlances(k.glances, glances)
 }
 
 // glanceKey copies the glance list down to what the sidebar draws from it.
-func glanceKey(glances []PageGlance) []PageGlance {
-	key := make([]PageGlance, len(glances))
+func glanceKey(glances []sidebarGlance) []sidebarGlance {
+	key := make([]sidebarGlance, len(glances))
 	for i, g := range glances {
-		key[i] = PageGlance{Title: g.Title, Rows: make([]PageRow, len(g.Rows))}
+		key[i] = sidebarGlance{PageGlance: PageGlance{Title: g.Title, Rows: make([]PageRow, len(g.Rows))}, total: g.total}
 		for j, row := range g.Rows {
 			key[i].Rows[j] = PageRow{ID: row.ID, Text: row.Text, Tone: row.Tone}
 		}
@@ -493,12 +493,12 @@ func sameStrings(a, b []string) bool {
 }
 
 // sameGlances compares two glance lists by what the sidebar draws from them.
-func sameGlances(a, b []PageGlance) bool {
+func sameGlances(a, b []sidebarGlance) bool {
 	if len(a) != len(b) {
 		return false
 	}
 	for i := range a {
-		if a[i].Title != b[i].Title || !samePageRows(a[i].Rows, b[i].Rows) {
+		if a[i].Title != b[i].Title || a[i].count() != b[i].count() || !samePageRows(a[i].Rows, b[i].Rows) {
 			return false
 		}
 	}
