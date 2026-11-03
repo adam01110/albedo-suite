@@ -10,6 +10,7 @@ import albedo/harness/extension/selection
 import albedo/harness/extensions/bedrock/reasoning
 import albedo/harness/runtime
 import albedo/openai_api/types as albedo_types
+import gleam/dict
 import gleam/dynamic/decode
 import gleam/int
 import gleam/json
@@ -64,11 +65,7 @@ pub fn profile_endpoint(
   home: String,
   provider: String,
 ) -> option.Option(String) {
-  configuration.settings(
-    home,
-    provider,
-    decode.optional_field("baseUrl", "", decode.string, decode.success),
-  )
+  configuration.settings(home, provider, base_url())
   |> result.unwrap("")
   |> extension.clean_endpoint
   |> catalog_endpoint(home, provider, _)
@@ -81,6 +78,23 @@ fn catalog_endpoint(
   ordinary: option.Option(String),
 ) -> option.Option(String)
 
+/// `profile_endpoint` for every saved profile, by name, from one read.
+pub fn profile_endpoints(
+  home: String,
+) -> dict.Dict(String, option.Option(String)) {
+  configuration.every_settings(home, base_url())
+  |> result.unwrap(dict.new())
+  |> dict.map_values(fn(profile, url) {
+    result.unwrap(url, "")
+    |> extension.clean_endpoint
+    |> catalog_endpoint(home, profile, _)
+  })
+}
+
+fn base_url() -> decode.Decoder(String) {
+  decode.optional_field("baseUrl", "", decode.string, decode.success)
+}
+
 /// The reasoning efforts a session on `provider` accepts for `model`.
 pub fn model_efforts(
   host: runtime.Runtime,
@@ -92,9 +106,24 @@ pub fn model_efforts(
     option.Some(efforts) -> efforts
     option.None -> {
       let endpoint = profile_endpoint(home, provider)
-      runtime.model_efforts(host, model, endpoint)
+      runtime.model_efforts(
+        host,
+        profile_extension(home, provider),
+        model,
+        endpoint,
+      )
     }
   }
+}
+
+/// The extension a saved profile uses; profiles predating the field are openai.
+fn profile_extension(home: String, provider: String) -> String {
+  configuration.settings(
+    home,
+    provider,
+    decode.optional_field("extension", "openai", decode.string, decode.success),
+  )
+  |> result.unwrap("openai")
 }
 
 /// Only a saved Bedrock Converse profile has these verified wire controls.
@@ -105,19 +134,8 @@ pub fn profile_effort_override(
   provider: String,
   model: String,
 ) -> option.Option(List(String)) {
-  let provider_extension =
-    configuration.settings(
-      home,
-      provider,
-      decode.optional_field(
-        "extension",
-        "openai",
-        decode.string,
-        decode.success,
-      ),
-    )
-  case provider_extension {
-    Ok("bedrock") -> {
+  case profile_extension(home, provider) {
+    "bedrock" -> {
       let api =
         configuration.settings(
           home,
@@ -261,7 +279,11 @@ pub fn read_compact_at(
   let info =
     runtime.global(state.host)
     |> result.unwrap([])
-    |> extension.model_info(state.info.model, endpoint)
+    |> extension.provider_model_info(
+      profile_extension(state.home, state.info.provider),
+      state.info.model,
+      endpoint,
+    )
   let model_window = option.then(info, selection.window)
   let effective = option.or(session_window, model_window)
   let #(source, message) = case session_window, model_window {

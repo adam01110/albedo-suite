@@ -83,7 +83,7 @@
       touch $out
     '';
 
-    checks.package-licenses = assert pkgs.lib.all (package: package.meta.license.spdxId == "MPL-2.0") [
+    checks.package-licenses = assert pkgs.lib.all (package: pkgs.lib.licenses.toSPDX package.meta.license == "AGPL-3.0-only WITH Classpath-exception-2.0") [
       # keep-sorted start
       runtime
       runtime.client
@@ -94,7 +94,7 @@
       suitePackages.albedo-web
       # keep-sorted end
     ];
-    assert map (license: license.spdxId) suitePackages.albedo-fff.meta.license == ["MIT" "MPL-2.0"];
+    assert pkgs.lib.licenses.toSPDX suitePackages.albedo-fff.meta.license == "(AGPL-3.0-only WITH Classpath-exception-2.0) AND MIT";
       runCommand "albedo-package-license-tests" {
         nativeBuildInputs = [pkgs.python311];
         ALBEDO_LICENSE_PACKAGES = builtins.toJSON {

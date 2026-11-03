@@ -1,7 +1,7 @@
 {
   "project": "https://tangled.org/okami.mom/albedo",
-  "rev": "154c6911d6a491aeeecacf26a06b6ae8c4bc70e1",
-  "narHash": "sha256-OxEm9iKmMqO2IHw1A5XEcc7Xq018M747eDCKoLNKCso=",
+  "rev": "ff9d6dc0b83d4ee917f0e4b4dbf365a42684364d",
+  "narHash": "sha256-CqcCHkBiawEisqJBmeT93ViKbOw9uIlWLhNHktrPIMs=",
   "sourceFiles": [
     "docs/openapi.yaml",
     "priv/python/albedo_fff.mjs",

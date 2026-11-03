@@ -64,13 +64,15 @@ pub type Loop {
     progress_reset: fn(Int) -> Nil,
     progress_finish: fn(String) -> Nil,
     /// Commits inputs at a stage; a model response passes how long the
-    /// model thought before it. Answers the shared daemon time and the seq
-    /// of its first assistant row, or the identified tool result.
+    /// model thought before it, and what its commit also saves. Answers the
+    /// shared daemon time and the seq of its first assistant row, or the
+    /// identified tool result.
     commit: fn(
       List(types.Input),
       conversation.Stage,
       Option(Int),
       Option(conversation.ToolIdentity),
+      conversation.Follow,
     ) -> Result(#(Int, Option(Int)), String),
     /// Appends image fit rows ahead of the request that needs them.
     commit_fits: fn(List(transcript.ImageFit)) -> Result(Nil, String),
@@ -81,7 +83,6 @@ pub type Loop {
       Option(compaction.Observation),
       Bool,
     ) -> Nil,
-    record_usage: fn(usage.Metadata) -> Result(Nil, String),
     drain_steering: fn() -> Result(List(types.Input), String),
     /// Reports the pin's compaction baseline (`Some`) or that compaction
     /// replaced the history the pinned prompt was cached with (`None`).
@@ -318,7 +319,9 @@ fn converse(
       cache_loss,
     )
   let replay = list.map(turn.output, types.Replay)
-  use #(_timestamp, seq) <- result.try(state.commit(
+  // The request row learns the seq of the row it produced, and the session
+  // its usage, in the response's own commit.
+  use _ <- result.try(state.commit(
     replay,
     case turn.tool_calls {
       [] -> conversation.Idle
@@ -326,9 +329,8 @@ fn converse(
     },
     turn.thought_ms,
     None,
+    conversation.Follow(row, Some(completed_usage)),
   ))
-  attach(state, row, seq)
-  use _ <- result.try(state.record_usage(completed_usage))
   let speechless_turn = !state.allow_empty_reply && speechless(turn)
   let state =
     Loop(
@@ -390,7 +392,13 @@ fn converse(
       let state = Loop(..state, repeats:)
       use _ <- result.try(commit_hooked(state, added, conversation.Tool))
       use steering <- result.try(state.drain_steering())
-      use _ <- result.try(state.commit([], conversation.Model, None, None))
+      use _ <- result.try(state.commit(
+        [],
+        conversation.Model,
+        None,
+        None,
+        conversation.no_follow,
+      ))
       run(
         state,
         id,
@@ -594,6 +602,7 @@ fn run_tool(
           tool_progress.call_title(call),
           failed,
         )),
+        conversation.no_follow,
       ))
       let saved = saved_trace(state, output)
       let _ = case output {
@@ -771,7 +780,9 @@ fn commit_hooked(
 ) -> Result(Nil, String) {
   case inputs {
     [] -> Ok(Nil)
-    _ -> state.commit(inputs, stage, None, None) |> result.replace(Nil)
+    _ ->
+      state.commit(inputs, stage, None, None, conversation.no_follow)
+      |> result.replace(Nil)
   }
 }
 
@@ -1105,26 +1116,6 @@ fn go_on(
         step + 1,
       )
     }
-  }
-}
-
-/// Attaches the transcript row a recorded call produced — the first
-/// assistant row of its response commit. A commit with no assistant row, or
-/// a failed update, is logged and skipped, never a failed turn.
-fn attach(state: Loop, row: Option(Int), seq: Option(Int)) -> Nil {
-  case row, seq {
-    Some(id), Some(seq) ->
-      case requests.attach(runtime.ledger(state.host), state.session, id, seq) {
-        Ok(_) -> Nil
-        Error(error) ->
-          io.println_error(
-            "provider request seq attach failed for session "
-            <> state.session
-            <> ": "
-            <> error,
-          )
-      }
-    _, _ -> Nil
   }
 }
 

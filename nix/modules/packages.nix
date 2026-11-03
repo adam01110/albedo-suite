@@ -39,7 +39,7 @@
 
     withSuiteNotices = package:
       package.overrideAttrs (old: {
-        meta = (old.meta or {}) // {license = pkgs.lib.licenses.mpl20;};
+        meta = (old.meta or {}) // {license = import ../albedo-license.nix {inherit (pkgs) lib;};};
         postInstall =
           (old.postInstall or "")
           + ''
@@ -171,7 +171,7 @@
             then withPortableUsageCore package
             else package;
         }).overrideAttrs (old: {
-          meta = (old.meta or {}) // {license = pkgs.lib.licenses.mpl20;};
+          meta = (old.meta or {}) // {license = import ../albedo-license.nix {inherit (pkgs) lib;};};
           passthru = (old.passthru or {}) // {web = self.packages.${pkgs.stdenv.hostPlatform.system}.albedo-web;};
           buildCommand =
             old.buildCommand

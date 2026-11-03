@@ -313,6 +313,7 @@ pub type Message {
     conversation.Stage,
     Option(Int),
     Option(conversation.ToolIdentity),
+    conversation.Follow,
     Subject(Result(#(Int, Option(Int)), String)),
   )
   CommitFits(String, List(transcript.ImageFit), Subject(Result(Nil, String)))
@@ -320,7 +321,6 @@ pub type Message {
   /// the turn goes on from that output.
   Salvage(String, String, Subject(Result(List(types.Input), String)))
   RecordContext(String, context_snapshot.Snapshot, Bool, Subject(Nil))
-  RecordUsage(String, usage.Metadata, Subject(Result(Nil, String)))
   ReportPin(String, Option(Int), Subject(Nil))
   /// The worker's turn call succeeded; the session's extensions hear it.
   /// Fire-and-forget, like the pin report.
@@ -347,9 +347,17 @@ pub type Message {
   Finished(String, Result(Nil, String))
   Down(process.Down)
   Idle(Subject(Report))
-  Release(Subject(Bool))
+  /// An automatic release keeps a kernel whose save missed names; the sweep
+  /// sends a lossy one while the kernel budget is pressed, as closing an
+  /// agent always does.
+  Release(Subject(Bool), automatic: Bool)
   ReleaseResting
-  Released(runtime.Session, Result(python.Saved, String), Option(Subject(Bool)))
+  Released(
+    runtime.Session,
+    Result(python.Saved, String),
+    Option(Subject(Bool)),
+    automatic: Bool,
+  )
   Deleted(Result(Nil, String), Subject(Result(Nil, String)))
   ExpireState(Subject(Bool))
   EvictHistory(Subject(Bool))
@@ -925,7 +933,7 @@ pub fn report(session: Session) -> Report {
 
 /// Release the kernel if nothing is attached or running. True when one was released.
 pub fn release(session: Session) -> Bool {
-  actor.call(session, 40_000, Release)
+  actor.call(session, 40_000, Release(_, automatic: False))
 }
 
 /// Delete the saved variables unless a kernel, turn or boot uses them now.
@@ -1603,8 +1611,8 @@ fn handle(
         True ->
           case restable(state, id, token), state.kernel {
             True, Some(kernel) ->
-              actor.continue(release_kernel(state, kernel, None))
-            // Work still running, a watcher, or a transition: look again.
+              actor.continue(release_kernel(state, kernel, None, True))
+            // Work still running or a transition: look again.
             _, _ -> {
               rest_later(state.self, id, token)
               actor.continue(state)
@@ -1612,10 +1620,18 @@ fn handle(
           }
       }
     IdleKernel(token) ->
-      case token == state.rest_token {
+      case
+        token == state.rest_token,
+        uses_kernel_transition(state) || state.booting != None
+      {
         // A turn, a cell or a job ending since armed a newer timer.
-        False -> actor.continue(state)
-        True -> begin_release(state, None)
+        False, _ -> actor.continue(state)
+        // A swap or boot under way: look again once it settles.
+        True, True -> {
+          let _ = clock.send_after(state.self, 1000, IdleKernel(token))
+          actor.continue(state)
+        }
+        True, False -> begin_release(state, None, True)
       }
     WorkspaceReady(token, purpose, result) ->
       actor.continue(workspace_ready(state, token, purpose, result))
@@ -2137,7 +2153,23 @@ fn handle(
       actor.continue(session_state.flush_output(
         session_state.State(..state, output_timer: None),
       ))
-    Commit(id, inputs, stage, thought_ms, tool, reply) ->
+    Commit(id, [], stage, _, _, conversation.Follow(None, None), reply) ->
+      // The worker's move to the model after its tools' results saves
+      // nothing new: a restart resumes a turn left at Tool or Model alike,
+      // so the stage reaches the store with the response's own commit.
+      case turn.owner(state.activity, id) {
+        Some(_) ->
+          answer(
+            session_state.State(
+              ..state,
+              activity: turn.committed(state.activity, id, stage),
+            ),
+            reply,
+            Ok(#(usage.now(), None)),
+          )
+        _ -> answer(state, reply, Error("stale run"))
+      }
+    Commit(id, inputs, stage, thought_ms, tool, follow, reply) ->
       case stage == conversation.Idle && !turn.live(state.activity, id) {
         True -> answer(state, reply, Error("cancelled final reply"))
         False ->
@@ -2154,6 +2186,7 @@ fn handle(
                   thought_ms,
                   id,
                   tool,
+                  follow,
                 )
               case written {
                 Ok(#(timestamp, _)) ->
@@ -2166,7 +2199,8 @@ fn handle(
                       inputs,
                       timestamp,
                       thought_ms,
-                    ),
+                    )
+                      |> remember_usage(follow.usage),
                     reply,
                     written,
                   )
@@ -2389,32 +2423,6 @@ fn handle(
       let #(state, snapshot) = context_read(state)
       answer(state, reply, snapshot)
     }
-    RecordUsage(id, metadata, reply) ->
-      case turn.owner(state.activity, id) {
-        Some(_) -> {
-          let written =
-            conversation.record_usage(
-              runtime.ledger(state.host),
-              state.info.id,
-              metadata,
-            )
-          case written {
-            Ok(_) ->
-              answer(
-                session_state.State(
-                  ..state,
-                  latest_usage: Some(metadata),
-                  context: context_snapshot.with_usage(state.context, metadata),
-                )
-                  |> session_state.emit(view.Usage(metadata)),
-                reply,
-                written,
-              )
-            Error(_) -> answer(state, reply, written)
-          }
-        }
-        _ -> answer(state, reply, Error("stale run"))
-      }
     Finished(id, outcome) ->
       case turn.owner(state.activity, id) {
         Some(run) -> finish_run(state, run, outcome)
@@ -2489,45 +2497,42 @@ fn handle(
         }
         _, _ -> answer(state, reply, False)
       }
-    Release(reply) -> begin_release(state, Some(reply))
-    ReleaseResting -> begin_release(state, None)
-    Released(_, Error(_), reply) -> {
+    Release(reply, automatic) -> begin_release(state, Some(reply), automatic)
+    ReleaseResting -> begin_release(state, None, True)
+    Released(kernel, saved, reply, automatic) -> {
       let parked = option.unwrap(state.releasing, [])
-      list.each(parked, process.send(state.self, _))
-      release_answer(
-        session_state.State(..state, releasing: None),
-        reply,
-        False,
-      )
-    }
-    // Automatic release keeps a kernel whose namespace did not fully save.
-    Released(_, Ok(python.Saved(missed: [_, ..], ..)), None) -> {
-      let parked = option.unwrap(state.releasing, [])
-      list.each(parked, process.send(state.self, _))
-      actor.continue(session_state.State(..state, releasing: None))
-    }
-    Released(kernel, Ok(_) as saved, reply) -> {
-      let parked = option.unwrap(state.releasing, [])
-      session_namespace.forget(kernel)
-      // Reset and any subsequent Open are sent by this actor, in that order.
-      runtime.reset_session_async(state.host, state.info.id)
-      process.send(state.self, Collect)
-      list.each(parked, process.send(state.self, _))
-      release_answer(
-        session_state.State(
-          ..state,
-          kernel: None,
-          released: Some(kernel),
-          releasing: None,
-          context: session_state.unprepared(),
-        )
-          |> session_state.emit(view.note(
-            "daemon",
-            session_namespace.released_text(saved, "nothing was attached"),
-          )),
-        reply,
-        True,
-      )
+      case session_namespace.may_release(saved, automatic:) {
+        False -> {
+          list.each(parked, process.send(state.self, _))
+          release_answer(
+            session_state.State(..state, releasing: None),
+            reply,
+            False,
+          )
+        }
+        True -> {
+          session_namespace.forget(kernel)
+          // Reset and any subsequent Open are sent by this actor, in that order.
+          runtime.reset_session_async(state.host, state.info.id)
+          process.send(state.self, Collect)
+          list.each(parked, process.send(state.self, _))
+          release_answer(
+            session_state.State(
+              ..state,
+              kernel: None,
+              released: Some(kernel),
+              releasing: None,
+              context: session_state.unprepared(),
+            )
+              |> session_state.emit(view.note(
+                "daemon",
+                session_namespace.released_text(saved, "nothing was attached"),
+              )),
+            reply,
+            True,
+          )
+        }
+      }
     }
     EvictHistory(reply) ->
       case turn.running(state.activity) {
@@ -2700,6 +2705,8 @@ fn start_shell(
         actor_call.try_call(self, 5000, ShellEnded(id, status, code, error, _))
       }
       let failed = fn(error) {
+        // Whatever was captured is flushed before the outcome is recorded.
+        let _ = shell_commands.sync(ledger, session, id)
         case ended("failed", None, Some(error)) {
           // No actor is left to own the outcome. A replacement actor also
           // reconciles running records before admitting any new command.
@@ -2731,12 +2738,14 @@ fn start_shell(
             ))
             notify(command)
           }
-          shell_commands.Ended(status, code, error) ->
+          shell_commands.Ended(status, code, error) -> {
+            use _ <- result.try(shell_commands.sync(ledger, session, id))
             ended(status, code, error)
             |> result.replace_error(
               "session did not acknowledge shell completion",
             )
             |> result.flatten
+          }
         }
       }
       let worker =
@@ -2884,11 +2893,19 @@ fn finish_idle_work(
     Unload(reply) ->
       case children_busy || occupied(state) || state.watchers != [] {
         True -> answer(state, reply, False)
-        False -> {
-          close_idle(state)
-          process.send(reply, True)
-          actor.stop()
-        }
+        // Unloading is automatic: it keeps a kernel an idle release would.
+        False ->
+          case
+            save_on_close(state)
+            |> option.map(session_namespace.may_release(_, automatic: True))
+          {
+            Some(False) -> answer(state, reply, False)
+            _ -> {
+              forget(state)
+              process.send(reply, True)
+              actor.stop()
+            }
+          }
       }
     StartSummary(checkpoint, instructions, out, ack) ->
       case children_busy || occupied(state) {
@@ -2959,20 +2976,18 @@ fn occupied(state: State) -> Bool {
 /// Stop an idle session, keeping its kernel's variables first: a clean stop is
 /// the other moment they are worth saving.
 fn close_idle(state: State) -> Nil {
-  case state.kernel {
-    Some(kernel) -> {
-      let _ =
-        session_namespace.save_state_within(
-          state.home,
-          state.info.id,
-          kernel,
-          session_namespace.close_state_timeout,
-        )
-      Nil
-    }
-    None -> Nil
-  }
+  let _ = save_on_close(state)
   forget(state)
+}
+
+/// The save of the kernel's variables before the session stops, if it has one.
+fn save_on_close(state: State) -> Option(Result(python.Saved, String)) {
+  option.map(state.kernel, session_namespace.save_state_within(
+    state.home,
+    state.info.id,
+    _,
+    session_namespace.close_state_timeout,
+  ))
 }
 
 /// Wake every stream watching this stopping session, so each ends now rather
@@ -3447,7 +3462,6 @@ fn restable(state: State, id: String, token: Int) -> Bool {
   && turn.live(state.activity, id)
   && !uses_kernel_transition(state)
   && state.booting == None
-  && state.watchers == []
   && option.map(state.kernel, runtime.live_work) == Some(Ok(0))
 }
 
@@ -4471,15 +4485,14 @@ const idle_release_ms = 120_000
 
 /// Releases a resting session's kernel once it goes `idle_release_ms`
 /// without a turn, cell or job, or at once when live kernels are near the
-/// memory budget. Runs when a turn ends and when the kernel reports changed
-/// facts (a job ended), each run restarting the wait; `begin_release`
-/// rechecks every condition.
+/// memory budget; a client watching the session holds none. Runs when a turn
+/// ends and when the kernel reports changed facts (a job ended), each run
+/// restarting the wait; `begin_release` rechecks every condition.
 fn request_resting_release(state: State) -> State {
   case
     state.kernel,
     turn.running(state.activity),
-    state.watchers == []
-    && state.releasing == None
+    state.releasing == None
     && option.map(state.kernel, runtime.live_work) == Some(Ok(0))
   {
     Some(_), None, True -> {
@@ -4985,6 +4998,23 @@ fn start_worker(
   |> session_state.announce
 }
 
+/// Usage a committed model response carried becomes the session's latest.
+fn remember_usage(
+  state: session_state.State(Message),
+  metadata: Option(usage.Metadata),
+) -> session_state.State(Message) {
+  case metadata {
+    None -> state
+    Some(metadata) ->
+      session_state.State(
+        ..state,
+        latest_usage: Some(metadata),
+        context: context_snapshot.with_usage(state.context, metadata),
+      )
+      |> session_state.emit(view.Usage(metadata))
+  }
+}
+
 /// The messages a run's worker sends this actor.
 fn run_messages() -> session_run.Messages(Message) {
   session_run.Messages(
@@ -4997,7 +5027,6 @@ fn run_messages() -> session_run.Messages(Message) {
     CommitFits,
     Salvage,
     RecordContext,
-    RecordUsage,
     DrainSteering,
     ReportPin,
     ReportSent,
@@ -5193,7 +5222,7 @@ fn read_only(message: Message) -> Bool {
     | FlushShell
     | ReadCapture(_)
     | CaptureIn(_, _)
-    | Released(_, _, _)
+    | Released(..)
     | Deleted(_, _)
     | ChildrenObserved(_, _)
     | WorkspaceReset(_, _)
@@ -5452,13 +5481,14 @@ fn release_answer(
 fn begin_release(
   state: State,
   reply: Option(Subject(Bool)),
+  automatic: Bool,
 ) -> actor.Next(State, Message) {
   let settled = !uses_kernel_transition(state) && state.booting == None
   case state.kernel, turn.running(state.activity) {
     // Only published facts: unknown work retains the kernel without calling its owner.
     Some(kernel), None ->
       case settled && runtime.live_work(kernel) == Ok(0) {
-        True -> actor.continue(release_kernel(state, kernel, reply))
+        True -> actor.continue(release_kernel(state, kernel, reply, automatic))
         False -> release_answer(state, reply, False)
       }
     // A resting session that never opened a kernel still drops the request
@@ -5476,6 +5506,7 @@ fn release_kernel(
   state: State,
   kernel: runtime.Session,
   reply: Option(Subject(Bool)),
+  automatic: Bool,
 ) -> State {
   let #(home, id, self) = #(state.home, state.info.id, state.self)
   let _ =
@@ -5488,6 +5519,7 @@ fn release_kernel(
             session_namespace.save_state(home, id, kernel)
           }),
           reply,
+          automatic,
         ),
       )
     })

@@ -125,10 +125,10 @@ in
     meta = {
       description = "FFF native file indexer worker for Albedo";
       homepage = "https://github.com/dmtrKovalenko/fff";
-      license = [
+      license = lib.licenses.AND [
         # keep-sorted start
+        (import ../albedo-license.nix {inherit lib;})
         lib.licenses.mit
-        lib.licenses.mpl20
         # keep-sorted end
       ];
       platforms = [

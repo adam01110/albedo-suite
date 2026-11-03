@@ -9,6 +9,22 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
+// linkRows is a URL broken into rows of at most width cells, one list entry
+// per row: the frame clips an entry to a single row, so a newline inside one
+// would cut the link off after its first line. A terminal finds a URL only
+// within one row, so each row also carries the whole URL as an OSC 8
+// hyperlink (the same id on every row joins them), which stays clickable
+// across the breaks.
+func linkRows(url string, width int) []string {
+	rows := strings.Split(ansi.Hardwrap(url, max(1, width), true), "\n")
+	id := "id=albedo-link"
+	out := make([]string, len(rows))
+	for i, row := range rows {
+		out[i] = ansi.SetHyperlink(url, id) + DefaultStyles.Faint.Render(row) + ansi.ResetHyperlink()
+	}
+	return out
+}
+
 func (m LoginModel) openBrowserCmd(urlStr string) tea.Cmd {
 	return func() tea.Msg {
 		if m.openBrowser != nil {
@@ -131,7 +147,8 @@ func (m LoginModel) body(width int) []string {
 			lines = append(lines, paneNote(m.LoginInstructions, width)...)
 		}
 		if m.SignInURL != "" {
-			lines = append(lines, "", DefaultStyles.Faint.Render(ansi.Hardwrap(m.SignInURL, width, true)))
+			lines = append(lines, "")
+			lines = append(lines, linkRows(m.SignInURL, width)...)
 		}
 		lines = append(lines, "")
 		return append(lines, paneNote(m.signInHint(), width)...)

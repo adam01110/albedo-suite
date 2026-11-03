@@ -447,6 +447,7 @@ paths:
                         kernel_bytes: 0
                         backup_bytes: 0
                         other_bytes: 0
+                        shell_output_bytes: 0
                         recent_backup_bytes: 0
                         recent_backup_count: 0
                     measured_at: '2026-10-02T14:00:00Z'
@@ -2316,6 +2317,132 @@ paths:
         schema:
           type: string
           minLength: 1
+  /sessions/{session_id}/changes:
+    get:
+      operationId: getSessionChanges
+      summary: Read every change of the session's checkout
+      tags:
+      - sessions
+      responses:
+        '200':
+          description: Successful result.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CheckoutChanges'
+              examples:
+                CheckoutChanges:
+                  value:
+                    checkout:
+                      kind: git
+                      root: /workspace/project
+                      head: 6e1f2a9
+                      branch: main
+                    base:
+                      spec: uncommitted
+                      label: HEAD
+                      commit: 6e1f2a9
+                    files:
+                    - path: docs/guide.md
+                      old_path: null
+                      status: untracked
+                      added: 2
+                      removed: 0
+                      binary: false
+                      diff: "diff --git a/docs/guide.md b/docs/guide.md\nnew file mode 100644\n--- /dev/null\n+++ b/docs/guide.md\n@@ -0,0 +1,2 @@\n+# guide\n+read me"
+                      omitted: null
+                    - path: logo.png
+                      old_path: null
+                      status: modified
+                      added: 0
+                      removed: 0
+                      binary: true
+                      diff: null
+                      omitted: binary
+                    - path: src/main.go
+                      old_path: src/app.go
+                      status: renamed
+                      added: 1
+                      removed: 1
+                      binary: false
+                      diff: "diff --git a/src/app.go b/src/main.go\nsimilarity index 90%\nrename from src/app.go\nrename to src/main.go\nindex 3b18e51..a0423896 100644\n--- a/src/app.go\n+++ b/src/main.go\n@@ -1,3 +1,3 @@\n package main\n-// app\n+// main\n func main() {}"
+                      omitted: null
+                    truncated: false
+        '304':
+          description: The answer named by `If-None-Match` is still current. No body.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '409':
+          description: The workspace is in no git or jj checkout (`not_a_repository`), or `base=upstream`
+            has nothing to compare with (`no_upstream`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '502':
+          description: git or jj failed or is not installed (`vcs_failed`), or the gather on the workspace's
+            host failed (`workspace_unavailable`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '503':
+          $ref: '#/components/responses/Problem503'
+        '504':
+          description: The commands missed their 15 s deadline (`vcs_timeout`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      description: 'Diffs the working copy of the checkout enclosing the session''s workspace, on the
+        machine the workspace is on (the daemon, or the host through SSH gathers). Read-only: git runs
+        without optional locks and jj with `--ignore-working-copy`. `uncommitted` compares the working tree,
+        staged and unstaged, with HEAD (git) or `@-` (jj); `upstream` compares it with the merge base of
+        HEAD and the branch''s upstream, else origin/HEAD, else origin/main (git), or with
+        `fork_point(trunk() | @)` (jj). Untracked files that are not ignored are listed whole. A jj checkout
+        colocated with git is answered by git and so includes edits jj has not snapshotted, listing a file
+        new to git as `added`; one without git is as fresh as jj''s last snapshot. Files sort by path, at
+        most 1000 (`truncated` past that). A diff over 256 KiB is omitted `too_large`; once the
+        JSON-encoded diffs reach 768 KiB, that file and every later one are omitted `budget`. Binary
+        content, and text that is not UTF-8, is `binary`. `diff` is null exactly when `omitted` is set;
+        counts are always filled (0 for binary, and for an untracked file over 64 MiB). The ETag hashes the
+        answer: `If-None-Match` with it answers 304. A missing workspace folder is 404
+        `workspace_unavailable`. Requires capability `checkout_changes: 1`.'
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ID'
+      - name: base
+        in: query
+        required: false
+        schema:
+          type: string
+          enum: [uncommitted, upstream]
+          default: uncommitted
+      - name: If-None-Match
+        in: header
+        required: false
+        description: The ETag of an earlier answer.
+        schema:
+          type: string
   /sessions/{session_id}/reload:
     post:
       operationId: reloadSession
@@ -2615,7 +2742,7 @@ paths:
           $ref: '#/components/responses/Problem404'
         '409':
           $ref: '#/components/responses/Problem409'
-      description: 'Without location return recent workspaces. include=preview requires location. Paths
+      description: 'Without location return recent workspaces. include requires location. Paths
         resolve on the daemon host; cached host state does not perform SSH sign-in. Requires capability
         `workspace_browsing: 1`.'
       parameters:
@@ -2627,9 +2754,11 @@ paths:
       - name: include
         in: query
         required: false
+        description: '`preview` adds repository facts and a tree; `files` lists the directory''s files
+          after its directories, each item with `kind`, `size` and `ignored`.'
         schema:
           type: string
-          enum: [preview]
+          enum: [preview, files, 'preview,files', 'files,preview']
       - $ref: '#/components/parameters/Limit'
       - $ref: '#/components/parameters/Next'
   /hosts:
@@ -7280,11 +7409,13 @@ components:
               $ref: '#/components/schemas/Counter'
             other_bytes:
               $ref: '#/components/schemas/Counter'
+            shell_output_bytes:
+              $ref: '#/components/schemas/Counter'
             recent_backup_bytes:
               $ref: '#/components/schemas/Counter'
             recent_backup_count:
               $ref: '#/components/schemas/Counter'
-          required: [kernel_bytes, backup_bytes, other_bytes, recent_backup_bytes, recent_backup_count]
+          required: [kernel_bytes, backup_bytes, other_bytes, shell_output_bytes, recent_backup_bytes, recent_backup_count]
           additionalProperties: false
       required: [items, next, totals]
       additionalProperties: false
@@ -7348,6 +7479,7 @@ components:
             kernel_bytes: 0
             backup_bytes: 0
             other_bytes: 0
+            shell_output_bytes: 0
             recent_backup_bytes: 0
             recent_backup_count: 0
         measured_at: '2026-10-02T14:00:00Z'
@@ -10320,6 +10452,95 @@ components:
           description: The file's contents. At most 1 MiB of UTF-8 without NUL.
       required: [path, size, modified_at, text]
       additionalProperties: false
+    ChangedFile:
+      type: object
+      properties:
+        path:
+          type: string
+          maxLength: 4096
+          description: Relative to the checkout root.
+        old_path:
+          anyOf:
+          - type: string
+            maxLength: 4096
+          - type: 'null'
+          description: Where a renamed file came from.
+        status:
+          type: string
+          enum: [modified, added, deleted, renamed, untracked]
+        added:
+          $ref: '#/components/schemas/Counter'
+        removed:
+          $ref: '#/components/schemas/Counter'
+        binary:
+          type: boolean
+          description: Binary content, or text that is not UTF-8.
+        diff:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Unified diff with git's `diff --git` and `---`/`+++` headers, without a trailing
+            newline. Null exactly when `omitted` is set.
+        omitted:
+          anyOf:
+          - type: string
+            enum: [binary, too_large, budget]
+          - type: 'null'
+      required: [path, old_path, status, added, removed, binary, diff, omitted]
+      additionalProperties: false
+    CheckoutChanges:
+      type: object
+      properties:
+        checkout:
+          type: object
+          properties:
+            kind:
+              type: string
+              enum: [git, jj]
+            root:
+              $ref: '#/components/schemas/Workspace'
+            head:
+              description: The short HEAD commit (git) or `@`'s change id (jj); null when unborn.
+              anyOf:
+              - type: string
+                maxLength: 256
+              - type: 'null'
+            branch:
+              description: The branch (git) or the bookmark `@` works on (jj).
+              anyOf:
+              - type: string
+                maxLength: 4096
+              - type: 'null'
+          required: [kind, root, head, branch]
+          additionalProperties: false
+        base:
+          type: object
+          properties:
+            spec:
+              type: string
+              enum: [uncommitted, upstream]
+            label:
+              type: string
+              maxLength: 4096
+              description: What the working copy was compared with, such as HEAD, @-, origin/main or trunk().
+            commit:
+              description: The short commit compared with; null for an unborn HEAD or jj's root.
+              anyOf:
+              - type: string
+                maxLength: 256
+              - type: 'null'
+          required: [spec, label, commit]
+          additionalProperties: false
+        files:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChangedFile'
+          maxItems: 1000
+        truncated:
+          type: boolean
+          description: More files changed than are listed.
+      required: [checkout, base, files, truncated]
+      additionalProperties: false
     ContextRead:
       oneOf:
       - $ref: '#/components/schemas/ContextSummary'
@@ -11558,6 +11779,21 @@ components:
                 - type: 'null'
               hidden:
                 type: boolean
+              kind:
+                description: Only with `include=files`. A link to a file is a file.
+                type: string
+                enum: [directory, file]
+              size:
+                description: Only with `include=files`. Bytes for a file, null for a directory.
+                anyOf:
+                - $ref: '#/components/schemas/Counter'
+                - type: 'null'
+              ignored:
+                description: Only with `include=files`. Whether git (or a colocated jj) ignores it; null
+                  outside a repository, in a jj checkout without git, or when git cannot say.
+                anyOf:
+                - type: boolean
+                - type: 'null'
             required: [name, location, vcs, modified_at, hidden]
             additionalProperties: false
           maxItems: 200

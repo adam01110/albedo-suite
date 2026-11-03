@@ -13,7 +13,13 @@ PACKAGES = {
 
 
 class PackageLicenseTests(unittest.TestCase):
-    def test_suite_packages_include_mpl_and_attribution(self):
+    def assert_agpl_with_classpath_exception(self, doc):
+        license_text = (doc / "LICENSE").read_text()
+        self.assertIn("GNU AFFERO GENERAL PUBLIC LICENSE", license_text)
+        self.assertIn('"CLASSPATH" EXCEPTION', license_text)
+        self.assertIn("If you modify albedo, you may extend this", license_text)
+
+    def test_suite_packages_include_agpl_exception_and_attribution(self):
         for name in (
             "defaults",
             "patched",
@@ -24,11 +30,14 @@ class PackageLicenseTests(unittest.TestCase):
         ):
             with self.subTest(package=name):
                 doc = PACKAGES[name] / "share/doc/albedo-suite"
-                self.assertIn(
-                    "Mozilla Public License Version 2.0", (doc / "LICENSE").read_text()
-                )
-                self.assertIn("MPL-2.0", (doc / "SOURCE.md").read_text())
+                self.assert_agpl_with_classpath_exception(doc)
+                self.assertIn("AGPL-3.0-only", (doc / "SOURCE.md").read_text())
                 self.assertTrue((doc / "THIRD_PARTY_NOTICES.md").is_file())
+                self.assertTrue((doc / "LICENSES/albedo-AUTHORS.md").is_file())
+                self.assertIn(
+                    "Mozilla Public License Version 2.0",
+                    (doc / "LICENSES/albedo-MPL-2.0.txt").read_text(),
+                )
                 self.assertTrue(
                     (doc / "LICENSES/albedo-THIRD_PARTY_NOTICES.md").is_file()
                 )
@@ -71,6 +80,9 @@ class PackageLicenseTests(unittest.TestCase):
                     expected,
                     name,
                 )
+        self.assertEqual(
+            (upstream / "LICENSE").read_bytes(), (doc / "LICENSE").read_bytes()
+        )
         self.assertEqual(
             (upstream / "THIRD_PARTY_NOTICES.md").read_bytes(),
             (doc / "LICENSES/albedo-THIRD_PARTY_NOTICES.md").read_bytes(),
@@ -116,10 +128,8 @@ class PackageLicenseTests(unittest.TestCase):
 
     def test_standalone_web_has_source_and_dependency_notices(self):
         doc = PACKAGES["web"] / "share/doc/albedo-web"
-        self.assertIn(
-            "Mozilla Public License Version 2.0", (doc / "LICENSE").read_text()
-        )
-        self.assertIn("MPL-2.0", (doc / "SOURCE.md").read_text())
+        self.assert_agpl_with_classpath_exception(doc)
+        self.assertIn("AGPL-3.0-only", (doc / "SOURCE.md").read_text())
         self.assertEqual(
             (doc / "THIRD_PARTY_NOTICES.md").read_bytes(),
             (doc / "source/THIRD_PARTY_NOTICES.md").read_bytes(),
@@ -130,12 +140,10 @@ class PackageLicenseTests(unittest.TestCase):
             (doc / "dependency-notices/node_modules/svelte/LICENSE.md").is_file()
         )
 
-    def test_fff_retains_mpl_adapter_and_mit_dependency_licenses(self):
+    def test_fff_retains_agpl_adapter_and_mit_dependency_licenses(self):
         package = PACKAGES["fff"]
         doc = package / "share/licenses/albedo-fff"
-        self.assertIn(
-            "Mozilla Public License Version 2.0", (doc / "LICENSE").read_text()
-        )
+        self.assert_agpl_with_classpath_exception(doc)
         self.assertIn("libexec/albedo-fff.mjs", (doc / "SOURCE.md").read_text())
         self.assertIn("Permission is hereby granted", (doc / "fff-LICENSE").read_text())
         self.assertIn(

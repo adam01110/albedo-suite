@@ -1,16 +1,28 @@
 # Source attribution
 
 The files under `src/server/` and `src/client/` replace files from Albedo at
-revision `154c6911d6a491aeeecacf26a06b6ae8c4bc70e1`,
-<https://tangled.org/okami.mom/albedo>. Albedo is copyright 2026 albedo contributors
-(okami.mom, ptr.pet, aly.codes and other contributors), licensed under MPL 2.0;
-the license is retained in `LICENSES/albedo-MPL-2.0.txt`. Updated source
-replacements retain upstream MPL 2.0 coverage. The previous WTFPL v2 license
-is retained in `LICENSES/albedo-WTFPL.txt` for earlier source versions.
+revision `ff9d6dc0b83d4ee917f0e4b4dbf365a42684364d`,
+<https://tangled.org/okami.mom/albedo>. Albedo is copyright 2026 okami.mom,
+ptr.pet, aly.codes and the other contributors in its git history, licensed under
+the GNU Affero General Public License v3.0 only with the Classpath exception.
+The root `LICENSE` reproduces that revision's license and exception verbatim;
+`LICENSES/albedo-AUTHORS.md` preserves its authors notice. The suite extends the
+same Classpath exception to its modifications.
+
 Suite-authored code, packaging, modules, helpers, tests and documentation are
-copyright 2026 Adam0 and licensed under MPL 2.0 in the root `LICENSE`, except
-where third-party notices specify otherwise. Earlier versions retain their
-original licenses.
+copyright 2026 Adam0 and licensed under the same AGPL-3.0-only with Classpath
+exception, except where third-party notices specify otherwise. This license
+update and the suite modifications described below are dated 2026-11-02.
+Earlier versions retain their original licenses.
+
+The previous upstream pin was `154c6911d6a491aeeecacf26a06b6ae8c4bc70e1`,
+licensed under MPL 2.0. Original MPL-covered portions retained from that source
+remain subject to their MPL notices and source-availability requirements; the
+new upstream license does not erase those obligations or relicense third-party
+code. The MPL text is retained in `LICENSES/albedo-MPL-2.0.txt`. The earlier
+WTFPL v2 text is retained in `LICENSES/albedo-WTFPL.txt`. Separately licensed
+components, including the MPL-covered madoromi colours identified by upstream,
+retain their own terms.
 
 Modifications add opt-in lazy MCP lifecycle/bindings, explicit staged formatting
 and local LSP batch checks, isolated local LSP compatibility tools, durable user

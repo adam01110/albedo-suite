@@ -10,12 +10,14 @@ import albedo/clock
 import albedo/daemon/configuration
 import albedo/daemon/conversation
 import albedo/daemon/session_provider
+import albedo/harness/model_lists
 import albedo/harness/runtime
 import albedo/text_scalars
 import gleam/dict
 import gleam/erlang/process
 import gleam/int
 import gleam/list
+import gleam/option.{type Option}
 import gleam/result
 import gleam/string
 
@@ -23,12 +25,41 @@ import gleam/string
 pub type Choice =
   Result(#(configuration.Provider, String), String)
 
+/// One lookup's view: every profile's endpoint, read once, and the time by
+/// which every list it asks for must have answered.
+type Lookup {
+  Lookup(
+    host: runtime.Runtime,
+    endpoints: dict.Dict(String, Option(String)),
+    deadline: Int,
+  )
+}
+
+/// A lookup waits for lists at most one first fetch from its start, however
+/// many profiles it asks and however late each ask begins.
+fn lookup(host: runtime.Runtime, home: String) -> Lookup {
+  Lookup(
+    host,
+    session_provider.profile_endpoints(home),
+    clock.monotonic_ms() + model_lists.first_wait_ms(),
+  )
+}
+
 /// `requested` is "provider/model", a bare model, or "" for the parent's. A
 /// bare model stays on the parent's provider when it lists it, and otherwise
-/// moves to the one other provider that does. Only the profiles a decision
-/// needs are listed.
+/// moves to the one other provider that does. Other profiles are listed only
+/// when the parent's provider may not list it (see `moved`).
 pub fn resolve(
   host: runtime.Runtime,
+  home: String,
+  parent: conversation.Info,
+  requested: String,
+) -> Choice {
+  resolve_with(lookup(host, home), home, parent, requested)
+}
+
+fn resolve_with(
+  lookup: Lookup,
   home: String,
   parent: conversation.Info,
   requested: String,
@@ -64,7 +95,7 @@ pub fn resolve(
       case
         profile.name == parent.provider
         && model == parent.model
-        || offers(host, home, profile, model)
+        || offers(lookup, profile, model)
       {
         True -> Ok(#(profile, model))
         False -> Error("model is not available from provider " <> profile.name)
@@ -75,17 +106,15 @@ pub fn resolve(
         "" -> parent.model
         _ -> requested
       }
-      case offers(host, home, current, model) {
-        True -> Ok(#(current, model))
-        False ->
-          case other_offers(host, home, profiles, current, model) {
-            [profile] -> Ok(#(profile, model))
-            [] -> Ok(#(current, model))
-            _ ->
-              Error(
-                "model is available from multiple providers; use provider/model",
-              )
-          }
+      let others =
+        list.filter(profiles, fn(profile) { profile.name != current.name })
+      case moved(lookup, current, others, model) {
+        Ok([profile]) -> Ok(#(profile, model))
+        Error(Nil) | Ok([]) -> Ok(#(current, model))
+        Ok(_) ->
+          Error(
+            "model is available from multiple providers; use provider/model",
+          )
       }
     }
   }
@@ -98,8 +127,14 @@ pub fn resolve_switch(
   info: conversation.Info,
   requested: String,
 ) -> Choice {
-  use #(provider, model) <- result.try(resolve(host, home, info, requested))
-  case offers(host, home, provider, model) {
+  let lookup = lookup(host, home)
+  use #(provider, model) <- result.try(resolve_with(
+    lookup,
+    home,
+    info,
+    requested,
+  ))
+  case offers(lookup, provider, model) {
     True -> Ok(#(provider, model))
     False -> Error("model is not available from any provider")
   }
@@ -113,8 +148,15 @@ pub fn available(
   info: conversation.Info,
 ) -> List(String) {
   let profiles = configuration.providers(home) |> result.unwrap([])
+  let lookup = lookup(host, home)
   let listings =
-    concurrently(profiles, fn(profile) { listed(host, home, profile) }, [])
+    concurrently(
+      lookup,
+      profiles,
+      fn(profile) { listed(lookup, profile) },
+      [],
+      fn(_) { False },
+    )
     |> list.zip(profiles, _)
   let #(same, other) =
     list.partition(listings, fn(listing) { { listing.0 }.name == info.provider })
@@ -131,44 +173,76 @@ pub fn available(
   ))
 }
 
-/// The profiles other than `current` that offer `model`, in profile order. Each
-/// is asked at once, so stalled endpoints cost one wait together.
-fn other_offers(
-  host: runtime.Runtime,
-  home: String,
-  profiles: List(configuration.Provider),
+/// `Error(Nil)` when `current` offers `model`, else the `others` that do, in
+/// profile order. `current` is asked first when its list is at hand; one that
+/// must be fetched is asked together with the others, so a slow endpoint and
+/// stalled ones cost one wait, not two. Its answer is still awaited before
+/// the others count.
+fn moved(
+  lookup: Lookup,
   current: configuration.Provider,
+  others: List(configuration.Provider),
   model: String,
-) -> List(configuration.Provider) {
-  let others =
-    list.filter(profiles, fn(profile) { profile.name != current.name })
-  concurrently(
-    others,
-    fn(profile) { offers(host, home, profile, model) },
-    False,
-  )
-  |> list.zip(others, _)
-  |> list.filter_map(fn(asked) {
-    case asked.1 {
-      True -> Ok(asked.0)
-      False -> Error(Nil)
-    }
-  })
+) -> Result(List(configuration.Provider), Nil) {
+  let ask = fn(profile) { offers(lookup, profile, model) }
+  let asked = case current.model == model || ready(lookup, current) {
+    True ->
+      case ask(current) {
+        True -> [True]
+        False -> [
+          False,
+          ..concurrently(lookup, others, ask, False, fn(_) { False })
+        ]
+      }
+    False ->
+      concurrently(lookup, [current, ..others], ask, False, fn(received) {
+        dict.get(received, 0) == Ok(True)
+      })
+  }
+  case asked {
+    [True, ..] -> Error(Nil)
+    [_, ..rest] ->
+      list.zip(others, rest)
+      |> list.filter_map(fn(answer) {
+        case answer.1 {
+          True -> Ok(answer.0)
+          False -> Error(Nil)
+        }
+      })
+      |> Ok
+    [] -> Error(Nil)
+  }
 }
 
-/// How long one profile's endpoint may take before it counts as offering
-/// nothing: its own fetch gives up sooner, this bounds a fetch that never does.
-const listing_timeout_ms = 15_000
-
 /// `work` on every item at once, in item order; `fallback` for one that has not
-/// answered by the deadline.
-fn concurrently(items: List(a), work: fn(a) -> b, fallback: b) -> List(b) {
-  let answers = process.new_subject()
-  list.index_map(items, fn(item, index) {
-    process.spawn_unlinked(fn() { process.send(answers, #(index, work(item))) })
+/// answered by the lookup's deadline, or by the time the answers so far are
+/// `enough`. The answers are collected in a process of their own, so ones that
+/// land after the caller stops listening never reach its mailbox.
+fn concurrently(
+  lookup: Lookup,
+  items: List(a),
+  work: fn(a) -> b,
+  fallback: b,
+  enough: fn(dict.Dict(Int, b)) -> Bool,
+) -> List(b) {
+  let reply = process.new_subject()
+  process.spawn_unlinked(fn() {
+    let answers = process.new_subject()
+    list.index_map(items, fn(item, index) {
+      process.spawn_unlinked(fn() {
+        process.send(answers, #(index, work(item)))
+      })
+    })
+    let received =
+      collect(answers, list.length(items), lookup.deadline, enough, dict.new())
+    process.send(reply, received)
   })
-  let deadline = clock.monotonic_ms() + listing_timeout_ms
-  let received = collect(answers, list.length(items), deadline, dict.new())
+  let received =
+    process.receive(
+      reply,
+      int.max(0, lookup.deadline - clock.monotonic_ms()) + 1000,
+    )
+    |> result.unwrap(dict.new())
   list.index_map(items, fn(_, index) {
     dict.get(received, index) |> result.unwrap(fallback)
   })
@@ -178,11 +252,12 @@ fn collect(
   answers: process.Subject(#(Int, b)),
   remaining: Int,
   deadline: Int,
+  enough: fn(dict.Dict(Int, b)) -> Bool,
   received: dict.Dict(Int, b),
 ) -> dict.Dict(Int, b) {
-  case remaining {
-    0 -> received
-    _ ->
+  case remaining == 0 || enough(received) {
+    True -> received
+    False ->
       case
         process.receive(answers, int.max(0, deadline - clock.monotonic_ms()))
       {
@@ -191,6 +266,7 @@ fn collect(
             answers,
             remaining - 1,
             deadline,
+            enough,
             dict.insert(received, index, value),
           )
         Error(Nil) -> received
@@ -199,24 +275,40 @@ fn collect(
 }
 
 fn offers(
-  host: runtime.Runtime,
-  home: String,
+  lookup: Lookup,
   provider: configuration.Provider,
   model: String,
 ) -> Bool {
-  provider.model == model || list.contains(listed(host, home, provider), model)
+  provider.model == model || list.contains(listed(lookup, provider), model)
 }
 
-fn listed(
-  host: runtime.Runtime,
-  home: String,
-  provider: configuration.Provider,
-) -> List(String) {
-  // A generic extension (openai) serves many gateways; the profile's endpoint
-  // names which catalog provider's models it lists.
-  let endpoint = session_provider.profile_endpoint(home, provider.name)
+/// Whether listing `provider`'s models answers without waiting on a fetch.
+fn ready(lookup: Lookup, provider: configuration.Provider) -> Bool {
+  runtime.model_names_ready(
+    lookup.host,
+    provider.extension,
+    endpoint(lookup, provider),
+  )
+}
+
+fn listed(lookup: Lookup, provider: configuration.Provider) -> List(String) {
   list.unique([
     provider.model,
-    ..runtime.model_names(host, provider.extension, endpoint)
+    ..runtime.model_names(
+      lookup.host,
+      provider.extension,
+      endpoint(lookup, provider),
+    )
   ])
+}
+
+/// A generic extension (openai) serves many gateways; the profile's endpoint
+/// names which catalog provider's models it lists.
+fn endpoint(
+  lookup: Lookup,
+  provider: configuration.Provider,
+) -> Option(String) {
+  dict.get(lookup.endpoints, provider.name)
+  |> option.from_result
+  |> option.flatten
 }

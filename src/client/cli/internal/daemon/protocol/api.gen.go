@@ -513,6 +513,53 @@ type CatalogCandidate struct {
 	Valid           bool    `json:"valid"`
 }
 
+// ChangedFile defines model for ChangedFile.
+type ChangedFile struct {
+	Added Counter `json:"added"`
+
+	// Binary Binary content, or text that is not UTF-8.
+	Binary bool `json:"binary"`
+
+	// Diff Unified diff with git's `diff --git` and `---`/`+++` headers, without a trailing newline. Null exactly when `omitted` is set.
+	Diff *string `json:"diff" nullable:"true"`
+
+	// OldPath Where a renamed file came from.
+	OldPath *string `json:"old_path" nullable:"true"`
+	Omitted *string `json:"omitted" nullable:"true"`
+
+	// Path Relative to the checkout root.
+	Path    string  `json:"path"`
+	Removed Counter `json:"removed"`
+	Status  string  `json:"status"`
+}
+
+// CheckoutChanges defines model for CheckoutChanges.
+type CheckoutChanges struct {
+	Base struct {
+		// Commit The short commit compared with; null for an unborn HEAD or jj's root.
+		Commit *string `json:"commit" nullable:"true"`
+
+		// Label What the working copy was compared with, such as HEAD, @-, origin/main or trunk().
+		Label string `json:"label"`
+		Spec  string `json:"spec"`
+	} `json:"base"`
+	Checkout struct {
+		// Branch The branch (git) or the bookmark `@` works on (jj).
+		Branch *string `json:"branch" nullable:"true"`
+
+		// Head The short HEAD commit (git) or `@`'s change id (jj); null when unborn.
+		Head *string `json:"head" nullable:"true"`
+		Kind string  `json:"kind"`
+
+		// Root Canonical daemon-host location, local or SSH. Clients do not resolve this path locally.
+		Root Workspace `json:"root"`
+	} `json:"checkout"`
+	Files []ChangedFile `json:"files"`
+
+	// Truncated More files changed than are listed.
+	Truncated bool `json:"truncated"`
+}
+
 // Checkpoint defines model for Checkpoint.
 type Checkpoint struct {
 	// CheckpointID Opaque identity. Never infer a resource type or route from its contents.
@@ -3482,10 +3529,11 @@ type StorageFilePage struct {
 		OtherBytes        Counter `json:"other_bytes"`
 		RecentBackupBytes Counter `json:"recent_backup_bytes"`
 		RecentBackupCount Counter `json:"recent_backup_count"`
+		ShellOutputBytes  Counter `json:"shell_output_bytes"`
 	} `json:"totals"`
 }
 
-// StorageReport Examples: {"database":{"free_page_count":0,"main_file_bytes":8192,"page_count":2,"page_size_bytes":4096,"used_bytes":8192,"wal_bytes":0},"files":{"items":[],"next":null,"totals":{"backup_bytes":0,"kernel_bytes":0,"other_bytes":0,"recent_backup_bytes":0,"recent_backup_count":0}},"images":{"bytes":0,"count":0},"measured_at":"2026-10-02T14:00:00Z","sessions":{"items":[],"next":null,"total_count":0,"total_estimated_content_bytes":0}}
+// StorageReport Examples: {"database":{"free_page_count":0,"main_file_bytes":8192,"page_count":2,"page_size_bytes":4096,"used_bytes":8192,"wal_bytes":0},"files":{"items":[],"next":null,"totals":{"backup_bytes":0,"kernel_bytes":0,"other_bytes":0,"recent_backup_bytes":0,"recent_backup_count":0,"shell_output_bytes":0}},"images":{"bytes":0,"count":0},"measured_at":"2026-10-02T14:00:00Z","sessions":{"items":[],"next":null,"total_count":0,"total_estimated_content_bytes":0}}
 type StorageReport struct {
 	Database struct {
 		FreePageCount Counter `json:"free_page_count"`
@@ -3874,11 +3922,20 @@ type WorkspaceDirectory struct {
 	Items     []struct {
 		Hidden bool `json:"hidden"`
 
+		// Ignored Only with `include=files`. Whether git (or a colocated jj) ignores it; null outside a repository, in a jj checkout without git, or when git cannot say.
+		Ignored *bool `json:"ignored,omitempty" nullable:"true"`
+
+		// Kind Only with `include=files`. A link to a file is a file.
+		Kind *string `json:"kind,omitempty"`
+
 		// Location Canonical daemon-host location, local or SSH. Clients do not resolve this path locally.
 		Location   Workspace  `json:"location"`
 		ModifiedAt *Timestamp `json:"modified_at" nullable:"true"`
 		Name       string     `json:"name"`
-		Vcs        *string    `json:"vcs" nullable:"true"`
+
+		// Size Only with `include=files`. Bytes for a file, null for a directory.
+		Size *Counter `json:"size,omitempty" nullable:"true"`
+		Vcs  *string  `json:"vcs" nullable:"true"`
 	} `json:"items"`
 	Next    *PageToken        `json:"next" nullable:"true"`
 	Parent  *Workspace        `json:"parent" nullable:"true"`
@@ -4293,6 +4350,14 @@ type GetCatalogParams struct {
 	Next  *Next   `form:"next,omitempty" json:"next,omitempty"`
 }
 
+// GetSessionChangesParams defines parameters for GetSessionChanges.
+type GetSessionChangesParams struct {
+	Base *string `form:"base,omitempty" json:"base,omitempty"`
+
+	// IfNoneMatch The ETag of an earlier answer.
+	IfNoneMatch *string `json:"If-None-Match,omitempty"`
+}
+
 // GetContextParams defines parameters for GetContext.
 type GetContextParams struct {
 	View       *string  `form:"view,omitempty" json:"view,omitempty"`
@@ -4407,9 +4472,11 @@ type AttachTerminalParams struct {
 // GetWorkspacesParams defines parameters for GetWorkspaces.
 type GetWorkspacesParams struct {
 	Location *Workspace `form:"location,omitempty" json:"location,omitempty"`
-	Include  *string    `form:"include,omitempty" json:"include,omitempty"`
-	Limit    *Limit     `form:"limit,omitempty" json:"limit,omitempty"`
-	Next     *Next      `form:"next,omitempty" json:"next,omitempty"`
+
+	// Include `preview` adds repository facts and a tree; `files` lists the directory's files after its directories, each item with `kind`, `size` and `ignored`.
+	Include *string `form:"include,omitempty" json:"include,omitempty"`
+	Limit   *Limit  `form:"limit,omitempty" json:"limit,omitempty"`
+	Next    *Next   `form:"next,omitempty" json:"next,omitempty"`
 }
 
 // PatchAccountJSONRequestBody defines body for PatchAccount for application/json ContentType.
@@ -5483,6 +5550,13 @@ type ClientInterface interface {
 	// Corresponds with GET /sessions/{session_id}/catalog (the `GetCatalog` operationId).
 	GetCatalog(ctx context.Context, sessionID ID, params *GetCatalogParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// GetSessionChanges Read every change of the session's checkout
+	//
+	// Diffs the working copy of the checkout enclosing the session's workspace, on the machine the workspace is on (the daemon, or the host through SSH gathers). Read-only: git runs without optional locks and jj with `--ignore-working-copy`. `uncommitted` compares the working tree, staged and unstaged, with HEAD (git) or `@-` (jj); `upstream` compares it with the merge base of HEAD and the branch's upstream, else origin/HEAD, else origin/main (git), or with `fork_point(trunk() | @)` (jj). Untracked files that are not ignored are listed whole. A jj checkout colocated with git is answered by git and so includes edits jj has not snapshotted, listing a file new to git as `added`; one without git is as fresh as jj's last snapshot. Files sort by path, at most 1000 (`truncated` past that). A diff over 256 KiB is omitted `too_large`; once the JSON-encoded diffs reach 768 KiB, that file and every later one are omitted `budget`. Binary content, and text that is not UTF-8, is `binary`. `diff` is null exactly when `omitted` is set; counts are always filled (0 for binary, and for an untracked file over 64 MiB). The ETag hashes the answer: `If-None-Match` with it answers 304. A missing workspace folder is 404 `workspace_unavailable`. Requires capability `checkout_changes: 1`.
+	//
+	// Corresponds with GET /sessions/{session_id}/changes (the `GetSessionChanges` operationId).
+	GetSessionChanges(ctx context.Context, sessionID ID, params *GetSessionChangesParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// CompactSessionWithBody Compact model context while retaining history
 	//
 	// Idle required. Selecting a strategy can succeed even if compaction later fails; report both. Full durable history stays intact. No automatic retry.
@@ -5805,7 +5879,7 @@ type ClientInterface interface {
 
 	// GetWorkspaces Browse recent locations or a directory
 	//
-	// Without location return recent workspaces. include=preview requires location. Paths resolve on the daemon host; cached host state does not perform SSH sign-in. Requires capability `workspace_browsing: 1`.
+	// Without location return recent workspaces. include requires location. Paths resolve on the daemon host; cached host state does not perform SSH sign-in. Requires capability `workspace_browsing: 1`.
 	//
 	// Corresponds with GET /workspaces (the `GetWorkspaces` operationId).
 	GetWorkspaces(ctx context.Context, params *GetWorkspacesParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -7785,6 +7859,23 @@ func (c *Client) GetCatalog(ctx context.Context, sessionID ID, params *GetCatalo
 	return c.Client.Do(req)
 }
 
+// GetSessionChanges Read every change of the session's checkout
+//
+// Diffs the working copy of the checkout enclosing the session's workspace, on the machine the workspace is on (the daemon, or the host through SSH gathers). Read-only: git runs without optional locks and jj with `--ignore-working-copy`. `uncommitted` compares the working tree, staged and unstaged, with HEAD (git) or `@-` (jj); `upstream` compares it with the merge base of HEAD and the branch's upstream, else origin/HEAD, else origin/main (git), or with `fork_point(trunk() | @)` (jj). Untracked files that are not ignored are listed whole. A jj checkout colocated with git is answered by git and so includes edits jj has not snapshotted, listing a file new to git as `added`; one without git is as fresh as jj's last snapshot. Files sort by path, at most 1000 (`truncated` past that). A diff over 256 KiB is omitted `too_large`; once the JSON-encoded diffs reach 768 KiB, that file and every later one are omitted `budget`. Binary content, and text that is not UTF-8, is `binary`. `diff` is null exactly when `omitted` is set; counts are always filled (0 for binary, and for an untracked file over 64 MiB). The ETag hashes the answer: `If-None-Match` with it answers 304. A missing workspace folder is 404 `workspace_unavailable`. Requires capability `checkout_changes: 1`.
+//
+// Corresponds with GET /sessions/{session_id}/changes (the `GetSessionChanges` operationId).
+func (c *Client) GetSessionChanges(ctx context.Context, sessionID ID, params *GetSessionChangesParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetSessionChangesRequest(c.Server, sessionID, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 // CompactSessionWithBody Compact model context while retaining history
 //
 // Idle required. Selecting a strategy can succeed even if compaction later fails; report both. Full durable history stays intact. No automatic retry.
@@ -8487,7 +8578,7 @@ func (c *Client) AttachTerminal(ctx context.Context, terminalID ID, params *Atta
 
 // GetWorkspaces Browse recent locations or a directory
 //
-// Without location return recent workspaces. include=preview requires location. Paths resolve on the daemon host; cached host state does not perform SSH sign-in. Requires capability `workspace_browsing: 1`.
+// Without location return recent workspaces. include requires location. Paths resolve on the daemon host; cached host state does not perform SSH sign-in. Requires capability `workspace_browsing: 1`.
 //
 // Corresponds with GET /workspaces (the `GetWorkspaces` operationId).
 func (c *Client) GetWorkspaces(ctx context.Context, params *GetWorkspacesParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
@@ -13145,6 +13236,82 @@ func NewGetCatalogRequest(server string, sessionID ID, params *GetCatalogParams)
 	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
 	if err != nil {
 		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetSessionChangesRequest constructs an http.Request for the GetSessionChanges method
+func NewGetSessionChangesRequest(server string, sessionID ID, params *GetSessionChangesParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/sessions/%s/changes", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if params.Base != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "base", *params.Base, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.IfNoneMatch != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "If-None-Match", *params.IfNoneMatch, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("If-None-Match", headerParam0)
+		}
+
 	}
 
 	return req, nil

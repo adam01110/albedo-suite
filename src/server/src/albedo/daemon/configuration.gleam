@@ -199,6 +199,29 @@ pub fn settings(
   name: String,
   decoder: decode.Decoder(a),
 ) -> Result(a, String) {
+  use providers <- result.try(raw_providers(home))
+  use value <- result.try(
+    dict.get(providers, name) |> result.replace_error(not_configured),
+  )
+  decode.run(value, decoder)
+  |> result.replace_error(invalid_config)
+}
+
+/// `settings` for every saved profile from one read of the file, by name;
+/// `Error(Nil)` for a profile `decoder` rejects.
+pub fn every_settings(
+  home: String,
+  decoder: decode.Decoder(a),
+) -> Result(Dict(String, Result(a, Nil)), String) {
+  use providers <- result.map(raw_providers(home))
+  dict.map_values(providers, fn(_, value) {
+    decode.run(value, decoder) |> result.replace_error(Nil)
+  })
+}
+
+/// Each saved profile's raw settings by name; a legacy flat file is the one
+/// profile "default".
+fn raw_providers(home: String) -> Result(Dict(String, Dynamic), String) {
   use raw <- result.try(
     read_config(home)
     |> result.map_error(fn(error) {
@@ -212,20 +235,12 @@ pub fn settings(
     decode.run(raw, decode.dict(decode.string, decode.dynamic))
     |> result.replace_error(invalid_config),
   )
-  let value = case dict.get(root, "providers") {
+  case dict.get(root, "providers") {
     Ok(providers) ->
       decode.run(providers, decode.dict(decode.string, decode.dynamic))
       |> result.replace_error(invalid_config)
-      |> result.try(fn(providers) {
-        dict.get(providers, name)
-        |> result.replace_error(not_configured)
-      })
-    Error(_) if name == "default" -> Ok(raw)
-    Error(_) -> Error(not_configured)
+    Error(_) -> Ok(dict.from_list([#("default", raw)]))
   }
-  use value <- result.try(value |> result.replace_error(not_configured))
-  decode.run(value, decoder)
-  |> result.replace_error(invalid_config)
 }
 
 @external(erlang, "albedo_settings", "write_default")

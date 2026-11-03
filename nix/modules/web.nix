@@ -8,7 +8,7 @@
       pname = "albedo-web";
       version = "1.0.0";
       src = upstream + "/web";
-      npmDepsHash = "sha256-FhhkJGQxpwm51eQDqrO9r9M9FS1QrcdnKdPObW/b//s=";
+      npmDepsHash = "sha256-cO7QJ6eomg2h9BpvGyCq2uLV20iAl10He9oG6w8C5jE=";
       installPhase = ''
         runHook preInstall
         cp -R dist $out
@@ -25,7 +25,7 @@
       '';
       meta = {
         description = "Canvas web client for Albedo";
-        license = pkgs.lib.licenses.mpl20;
+        license = import ../albedo-license.nix {inherit (pkgs) lib;};
         platforms = pkgs.lib.platforms.unix;
       };
     };

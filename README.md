@@ -96,7 +96,10 @@ tests. [Third-party notices](THIRD_PARTY_NOTICES.md) record source attribution.
 
 ## License
 
-This repository is licensed under the [Mozilla Public License 2.0](LICENSE),
-except where third-party notices specify otherwise. Upstream and
-third-party attributions and license exceptions are retained in
-[the source notices](THIRD_PARTY_NOTICES.md) and `LICENSES/`.
+This repository is licensed under the [GNU Affero General Public License v3.0
+only with the Classpath exception](LICENSE), matching upstream Albedo. The
+exception permits linking independent modules under their own licenses.
+[The source notices](THIRD_PARTY_NOTICES.md) and `LICENSES/` retain upstream
+attribution, historical MPL obligations and separately licensed components.
+[Source instructions](docs/package-sources.md) cover distribution and remote
+network source obligations.

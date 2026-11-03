@@ -25,17 +25,26 @@ baseline checksum. The whole-source hash still pins their upstream base.
 ## Packaged licenses and source
 
 Both suite variants and their server/client/renderer outputs include
-`share/doc/albedo-suite/` with MPL-2.0, attribution, preserved third-party notices
-and [corresponding source instructions](package-sources.md). The source links
-retain the exact suite and pristine upstream snapshots in the package closure.
+`share/doc/albedo-suite/` with the AGPL-3.0-only license and Classpath exception,
+attribution, preserved third-party and historical MPL notices, and
+[corresponding source instructions](package-sources.md). The source links retain
+the exact suite and pristine upstream snapshots in the package closure.
 The standalone web package similarly includes `share/doc/albedo-web/`, web source
-and npm dependency notices. The FFF adapter retains its MPL notice and readable
-source alongside the separate MIT dependency licenses.
+and npm dependency notices. The FFF adapter retains the same AGPL license and
+exception and readable source alongside the separate MIT dependency licenses.
 
 Distribute the complete closure, including its referenced source snapshots, or
 supply corresponding source and notices separately when extracting binaries or
-browser assets. `checks.package-licenses` checks metadata, installed notices,
-source links, pristine checksums and Python overlay/source correspondence.
+browser assets, using a source-delivery method permitted by the applicable
+licenses. Retained original MPL-covered portions still require their MPL notices
+and covered source. For modified versions supporting remote network interaction,
+AGPL section 13 requires a prominent, no-charge network offer of the exact
+Corresponding Source to those users. Nix store source links do not implement
+that offer; operators must provide it. The Classpath exception covers independent
+linked modules, not modifications to Albedo itself.
+`checks.package-licenses` checks metadata, installed notices, source links,
+pristine checksums and Python overlay/source correspondence; it does not verify
+an operator's network source offer.
 
 ## Checks
 
