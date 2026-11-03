@@ -79,6 +79,7 @@ type PageViewModel struct {
 	FormValues              map[string]json.RawMessage
 	Busy                    bool
 	questionAnswers         *questionAnswerList
+	questionDrafts          map[string]questionDraft
 }
 
 func NewPageViewModel(conn *daemon.Connection, sessionID, command string) PageViewModel {
@@ -98,7 +99,7 @@ func (m *PageViewModel) SetSize(width, height int) {
 	m.listView.setSize(width, height)
 	m.fitInput()
 	if m.questionAnswers != nil {
-		m.questionAnswers.setSize(width, height)
+		m.fitQuestionEditor()
 	}
 }
 
@@ -192,6 +193,10 @@ func (m *PageViewModel) ask(act PageAction) {
 
 // cancelPrompt drops whatever a prompt or question was collecting.
 func (m *PageViewModel) cancelPrompt() {
+	m.saveQuestionDraft()
+	if m.questionAnswers != nil {
+		m.focusRow(m.questionAnswers.row.ID)
+	}
 	m.questionAnswers = nil
 	m.Mode, m.CurrentAction, m.FormValues, m.FieldIndex = modeBrowse, nil, nil, 0
 	m.TextInput.Reset()
@@ -308,6 +313,10 @@ func (m PageViewModel) Update(msg tea.Msg) (PageViewModel, tea.Cmd) {
 		return m.keyPress(msg)
 	}
 	if m.Mode == modeText {
+		if m.questionAnswers != nil {
+			cmd := m.updateQuestionEditor(msg)
+			return m, cmd
+		}
 		var cmd tea.Cmd
 		m.TextInput, cmd = m.TextInput.Update(msg)
 		return m, cmd
@@ -321,6 +330,9 @@ func (m PageViewModel) Update(msg tea.Msg) (PageViewModel, tea.Cmd) {
 
 // keyPress keeps list navigation separate from prompts and confirmations.
 func (m PageViewModel) keyPress(msg tea.KeyPressMsg) (PageViewModel, tea.Cmd) {
+	if m.questionAnswers != nil && (m.Mode == modeQuestionAnswers || m.Mode == modeText || m.Mode == modeConfirm) {
+		return m.questionAnswerKey(msg)
+	}
 	if m.Mode == modeBrowse {
 		var done bool
 		msg, done = m.navigation.key(msg, &m.input, false)
@@ -345,10 +357,6 @@ func (m PageViewModel) keyPress(msg tea.KeyPressMsg) (PageViewModel, tea.Cmd) {
 	if key == "esc" || key == "ctrl+c" {
 		if m.Mode == modeBrowse {
 			return m, func() tea.Msg { return PageCancelMsg{} }
-		}
-		if m.Mode == modeText && m.questionAnswers != nil {
-			m.Mode = modeQuestionAnswers
-			return m, nil
 		}
 		m.cancelPrompt()
 		return m, nil

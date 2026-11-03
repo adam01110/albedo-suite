@@ -13,16 +13,29 @@ The tool records a question and returns immediately. End the turn rather than
 polling or continuing work that needs the answer. Tell the user to open
 `/questions`; the sidebar shows pending questions for the current session.
 
-Select a question and press Enter or `ctrl+e` to answer. Suggested answers appear
-as a full-page vertical list. Arrow keys or `j`/`k` move between options; Enter
-submits the selected answer. Number keys select an option without submitting it.
-Long lists scroll, and the detail pane shows the question and selected answer.
+Select a question and press Enter or `ctrl+e` to open the answering workspace.
+The question stays above its suggested answers; wide terminals also show a
+pending-question rail with draft indicators. Narrow terminals keep the question
+and answers together rather than hiding the question in a separate detail pane.
 
-Choose "Type your own answer", or press `ctrl+e` in the answer list, for free
-text. Questions without suggestions open text entry directly. Escape returns
-from text entry to the options, then to the question list without dismissing
-anything. `ctrl+d` in the question list dismisses after confirmation. Chat drafts
-and attachments are untouched; there is no inline chooser or `ctrl+q` binding.
+- Arrow keys or `j`/`k` select an answer; Enter submits it. Number keys select
+  without submitting. Long option lists scroll, with an answer preview below.
+- Tab and Shift+Tab switch between pending questions. Each question retains its
+  selected option, text draft and question scroll position while the page is open.
+- `e` edits the selected suggestion. `ctrl+e`, or "Write your own answer", opens
+  the existing custom draft. Questions without suggestions open the editor directly.
+- Custom answers support multiple lines. Enter adds a newline; `ctrl+enter` or
+  `ctrl+s` submits. Empty answers and answers over 8192 bytes stay editable with
+  an error instead of being sent.
+- `ctrl+up` and `ctrl+down` scroll long question text independently of the options.
+- Escape returns from the editor to the options, then to the pending list. Text
+  drafts survive this navigation; leaving the `/questions` page discards local
+  drafts, not durable questions. Resolved-question drafts are removed on refresh.
+- `ctrl+d` dismisses after confirmation from either the pending list or the
+  answering workspace. Cancelling confirmation keeps the answer draft.
+
+Typing or switching questions never submits an answer. Chat drafts and
+attachments are untouched; there is no inline chooser or `ctrl+q` binding.
 
 Options are suggestions, not restrictions. All answers use the displayed
 question's ETag and the existing page action; stale answers are rejected rather
