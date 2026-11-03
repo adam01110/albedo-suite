@@ -143,6 +143,9 @@ func (l *listView) update(msg tea.Msg) tea.Cmd {
 			return nil
 		}
 		msg = key
+		if l.navigation.move(key, &l.Cursor, len(l.shown), l.height) {
+			return nil
+		}
 		page := max(1, l.height/2)
 		if by, moves := map[string]int{"up": -1, "ctrl+p": -1, "down": 1, "ctrl+n": 1, "pgup": -page, "pgdown": page}[key.String()]; moves {
 			l.move(by)

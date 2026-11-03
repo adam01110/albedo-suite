@@ -246,7 +246,11 @@ func (m AgentsViewModel) View() string {
 	if n := m.nodes[m.rename.id]; n != nil && m.rename.active() {
 		out = append(out, " "+DefaultStyles.Prompt.Render("✎ ")+m.rename.view(m.Width-promptMarkWidth-1), " "+renameHints("restores "+renameBlank(n)))
 	} else {
-		out = append(out, " "+promptLead()+input, footerLine(m.Width, []hint{{"hjkl/tab", "agent"}, {"enter", "open or send"}, {"ctrl+r", "rename"}, {"ctrl+x", "delete"}, {"esc", "back"}}, "", false))
+		mode, action := "NORMAL", "open"
+		if m.navigation.editing {
+			mode, action = "INSERT", "send"
+		}
+		out = append(out, " "+promptLead()+input, footerLine(m.Width, []hint{{mode, ""}, {"hjkl/tab", "agent"}, {"i", "write"}, {"enter", action}, {"ctrl+r", "rename"}, {"ctrl+x", "delete"}, {"esc", "back"}}, "", false))
 	}
 	return strings.Join(out, "\n")
 }

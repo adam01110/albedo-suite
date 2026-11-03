@@ -162,7 +162,9 @@ func TestQuestionsPageNoOptionsAndDismiss(t *testing.T) {
 		t.Fatal("no-options question did not open text entry")
 	}
 	questionPageKey(&m, tea.KeyEscape, 0)
-	questionPageKey(&m, 'd', tea.ModCtrl)
+	questionPageKey(&m, 'a', tea.ModCtrl)
+	questionPageKey(&m, 'j', 0)
+	questionPageKey(&m, 'l', 0)
 	if m.Mode != modeConfirm || len(*answers) != 0 {
 		t.Fatal("dismiss requires confirmation")
 	}
@@ -170,7 +172,9 @@ func TestQuestionsPageNoOptionsAndDismiss(t *testing.T) {
 	if m.Mode != modeBrowse || len(*answers) != 0 {
 		t.Fatal("escape dismissed question")
 	}
-	questionPageKey(&m, 'd', tea.ModCtrl)
+	questionPageKey(&m, 'a', tea.ModCtrl)
+	questionPageKey(&m, 'j', 0)
+	questionPageKey(&m, 'l', 0)
 	result := questionPageKey(&m, tea.KeyEnter, 0)().(pageActionExecutedMsg)
 	if result.Err != nil || len(*answers) != 1 || (*answers)[0] != "dismissed" {
 		t.Fatalf("dismiss: %v %v", *answers, result.Err)

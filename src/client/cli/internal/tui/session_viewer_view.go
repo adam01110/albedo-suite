@@ -182,13 +182,13 @@ func (m SessionViewer) hints() []hint {
 		if _, ok := m.Highlighted(); !ok {
 			return []hint{{"esc", "back"}}
 		}
-		return []hint{{"↑↓", "move"}, {"enter", "open"}, {"ctrl+d", "delete"}, {"ctrl+r", "rename"}, {"ctrl+a", "restore"}, {"esc", "back"}}
+		return []hint{{"j/k", "move"}, {"l/enter", "open"}, {"x", "delete"}, {"r", "rename"}, {"a", "restore"}, {"h/esc", "back"}}
 	}
 	esc := "quit"
 	if m.HasActive {
 		esc = "back"
 	}
-	return []hint{{"↑↓", "move"}, {"tab", "switch"}, {"enter", "open"}, {"ctrl+r", "rename"}, {"ctrl+s", "pin"}, {"ctrl+a", "archive"}, {"ctrl+f", "folders"}, {"esc", esc}}
+	return []hint{{"j/k", "move"}, {"l/enter", "open"}, {"n", "new"}, {"r", "rename"}, {"p", "pin"}, {"a", "archive"}, {"f", "folders"}, {"F2", "workspace"}, {"esc", esc}}
 }
 
 // counts is how many sessions the list holds, and how many of them today.

@@ -69,6 +69,7 @@ type AppModel struct {
 	FolderPicker     FolderPicker
 	Agents           AgentsViewModel
 	Quota            QuotaModel
+	workspaceOverlay *workspaceOverlay
 
 	Chat        ChatModel
 	SettingsGen int
@@ -190,6 +191,9 @@ func (m *AppModel) ClearNotices() {
 }
 
 func (m *AppModel) Update(msg tea.Msg) (model tea.Model, resultCmd tea.Cmd) {
+	if cmd, handled := m.updateWorkspaceOverlay(msg); handled {
+		return m, cmd
+	}
 	previous := m.Chat
 	defer func() {
 		if previous.Generation != m.Chat.Generation || previous.streamCtx != nil && previous.streamCtx.Err() != nil {

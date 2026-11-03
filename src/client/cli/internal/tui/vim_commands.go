@@ -113,9 +113,7 @@ func vimUndo(m *ChatModel, input vimInput, before vimSnapshot, msg tea.KeyPressM
 	return nil
 }
 func vimCommandMenu(m *ChatModel, input vimInput, before vimSnapshot, msg tea.KeyPressMsg) tea.Cmd {
-	m.vimPosition(0)
-	m.vimBeginInsert(before)
-	return m.updateComposer(msg, nil)
+	return func() tea.Msg { return ChatOpenWorkspaceMsg{} }
 }
 func (m *ChatModel) vimRemember(s vimSnapshot) {
 	if s.text == m.TextArea.Value() {

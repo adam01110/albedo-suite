@@ -48,6 +48,11 @@ file-backed and restarted databases; revision checks reject stale transitions.
 The files under `src/` keep upstream formatting and are excluded from the suite's
 treefmt run.
 
+## Terminal UX
+
+[Vim-first terminal interface](vim-ux.md) defines modes, focus, navigation and
+action discovery, including intentionally changed control-key bindings.
+
 ## Daemon tests
 
 ```console

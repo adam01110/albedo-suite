@@ -244,19 +244,24 @@ func TestNavigationFoldersBrowseAndRetainQuery(t *testing.T) {
 	}
 }
 
-func TestNavigationEmptyComposerBrowsesChat(t *testing.T) {
+func TestNavigationExplicitTranscriptFocus(t *testing.T) {
 	m := newTestChatModel(t, &daemon.Session{ID: "s"})
 	m.SetSize(80, 20)
 	m.appendSettledEntry(HistoryEntry{Kind: EntryAssistant, Text: strings.Repeat("history\n", 80)})
 	m.refreshViewportContent()
 	bottom := m.scrollOffset
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 	m, _ = m.Update(navigationKey('k'))
-	if m.scrollOffset != bottom-1 || m.Follow {
+	if !m.reader.active || m.reader.row != bottom-1 || m.scrollOffset != bottom-1 || m.Follow {
 		t.Fatal("k did not scroll the transcript")
 	}
 	m, _ = m.Update(navigationKey('j'))
+	if m.reader.row != bottom || m.Follow {
+		t.Fatal("j lost the transcript cursor")
+	}
+	m, _ = m.Update(navigationKey('G'))
 	if m.scrollOffset != bottom || !m.Follow {
-		t.Fatal("j did not return to the live tail")
+		t.Fatal("G did not return to the live tail")
 	}
 	var cmd tea.Cmd
 	m, cmd = m.Update(navigationKey('h'))

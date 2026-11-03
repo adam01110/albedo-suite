@@ -322,6 +322,11 @@ func (m PageViewModel) Update(msg tea.Msg) (PageViewModel, tea.Cmd) {
 // keyPress keeps list navigation separate from prompts and confirmations.
 func (m PageViewModel) keyPress(msg tea.KeyPressMsg) (PageViewModel, tea.Cmd) {
 	if m.Mode == modeBrowse {
+		if !m.navigation.editing {
+			if chord := map[string]rune{"a": 'a', "r": 'r'}[msg.String()]; chord != 0 {
+				msg = tea.KeyPressMsg{Code: chord, Mod: tea.ModCtrl}
+			}
+		}
 		var done bool
 		msg, done = m.navigation.key(msg, &m.input, false)
 		if done {
@@ -392,7 +397,7 @@ func (m PageViewModel) browseKey(msg tea.KeyPressMsg) (PageViewModel, tea.Cmd) {
 	if m.Doc == nil {
 		return m, nil
 	}
-	if key == "ctrl+a" {
+	if key == "ctrl+a" || key == "enter" && m.Command != "/questions" {
 		if len(m.Doc.Actions) > 0 {
 			m.Mode, m.ActionIndex = modeActions, 0
 		}
@@ -430,7 +435,9 @@ func (m PageViewModel) actionsKey(key string) (PageViewModel, tea.Cmd) {
 		m.ActionIndex = max(0, m.ActionIndex-1)
 	case "down", "ctrl+n", "j":
 		m.ActionIndex = min(len(m.Doc.Actions)-1, m.ActionIndex+1)
-	case "enter":
+	case "h", "q":
+		m.Mode = modeBrowse
+	case "enter", "l":
 		act := m.Doc.Actions[m.ActionIndex]
 		if act.Row && m.currentRow() == nil {
 			m.Error = "Select a row for this action."

@@ -15,6 +15,14 @@ func (m *ChatModel) handleInput(msg tea.Msg) (tea.Cmd, bool) {
 	if cmd, handled := m.handleTerminalClipboard(msg); handled {
 		return cmd, true
 	}
+	if _, ok := msg.(tea.PasteMsg); ok && m.reader.active {
+		if m.reader.searching {
+			var cmd tea.Cmd
+			m.reader.search, cmd = m.reader.search.Update(msg)
+			return cmd, true
+		}
+		return nil, true
+	}
 	var cmds []tea.Cmd
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
@@ -45,11 +53,11 @@ func (m *ChatModel) handleInput(msg tea.Msg) (tea.Cmd, bool) {
 			}
 		}
 
-		if msg.String() == "left" && m.TextArea.Value() == "" {
+		if msg.String() == "left" && !m.reader.active && m.TextArea.Value() == "" {
 			return func() tea.Msg { return ChatBackToSessionsMsg{} }, true
 		}
 
-		if msg.String() == "ctrl+c" || (msg.String() == "ctrl+d" && m.TextArea.Focused() && m.TextArea.Value() == "") {
+		if msg.String() == "ctrl+c" {
 			m.Close()
 			return func() tea.Msg { return ChatQuitMsg{} }, true
 		}
@@ -64,6 +72,17 @@ func (m *ChatModel) handleInput(msg tea.Msg) (tea.Cmd, bool) {
 			return nil, true
 		}
 
+		if cmd, handled := m.handleReader(msg); handled {
+			return cmd, true
+		}
+		if m.vim.normal && (msg.String() == "ctrl+d" || msg.String() == "ctrl+u") {
+			delta := max(1, m.Viewport.Height()/2)
+			if msg.String() == "ctrl+u" {
+				delta = -delta
+			}
+			m.scrollBy(delta)
+			return nil, true
+		}
 		if cmd, handled := m.handleVim(msg); handled {
 			return cmd, true
 		}

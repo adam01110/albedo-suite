@@ -39,7 +39,9 @@ quota poller deadline recovery and newest-report projection,
 reversible provider-profile availability and model-discovery filtering,
 cache-stable startup reference reductions with on-demand API documentation,
 Vim-style CLI composer editing with a footer mode indicator, recoverable queued
-inputs on interruption and modal hjkl navigation across searchable CLI screens,
+inputs on interruption, explicit counted navigation/search across CLI screens,
+a draft-preserving workspace launcher and keyboard reference, keyboard transcript
+focus/actions/search, and mode-specific agent messaging,
 explicit Base16 terminal palettes, formatted CLI context inspection with a raw toggle,
 a passive bounded TUI activity sidebar derived from existing stream events,
 zoxide suggestions and successful local move tracking in the folder picker,

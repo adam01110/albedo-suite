@@ -238,7 +238,7 @@ func (m PageViewModel) hints() []hint {
 	case m.Mode == modeChoice:
 		return []hint{{"←→", "choose"}, {"enter", "apply"}, {"esc", "cancel"}}
 	case m.Mode == modeActions:
-		return []hint{{"↑↓", "action"}, {"enter", "choose"}, {"esc", "cancel"}}
+		return []hint{{"j/k", "action"}, {"l/enter", "choose"}, {"h/esc", "cancel"}}
 	}
 	return m.browseHints()
 }
@@ -251,14 +251,14 @@ func (m PageViewModel) browseHints() []hint {
 		hints = append(hints, hint{"↑↓", "move"})
 	}
 	for _, act := range m.Doc.Actions {
-		if act.Key != "" && (!act.Row || m.currentRow() != nil) {
+		if act.Key != "" && act.Key != "ctrl+d" && act.Key != "ctrl+u" && (!act.Row || m.currentRow() != nil) {
 			chords = append(chords, hint{act.Key, act.Label})
 		}
 	}
 	first := min(2, len(chords))
 	hints = append(hints, chords[:first]...)
 	if len(m.Doc.Actions) > 0 {
-		hints = append(hints, hint{"ctrl+a", "actions"})
+		hints = append(hints, hint{"a/enter", "actions"})
 	}
 	hints = append(hints, chords[first:]...)
 	return append(hints, hint{"ctrl+r", "refresh"}, hint{"esc", "back"})

@@ -339,6 +339,10 @@ func (m ModelPickerModel) Update(msg tea.Msg) (ModelPickerModel, tea.Cmd) {
 		if done {
 			return m, nil
 		}
+		if m.navigation.move(msg, &m.cursor, len(m.rows), m.Height) {
+			m.browsing = true
+			return m, nil
+		}
 		switch msg.String() {
 		case "esc", "ctrl+c", "ctrl+d":
 			return m, func() tea.Msg { return ModelPickerCancelMsg{} }

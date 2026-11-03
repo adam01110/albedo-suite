@@ -310,6 +310,17 @@ func (m ChatModel) reaching() string {
 // reused, and a frame nothing changed in returns the string the last one
 // returned, so Bubble Tea's own comparison can skip parsing and painting it.
 func (m *ChatModel) View() string {
+	if m.reader.active {
+		if m.Follow {
+			m.reader.row = max(0, len(m.frameLines)-1)
+		} else {
+			previous := m.reader.row
+			m.readerAnchor()
+			if previous != m.reader.row {
+				m.readerReveal()
+			}
+		}
+	}
 	if m.frame == nil {
 		m.frame = &frameCache{}
 	}
@@ -328,7 +339,7 @@ func (m *ChatModel) View() string {
 		rows = append(rows, "")
 	}
 
-	rows = append(rows, m.body()...)
+	rows = append(rows, m.readerRows(m.body())...)
 	// one row: a job's command may span lines
 	status := oneLine(m.statusLine())
 	// the face trails the text, so its frames never move anything

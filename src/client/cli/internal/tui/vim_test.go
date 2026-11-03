@@ -119,15 +119,15 @@ func TestVimFooter(t *testing.T) {
 		for _, normal := range []bool{false, true} {
 			m.vim.normal = normal
 			footer := ansi.Strip(m.renderFooter())
-			a, b, c := strings.Index(footer, "sessions"), strings.Index(footer, m.vimMode()), strings.Index(footer, "commands")
+			b, c := strings.Index(footer, m.vimMode()), strings.Index(footer, "workspace")
 			t.Logf("width=%d mode=%s footer=%q", width, m.vimMode(), footer)
-			if b < 0 || !(a >= 0 && a < b && b < c) {
+			if b < 0 || c < b {
 				t.Fatalf("width %d: %q", width, footer)
 			}
 			if width == 40 && !strings.HasSuffix(footer, "—/—") {
 				t.Fatal(footer)
 			}
-			if width == 120 && !strings.Contains(footer, "your messages") {
+			if width == 120 && !strings.Contains(footer, "keys") {
 				t.Fatal(footer)
 			}
 			if ansi.StringWidth(footer) > m.chatWidth() {
@@ -237,7 +237,7 @@ func TestVimFooterExpandedUsage(t *testing.T) {
 			t.Fatal(footer)
 		}
 		if width >= 80 {
-			a, b, c := strings.Index(footer, "sessions"), strings.Index(footer, "NORMAL"), strings.Index(footer, "commands")
+			a, b, c := strings.Index(footer, "transcript"), strings.Index(footer, "NORMAL"), strings.Index(footer, "workspace")
 			if !(a >= 0 && a < b && b < c) {
 				t.Fatal(footer)
 			}
