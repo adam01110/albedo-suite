@@ -61,6 +61,9 @@ func (m *ChatModel) handleInput(msg tea.Msg) (tea.Cmd, bool) {
 			m.Close()
 			return func() tea.Msg { return ChatQuitMsg{} }, true
 		}
+		if msg.String() == "ctrl+s" {
+			return func() tea.Msg { return ChatBackToSessionsMsg{} }, true
+		}
 		if msg.String() == "ctrl+n" {
 			return func() tea.Msg { return ChatNewSessionMsg{} }, true
 		}

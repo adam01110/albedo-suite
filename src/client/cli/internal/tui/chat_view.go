@@ -368,7 +368,7 @@ func (m *ChatModel) View() string {
 		rows = append(rows, m.chipStrip(width)...)
 		rows = append(rows, m.direnvRows(width)...)
 	}
-	rows = append(rows, DefaultStyles.Decor.Render(strings.Repeat("─", width)))
+	rows = append(rows, m.composeRule(width))
 	if len(m.effortOptions) > 0 {
 		rows = append(rows, "", DefaultStyles.Bold.Render(ansi.Truncate("Reasoning effort", width, "")), m.effortSelectorView(), DefaultStyles.Faint.Render(ansi.Truncate("← → choose  ·  enter apply  ·  esc cancel", width, "")))
 	} else {
@@ -611,6 +611,18 @@ func joinBody(rows, column []string, width, sidebar int) []string {
 		out[i] = row + strings.Repeat(" ", max(0, width-ansi.StringWidth(row))) + cell
 	}
 	return out
+}
+
+// composeRule labels the input at its boundary without taking a content row.
+func (m ChatModel) composeRule(width int) string {
+	if len(m.effortOptions) > 0 {
+		return DefaultStyles.Decor.Render(strings.Repeat("─", width))
+	}
+	style := DefaultStyles.Muted
+	if m.reader.active {
+		style = DefaultStyles.Faint
+	}
+	return titleRule(width, style.Render(ansi.Truncate("compose", width, "")), "")
 }
 
 // composer is the input block as rows, drawn again only when the textarea's

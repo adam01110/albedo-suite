@@ -121,7 +121,7 @@ func TestVimFooter(t *testing.T) {
 			footer := ansi.Strip(m.renderFooter())
 			b, c := strings.Index(footer, m.vimMode()), strings.Index(footer, "workspace")
 			t.Logf("width=%d mode=%s footer=%q", width, m.vimMode(), footer)
-			if b < 0 || c < b {
+			if b < 0 || width >= 80 && c < b || width == 40 && !strings.Contains(footer, "ctrl+s sessions") {
 				t.Fatalf("width %d: %q", width, footer)
 			}
 			if width == 40 && !strings.HasSuffix(footer, "—/—") {

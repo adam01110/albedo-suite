@@ -178,20 +178,20 @@ func (m ChatModel) renderFooter() string {
 	if m.reader.searching {
 		return ansi.Truncate(m.readerStatus(), width, "…")
 	}
-	if width >= 60 {
+	if width >= 60 && m.reader.active {
 		mode.does = focus
 	}
 	candidates := []struct {
 		right string
 		left  []hint
 	}{
-		{left: []hint{sessions, mode, commands, {"F1", "keys"}, {"ctrl+j", "diffs"}, {"ctrl+o", "agents"}}, right: right},
-		{left: []hint{sessions, mode, commands, {"ctrl+j", "diffs"}, {"ctrl+o", "agents"}}, right: right},
+		{left: []hint{sessions, mode, {"ctrl+s", "sessions"}, commands, {"F1", "keys"}, {"ctrl+j", "diffs"}, {"ctrl+o", "agents"}}, right: right},
+		{left: []hint{sessions, mode, {"ctrl+s", "sessions"}, commands, {"ctrl+j", "diffs"}, {"ctrl+o", "agents"}}, right: right},
 		{left: []hint{sessions, mode, commands, {"ctrl+o", "agents"}}, right: compact},
-		{left: []hint{sessions, mode, commands}, right: compact},
+		{left: []hint{sessions, mode, commands, {"ctrl+s", "sessions"}}, right: compact},
 		{left: []hint{mode, commands, {"ctrl+j", "diffs"}}, right: compact},
-		{left: []hint{mode, commands}, right: compact},
-		{left: []hint{mode}, right: compact},
+		{left: []hint{mode, commands, {"ctrl+s", "sessions"}}, right: compact},
+		{left: []hint{mode, {"ctrl+s", "sessions"}}, right: compact},
 	}
 	if slices.ContainsFunc(m.History.Entries(), func(e HistoryEntry) bool { return e.Kind == EntryShell }) {
 		candidates = append([]struct {

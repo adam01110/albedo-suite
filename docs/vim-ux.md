@@ -45,8 +45,15 @@ action shortcuts remain available. Actions previously bound to `ctrl+d` or
 
 ## Conversation focus
 
+`ctrl+s` opens sessions directly from either focus, including INSERT, while
+retaining the draft. The lowercase `compose` label sits on the separator above
+the input; the footer keeps the editing mode instead of repeating that label.
+
 The composer retains its existing Vim editing: insert commands, counted motions,
-operators, text objects, find/till, yank/paste and undo/redo. NORMAL motions act
+operators, text objects, find/till, yank/paste and undo/redo. Yanks also write to
+the system clipboard through the existing local clipboard/OSC 52 transport;
+linewise yanks include a final newline. The internal register remains available
+for `p`/`P`. NORMAL motions act
 on the composer regardless of whether its draft is empty.
 
 **Tab in NORMAL** moves focus between composer and transcript without changing

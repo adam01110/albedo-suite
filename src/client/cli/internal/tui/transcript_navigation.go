@@ -244,7 +244,7 @@ func (m ChatModel) readerStatus() string {
 		return "FIND  /" + m.reader.search.View()
 	}
 	if !m.reader.active {
-		return m.vimMode() + " · COMPOSER"
+		return m.vimMode()
 	}
 	follow := ""
 	if m.Follow {

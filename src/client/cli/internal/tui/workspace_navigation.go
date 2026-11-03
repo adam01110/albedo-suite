@@ -90,7 +90,7 @@ func (m *AppModel) openWorkspaceOverlay(help bool) {
 			{Label: "Modes", Detail: "NORMAL navigates · / searches lists · Esc retains filter and navigates"},
 			{Label: "Lists", Detail: "[count]j/k move · gg/G first/last · ctrl+u/d half-page"},
 			{Label: "Open / back", Detail: "l or Enter opens · h, q or Esc goes back"},
-			{Label: "Composer", Detail: "i/a/I/A insert · Esc NORMAL · Tab switches to transcript"},
+			{Label: "Composer", Detail: "i/a/I/A insert · Esc NORMAL · Tab transcript · ctrl+s sessions"},
 			{Label: "Editing", Detail: "w/b/e, 0/$, f/t, operators d/c/y, text objects, u/ctrl+r"},
 			{Label: "Transcript", Detail: "Tab focuses · j/k rows · gg/G bounds · ctrl+u/d half-page"},
 			{Label: "Transcript actions", Detail: "]/[ next/previous action · Enter activates · y copies row · o opens file"},

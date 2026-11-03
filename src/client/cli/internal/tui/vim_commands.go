@@ -173,10 +173,14 @@ func (m *ChatModel) vimDelete(start, end int) {
 	m.syncLayout()
 }
 
-func (m *ChatModel) vimApplyOperator(operator string, span vimRange, before vimSnapshot) {
+func (m *ChatModel) vimApplyOperator(operator string, span vimRange, before vimSnapshot) tea.Cmd {
 	if operator == "y" {
 		m.vim.register, m.vim.linewise = span.register, span.linewise
-		return
+		text := span.register
+		if span.linewise {
+			text += "\n"
+		}
+		return m.copied(text)
 	}
 	m.vimDelete(span.start, span.end)
 	if span.linewise {
@@ -187,4 +191,5 @@ func (m *ChatModel) vimApplyOperator(operator string, span vimRange, before vimS
 	} else {
 		m.vimRemember(before)
 	}
+	return nil
 }
