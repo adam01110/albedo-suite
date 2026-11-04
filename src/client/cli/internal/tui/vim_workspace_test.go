@@ -277,6 +277,9 @@ func TestNavigationWorkspacePagesNeverSubmitInput(t *testing.T) {
 	m.openWorkspaceOverlay(false)
 	found := false
 	for _, item := range m.workspaceOverlay.picker.Items {
+		if item.ID == "questions" || item.ID == "/questions" {
+			t.Fatal("removed question tool remains in launcher")
+		}
 		if item.ID == "/requests" {
 			found = true
 		}
@@ -284,7 +287,7 @@ func TestNavigationWorkspacePagesNeverSubmitInput(t *testing.T) {
 	if !found {
 		t.Fatal("catalog page absent from launcher")
 	}
-	for _, id := range []string{"/requests", "questions"} {
+	for _, id := range []string{"/requests"} {
 		cmd := m.workspaceDestination(id)
 		if cmd == nil {
 			t.Fatal("missing page command", id)

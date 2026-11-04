@@ -60,7 +60,7 @@ func keyboardReference() []PickerItem {
 			{"f", "Browse folders"}, {"x", "Delete in archive; confirmation required"},
 		}},
 		{"Pages NORMAL", []hint{
-			{"a / Enter", "Open action menu (questions: answer flow)"}, {"r", "Refresh page"},
+			{"a / Enter", "Open action menu"}, {"r", "Refresh page"},
 		}},
 		{"Forms and choices", []hint{
 			{"Type / Space", "Literal text in text fields"}, {"j / k", "Choose option"}, {"Enter", "Apply"}, {"Esc", "Cancel"},

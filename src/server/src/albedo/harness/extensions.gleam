@@ -32,7 +32,6 @@ import albedo/harness/extensions/paperclips/extension as paperclips
 import albedo/harness/extensions/perplexity/extension as perplexity
 import albedo/harness/extensions/proxy/extension as proxy
 import albedo/harness/extensions/python/extension as python
-import albedo/harness/extensions/questions/extension as questions
 import albedo/harness/extensions/remote/extension as remote
 import albedo/harness/extensions/rolling/extension as rolling
 import albedo/harness/extensions/run/extension as run
@@ -75,7 +74,6 @@ pub fn declared() -> Config {
       agents.extension(),
       schedule.extension(),
       paperclips.extension(),
-      questions.extension(),
       artifacts.extension(),
       files.extension(),
       // Diagnostics inspect published formatter output, not unfinished edits.
@@ -136,7 +134,7 @@ pub fn declared() -> Config {
       "models", "openai", "codex", "antigravity", "opencode-go", "opencode-zen",
       "bedrock", "claude", "vertex", "rolling", "snapcompact-memory",
       "lcm-memory", "notes", "remote", "browser", "warm", "exa", "perplexity",
-      "mistral", "web-search", "editor-mcp", "questions", "zed",
+      "mistral", "web-search", "editor-mcp", "zed",
     ],
   )
 }

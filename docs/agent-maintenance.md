@@ -26,8 +26,6 @@ this guide describes the constraints to preserve, not a frozen file inventory.
   every edit or as a final-reply veto. LSP starts on demand. Both remain optional
   and isolated compatibility layers;
   disabling them must preserve ordinary file, Python, MCP and streaming behavior.
-- Questions are durable and answerable through `/questions`, resuming the asking
-  session. Preserve streaming replay and session/operation lifecycle behavior.
 - Supported commands use RTK; file search uses FFF. Preserve daemon-owned worker
   sharing and local/SSH isolation, bounded indexes, timeouts and shutdown. Do not
   silently substitute another search engine or create a worker per Python kernel.

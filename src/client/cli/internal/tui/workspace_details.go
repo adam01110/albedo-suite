@@ -2,7 +2,7 @@ package tui
 
 func workspaceGroup(id string) string {
 	switch id {
-	case "chat", "model", "agents", "tree", "context", "extensions", "questions":
+	case "chat", "model", "agents", "tree", "context", "extensions":
 		return "Active session"
 	case "sessions", "folders", "new":
 		return "Workspace"
@@ -23,7 +23,6 @@ func workspaceDetail(item PickerItem) string {
 		"agents":     "Inspect related sessions and agent activity.\n\nh/j/k/l navigate\nEnter open selected agent\ni compose a message · Esc navigate\n\nDirect: space a in NORMAL",
 		"tree":       "Inspect conversation history and branches.\n\nSelect an entry to branch or rewind. Existing confirmation steps still apply.",
 		"context":    "Inspect the model request, prompt sections and context usage without sending a message.",
-		"questions":  "Review pending questions and saved answers.\n\nEnter opens the answer flow. Revision checks and cancellation stay in effect.",
 		"extensions": "Inspect available tools, skills and extension capabilities for this session.",
 		"login":      "Manage provider accounts, authentication and availability through the existing login flow.",
 		"config":     "Inspect and edit extension configuration. Changes use the existing validation and apply flow.",

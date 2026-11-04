@@ -83,7 +83,6 @@
             cp ${../../test/suite_quota_test.gleam} test/suite_quota_test.gleam
             cp ${../../test/suite_codex_error_test.gleam} test/suite_codex_error_test.gleam
             cp ${../../test/suite_opencode_go_test.gleam} test/suite_opencode_go_test.gleam
-            cp ${../../test/suite_questions_test.gleam} test/suite_questions_test.gleam
             cp ${../../test/suite_prompt_docs_test.gleam} test/suite_prompt_docs_test.gleam
             gleam run -m suite_prompt_docs_test
             gleam run -m suite_quota_test
@@ -94,7 +93,6 @@
             cp ${../../test/suite_zed_login_test.gleam} test/suite_zed_login_test.gleam
             cp ${../../test/albedo_zed_login_test.erl} test/albedo_zed_login_test.erl
             gleam run -m suite_zed_login_test
-            gleam run -m suite_questions_test
           '';
         postInstall =
           (old.postInstall or "")

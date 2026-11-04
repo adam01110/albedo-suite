@@ -101,6 +101,19 @@ class PromptContextTests(unittest.TestCase):
         self.assertNotIn("A dropped connection stays dropped", prompt)
         self.assertLess(len(prompt.encode()), 43000)
 
+    def test_question_tool_is_absent_from_kernel_and_prompt(self):
+        requests = self.turn(
+            "assert 'ask_user' not in globals()\n"
+            "assert 'questions' not in globals()\n"
+            "assert 'QuestionError' not in globals()\n"
+            "print('PROBE_OK')"
+        )
+        prompt = instructions(requests[0])
+        for removed in ("ask_user", "/questions", "QuestionError"):
+            self.assertNotIn(removed, prompt)
+        with self.app.api(f"/sessions/{self.session}/catalog") as response:
+            self.assertNotIn('"/questions"', response.read().decode())
+
     def test_docs_and_memory_operations_leave_the_request_prefix_unchanged(self):
         first = self.turn()[0]
         probe = self.turn(

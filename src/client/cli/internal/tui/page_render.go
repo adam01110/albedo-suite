@@ -13,7 +13,6 @@ import (
 // setDoc takes a document and its rows, keeping the cursor on the row it was on.
 func (m *PageViewModel) setDoc(doc *PageDocument) {
 	m.Doc = doc
-	m.pruneQuestionDrafts()
 	var rows []listEntry
 	if doc != nil {
 		rows = make([]listEntry, len(doc.Rows))
@@ -126,9 +125,6 @@ func pageNotice(msg pageActionExecutedMsg) string {
 // View draws the rows beside the highlighted row's detail; a prompt or a
 // question takes the footer, and the filter rests while one is open.
 func (m PageViewModel) View() string {
-	if m.questionAnswers != nil && (m.Mode == modeQuestionAnswers || m.Mode == modeText || m.Mode == modeConfirm) {
-		return m.questionAnswerView()
-	}
 	width := cmp.Or(m.Width, 80)
 	lv := m.listView
 	lv.Empty = m.emptyText()

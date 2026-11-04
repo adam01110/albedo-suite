@@ -39,7 +39,7 @@ Closing either surface preserves the underlying screen, draft, attachments and
 undo history. Streaming continues while it is open.
 
 The workspace includes conversations, sessions, folders, providers, models,
-agents, history, context, questions, settings and quota. Session commands that
+agents, history, context, settings and quota. Session commands that
 advertise a page join the list. Choosing a destination opens its existing screen;
 it does not bypass that screen's confirmation or form flow.
 
@@ -63,7 +63,7 @@ and `f` folders. In the archive, `x` (or `ctrl+x`) requests deletion and still
 requires confirmation. `ctrl+d` is paging, not deletion.
 
 On document pages, `a` opens the actions menu and `r` refreshes. Enter also opens
-the menu, except on questions where it opens the answer flow. Use `j`/`k` and
+the menu. Use `j`/`k` and
 `l`/Enter in the menu; `h`/Escape cancels. Existing non-conflicting control-key
 action shortcuts remain available. Actions previously bound to `ctrl+d` or
 `ctrl+u` remain in the menu; those chords now page through rows.

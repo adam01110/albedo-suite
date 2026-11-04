@@ -87,8 +87,7 @@ func (m *AppModel) openWorkspaceOverlay(help bool) {
 			{ID: "agents", Label: "Agents", Detail: "navigate sessions and message agents"},
 			{ID: "tree", Label: "History", Detail: "branch or rewind with confirmation"},
 			{ID: "context", Label: "Context", Detail: "inspect the model request"},
-			{ID: "extensions", Label: "Extensions", Detail: "tools and capabilities"},
-			{ID: "questions", Label: "Questions", Detail: "answer pending questions"}}, items...)
+			{ID: "extensions", Label: "Extensions", Detail: "tools and capabilities"}}, items...)
 	}
 	if !help && m.ActiveSession != nil {
 		known := map[string]bool{}
