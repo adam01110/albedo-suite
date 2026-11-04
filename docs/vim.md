@@ -13,8 +13,9 @@ Both suite packages include the same Vim support.
 
 ## Modes and application keys
 
-New chat models start in `NORMAL`; press `i` to type. The footer shows `sessions`,
-the current mode, then `commands`. The mode label is bold: `NORMAL` uses the
+New chat models start in `NORMAL`; press `i` to type. The footer puts the mode
+first, followed by `space actions` in NORMAL or `esc normal` in INSERT. The mode
+label is bold: `NORMAL` uses the
 theme's cyan and `INSERT` its green (Base16 base0C/base0B when configured).
 This edits only the unsent composer, never the transcript or already-submitted
 messages.
@@ -26,13 +27,17 @@ messages.
 | `i` / `a` | Insert at / after the cursor, including while an agent runs. |
 | `I` / `A` | Insert at the first nonblank / end of the logical line. |
 | `o` / `O` | Open one line below / above and enter Insert mode. |
-| `/` in Normal mode | Enter Insert mode and insert `/` at the start of the draft for Albedo commands; **not** Vim search. |
+| `/` in Normal mode | Open workspace destinations without editing the draft; **not** composer search. |
+| `Space` in Normal mode | Open grouped actions in the sidebar; see [leader bindings](vim-ux.md#workspace-and-help). |
+| `F2` / `F1` | Workspace destinations / searchable keyboard reference. |
 | `Enter` | Submit using the existing composer rules, in either mode. |
 | `Shift+Enter` | Insert a newline, in either mode. |
 
-Arrows, transcript paging, control/Alt shortcuts, menus and external-editor
-integration retain their application behavior. `Ctrl+r` in Normal mode is the
-exception: it performs Vim-style redo. Unsupported unmodified Normal-mode keys
+Arrows, transcript paging, menus and external-editor integration retain their
+application behavior. Chat navigation via `Ctrl+s`/`Ctrl+o` and the `Ctrl+j` diff
+toggle are replaced by the Space leader; other control/Alt shortcuts remain.
+`Ctrl+r` in Normal mode performs Vim-style redo. Unsupported unmodified
+Normal-mode keys
 are generally consumed without inserting text; they do not invoke Vim features.
 
 When interruption cancels queued messages, their text, images and collapsed pastes
@@ -49,8 +54,8 @@ webhooks, Discord and command-backed pages. Existing confirmations still require
 Enter; navigation letters never confirm a pending mutation.
 
 Press `/` to edit the search, including queries starting with `h`, `j`, `k` or
-`l`. Other printable letters also start a search for compatibility with typing
-to filter. In `SEARCH`, hjkl are literal text. `Esc` returns to navigation while
+`l`. Other printable keys do not enter search implicitly. In `SEARCH`, hjkl
+and spaces are literal text. `Esc` returns to navigation while
 keeping the filter; a second `Esc` leaves the screen. Arrow keys and control
 shortcuts remain available. The search line displays the current mode.
 
@@ -65,8 +70,9 @@ shortcuts remain available. The search line displays the current mode.
 - Choice menus and effort selector: `h`/`k` select previous; `l`/`j` select next.
 - MCP transport row: `h`/`l` change transport; `j`/`k` move focus.
 
-With an empty Normal-mode composer, `j`/`k` scroll the transcript and `h` returns
-to sessions. With draft text, hjkl retain their composer motions.
+Normal-mode composer motions edit the draft, even when it is empty. Tab switches
+to transcript focus, where `j`/`k` navigate rows, `h` returns to sessions, and `/`
+starts transcript FIND. Tab returns to the composer without changing its draft.
 
 Text prompts, rename fields, credentials and form text fields remain ordinary
 text entry; hjkl are not intercepted there.
@@ -153,7 +159,7 @@ language-aware, and does not provide all Vim text-object edge-case semantics.
 | --- | --- |
 | Modes | Characterwise, linewise and blockwise Visual mode (`v`, `V`, `Ctrl+v`); Replace mode (`R`). |
 | Repetition and automation | Dot-repeat (`.`), macro recording/playback (`q`, `@`), mappings and vimrc configuration. |
-| Search | Buffer search (`/`, `?`, `n`, `N`, `*`, `#`), regular expressions and substitution. `/` is reserved for Albedo commands. |
+| Search | Buffer search (`/`, `?`, `n`, `N`, `*`, `#`), regular expressions and substitution. `/` opens workspace destinations in composer NORMAL; slash commands remain available in INSERT. |
 | Other motions | `W/B/E`, `%`, `ge/gE`, paragraph/sentence motions, marks, jumps and Vim window/screen motions. |
 | Other edits | `s/S`, `Y`, `J/gJ`, indentation (`>/<`), case operators (`~/gu/gU`), formatting and numeric increment/decrement. |
 | Other text objects | Sentences, paragraphs, tags, Visual-mode objects and plugin-defined objects. |

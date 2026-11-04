@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	"albedo/cli/internal/daemon"
-	tea "charm.land/bubbletea/v2"
 )
 
 func TestDefaultDiffVisibility(t *testing.T) {
@@ -15,12 +14,14 @@ func TestDefaultDiffVisibility(t *testing.T) {
 	if model.Flags.Tools || model.Flags.Thinking || model.Flags.Compaction {
 		t.Fatal("other display defaults must remain unchanged")
 	}
-	model, _ = model.Update(tea.KeyPressMsg{Code: 'j', Mod: tea.ModCtrl})
-	if model.Flags.Diffs {
-		t.Fatal("Ctrl+J must still hide diffs")
-	}
-	model, _ = model.Update(tea.KeyPressMsg{Code: 'j', Mod: tea.ModCtrl})
-	if !model.Flags.Diffs {
-		t.Fatal("Ctrl+J must still show diffs again")
+	app := &AppModel{State: AppStateChat, Chat: model, ActiveSession: &daemon.Session{ID: "default-diffs"}, Width: 80, Height: 24}
+	app.Chat.SetSize(80, 24)
+	for _, expected := range []bool{false, true} {
+		for _, key := range " vd" {
+			app.Update(navigationKey(key))
+		}
+		if app.Chat.Flags.Diffs != expected {
+			t.Fatal("space v d did not toggle default diffs")
+		}
 	}
 }

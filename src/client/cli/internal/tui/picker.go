@@ -83,7 +83,7 @@ func (m *PickerModel) applyFilter() {
 	words := searchWords(m.SearchInput.Value())
 	m.Filtered = nil
 	for _, item := range m.Items {
-		if _, _, matched := matchFields(words, item.Label, item.Detail, item.ID); matched {
+		if _, _, matched := matchFields(words, item.Label, item.Detail, item.Note, item.ID); matched {
 			m.Filtered = append(m.Filtered, item)
 		}
 	}

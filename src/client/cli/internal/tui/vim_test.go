@@ -119,9 +119,12 @@ func TestVimFooter(t *testing.T) {
 		for _, normal := range []bool{false, true} {
 			m.vim.normal = normal
 			footer := ansi.Strip(m.renderFooter())
-			b, c := strings.Index(footer, m.vimMode()), strings.Index(footer, "workspace")
+			b, c := strings.Index(footer, m.vimMode()), strings.Index(footer, "actions")
+			if !normal {
+				c = strings.Index(footer, "normal")
+			}
 			t.Logf("width=%d mode=%s footer=%q", width, m.vimMode(), footer)
-			if b < 0 || width >= 80 && c < b || width == 40 && !strings.Contains(footer, "ctrl+s sessions") {
+			if b < 0 || width >= 80 && c < b || width == 40 && c < 0 {
 				t.Fatalf("width %d: %q", width, footer)
 			}
 			if width == 40 && !strings.HasSuffix(footer, "—/—") {
@@ -203,8 +206,8 @@ func TestVimTerminalKeysAndShortcuts(t *testing.T) {
 	}
 	before := m.Flags.Diffs
 	m, _ = m.Update(tea.KeyPressMsg{Code: 'j', Mod: tea.ModCtrl})
-	if m.Flags.Diffs == before || !m.vim.normal {
-		t.Fatal("Ctrl+J did not retain diff toggle")
+	if m.Flags.Diffs != before || !m.vim.normal {
+		t.Fatal("retired Ctrl+J shortcut changed display or mode")
 	}
 	m, _ = m.Update(tea.KeyPressMsg{Code: 'A', Text: "A", Mod: tea.ModShift})
 	if m.vim.normal || m.TextArea.Column() != 7 || m.TextArea.Value() != "one two" {
@@ -237,7 +240,7 @@ func TestVimFooterExpandedUsage(t *testing.T) {
 			t.Fatal(footer)
 		}
 		if width >= 80 {
-			a, b, c := strings.Index(footer, "transcript"), strings.Index(footer, "NORMAL"), strings.Index(footer, "workspace")
+			a, b, c := strings.Index(footer, "NORMAL"), strings.Index(footer, "actions"), strings.Index(footer, "transcript")
 			if !(a >= 0 && a < b && b < c) {
 				t.Fatal(footer)
 			}

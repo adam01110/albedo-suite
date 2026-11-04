@@ -61,14 +61,8 @@ func (m *ChatModel) handleInput(msg tea.Msg) (tea.Cmd, bool) {
 			m.Close()
 			return func() tea.Msg { return ChatQuitMsg{} }, true
 		}
-		if msg.String() == "ctrl+s" {
-			return func() tea.Msg { return ChatBackToSessionsMsg{} }, true
-		}
 		if msg.String() == "ctrl+n" {
 			return func() tea.Msg { return ChatNewSessionMsg{} }, true
-		}
-		if msg.String() == "ctrl+o" {
-			return func() tea.Msg { return ChatOpenAgentsMsg{} }, true
 		}
 		if msg.String() == "esc" && m.dragAnchor != nil {
 			m.dragAnchor, m.dragDir = nil, 0
@@ -175,12 +169,8 @@ func (m *ChatModel) handleInput(msg tea.Msg) (tea.Cmd, bool) {
 			}
 			m.refreshViewportContent()
 			return nil, true
-		case "ctrl+j", "ctrl+k":
-			if msg.String() == "ctrl+j" {
-				m.Flags.Diffs = !m.Flags.Diffs
-			} else {
-				m.Flags.Compaction = !m.Flags.Compaction
-			}
+		case "ctrl+k":
+			m.Flags.Compaction = !m.Flags.Compaction
 			m.rebuildSettledLines()
 			m.refreshViewportContent()
 			return nil, true

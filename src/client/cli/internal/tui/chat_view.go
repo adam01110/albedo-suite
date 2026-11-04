@@ -63,8 +63,11 @@ func (m ChatModel) chatWidth() int { return max(1, m.Width-2*chatMargin) }
 // sidebarWidth is 0 without glances or room for them. The transcript keeps at
 // least 72 columns beside a sidebar of 28 to 32.
 func (m ChatModel) sidebarWidth() int {
+	if m.leader != nil && m.Height-6-m.chromeRows() < 11 {
+		return 0
+	}
 	room := m.chatWidth() - 72 - 2
-	if room < 28 || len(m.activeGlances()) == 0 {
+	if room < 28 || m.leader == nil && len(m.activeGlances()) == 0 {
 		return 0
 	}
 	return min(32, room)
@@ -554,6 +557,9 @@ func (m ChatModel) sidebarColumn() []string {
 	if m.sidebarWidth() <= 0 {
 		return nil
 	}
+	if m.leader != nil {
+		return m.leader.leaderRows(m.sidebarWidth(), m.Viewport.Height())
+	}
 	if m.frame != nil {
 		return m.frame.glances(m).column
 	}
@@ -613,16 +619,8 @@ func joinBody(rows, column []string, width, sidebar int) []string {
 	return out
 }
 
-// composeRule labels the input at its boundary without taking a content row.
 func (m ChatModel) composeRule(width int) string {
-	if len(m.effortOptions) > 0 {
-		return DefaultStyles.Decor.Render(strings.Repeat("─", width))
-	}
-	style := DefaultStyles.Muted
-	if m.reader.active {
-		style = DefaultStyles.Faint
-	}
-	return titleRule(width, style.Render(ansi.Truncate("compose", width, "")), "")
+	return DefaultStyles.Decor.Render(strings.Repeat("─", width))
 }
 
 // composer is the input block as rows, drawn again only when the textarea's

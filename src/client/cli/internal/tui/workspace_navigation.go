@@ -1,9 +1,11 @@
 package tui
 
 import (
+	"cmp"
+	"strings"
+
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
-	"strings"
 )
 
 // The launcher is separate from the composer: opening or cancelling it cannot
@@ -16,42 +18,61 @@ type workspacePickerResult struct {
 }
 
 type workspaceOverlay struct {
-	picker PickerModel
-	help   bool
+	picker  PickerModel
+	help    bool
+	leader  bool
+	group   string
+	session bool
+	chat    bool
+	context string
 }
 
 func (o workspaceOverlay) view() string {
 	p := o.picker
+	if o.leader {
+		return strings.Join(o.leaderRows(p.Width, p.Height), "\n")
+	}
 	f := listFrame{title: brand("albedo") + " " + DefaultStyles.Bold.Render(p.Title), filter: p.navigation.filterLine(p.SearchInput), footer: keyHints(hint{"j/k", "move"}, hint{"l/enter", "open"}, hint{"/", "search"}, hint{"esc", "back"})}
+	if !o.help {
+		f.right = ansi.Truncate(o.context, max(1, p.Width/3), "…")
+	}
+	if o.help {
+		f.footer = keyHints(hint{"j/k", "browse"}, hint{"/", "find key or action"}, hint{"F1/esc", "close"})
+	}
 	f.list = func(width, height int) []string {
-		rows := make([]string, len(p.Filtered))
+		var rows []string
+		selected, group := -1, ""
 		for i, item := range p.Filtered {
+			if !o.help && workspaceGroup(item.ID) != group {
+				group = workspaceGroup(item.ID)
+				rows = append(rows, DefaultStyles.Faint.Render("  "+group))
+			}
 			line := "  " + pickerRow(item)
 			if i == p.Cursor {
+				selected = len(rows)
 				line = selectBar() + " " + pickerRow(item)
 				line = selectedLine(ansi.Truncate(line, width, "…"), width)
 			}
-			rows[i] = line
+			rows = append(rows, line)
 		}
 		if len(rows) == 0 {
 			rows = []string{DefaultStyles.Faint.Render("  no matches")}
 		}
-		return scrollWindow(rows, p.Cursor, width, height)
+		return scrollWindow(rows, selected, width, height)
 	}
-	if o.help {
-		if item, ok := p.Highlighted(); ok {
-			f.pane = func(width, height int) []string {
-				rows := paneTitle(item.Label, "", width)
-				rows = append(rows, "")
-				rows = append(rows, svWrap(item.Detail, width, height)...)
-				return scrollWindow(rows, -1, width, height)
-			}
+	if item, ok := p.Highlighted(); ok {
+		f.pane = func(width, height int) []string {
+			rows := paneTitle(item.Label, "", width)
+			rows = append(rows, "")
+			rows = append(rows, svWrap(cmp.Or(item.Note, item.Detail), width, max(1, height-len(rows)))...)
+			return scrollWindow(rows, -1, width, height)
 		}
 	}
 	return f.view(p.Width, p.Height)
 }
 
 func (m *AppModel) openWorkspaceOverlay(help bool) {
+	m.closeWorkspaceOverlay()
 	items := []PickerItem{
 		{ID: "sessions", Label: "Sessions", Detail: "open, pin, rename and archive"},
 		{ID: "folders", Label: "Folders", Detail: "browse workspaces and their sessions"},
@@ -85,30 +106,20 @@ func (m *AppModel) openWorkspaceOverlay(help bool) {
 	title := "Workspace"
 	if help {
 		title = "Keyboard reference"
-		items = []PickerItem{
-			{Label: "Workspace", Detail: "F2 or Space in root NORMAL · destinations without slash commands"},
-			{Label: "Modes", Detail: "NORMAL navigates · / searches lists · Esc retains filter and navigates"},
-			{Label: "Lists", Detail: "[count]j/k move · gg/G first/last · ctrl+u/d half-page"},
-			{Label: "Open / back", Detail: "l or Enter opens · h, q or Esc goes back"},
-			{Label: "Composer", Detail: "i/a/I/A insert · Esc NORMAL · Tab transcript · ctrl+s sessions"},
-			{Label: "Editing", Detail: "w/b/e, 0/$, f/t, operators d/c/y, text objects, u/ctrl+r"},
-			{Label: "Transcript", Detail: "Tab focuses · j/k rows · gg/G bounds · ctrl+u/d half-page"},
-			{Label: "Transcript actions", Detail: "]/[ next/previous action · Enter activates · y copies row · o opens file"},
-			{Label: "Find in transcript", Detail: "/ query · Enter finds · n/N next/previous · Esc cancels search"},
-			{Label: "Draft safety", Detail: "Tab preserves text and undo · i returns to composing"},
-			{Label: "Page actions", Detail: "Enter or l opens action menu · j/k chooses · Enter applies"},
-			{Label: "Forms and choices", Detail: "text fields are literal · j/k choices · Enter applies · Esc cancels"},
-			{Label: "Agents", Detail: "j/k/h/l select · i writes · Esc navigates · Enter opens, never sends in NORMAL"},
-			{Label: "Stop / quit", Detail: "Esc in chat NORMAL stops response · ctrl+c exits"},
-			{Label: "Search selection", Detail: "Enter also opens the highlighted result from SEARCH"},
-		}
+		items = keyboardReference()
+	}
+	if !help {
 		for i := range items {
-			items[i].ID = items[i].Label
+			items[i].Note = workspaceDetail(items[i])
 		}
 	}
 	p := NewPickerModel(title, items, true, "")
 	p.SetSize(m.Width, m.Height)
-	m.workspaceOverlay = &workspaceOverlay{picker: p, help: help}
+	context := "No active session"
+	if m.ActiveSession != nil {
+		context = oneLine(ansi.Strip(m.ActiveSession.Title))
+	}
+	m.workspaceOverlay = &workspaceOverlay{picker: p, help: help, context: context}
 }
 
 func (m *AppModel) updateWorkspaceOverlay(msg tea.Msg) (tea.Cmd, bool) {
@@ -122,10 +133,10 @@ func (m *AppModel) updateWorkspaceOverlay(msg tea.Msg) (tea.Cmd, bool) {
 		}
 		switch result := event.result.(type) {
 		case PickerCancelMsg:
-			m.workspaceOverlay = nil
+			m.closeWorkspaceOverlay()
 		case PickerSelectMsg:
 			if !event.owner.help {
-				m.workspaceOverlay = nil
+				m.closeWorkspaceOverlay()
 				return m.workspaceDestination(result.ID), true
 			}
 		}
@@ -137,7 +148,7 @@ func (m *AppModel) updateWorkspaceOverlay(msg tea.Msg) (tea.Cmd, bool) {
 	key, isKey := msg.(tea.KeyPressMsg)
 	if isKey && key.String() == "f1" {
 		if m.workspaceOverlay != nil && m.workspaceOverlay.help {
-			m.workspaceOverlay = nil
+			m.closeWorkspaceOverlay()
 		} else {
 			m.openWorkspaceOverlay(true)
 		}
@@ -145,8 +156,17 @@ func (m *AppModel) updateWorkspaceOverlay(msg tea.Msg) (tea.Cmd, bool) {
 	}
 	root := m.State == AppStateChat || m.State == AppStateSessionPicker
 	normal := m.State == AppStateChat && m.Chat.vim.normal && !m.Chat.reader.searching && len(m.Chat.effortOptions) == 0 && m.Chat.direnvAsk == "" && len(m.Chat.CommandMenu.Matches(m.Chat.TextArea.Value())) == 0 || m.State == AppStateSessionPicker && !m.SessionPicker.navigation.editing && !m.SessionPicker.rename.active() && !m.SessionPicker.confirm.asking()
-	if isKey && m.workspaceOverlay == nil && root && (key.String() == "f2" || normal && key.Text == " ") {
-		m.openWorkspaceOverlay(false)
+	if m.State == AppStateChat {
+		normal = normal && m.Chat.vim.pending == "" && m.Chat.vim.count == 0 && m.Chat.vim.argument == nil && m.Chat.reader.pending == "" && m.Chat.reader.count == 0
+	} else if m.State == AppStateSessionPicker {
+		normal = normal && !m.SessionPicker.navigation.pendingG && m.SessionPicker.navigation.count == 0
+	}
+	if isKey && m.workspaceOverlay == nil && root && (key.String() == "f2" || normal && key.Mod == 0 && key.Text == " ") {
+		if key.String() == "f2" {
+			m.openWorkspaceOverlay(false)
+		} else {
+			m.openLeader()
+		}
 		return nil, true
 	}
 	if m.workspaceOverlay == nil {
@@ -161,8 +181,14 @@ func (m *AppModel) updateWorkspaceOverlay(msg tea.Msg) (tea.Cmd, bool) {
 		}
 	}
 	o := m.workspaceOverlay
+	if o.leader {
+		if isKey {
+			return m.updateLeader(key), true
+		}
+		return nil, true
+	}
 	if isKey && (key.String() == "f2" || key.String() == "ctrl+c") {
-		m.workspaceOverlay = nil
+		m.closeWorkspaceOverlay()
 		return nil, true
 	}
 	// Resolve the existing picker's immediate messages here, rather than letting

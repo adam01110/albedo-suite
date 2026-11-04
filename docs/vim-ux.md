@@ -8,8 +8,33 @@ forms and destructive operations keep their existing validation and confirmation
 
 ## Workspace and help
 
-From chat or sessions, **F2** opens a searchable destination list. **Space** in
-NORMAL does the same. **F1** opens the keyboard reference from any screen.
+From chat or sessions, **Space** in NORMAL opens an immediate which-key menu in
+the chat sidebar. On narrow or short terminals, and from sessions, it uses a
+full-screen fallback. The transcript continues streaming underneath.
+
+| Sequence | Action |
+| --- | --- |
+| `space s` | Sessions |
+| `space a` | Agents |
+| `space n` | New session |
+| `space m` | Model |
+| `space w` | Workspace destinations |
+| `space v d` | Toggle diffs |
+| `space v c` | Toggle compaction |
+| `space v o` | Toggle shell output |
+| `space ?` | Keyboard reference |
+
+Session-specific actions appear only with an active session. Escape or Backspace
+returns from a group, then closes the menu; Ctrl+C and F2 also close it. Unmapped
+keys never reach the draft. INSERT, SEARCH, FIND and Vim character arguments
+retain literal Space; pending counts and operators keep ownership of their keys.
+View controls are available only while the conversation is on screen.
+
+**F2** opens the searchable workspace destinations directly. **F1** opens a
+searchable keyboard reference with one binding, action and scope per row, rather
+than paragraphs of shortcuts. Workspace destinations are grouped into active
+session, workspace, application and session pages, with a detail pane for the
+selected destination and the current session in the header.
 Closing either surface preserves the underlying screen, draft, attachments and
 undo history. Streaming continues while it is open.
 
@@ -45,9 +70,12 @@ action shortcuts remain available. Actions previously bound to `ctrl+d` or
 
 ## Conversation focus
 
-`ctrl+s` opens sessions directly from either focus, including INSERT, while
-retaining the draft. The lowercase `compose` label sits on the separator above
-the input; the footer keeps the editing mode instead of repeating that label.
+The input separator is an unlabelled rule. The footer keeps the editing mode:
+NORMAL advertises `space actions`; INSERT advertises `esc normal`. The old
+`ctrl+s`, `ctrl+j` and `ctrl+o` chat shortcuts are replaced by `space s`,
+`space v d` and `space a`; they no longer navigate or toggle diffs. Leave INSERT
+with Escape before using a leader sequence. F2 remains available in INSERT to
+navigate without changing the draft.
 
 The composer retains its existing Vim editing: insert commands, counted motions,
 operators, text objects, find/till, yank/paste and undo/redo. Yanks also write to
@@ -91,6 +119,8 @@ validation, revision guards, and destructive confirmations are unchanged.
 
 ## Verification
 
+`leader_navigation_test.go` covers leader groups, sidebar reservation/restoration,
+resizing, literal Space, draft/undo safety and searchable binding discovery.
 `vim_workspace_test.go` covers counted and nested list navigation, strict search,
 draft/undo preservation, transcript action targeting and search, modal key
 priority, owned launcher cancellation, archive deletion safety, terminal sizes,

@@ -24,7 +24,8 @@ Labels are single-line, terminal-control-stripped and display-width-truncated.
 The sidebar does not show Python bodies, tool arguments, result bodies or raw
 thinking. Generic tools fall back to their name. The transcript remains the
 place to inspect detailed evidence. Existing narrow/short-screen omission and
-footer counts apply; no new controls or shortcuts are added.
+footer counts apply. The [Space leader](vim-ux.md#workspace-and-help) temporarily
+uses this column for action discovery; closing it restores the activity glances.
 
 A deterministic example produced by `TestActivityRenderedExample` through the
 actual sidebar renderer (32 columns):

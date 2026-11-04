@@ -91,7 +91,7 @@ func (m ChatModel) activeGlances() []sidebarGlance {
 // a sidebar, the ones that did not fit its height with one.
 func (m ChatModel) glanceCounts() []string {
 	omitted := m.activeGlances()
-	if m.sidebarWidth() > 0 {
+	if m.sidebarWidth() > 0 && m.leader == nil {
 		_, omitted = m.sidebarRows()
 	}
 	var counts []string
@@ -171,7 +171,10 @@ func (m ChatModel) glanceRows(g sidebarGlance, limit int) []string {
 func (m ChatModel) renderFooter() string {
 	width := m.chatWidth()
 	right, compact := m.contextStat()
-	commands := hint{"F2", "workspace"}
+	commands := hint{"space", "actions"}
+	if !m.vim.normal {
+		commands = hint{"esc", "normal"}
+	}
 	sessions := hint{"tab", "transcript"}
 	if m.reader.active {
 		sessions = hint{"tab", "composer"}
@@ -192,13 +195,9 @@ func (m ChatModel) renderFooter() string {
 		right string
 		left  []hint
 	}{
-		{left: []hint{sessions, mode, {"ctrl+s", "sessions"}, commands, {"F1", "keys"}, {"ctrl+j", "diffs"}, {"ctrl+o", "agents"}}, right: right},
-		{left: []hint{sessions, mode, {"ctrl+s", "sessions"}, commands, {"ctrl+j", "diffs"}, {"ctrl+o", "agents"}}, right: right},
-		{left: []hint{sessions, mode, commands, {"ctrl+o", "agents"}}, right: compact},
-		{left: []hint{sessions, mode, commands, {"ctrl+s", "sessions"}}, right: compact},
-		{left: []hint{mode, commands, {"ctrl+j", "diffs"}}, right: compact},
-		{left: []hint{mode, commands, {"ctrl+s", "sessions"}}, right: compact},
-		{left: []hint{mode, {"ctrl+s", "sessions"}}, right: compact},
+		{left: []hint{mode, commands, sessions, {"F2", "workspace"}, {"F1", "keys"}}, right: right},
+		{left: []hint{mode, commands, sessions, {"F1", "keys"}}, right: compact},
+		{left: []hint{mode, commands}, right: compact},
 	}
 	if slices.ContainsFunc(m.History.Entries(), func(e HistoryEntry) bool { return e.Kind == EntryShell }) {
 		candidates = append([]struct {

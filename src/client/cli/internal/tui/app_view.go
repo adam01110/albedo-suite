@@ -48,7 +48,7 @@ func stripPrivateMarks(s string) string {
 // a frame (and caches the result), so only other screens need the scan here.
 func (m *AppModel) View() tea.View {
 	content := m.content()
-	if m.workspaceOverlay != nil {
+	if m.workspaceOverlay != nil && (!m.workspaceOverlay.leader || m.State != AppStateChat || m.Chat.sidebarWidth() == 0) {
 		content = m.workspaceOverlay.view()
 	}
 	if m.State != AppStateChat {
