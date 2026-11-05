@@ -18,15 +18,51 @@ import (
 // rules, and the footer.
 const folderChrome = 6
 
+// hostSplit is the index of the first host row when folder rows precede it,
+// or -1 when all rows share one section rule.
+func (m FolderPicker) hostSplit() int {
+	if i := slices.IndexFunc(m.rows, func(r folderRow) bool { return r.hostRow }); i > 0 {
+		return i
+	}
+	return -1
+}
+
+// rowLine is the list line a row sits on under its section rule(s), and n is
+// the total lines in the list.
+func (m FolderPicker) rowLine(r, split int) (line, n int) {
+	if split > 0 && r >= split {
+		return r + 2, len(m.rows) + 2
+	}
+	if split > 0 {
+		return r + 1, len(m.rows) + 2
+	}
+	return r + 1, len(m.rows) + 1
+}
+
 // visibleRows is the range of rows the list window shows, the way
-// scrollWindow cuts it under the section rule.
+// scrollWindow cuts it under the section rules.
 func (m FolderPicker) visibleRows() (first, last int) {
-	h, n := max(1, cmp.Or(m.Height, 24)-folderChrome), len(m.rows)+1
+	if len(m.rows) == 0 {
+		return 0, 0
+	}
+	split := m.hostSplit()
+	selectedAt, n := m.rowLine(m.cursor, split)
+	h := max(1, cmp.Or(m.Height, 24)-folderChrome)
 	if n <= h {
 		return 0, len(m.rows)
 	}
-	start := min(max(0, m.cursor+1-h/2), n-h)
-	return max(0, start-1), min(len(m.rows), start+h-1)
+	start := windowStart(n, selectedAt, h)
+	first = len(m.rows)
+	for r := range m.rows {
+		if line, _ := m.rowLine(r, split); line >= start && line < start+h {
+			first = min(first, r)
+			last = r + 1
+		}
+	}
+	if first > last {
+		return 0, 0
+	}
+	return first, last
 }
 
 func (m FolderPicker) View() string {
@@ -113,7 +149,7 @@ func (m FolderPicker) hints() []hint {
 		hints = append(hints, hint{"↑↓", "move"}, hint{"tab", "open"})
 	}
 	hints = append(hints, hint{"shift+tab", "up"})
-	if ok && len(m.sessionsIn(row.path)) > 0 {
+	if ok && len(m.sessionsFor(row)) > 0 {
 		hints = append(hints, hint{"→", "sessions"})
 	}
 	if ok && m.probe(row.hostKey).State == "needs_auth" {
@@ -153,19 +189,34 @@ func (m FolderPicker) list(width, height int) []string {
 	if len(m.rows) == 0 {
 		return scrollWindow([]string{sectionRule(m.section, 0, width), DefaultStyles.Faint.Render("   " + m.emptyNote())}, 1, width, height)
 	}
-	here, latest := m.workspace(), m.latestOther()
+	here := m.workspace()
 	tagW := 0
 	if slices.ContainsFunc(m.rows, func(r folderRow) bool { return repoTag(m.repos[r.path]) != "" }) {
 		tagW = 12
 	}
 	now := time.Now()
-	return drawWindow(len(m.rows)+1, func(i int) string {
-		if i == 0 {
-			return sectionRule(m.section, len(m.rows), width)
+	split := m.hostSplit()
+	selectedAt, n := m.rowLine(m.cursor, split)
+	sec, topCount := m.section, len(m.rows)
+	if split > 0 {
+		topCount = split
+	} else if m.rows[0].hostRow {
+		sec = "hosts"
+	}
+	return drawWindow(n, func(i int) string {
+		switch {
+		case i == 0:
+			return sectionRule(sec, topCount, width)
+		case split > 0 && i == split+1:
+			return sectionRule("hosts", len(m.rows)-split, width)
 		}
-		row := m.rows[i-1]
-		return m.row(row, i-1 == m.cursor, row.path == here, row.path == latest, width, tagW, now)
-	}, m.cursor+1, width, height)
+		r := i - 1
+		if split > 0 && i > split+1 {
+			r = i - 2
+		}
+		row := m.rows[r]
+		return m.row(row, r == m.cursor, row.path == here, width, tagW, now)
+	}, selectedAt, width, height)
 }
 
 // typedHost is the host a remote listing is typed for, as a row.
@@ -197,25 +248,10 @@ func (m FolderPicker) emptyNote() string {
 	return "no matches"
 }
 
-// latestOther is the most recently used recent folder besides this one.
-func (m FolderPicker) latestOther() string {
-	best, at := "", int64(0)
-	for _, row := range m.rows {
-		if row.recent && row.age != nil && *row.age > at && row.path != m.workspace() {
-			best, at = row.path, *row.age
-		}
-	}
-	return best
-}
-
-// where is the folder a row is in, led by its host when it is remote; a
-// host row says where the host is known from.
+// where is the folder a row is in, led by its host when it is remote.
 func (m FolderPicker) where(row folderRow) string {
-	switch {
-	case row.hostRow && row.source == "config":
-		return "ssh config"
-	case row.hostRow:
-		return "recent host"
+	if row.hostRow {
+		return ""
 	}
 	host, p := daemon.SplitLocation(row.path)
 	if host == "" {
@@ -247,17 +283,19 @@ func (m FolderPicker) reach(row folderRow) (note string, style lipgloss.Style, d
 // the matched letters lit, then quiet columns for where, head and age. The
 // head column is tagW wide, none when no row has a head, and where takes
 // what the others leave.
-func (m FolderPicker) row(row folderRow, selected, here, latest bool, width, tagW int, now time.Time) string {
+func (m FolderPicker) row(row folderRow, selected, here bool, width, tagW int, now time.Time) string {
 	glyph, glyphStyle := "· ", DefaultStyles.Faint
 	switch {
 	case selected:
 		glyph, glyphStyle = "◆ ", DefaultStyles.Agent
 	case here:
-		glyph = "○ "
-	case latest:
 		glyph, glyphStyle = "● ", DefaultStyles.Success
 	}
-	ageW, tail := 4, 6
+	ageW := 4
+	if here {
+		ageW = len("current")
+	}
+	tail := ageW + 2
 	if tagW > 0 {
 		tail += tagW + 2
 	}
@@ -275,6 +313,8 @@ func (m FolderPicker) row(row folderRow, selected, here, latest bool, width, tag
 	switch {
 	case dim:
 		base = DefaultStyles.Faint
+	case row.hostRow:
+		base = hostStyle(row.host).Bold(selected)
 	case selected:
 		base = DefaultStyles.Bold
 	}
@@ -297,13 +337,13 @@ func (m FolderPicker) row(row folderRow, selected, here, latest bool, width, tag
 	if tagW > 0 {
 		line += "  " + DefaultStyles.Faint.Render(svCell(repoTag(m.repos[row.path]), tagW, false))
 	}
-	age := ""
+	age, ageStyle := "", DefaultStyles.Faint
 	if here {
-		age = "here"
+		age, ageStyle = "current", DefaultStyles.Success
 	} else if row.age != nil {
 		age = svCompactAge(row.age, now)
 	}
-	line += "  " + DefaultStyles.Faint.Render(svCell(age, ageW, true))
+	line += "  " + ageStyle.Render(svCell(age, ageW, true))
 	if selected {
 		return selectedLine(line, width)
 	}
@@ -446,9 +486,7 @@ func (m FolderPicker) hostPane(row folderRow, width, height int) []string {
 	for _, l := range body {
 		lines = append(lines, "  "+ansi.Truncate(l, max(0, width-2), "…"))
 	}
-	if !row.hostRow {
-		lines = append(lines, m.sessionBlock(m.sessionsIn(row.path), width, height-len(lines)-sessionHead)...)
-	}
+	lines = append(lines, m.sessionBlock(m.sessionsFor(row), width, height-len(lines)-sessionHead)...)
 	return append(lines, make([]string, max(0, height-len(lines)))...)[:height]
 }
 
@@ -501,6 +539,17 @@ func (m FolderPicker) sessionRows(sessions []daemon.Session, width, room int) []
 
 func (m FolderPicker) sessionsIn(p string) []daemon.Session {
 	return slices.DeleteFunc(slices.Clone(m.sessions), func(s daemon.Session) bool { return s.Workspace != p })
+}
+
+func (m FolderPicker) sessionsFor(row folderRow) []daemon.Session {
+	if !row.hostRow {
+		return m.sessionsIn(row.path)
+	}
+	target := m.canonical(row.hostKey)
+	return slices.DeleteFunc(slices.Clone(m.sessions), func(s daemon.Session) bool {
+		host, _ := daemon.SplitLocation(s.Workspace)
+		return host == "" || m.canonical(host) != target
+	})
 }
 
 // paneRule heads the preview like sectionRule heads the list: the folder's

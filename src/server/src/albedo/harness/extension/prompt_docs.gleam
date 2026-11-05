@@ -23,6 +23,7 @@ pub fn available(items: List(extension.Prepared)) -> Bool {
       ),
     ]),
   )
+  && !list.contains(modules, "api_docs")
   && !list.contains(modules, "albedo_plugins.api_docs")
 }
 
@@ -65,6 +66,7 @@ pub fn instructions(items: List(extension.Prepared)) -> String {
       }
     })
     |> list.filter(fn(text) { string.trim(text) != "" })
+    |> list.unique
     |> string.join("\n")
   }
 }

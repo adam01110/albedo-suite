@@ -1,0 +1,67 @@
+{
+  "harness.py": {
+    "sha256": "73093a6a8b5192b0e97ccfb55da5efd258211dc81f359c3cb4c58d6d7dc07189",
+    "replacements": [
+      [
+        "def prompt_text(request):",
+        "def message_text(item):\n    content = item.get(\"content\", \"\")\n    if isinstance(content, str):\n        return content\n    return \"\".join(part.get(\"text\", \"\") for part in content)\n\n\ndef prompt_text(request):"
+      ],
+      [
+        "str(item.get(\"content\", \"\"))",
+        "message_text(item)"
+      ],
+      [
+        "            item.get(\"content\", \"\")\n            for item in reversed(messages)",
+        "            message_text(item)\n            for item in reversed(messages)"
+      ]
+    ]
+  },
+  "kernel_detach_test.py": {
+    "sha256": "8214afd6edd4f805ed3a62edfe218e78841e15d1db5f85ade97024f942dcdaf5",
+    "replacements": [
+      [
+        "item[\"content\"] for item in request[\"input\"] if item.get(\"role\") == \"user\"",
+        "harness.message_text(item) for item in request[\"input\"] if item.get(\"role\") == \"user\""
+      ]
+    ]
+  },
+  "repetition_test.py": {
+    "sha256": "c3ef4eb816a7607d0a1308d77dbd66b089d73a8046a472ab4ca8af6bfe1ff512",
+    "replacements": [
+      [
+        "import difflib",
+        "import difflib\nimport harness"
+      ],
+      [
+        "                item[\"content\"]",
+        "                harness.message_text(item)"
+      ]
+    ]
+  },
+  "cache_miss_test.py": {
+    "sha256": "669ac7000a0db5735da631babcd388c6ee7164a9380e5a64422d88fe33cf4aef",
+    "replacements": [
+      [
+        "import json",
+        "import json\nimport harness"
+      ],
+      [
+        "str(item.get(\"content\", \"\"))",
+        "harness.message_text(item)"
+      ]
+    ]
+  },
+  "image_limits_test.py": {
+    "sha256": "9a31b9261dd2f848967da98e3b96c1370a6c0bf0ac1dfccf97ed9b5137286e5b",
+    "replacements": [
+      [
+        "import base64\n",
+        "import base64\nimport harness\n"
+      ],
+      [
+        "                item.get(\"content\")\n",
+        "                harness.message_text(item)\n"
+      ]
+    ]
+  }
+}

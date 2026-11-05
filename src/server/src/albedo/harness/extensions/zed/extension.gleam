@@ -97,6 +97,7 @@ fn resolve(
     fn() { None },
     fn(_) { [] },
     types.anthropic_images,
+    extension.NoCeiling,
   ))
 }
 

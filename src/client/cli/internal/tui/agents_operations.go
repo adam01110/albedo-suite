@@ -136,6 +136,9 @@ func (m AgentsViewModel) key(msg tea.KeyPressMsg) (AgentsViewModel, tea.Cmd) {
 		}
 		return m, nil
 	}
+	if m.find.active() {
+		return m.findKey(msg)
+	}
 	if !m.navigation.editing && s == "i" {
 		m.navigation.editing = true
 		m.input.Focus()
@@ -152,7 +155,15 @@ func (m AgentsViewModel) key(msg tea.KeyPressMsg) (AgentsViewModel, tea.Cmd) {
 	}
 	s = msg.String()
 	browsing := !m.navigation.editing
+	// On a fold, enter opens or closes it, → opens and ← closes.
+	if f := m.folds[m.selected]; f != nil && (empty || browsing) && (s == "enter" || s == "right" && !f.open || s == "left" && f.open) {
+		m.expanded[f.parent] = !f.open
+		m.layout()
+		return m, m.hold()
+	}
 	switch {
+	case s == "ctrl+f":
+		return m, m.openFind()
 	case s == "ctrl+l":
 		return m, m.restartStream()
 	case s == "ctrl+r":
@@ -180,13 +191,16 @@ func (m AgentsViewModel) key(msg tea.KeyPressMsg) (AgentsViewModel, tea.Cmd) {
 		return m, func() tea.Msg { return AgentsDoneMsg{} }
 	case s == "tab" || ((empty || browsing) && (s == "right" || s == "down")):
 		m.cycle(1)
-		return m, m.seedCmd()
+		return m, tea.Batch(m.hold(), m.seedCmd())
 	case s == "shift+tab" || ((empty || browsing) && (s == "left" || s == "up")):
 		m.cycle(-1)
-		return m, m.seedCmd()
+		return m, tea.Batch(m.hold(), m.seedCmd())
 	case s == "enter":
 		n := m.nodes[m.selected]
 		if n == nil {
+			if m.folds[m.selected] != nil {
+				m.say("pick one of the closed agents to message it; enter with no message shows them")
+			}
 			return m, nil
 		}
 		text := strings.TrimSpace(m.input.Value())

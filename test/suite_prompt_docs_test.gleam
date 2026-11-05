@@ -69,6 +69,17 @@ pub fn main() -> Nil {
   assert !string.contains(compact, original)
   assert string.byte_size(compact) < string.byte_size(original)
   assert compact == prompt_docs.instructions(items)
+  assert compact
+    == prompt_docs.instructions(
+      list.append(items, [
+        item("custom-shared", "custom instructions"),
+      ]),
+    )
+  assert prompt_docs.instructions([
+      item("first", "shared binding instructions"),
+      item("second", "shared binding instructions"),
+    ])
+    == "shared binding instructions"
 
   let assert Ok(ledger) = store.start(":memory:", "")
   let context = host.Context(ledger, "test", [])

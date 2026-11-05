@@ -24,10 +24,10 @@ type extensionsLoadedMsg struct {
 
 type extensionToggledMsg struct {
 	Err        error
-	Extensions []ExtensionItem
 	Notice     string
-	Warns      bool
+	Extensions []ExtensionItem
 	Gen        int
+	Warns      bool
 }
 
 // The scopes a change can be made in, and the confirmation each asks.
@@ -44,11 +44,12 @@ type ExtensionPickerModel struct {
 	Conn       *daemon.Connection
 	SessionID  string
 	Extensions []ExtensionItem
-	// noticeWarns says the notice is a warning rather than a save that went through.
-	noticeWarns bool
-	pageStatus
 	listView
 	confirm
+	pageStatus
+	// noticeWarns says the notice is a warning rather than a save that went through.
+	noticeWarns                 bool
+	providersOpen, builtinsOpen bool
 }
 
 func NewExtensionPickerModel(conn *daemon.Connection, sessionID string) ExtensionPickerModel {
@@ -62,11 +63,11 @@ func NewExtensionPickerModel(conn *daemon.Connection, sessionID string) Extensio
 
 func (m *ExtensionPickerModel) SetSize(width, height int) {
 	m.pageStatus.SetSize(width, height)
-	m.listView.setSize(width, height)
+	m.setSize(width, height)
 }
 
 // Confirming reports a question waiting for enter or esc.
-func (m ExtensionPickerModel) Confirming() bool { return m.confirm.asking() }
+func (m ExtensionPickerModel) Confirming() bool { return m.asking() }
 
 func (m ExtensionPickerModel) Init() tea.Cmd {
 	return m.loadExtensionsCmd(m.Generation)
@@ -128,7 +129,7 @@ func (m ExtensionPickerModel) changeExtensionCmd(name, scope string, enabled boo
 	}
 }
 
-func (m ExtensionPickerModel) capabilitiesList(ext ExtensionItem) []string {
+func extensionCapabilities(ext ExtensionItem) []string {
 	var caps []string
 	if ext.Context {
 		caps = append(caps, "context")
@@ -157,11 +158,7 @@ func (m ExtensionPickerModel) current() (ExtensionItem, bool) {
 
 func (m *ExtensionPickerModel) setExtensions(items []ExtensionItem) {
 	m.Extensions = items
-	rows := make([]listEntry, len(items))
-	for i, ext := range items {
-		rows[i] = m.entry(ext)
-	}
-	m.setRows(rows)
+	m.rebuildShelves()
 }
 
 // askToggle asks before changing an extension in scope, or before dropping
@@ -180,37 +177,71 @@ func (m *ExtensionPickerModel) askToggle(scope string) {
 	if scope == scopeSession {
 		on = ext.Enabled
 	}
+	if memoryStrategy(ext) && scope != scopeInherit {
+		if on {
+			return
+		}
+		scopeText := "globally"
+		if scope == scopeSession {
+			scopeText = "for this session"
+		}
+		prompt := fmt.Sprintf("Switch memory to %s %s?", ext.Name, scopeText)
+		suffix := ""
+		for _, old := range m.Extensions {
+			chosen := old.GlobalEnabled
+			if scope == scopeSession {
+				chosen = old.Enabled
+			}
+			if memoryStrategy(old) && chosen && old.Name != ext.Name {
+				switch old.Name {
+				case "coding-lcm":
+					suffix = " coding-lcm's summaries stay readable through the lcm tools."
+				case "snapcompact":
+					suffix = " snapcompact's images stay in the transcript."
+				default:
+					suffix = " Existing summaries stay in the transcript."
+				}
+				break
+			}
+		}
+		prompt += suffix
+		if scope == scopeSession {
+			prompt += " This will reload this session."
+		}
+		m.ask(scope, ext.Name, "switch", prompt)
+		return
+	}
 	verb := "enable"
 	if on {
 		verb = "disable"
 	}
 	switch scope {
 	case scopeInherit:
-		m.confirm.ask(scope, ext.Name, "follow global", fmt.Sprintf("This session will follow the global default for %s. Remove its own choice?", ext.Name))
+		m.ask(scope, ext.Name, "follow global", fmt.Sprintf("This session will follow the global default for %s. Remove its own choice?", ext.Name))
 	case scopeSession:
-		m.confirm.ask(scope, ext.Name, verb, fmt.Sprintf("This will reload this session. %s %s for this session only?", strings.ToUpper(verb[:1])+verb[1:], ext.Name))
+		m.ask(scope, ext.Name, verb, fmt.Sprintf("This will reload this session. %s %s for this session only?", strings.ToUpper(verb[:1])+verb[1:], ext.Name))
 	default:
-		m.confirm.ask(scope, ext.Name, verb, fmt.Sprintf("Sessions following global defaults will use this change. %s %s globally?", strings.ToUpper(verb[:1])+verb[1:], ext.Name))
+		m.ask(scope, ext.Name, verb, fmt.Sprintf("Sessions following global defaults will use this change. %s %s globally?", strings.ToUpper(verb[:1])+verb[1:], ext.Name))
 	}
 }
 
 // save sends the change the confirmation asked about.
 func (m *ExtensionPickerModel) save() tea.Cmd {
 	ext, ok := m.current()
-	if !ok || ext.Name != m.confirm.target {
-		m.confirm.dismiss()
+	if !ok || ext.Name != m.target {
+		m.dismiss()
 		return nil
 	}
 	m.Saving, m.Error = true, ""
 	m.Generation = nextPageGeneration()
 	enabled := !ext.GlobalEnabled
-	switch m.confirm.what {
+	switch m.what {
 	case scopeSession:
 		enabled = !ext.Enabled
 	case scopeInherit:
 		enabled = false
 	}
-	return m.changeExtensionCmd(ext.Name, m.confirm.what, enabled, m.Generation)
+	return m.changeExtensionCmd(ext.Name, m.what, enabled, m.Generation)
 }
 
 func (m ExtensionPickerModel) Update(msg tea.Msg) (ExtensionPickerModel, tea.Cmd) {
@@ -227,17 +258,17 @@ func (m ExtensionPickerModel) Update(msg tea.Msg) (ExtensionPickerModel, tea.Cmd
 		if msg.Gen == m.Generation {
 			if apiErr, ok := errors.AsType[*daemon.APIError](msg.Err); ok && apiErr.StatusCode == 412 {
 				m.Saving, m.Loading, m.Error = false, true, ""
-				m.confirm.dismiss()
+				m.dismiss()
 				m.Notice, m.noticeWarns = "The configuration changed. Review the refreshed choices before saving.", true
 				m.Generation = nextPageGeneration()
 				return m, m.loadExtensionsCmd(m.Generation)
 			}
 		}
 		if !m.settle(msg.Gen, msg.Err, &m.Saving) {
-			m.confirm.failed = msg.Gen == m.Generation
+			m.failed = msg.Gen == m.Generation
 			return m, nil
 		}
-		m.confirm.dismiss()
+		m.dismiss()
 		m.setExtensions(msg.Extensions)
 		m.Error = ""
 		m.Notice, m.noticeWarns = msg.Notice, msg.Warns
@@ -253,12 +284,12 @@ func (m ExtensionPickerModel) Update(msg tea.Msg) (ExtensionPickerModel, tea.Cmd
 		}
 		key := msg.String()
 		switch {
-		case m.confirm.asking() && !m.Saving:
-			if m.confirm.key(msg) {
+		case m.asking() && !m.Saving:
+			if m.key(msg) {
 				cmd := m.save()
 				return m, cmd
 			}
-			if !m.confirm.asking() {
+			if !m.asking() {
 				m.Error = ""
 			}
 			return m, nil
@@ -270,7 +301,17 @@ func (m ExtensionPickerModel) Update(msg tea.Msg) (ExtensionPickerModel, tea.Cmd
 		ext, _ := m.current()
 		switch key {
 		case "enter":
-			m.askToggle(scopeGlobal)
+			if row, ok := m.highlighted(); ok && row.heading {
+				switch row.group {
+				case "providers":
+					m.providersOpen = !m.providersOpen
+				case "builtins":
+					m.builtinsOpen = !m.builtinsOpen
+				}
+				m.rebuildShelves()
+			} else {
+				m.askToggle(scopeGlobal)
+			}
 		case "shift+enter", "alt+enter":
 			m.askToggle(scopeSession)
 		case "ctrl+x":
@@ -289,31 +330,21 @@ func (m ExtensionPickerModel) Update(msg tea.Msg) (ExtensionPickerModel, tea.Cmd
 			m.Generation = nextPageGeneration()
 			return m, m.loadExtensionsCmd(m.Generation)
 		default:
-			cmd := m.listView.update(msg)
+			before := m.input.Value()
+			cmd := m.update(msg)
+			if before != m.input.Value() {
+				m.rebuildShelves()
+			}
 			return m, cmd
 		}
 		return m, nil
 	}
-	cmd := m.listView.update(msg)
+	before := m.input.Value()
+	cmd := m.update(msg)
+	if before != m.input.Value() {
+		m.rebuildShelves()
+	}
 	return m, cmd
-}
-
-// entry is how an extension reads in the list: its state in this session in
-// front, daggered when that is the session's own choice.
-func (m ExtensionPickerModel) entry(ext ExtensionItem) listEntry {
-	lead, tag := daggered(stateLead(ext.Enabled), ext.Overridden), ""
-	if ext.Quarantined != "" {
-		lead, tag = DefaultStyles.Error.Render("bad"), DefaultStyles.Error.Render("quarantined")
-	}
-	return listEntry{
-		key:    ext.Name,
-		lead:   lead,
-		name:   ext.Name,
-		desc:   ext.Description,
-		tag:    tag,
-		search: append(slices.Clone(ext.Plugins), ext.Requires...),
-		detail: func(width int) []string { return m.details(ext, "", width) },
-	}
 }
 
 func stateLead(on bool) string {
@@ -346,23 +377,27 @@ func onOff(on bool) string {
 	return "off"
 }
 
-// details is the pane: both choices, the one a question asks about first,
-// what the extension provides, and what each key would change.
-func (m ExtensionPickerModel) details(ext ExtensionItem, asked string, width int) []string {
+// extensionDetails returns pane facts, with the scope being confirmed first.
+func extensionDetails(ext ExtensionItem, asked string, width int) []string {
 	lines := paneTitle(ext.Name, ext.Description, width)
-	session := "follows global"
+	if ext.Quarantined != "" {
+		for _, line := range svWrap("quarantined: "+ext.Quarantined, width, 6) {
+			lines = append(lines, DefaultStyles.Error.Render(line))
+		}
+		lines = append(lines, "")
+	}
+	session := "follows everywhere"
 	if ext.Overridden {
 		session = onOff(ext.Enabled) + " (its own choice)"
 	}
-	lines = append(lines, scopeRows(onOff(ext.GlobalEnabled)+" default", session, asked, width)...)
-	lines = append(lines, factRows("plugins", joinOr(ext.Plugins, ", ", "not reported"), width)...)
-	lines = append(lines, factRows("provides", joinOr(m.capabilitiesList(ext), " · ", "not reported"), width)...)
-	lines = append(lines, factRows("requires", joinOr(ext.Requires, ", ", "none"), width)...)
+	facts := [][]string{factRows("everywhere", onOff(ext.GlobalEnabled), width), factRows("here", session, width)}
+	if asked == scopeSession || asked == scopeInherit {
+		slices.Reverse(facts)
+	}
+	lines = append(lines, slices.Concat(facts...)...)
+	lines = append(lines, factRows("needs", joinOr(ext.Requires, ", ", "none"), width)...)
+	lines = append(lines, factRows("provides", joinOr(extensionCapabilities(ext), " · ", "not reported"), width)...)
 	if ext.Quarantined != "" {
-		lines = append(lines, "")
-		for _, l := range svWrap("quarantined: "+ext.Quarantined, width, 6) {
-			lines = append(lines, DefaultStyles.Error.Render(l))
-		}
 		return lines
 	}
 	switch asked {
@@ -392,21 +427,24 @@ func joinOr(items []string, sep, empty string) string {
 }
 
 func (m ExtensionPickerModel) footer(width int) string {
-	if m.confirm.asking() && !m.Saving {
+	if m.asking() && !m.Saving {
 		return m.confirm.footer(width, m.Error)
 	}
 	if len(m.Extensions) == 0 && m.Error != "" {
 		return footerLine(width, []hint{{"ctrl+r", "retry"}, {"esc", "back"}}, DefaultStyles.Error.Render(m.Error), true)
 	}
 	ext, _ := m.current()
-	hints := []hint{{"↑↓", "move"}, {"enter", "global"}, {"shift+enter", "this session"}}
+	hints := []hint{{"↑↓", "move"}, {"enter", "everywhere"}, {"shift+enter", "here"}}
+	if row, ok := m.highlighted(); ok && row.heading {
+		hints = []hint{{"↑↓", "move"}, {"enter", "open/close"}}
+	}
 	if ext.Overridden {
 		hints = append(hints, hint{"ctrl+x", "follow global"})
 	}
 	if (ext.Name == "webhooks" || ext.Name == "discord") && ext.Enabled {
 		hints = append(hints, hint{"ctrl+w", ext.Name})
 	}
-	hints = append(hints, hint{"esc", "back"})
+	hints = append(hints, hint{"ctrl+r", "refresh"}, hint{"esc", "back"})
 
 	var status string
 	urgent := true
@@ -440,10 +478,19 @@ func (m ExtensionPickerModel) View() string {
 	case m.Error != "" && len(m.Extensions) == 0:
 		lv.Empty = "Could not load extensions; the reason is in the footer."
 	}
-	marked := slices.ContainsFunc(m.Extensions, func(e ExtensionItem) bool { return e.Overridden && e.Quarantined == "" })
-	frame := lv.frame(brand("albedo")+" "+DefaultStyles.Muted.Render("/extensions"), daggerLegend(marked), m.footer(max(1, m.Width)))
-	if ext, ok := m.current(); ok && m.confirm.asking() {
-		frame.pane = detailPane(func(width int) []string { return m.details(ext, m.confirm.what, width) })
+	own := 0
+	for _, ext := range m.Extensions {
+		if ext.Overridden {
+			own++
+		}
+	}
+	right := ""
+	if own > 0 {
+		right = DefaultStyles.Muted.Render(fmt.Sprintf("%d own choices here", own))
+	}
+	frame := lv.frame(brand("albedo")+" "+DefaultStyles.Muted.Render("/extensions"), right, m.footer(max(1, m.Width)))
+	if ext, ok := m.current(); ok && m.asking() {
+		frame.pane = detailPane(func(width int) []string { return extensionDetails(ext, m.what, width) })
 	}
 	return frame.view(m.Width, m.Height)
 }

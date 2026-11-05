@@ -56,14 +56,15 @@ pub fn compose(
         list.flatten([composed.static, composed.managed, static, managed])
       let failures = case failures {
         [] ->
-          case extension.duplicate_capabilities(list.map(claimed, value)) {
-            False -> []
-            True -> [
-              broken(
-                candidate.name,
-                "it duplicates tools, commands, python modules, or routes",
-              ),
+          case
+            extension.module_clash(claimed),
+            extension.duplicate_capabilities(list.map(claimed, value))
+          {
+            option.Some(reason), _ -> [broken(candidate.name, reason)]
+            option.None, True -> [
+              broken(candidate.name, "it duplicates tools, commands, or routes"),
             ]
+            option.None, False -> []
           }
         _ -> failures
       }
@@ -257,8 +258,32 @@ pub fn warnings(composition: Composition) -> List(String) {
   list.flat_map(contributions(composition), fn(item) { item.value.warnings })
 }
 
+/// Every contribution's instructions, after one sentence naming where the
+/// session's capabilities are reached, worded from its actual tools. Two
+/// extensions that share a binding give the same text, said once.
 pub fn instructions(composition: Composition) -> String {
-  prompt_docs.instructions(contributions(composition))
+  let tools = list.map(tools(composition), fn(tool) { tool.definition.name })
+  [reach(tools), prompt_docs.instructions(contributions(composition))]
+  |> list.filter(fn(value) { string.trim(value) != "" })
+  |> list.unique
+  |> string.join("\n")
+}
+
+/// Empty without a python tool; a tool beside it is named, since its schema
+/// is the only place it is described.
+fn reach(tools: List(String)) -> String {
+  case
+    list.contains(tools, "python"),
+    list.filter(tools, fn(name) { name != "python" })
+  {
+    False, _ -> ""
+    True, [] ->
+      "python is your only tool: every capability this session has is a Python binding in its kernel, so call these names inside a python cell."
+    True, others ->
+      "Every capability this session has is a Python binding in the python tool's kernel, except the tools "
+      <> string.join(others, ", ")
+      <> ", which their own schemas describe; call everything else inside a python cell."
+  }
 }
 
 pub fn tools(composition: Composition) -> List(extension.Tool) {
@@ -266,12 +291,14 @@ pub fn tools(composition: Composition) -> List(extension.Tool) {
 }
 
 /// With `hook` last when any extension hooks the session: it reports the
-/// calls cells make, which a session without hooks never pays for.
+/// calls cells make, which a session without hooks never pays for. A module
+/// two extensions share (`mcp`) loads once.
 pub fn python_modules(composition: Composition) -> List(String) {
   let modules =
     list.flat_map(contributions(composition), fn(item) {
       item.value.python_modules
     })
+    |> list.unique
   let modules = case prompt_docs.available(contributions(composition)) {
     True -> list.append(modules, ["api_docs"])
     False -> modules

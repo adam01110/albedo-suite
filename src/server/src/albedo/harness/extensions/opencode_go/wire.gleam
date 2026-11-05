@@ -8,18 +8,11 @@ import albedo/harness/extensions/bedrock/wire as bedrock_wire
 import albedo/harness/extensions/vertex/wire as vertex_wire
 import albedo/harness/settings
 import albedo/openai_api
-import albedo/openai_api/decoding
-import albedo/openai_api/replay
+import albedo/openai_api/bridge
 import albedo/openai_api/request as openai_request
 import albedo/openai_api/stream as reducer
-import albedo/openai_api/types.{
-  type Client, type Error, type Input, type Request, Assistant, ChatCompletions,
-  InvalidRequest, Replay, Responses,
-}
-import gleam/dynamic/decode
-import gleam/json
-import gleam/list
-import gleam/option.{type Option, None, Some}
+import albedo/openai_api/types.{type Client, type Error, type Request, Responses}
+import gleam/option.{None}
 import gleam/result
 import gleam/string
 
@@ -29,10 +22,6 @@ pub type Route {
   MessagesRoute
   GeminiRoute
 }
-
-/// The detail type a replayed turn carries provider-issued reasoning items
-/// under, so the next Responses request can send them back.
-const reasoning_detail = "openai.reasoning"
 
 /// Which upstream route OpenCode Go uses for `model`.
 pub fn route(model: String) -> Route {
@@ -81,13 +70,8 @@ pub fn encode_responses(
   client: Client,
   request: Request,
 ) -> Result(openai_api.Exchange, Error) {
-  use inputs <- result.try(
-    list.try_fold(request.input, [], fn(acc, input) {
-      use items <- result.map(responses_input(input))
-      list.append(list.reverse(items), acc)
-    }),
-  )
-  let rewritten = types.Request(..request, input: list.reverse(inputs))
+  use inputs <- result.try(bridge.responses_inputs(request.input))
+  let rewritten = types.Request(..request, input: inputs)
   use body <- result.map(openai_request.encode_with_policy(
     Responses,
     client.policy,
@@ -95,7 +79,7 @@ pub fn encode_responses(
   ))
   openai_api.Exchange(
     base_url(client.base_url) <> "/responses",
-    openai_api.headers(client, request.model),
+    openai_api.request_headers(client, request),
     body,
     client.timeout_ms,
     None,
@@ -158,226 +142,8 @@ pub fn encode_gemini(
   )
 }
 
-fn responses_input(input: Input) -> Result(List(Input), Error) {
-  case input {
-    Replay(item) ->
-      case types.replay_protocol(item) {
-        Responses -> Ok([Replay(item)])
-        ChatCompletions -> {
-          use message <- result.try(
-            types.inspect_item(item, replay.message_decoder(detail_decoder()))
-            |> result.replace_error(InvalidRequest(
-              "replayed assistant message is not portable",
-            )),
-          )
-          use reasoning_items <- result.try(list.try_map(
-            recorded_reasoning(message.details),
-            responses_replay_item,
-          ))
-          let text_inputs = case message.text {
-            "" -> []
-            text -> [Assistant(text)]
-          }
-          use call_inputs <- result.map(list.try_map(
-            message.calls,
-            responses_call_item,
-          ))
-          list.append(reasoning_items, list.append(text_inputs, call_inputs))
-        }
-      }
-    other -> Ok([other])
-  }
-}
-
-type Recorded {
-  Recorded(items: List(json.Json))
-}
-
-fn detail_decoder() -> decode.Decoder(Option(Recorded)) {
-  use kind <- decode.field("type", decode.string)
-  use items <- decode.optional_field("items", [], decode.list(decode.dynamic))
-  decode.success(case kind == reasoning_detail {
-    True -> Some(Recorded(list.map(items, types.encode_value)))
-    False -> None
-  })
-}
-
-/// The reasoning items a turn recorded, in the order the provider issued
-/// them: a reasoning item comes before the message it precedes.
-fn recorded_reasoning(details: List(Recorded)) -> List(json.Json) {
-  details
-  |> list.filter_map(fn(detail) {
-    case detail {
-      Recorded(items) -> Ok(items)
-    }
-  })
-  |> list.flatten
-}
-
-fn responses_replay_item(item: json.Json) -> Result(Input, Error) {
-  json.parse(json.to_string(item), types.replay_decoder(Responses))
-  |> result.map(Replay)
-  |> result.replace_error(InvalidRequest(
-    "could not replay a recorded reasoning item",
-  ))
-}
-
-fn responses_call_item(call: types.ToolCall) -> Result(Input, Error) {
-  let raw =
-    json.object([
-      #("type", json.string("function_call")),
-      #("call_id", json.string(call.id)),
-      #("name", json.string(call.name)),
-      #("arguments", json.string(call.arguments)),
-    ])
-    |> json.to_string
-  json.parse(raw, types.replay_decoder(Responses))
-  |> result.map(Replay)
-  |> result.replace_error(InvalidRequest(
-    "could not encode tool call for Responses route",
-  ))
-}
-
-type ResponsesTurnState {
-  ResponsesTurnState(inner: reducer.Reducer, thinking: List(String))
-}
-
 /// Reduces an OpenAI `/responses` SSE stream into a Turn whose replay item is a
 /// single portable `ChatCompletions` assistant message.
 pub fn responses_reducer() -> reducer.Reducer {
-  reducer.wrap(
-    ResponsesTurnState(reducer.reducer(Responses), []),
-    responses_step,
-    fn(_) { Error(types.UnexpectedEnd) },
-  )
-}
-
-fn responses_step(
-  state: ResponsesTurnState,
-  data: String,
-) -> Result(
-  #(ResponsesTurnState, List(types.Event), Option(types.Turn)),
-  types.Error,
-) {
-  use #(next_inner, events, turn) <- result.try(state.inner.feed(data))
-  let thinking =
-    list.fold(events, state.thinking, fn(acc, event) {
-      case event {
-        types.ThinkingDelta(delta) -> [delta, ..acc]
-        _ -> acc
-      }
-    })
-  let next_state = ResponsesTurnState(next_inner, thinking)
-  case turn {
-    None -> Ok(#(next_state, events, None))
-    Some(turn) -> {
-      use converted <- result.map(responses_turn_to_chat(turn, thinking))
-      #(next_state, events, Some(converted))
-    }
-  }
-}
-
-fn responses_turn_to_chat(
-  turn: types.Turn,
-  thinking_chunks: List(String),
-) -> Result(types.Turn, types.Error) {
-  let text =
-    turn.output
-    |> list.map(responses_item_text)
-    |> string.concat
-  let thinking = case thinking_chunks {
-    [] ->
-      turn.output
-      |> list.map(responses_item_thinking)
-      |> list.filter(fn(s) { s != "" })
-      |> string.join("\n\n")
-    chunks -> chunks |> list.reverse |> string.concat
-  }
-  let calls = case turn.finish {
-    types.ToolCalls -> turn.tool_calls
-    _ -> []
-  }
-  let content = case text {
-    "" -> json.null()
-    _ -> json.string(text)
-  }
-  // The provider's reasoning items are kept whole: encrypted reasoning only
-  // continues a conversation if the next request sends it back.
-  let reasoning =
-    turn.output
-    |> list.filter(fn(item) { responses_item_kind(item) == "reasoning" })
-    |> list.map(types.replay_json)
-  let details = case reasoning {
-    [] -> None
-    items ->
-      Some(
-        json.preprocessed_array([
-          json.object([
-            #("type", json.string(reasoning_detail)),
-            #("items", json.preprocessed_array(items)),
-          ]),
-        ]),
-      )
-  }
-  use item <- result.map(
-    json.parse(
-      json.to_string(replay.message(content, thinking, details, calls)),
-      types.replay_decoder(ChatCompletions),
-    )
-    |> result.map_error(fn(error) {
-      types.InvalidEvent(
-        "could not build OpenCode Go replay message: "
-        <> decoding.json_error(error),
-      )
-    }),
-  )
-  let call_indices =
-    list.index_map(calls, fn(call, index) { #(call.id, index) })
-  types.Turn(..turn, output: [item], tool_calls: calls, call_indices:)
-}
-
-fn responses_item_text(item: types.ReplayItem) -> String {
-  let part = decode.field("text", decode.string, decode.success)
-  types.inspect_item(
-    item,
-    decode.field(
-      "content",
-      decode.list(decode.one_of(part, [decode.success("")])),
-      decode.success,
-    ),
-  )
-  |> result.unwrap([])
-  |> string.concat
-}
-
-fn responses_item_kind(item: types.ReplayItem) -> String {
-  types.inspect_item(item, decode.field("type", decode.string, decode.success))
-  |> result.unwrap("")
-}
-
-fn responses_item_thinking(item: types.ReplayItem) -> String {
-  let kind =
-    types.inspect_item(
-      item,
-      decode.field("type", decode.string, decode.success),
-    )
-    |> result.unwrap("")
-  case kind {
-    "reasoning" -> {
-      let part = decode.field("text", decode.string, decode.success)
-      let fragments = fn(name: String) {
-        types.inspect_item(
-          item,
-          decode.field(name, decode.list(part), decode.success),
-        )
-        |> result.unwrap([])
-      }
-      let parts = case fragments("summary") {
-        [] -> fragments("content")
-        summary -> summary
-      }
-      string.join(parts, "\n\n")
-    }
-    _ -> ""
-  }
+  bridge.responses_reducer()
 }

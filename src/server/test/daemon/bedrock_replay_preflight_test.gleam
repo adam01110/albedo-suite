@@ -120,6 +120,7 @@ fn fake_provider() -> extension.Extension {
               account: fn() { None },
               cache_marks: fn(_) { [] },
               images: types.any_images,
+              output: extension.NoCeiling,
             )),
           )
         },
@@ -162,10 +163,13 @@ fn state(home: String, host: runtime.Runtime) -> session_state.State(Nil) {
     home: home,
     self: process.new_subject(),
     history: Some([]),
+    results_settled: False,
     latest_usage: None,
     activity: turn.Resting,
     pending_switch: None,
     steering: [],
+    admitting: 0,
+    finishing: False,
     active_submissions: [],
     sequence: 0,
     events: event_buffer.new(),
@@ -181,6 +185,7 @@ fn state(home: String, host: runtime.Runtime) -> session_state.State(Nil) {
     releasing: None,
     closing: False,
     blocked_until: 0,
+    holding_failure: False,
     kernel_blocked: False,
     generation: "fixture",
     tool_progress: tool_progress.new(),
@@ -197,6 +202,7 @@ fn state(home: String, host: runtime.Runtime) -> session_state.State(Nil) {
     output_timer: None,
     output_published_at: 0,
     publish_output: Nil,
+    landed: fn(_) { Nil },
   )
 }
 

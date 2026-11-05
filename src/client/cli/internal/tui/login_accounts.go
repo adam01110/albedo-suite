@@ -6,6 +6,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -117,10 +118,7 @@ func (m *LoginModel) buildChoosePicker() {
 			})
 			continue
 		}
-		detail := "sign in"
-		if login.Detail != "" {
-			detail += " · " + login.Detail
-		}
+		detail := cmp.Or(login.Detail, "sign in")
 		items = append(items, loginItem{
 			ID: "signin:" + login.Provider, Label: login.Label, Detail: detail, section: sectionNew,
 			lead:  DefaultStyles.Muted.Render("+"),
@@ -304,6 +302,46 @@ func (m LoginModel) removalFor(id string) (removal, bool) {
 	return removal{}, false
 }
 
+// removalRefusal says why the daemon would refuse to remove an account, or
+// is empty when it would not: a profile pins it, or it is the last account a
+// rotation has.
+func (m LoginModel) removalRefusal(account daemon.Account) string {
+	if pinned := account.SelectedByProfiles; len(pinned) > 0 {
+		return fmt.Sprintf("%s is still used by %s; give %s another account first with ctrl+e on the profile", account.Label, strings.Join(pinned, ", "), itOrThem(pinned))
+	}
+	var last []string
+	for _, name := range account.RotatedByProfiles {
+		if len(m.Profiles.Providers[name].AccountIDs) <= 1 {
+			last = append(last, name)
+		}
+	}
+	if len(last) > 0 {
+		return fmt.Sprintf("%s is the last account %s rotates; give %s another account first with ctrl+e on the profile", account.Label, strings.Join(last, ", "), itOrThem(last))
+	}
+	return ""
+}
+
+// refusalError is what a failed change says: for an account the daemon
+// would not remove, which profiles hold it, read from the list re-read after.
+func (m LoginModel) refusalError(removed removal, err error) string {
+	if api, ok := errors.AsType[*daemon.APIError](err); ok && api.Code == "account_in_use" && removed.Kind == "account" {
+		if i := slices.IndexFunc(m.Accounts, func(a daemon.Account) bool { return a.ID == removed.ID }); i >= 0 {
+			if refusal := m.removalRefusal(m.Accounts[i]); refusal != "" {
+				return refusal
+			}
+		}
+	}
+	return err.Error()
+}
+
+// itOrThem is the pronoun for a list of profiles.
+func itOrThem(names []string) string {
+	if len(names) == 1 {
+		return "it"
+	}
+	return "them"
+}
+
 func (m *LoginModel) confirmRemoval(target removal) tea.Cmd {
 	detail := "This removes the provider and its saved key"
 	if target.Kind == "account" {
@@ -335,15 +373,16 @@ func (m *LoginModel) confirmKey(msg tea.KeyPressMsg) tea.Cmd {
 }
 
 // reloadCmd changes the daemon's accounts or the saved profiles, then re-reads
-// what /login can choose from.
+// what /login can choose from, also after a refused change, so the rows show
+// what the daemon holds. A refusal is the error it reports.
 func (m LoginModel) reloadCmd(change func(context.Context) error) tea.Cmd {
 	return func() tea.Msg {
-		ctx := context.Background()
-		if err := change(ctx); err != nil {
-			return signInsLoadedMsg{Mutation: true, Err: err, Gen: m.Generation}
-		}
+		changeErr := change(context.Background())
 		result := m.listSignIns(m.readCtx, m.Generation)
 		result.Mutation = true
+		if changeErr != nil {
+			result.Err = changeErr
+		}
 		return result
 	}
 }
@@ -415,7 +454,7 @@ func (m *LoginModel) chooseAccount(account daemon.Account) tea.Cmd {
 }
 
 func providerProtocol(provider string) string {
-	if provider == "claude" || provider == "opencode-go" || provider == "opencode-zen" || provider == "mistral" {
+	if provider == "claude" || provider == "antigravity" || provider == "opencode-go" || provider == "opencode-zen" || provider == "mistral" {
 		return "chat_completions"
 	}
 	return "responses"
@@ -618,7 +657,10 @@ func (m LoginModel) listSignIns(ctx context.Context, gen int) signInsLoadedMsg {
 		return signInsLoadedMsg{Err: err, Gen: gen}
 	}
 	settings, err := daemon.GetSettings(ctx, m.Conn)
-	return signInsLoadedMsg{Listed: listed, Profiles: &settings.Profiles, Err: err, Gen: gen}
+	if err != nil {
+		return signInsLoadedMsg{Loaded: true, Listed: listed, Err: err, Gen: gen}
+	}
+	return signInsLoadedMsg{Loaded: true, Listed: listed, Profiles: &settings.Profiles, Gen: gen}
 }
 
 // Startup already read profiles; only authentication choices need loading.
@@ -627,7 +669,7 @@ func (m LoginModel) initWithProfiles(profiles config.Profiles) tea.Cmd {
 	profiles.Providers = maps.Clone(profiles.Providers)
 	return func() tea.Msg {
 		listed, err := daemon.SignInList(ctx, conn)
-		return signInsLoadedMsg{Listed: listed, Profiles: &profiles, Err: err, Gen: gen}
+		return signInsLoadedMsg{Loaded: err == nil, Listed: listed, Profiles: &profiles, Err: err, Gen: gen}
 	}
 }
 

@@ -22,10 +22,14 @@ const (
 )
 
 // signInDraft is a new profile for a sign-in provider, before it has an
-// account or a model.
+// account or a model. A provider the wizard also lists starts from that row's
+// endpoint, so a key entered for it goes to the same place.
 func signInDraft(provider string) config.Settings {
 	if provider == "zed" {
 		return config.Settings{Extension: provider, Protocol: "chat_completions", BaseURL: "https://cloud.zed.dev"}
+	}
+	if p, ok := customFor(provider); ok {
+		return p.draft()
 	}
 	return config.Settings{Extension: provider, Protocol: providerProtocol(provider)}
 }
@@ -103,7 +107,7 @@ func (m LoginModel) acceptProfileName() (LoginModel, tea.Cmd) {
 		m.Draft.AccountID = &m.SelectedAccount.ID
 		m.Draft.AccountIDs = nil
 		if m.SelectedAccount.Kind == "key" {
-			m.Draft.BaseURL = deref(m.SelectedAccount.Endpoint)
+			m.Draft.BaseURL = cmp.Or(deref(m.SelectedAccount.Endpoint), m.Draft.BaseURL)
 		}
 		return m, m.credentialChosen()
 	}
@@ -114,10 +118,11 @@ func (m LoginModel) acceptProfileName() (LoginModel, tea.Cmd) {
 // accounts, so one key can be pinned, rotated, or shared by several profiles.
 // Every other provider keeps its key in the profile itself.
 var keyAccountExtensions = map[string]bool{
-	"openai":      true,
-	"opencode-go": true,
-	"perplexity":  true,
-	"mistral":     true,
+	"openai":         true,
+	"opencode-go":    true,
+	"perplexity":     true,
+	"mistral":        true,
+	"github-copilot": true,
 }
 
 // keyAccounts reports whether the draft's extension stores its API keys as
@@ -132,7 +137,8 @@ func (m LoginModel) credentialAccounts() []daemon.Account {
 			return true
 		}
 		if a.Kind == "key" {
-			return a.Endpoint == nil || *a.Endpoint != m.Draft.BaseURL
+			// A key saved with no endpoint (a Mistral sign-in) uses the profile's.
+			return a.Endpoint == nil || *a.Endpoint != "" && *a.Endpoint != m.Draft.BaseURL
 		}
 		return m.Provider == "openai"
 	})

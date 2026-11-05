@@ -346,11 +346,13 @@ class ModelCatalogSelectionTests(unittest.TestCase):
         with self.app.api(f"/models?{query}") as response:
             return json.load(response)["items"]
 
-    def test_gateway_uses_smallest_limits_and_shared_reported_capabilities(self):
+    def test_gateway_uses_smallest_window_and_shared_reported_capabilities(self):
         gateway = "https://gateway.example/v1"
         [shared] = self.listed("openai", gateway)
         self.assertEqual(shared["default_context_tokens"], 200000)
-        self.assertEqual(shared["max_output_tokens"], 8000)
+        # Neither provider's output limit is the gateway's: the smaller would
+        # cut its answers short, so the limit stays unknown.
+        self.assertIsNone(shared["max_output_tokens"])
         self.assertEqual(shared["input_modalities"], ["image", "text"])
         self.assertEqual(
             [effort["id"] for effort in shared["efforts"]], ["medium", "high"]

@@ -691,13 +691,14 @@ func (r TranscriptRenderer) foldRow(key, label string) string {
 }
 
 // compactionWords names what a strategy did with the evicted items and what
-// ctrl+k shows: snapcompact archives them as rendered frames, lcm folds them
-// into summary nodes, and rolling (or an unnamed strategy) summarizes them.
+// ctrl+k shows: snapcompact archives them as rendered frames, coding-lcm and
+// persistent-agent (lcm in older transcripts) fold them into summary nodes,
+// and rolling (or an unnamed strategy) summarizes them.
 func compactionWords(strategy string) (verb, noun string) {
 	switch strategy {
 	case "snapcompact":
 		return "archived as frames", "archive"
-	case "lcm":
+	case "coding-lcm", "persistent-agent", "lcm":
 		return "folded", "folds"
 	default:
 		return "summarized", "summary"

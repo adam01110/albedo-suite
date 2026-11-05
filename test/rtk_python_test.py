@@ -220,9 +220,19 @@ class RestoredJobTests(unittest.IsolatedAsyncioTestCase):
     async def test_restored_job_keeps_inert_routing_state(self):
         job = await self.restored_job()
         self.assertFalse(job._routed)
+        self.assertEqual(job.timeout, 30)
+        self.assertIsNone(job.cell)
         self.assertEqual(job.requested_argv, job.argv)
         self.assertEqual(job.requested_command, job.command)
         self.assertEqual(job._executed_argv, job.argv)
+
+    async def test_legacy_record_uses_default_pipeline_timeout(self):
+        job = await self.restored_job()
+        saved = job._saved()
+        saved.pop("timeout")
+        restored = self.plugin.Job._restored(saved, job.capture)
+        self.assertEqual(restored.timeout, 300)
+        self.assertIsNone(restored.cell)
 
     async def test_restored_job_pipe_reports_retention(self):
         job = await self.restored_job()

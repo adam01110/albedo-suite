@@ -62,10 +62,20 @@ pub type State(message) {
     home: String,
     self: Subject(message),
     history: Option(List(transcript.Entry)),
+    /// No tool call in the transcript lacks its result: known once a turn
+    /// ends cleanly, until the next turn starts. While False, admission scans
+    /// the transcript for calls a crash cut off.
+    results_settled: Bool,
     latest_usage: Option(usage.Metadata),
     activity: turn.Activity,
     pending_switch: Option(PendingSwitch),
     steering: List(Submission),
+    /// Admitted inputs whose receipts the store has not committed yet; each
+    /// joins `steering` once it has.
+    admitting: Int,
+    /// The run ended and its end is being committed; it holds the session
+    /// until then.
+    finishing: Bool,
     active_submissions: List(Submission),
     sequence: Int,
     events: event_buffer.Buffer,
@@ -89,6 +99,9 @@ pub type State(message) {
     blocked_until: Int,
     /// Failed kernel startup waits for an explicit retry or workspace move.
     kernel_blocked: Bool,
+    /// A child's failure letter waits briefly for its siblings' before its
+    /// turn starts; the session reports itself preparing meanwhile.
+    holding_failure: Bool,
     generation: String,
     tool_progress: tool_progress.Projection,
     progress_timer_token: Int,
@@ -113,7 +126,25 @@ pub type State(message) {
     output_timer: Option(process.Timer),
     output_published_at: Int,
     publish_output: message,
+    /// Wraps what goes on after a write `write_then` queued.
+    landed: fn(fn(State(message)) -> State(message)) -> message,
   )
+}
+
+/// Queues `write` on the store's writer and goes on; `landed` takes the
+/// session up again with its result once the store has committed it, in the
+/// order the writes were queued. Neither closure may capture the state: both
+/// cross to the writer's process.
+pub fn write_then(
+  state: State(message),
+  write: fn() -> a,
+  landed: fn(State(message), a) -> State(message),
+) -> State(message) {
+  let #(self, wrap) = #(state.self, state.landed)
+  store.query_then(runtime.ledger(state.host), fn(_) { write() }, fn(value) {
+    process.send(self, wrap(landed(_, value)))
+  })
+  state
 }
 
 /// Deltas reach a client at most once a frame; a terminal draws no faster.
@@ -399,7 +430,9 @@ pub fn current_status(state: State(message)) -> session_activity.Status {
   }
   session_activity.status(
     state.activity,
-    state.booting != None || state.workspace_reset != None,
+    state.booting != None
+      || state.workspace_reset != None
+      || state.holding_failure,
     blocking,
   )
 }

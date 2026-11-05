@@ -238,7 +238,7 @@ paths:
         required: false
         schema:
           type: string
-          enum: [quota_history]
+          enum: [quota_history, extensions]
       - $ref: '#/components/parameters/Limit'
       - $ref: '#/components/parameters/Next'
       - name: quota_provider
@@ -2526,6 +2526,53 @@ paths:
           $ref: '#/components/responses/Problem409'
       description: Stage and validate before swap. Report external jobs stopped during an unsuccessful
         upgrade; do not claim them restored. No automatic retry.
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmptyRequest'
+        description: UTF-8 JSON; duplicate keys and unknown fields are rejected.
+  /sessions/{session_id}/kernel/restart:
+    post:
+      operationId: restartKernel
+      summary: Replace the session's kernel with an empty one
+      tags:
+      - sessions
+      responses:
+        '200':
+          description: Successful result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KernelRestartResult'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '503':
+          $ref: '#/components/responses/Problem503'
+        '413':
+          $ref: '#/components/responses/Problem413'
+        '415':
+          $ref: '#/components/responses/Problem415'
+        '404':
+          $ref: '#/components/responses/Problem404'
+      description: Stop the running turn and cancel queued inputs as an interrupt does, discard the
+        saved variables, and stop the kernel and its jobs. The response waits for the stop; the next
+        turn boots an empty kernel. A stop that fails answers 503 kernel_restart_failed.
       parameters:
       - name: session_id
         in: path
@@ -6199,6 +6246,26 @@ components:
           - type: 'null'
       required: [items, next]
       additionalProperties: false
+    GlobalExtension:
+      type: object
+      description: Installed extension and its resolved global default, independent of session overrides.
+      properties:
+        id:
+          $ref: '#/components/schemas/ID'
+        description:
+          type: string
+        requires:
+          type: array
+          items:
+            $ref: '#/components/schemas/ID'
+        enabled:
+          type: boolean
+        quarantined:
+          type: boolean
+        diagnostic:
+          type: [string, 'null']
+      required: [id, description, requires, enabled, quarantined, diagnostic]
+      additionalProperties: false
     Server:
       type: object
       properties:
@@ -6224,6 +6291,13 @@ components:
           type: [string, 'null']
           pattern: ^[0-9a-f]{64}$
           description: Content digest of the running code tree; update information, not attachment compatibility.
+        api_digest:
+          type: string
+          pattern: ^[0-9a-f]{64}$
+          description: Digest of the HTTP contract this daemon serves (docs/openapi.yaml without prose or
+            examples), as cli/tools/apigen computes it. A client generated from a different digest may reject
+            responses, so it refuses to attach and names the side to rebuild or restart. Absent from daemons
+            that predate it.
         extensions:
           type: array
           items:
@@ -6261,6 +6335,11 @@ components:
             required: [id, kind, message]
             additionalProperties: false
           maxItems: 100
+        extension_inventory:
+          type: array
+          description: Returned only with include=extensions. Includes disabled and quarantined extensions; never prepares a session.
+          items:
+            $ref: '#/components/schemas/GlobalExtension'
         quota_history:
           $ref: '#/components/schemas/QuotaPage'
       required: [instance_id, protocol, state, capabilities, build, digest, extensions, quota, notices]
@@ -9968,12 +10047,18 @@ components:
             required: [name, tool_call_id, progress_call_id, status]
             additionalProperties: false
           - type: 'null'
+        phase:
+          description: Assistant response phase. Null for legacy rows, unfinished responses, and non-assistant entries.
+          anyOf:
+          - type: string
+            enum: [commentary, final]
+          - type: 'null'
         thinking_duration_ms:
           description: Observed thinking duration, when recorded.
           anyOf:
           - $ref: '#/components/schemas/Counter'
           - type: 'null'
-      required: [id, position, kind, turn_id, input_id, created_at, content, checkpoint_id, content_complete,
+      required: [id, position, kind, phase, turn_id, input_id, created_at, content, checkpoint_id, content_complete,
         tool]
       additionalProperties: false
     HistoryPage:
@@ -10333,7 +10418,7 @@ components:
             properties:
               through:
                 type: string
-                enum: [tools, system, input]
+                enum: [tools, shared, system, input]
               index:
                 anyOf:
                 - $ref: '#/components/schemas/Counter'
@@ -10829,6 +10914,16 @@ components:
     ExtensionMetadata:
       type: object
       properties:
+        shelf:
+          description: Where a client shows the extension. Presentation only.
+          type: string
+          enum: [memory, reach, channels, providers, builtins]
+        summary:
+          description: One line a client shows beside the name; null when the extension has none.
+          anyOf:
+          - type: string
+            maxLength: 120
+          - type: 'null'
         context:
           type: boolean
         tools:
@@ -10846,7 +10941,7 @@ components:
           maxItems: 200
           items:
             $ref: '#/components/schemas/ID'
-      required: [context, tools, python_modules, plugins]
+      required: [shelf, summary, context, tools, python_modules, plugins]
       additionalProperties: false
     HTTPCommand:
       type: object
@@ -11090,6 +11185,26 @@ components:
           - $ref: '#/components/schemas/ID'
           - type: 'null'
       required: [old_build, new_build, state, stopped_jobs, warnings, failure, old_kernel_id, new_kernel_id]
+      additionalProperties: false
+    KernelRestartResult:
+      type: object
+      properties:
+        old_kernel_id:
+          description: The kernel the session held when the restart began; null when it held none. A kernel only recorded for the session is stopped too.
+          anyOf:
+          - $ref: '#/components/schemas/ID'
+          - type: 'null'
+        stopped_jobs:
+          type: array
+          items:
+            $ref: '#/components/schemas/ID'
+          maxItems: 200
+        ended_cells:
+          type: array
+          items:
+            $ref: '#/components/schemas/ID'
+          maxItems: 200
+      required: [old_kernel_id, stopped_jobs, ended_cells]
       additionalProperties: false
     RewindRequest:
       type: object

@@ -55,6 +55,7 @@ func (m *AppModel) View() tea.View {
 		content = stripPrivateMarks(content)
 	}
 	v := tea.NewView(content)
+	v.WindowTitle = windowTitle(m.titleMode, m.ActiveSession)
 	v.MouseMode = tea.MouseModeNone
 	// ReportFocus lets a client animate only while its terminal is focused.
 	v.ReportFocus = true

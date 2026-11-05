@@ -25,8 +25,9 @@ import os
 import shlex
 import struct
 import time
-import uuid
+import secrets
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any, TypedDict, cast
 
 from albedo_protocol import RemoteCall, RemoteMessage, parse_remote
@@ -56,6 +57,7 @@ capture_factory: Any
 send_frame: Any
 attach_image: Any
 session_modules: list[str] = []
+current_cell: Callable[[], str | None] | None = None
 
 
 class LiveJob(TypedDict):
@@ -322,6 +324,7 @@ class RemoteRef:
         self._withdrawn: bool = False
         self._awaited = False  # an await here returned, so its result reached this cell
         self._waiters = 0  # awaits here still waiting on it
+        self._cell = current_cell() if current_cell else None  # the cell that made it
 
     # --- mirrored job state: sync, like the local handle ---
 
@@ -836,7 +839,7 @@ class RemoteConnection:
         self, call: "_RemoteCall", args: tuple[Any, ...], kwargs: dict[str, Any]
     ) -> RemoteRef:
         """Fire one call and return its reference immediately; it settles on await."""
-        call_id = uuid.uuid4().hex
+        call_id = secrets.token_hex(16)
         reference = RemoteRef(self, call_id=call_id, label=call._label)
         reference._task = loop.create_task(
             self.invoke(
@@ -875,7 +878,7 @@ class RemoteConnection:
             raise RemoteError(
                 f"degraded to ssh command mode ({self.degraded}); only rem.run() is available"
             )
-        call_id = call_id or uuid.uuid4().hex
+        call_id = call_id or secrets.token_hex(16)
         frame: dict[str, Any] = {
             "type": "invoke",
             "id": call_id,
@@ -970,7 +973,7 @@ class RemoteConnection:
         """What the remote namespace holds, and the live references it kept."""
         if self.degraded is not None:
             return {"names": ["run"], "handles": [], "degraded": str(self.degraded)}
-        call_id = uuid.uuid4().hex
+        call_id = secrets.token_hex(16)
         future: asyncio.Future[dict[str, Any]] = loop.create_future()
         self._pending[call_id] = future
         await self._send({"type": "introspect", "id": call_id})
@@ -1323,7 +1326,7 @@ class FallbackJob(JobOutput):
         shell: str | None = None,
         hooked: hook.Call | None = None,
     ) -> None:
-        self.id = uuid.uuid4().hex
+        self.id = secrets.token_hex(16)
         self._hooked = hooked
         self.argv = argv
         self.command = shell if shell is not None else shlex.join(argv)
@@ -1332,6 +1335,7 @@ class FallbackJob(JobOutput):
         self.started: float = loop.time()
         self.duration: float | None = None
         self.capture = capture_factory(self.id)
+        self.cell = current_cell() if current_cell else None
         self._awaited = False  # an await returned this job; its result reached them
         self._waiters = 0  # awaits still waiting; one cut short leaves the wake owed
         self._read = False
@@ -1450,13 +1454,10 @@ class FallbackJob(JobOutput):
             f"job finished on {self._connection.host} ({outcome}, {seconds}): {command}"
         )
         text = (
-            "<system-note>a background command finished with its result unread on"
-            f" {self._connection.host} (ssh command mode): {outcome}, {seconds},"
-            f" command: {command}."
-            " its handle is the job rem.run returned; its .tail() or"
-            f" output.read({self.id!r}) reads its output."
-            " no user sent this message; use the result if the session's work needs"
-            " it, otherwise acknowledge briefly and stay idle.</system-note>"
+            f"<system-note>a background command finished on {self._connection.host}"
+            f" (ssh command mode, {outcome}, {seconds}): {command}."
+            f" read its output with .tail() or output.read({self.id!r});"
+            " if nothing else is needed, reply briefly and stay idle.</system-note>"
         )
         return {
             "display": display,
@@ -1625,9 +1626,27 @@ async def stop_remote_job(job_id: str) -> dict[str, object] | None:
     return None
 
 
+def cell_jobs(cell: str) -> list[tuple[str, str]]:
+    """The remote jobs `cell` started that still run, on every host."""
+    running = [
+        (job.id, f"{job.command} on {job._connection.host}")
+        for job in _fallback_jobs.values()
+        if job.cell == cell and job.exit_code is None
+    ]
+    for connection in connections:
+        if connection.closed:
+            continue
+        for handle, reference in connection._refs.items():
+            mirror = connection._mirrors.get(handle, {})
+            job = connection._live.get(str(mirror.get("job")))
+            if reference._cell == cell and job is not None and not job["service"]:
+                running.append((job["id"], f"{job['command']} on {connection.host}"))
+    return running
+
+
 def setup(api: PythonApi) -> dict[str, object]:
     global loop, host_call, HostErrorType, capture_factory, send_frame
-    global attach_image, session_modules
+    global attach_image, session_modules, current_cell
     loop, host_call = api.loop, api.host
     HostErrorType, capture_factory = api.HostError, api.capture
     send_frame = api.send
@@ -1640,4 +1659,7 @@ def setup(api: PythonApi) -> dict[str, object]:
         )
     if api.on_stop_job is not None:
         api.on_stop_job(stop_remote_job)
+    current_cell = api.cell
+    if api.on_cell_jobs is not None:
+        api.on_cell_jobs(cell_jobs)
     return {"remote": remote, "RemoteError": RemoteError}

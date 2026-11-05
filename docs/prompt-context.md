@@ -30,8 +30,9 @@ that capability or advertising an unavailable retrieval API.
 
 ## Skills and memory
 
-Skill descriptions appear once in the skills catalog. The command catalog keeps
-their slash names, usage and exact typed-method mapping. Full catalog metadata,
+Skill descriptions appear once in the skills catalog. Upstream now groups skill
+commands in one short command-catalog row; the suite no longer replaces that
+renderer. Full catalog metadata,
 activation, arguments and resource paging are unchanged. Printed skill pages
 show readable content and source/encoding, plus continuation information when
 truncated; dictionary fields and JSON serialization remain unchanged.
@@ -44,6 +45,9 @@ and journals across linked workspaces; `memory.read(max_chars=...)` reads the
 current workspace's notes. No memory is deleted or rewritten by indexing.
 Required instructions still belong in instruction files, never in memory.
 
+Upstream places this memory context in a synthetic user/assistant opening,
+separate from the shared instructions. Codex also moves workspace instructions
+into an opening developer message. The suite retains these native layouts.
 Memory writes do not regenerate a running session's startup block. Explicit
 reloads, capability changes, compaction and normal upstream cache expiration
 retain their existing behavior. Adopting changed startup instructions can

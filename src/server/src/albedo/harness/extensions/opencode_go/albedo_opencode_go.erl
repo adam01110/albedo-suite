@@ -5,7 +5,7 @@
 
 -include_lib("kernel/include/file.hrl").
 -export([models/2, fetch_models/2,
-         device_start/0, device_start/1, account/1, accounts/1, expire/2,
+         device_start/0, account/1, accounts/1, expire/2,
          access/3, limited/4, metadata_route/2, owns_endpoint/2]).
 
 -define(DEFAULT_BASE_URL, <<"https://opencode.ai/inference/go/v1">>).
@@ -24,38 +24,21 @@
 %% ---- OAuth device authorization (RFC 8628) ------------------------------
 
 device_start() ->
-    device_start(console_server()).
-
-device_start(Server0) ->
-    Server = string:trim(binary(Server0), trailing, "/"),
-    Body = json:encode(#{<<"client_id">> => ?CLIENT_ID, <<"supports_org_scope">> => true}),
-    case post_json(<<Server/binary, "/auth/device/code">>, Body) of
-        {ok, 200, Response} ->
-            try json:decode(Response) of
-                #{<<"device_code">> := <<_, _/binary>> = DeviceCode,
-                  <<"user_code">> := <<_, _/binary>> = UserCode,
-                  <<"verification_uri_complete">> := <<_, _/binary>> = Verification} = Data ->
-                    ExpiresIn = positive_int(maps:get(<<"expires_in">>, Data, 600), 600),
-                    Interval = positive_int(maps:get(<<"interval">>, Data, 5), 5),
-                    case verification_url(Server, Verification) of
-                        {ok, Url} ->
-                            Deadline = erlang:system_time(millisecond) + ExpiresIn * 1000,
-                            Instructions = <<"Confirm code ", UserCode/binary,
-                                             " in your browser and select Authorize.">>,
-                            Complete = fun(Progress) ->
-                                poll_device(Server, DeviceCode, Interval * 1000, Deadline, Progress)
-                            end,
-                            {ok, {Url, Instructions, Complete}};
-                        Error -> Error
-                    end;
-                _ -> {error, <<"OpenCode Console returned an incomplete device-code response.">>}
-            catch _:_ -> {error, <<"OpenCode Console returned an invalid device-code response.">>}
-            end;
-        {ok, Status, Response} ->
-            {error, albedo_http:failure(<<"OpenCode Console device authorization">>, Status, Response)};
-        {error, Reason} ->
-            {error, Reason}
-    end.
+    albedo_device_flow:start(#{
+        server => console_server(),
+        code_path => <<"/auth/device/code">>,
+        token_path => <<"/auth/device/token">>,
+        encoding => json,
+        code_form => [{<<"client_id">>, ?CLIENT_ID}, {<<"supports_org_scope">>, true}],
+        token_form => [{<<"client_id">>, ?CLIENT_ID},
+                       {<<"grant_type">>, <<"urn:ietf:params:oauth:grant-type:device_code">>}],
+        headers => [{"accept", "application/json"}, {"user-agent", "albedo/1.0"}],
+        progress => <<"Waiting for authorization in your browser\xe2\x80\xa6">>,
+        instructions => fun(Code, _Url) ->
+            <<"Confirm code ", Code/binary, " in your browser and select Authorize.">>
+        end,
+        credential => fun(Token) -> build_credential(console_server(), Token) end
+    }).
 
 console_server() ->
     case os:getenv("OPENCODE_CONSOLE_SERVER") of
@@ -64,93 +47,10 @@ console_server() ->
         _ -> ?DEFAULT_CONSOLE_URL
     end.
 
-verification_url(Server, Verification) ->
-    case uri_string:parse(Verification) of
-        #{scheme := Scheme, host := Host} when (Scheme =:= <<"http">> orelse Scheme =:= <<"https">>),
-                                               Host =/= <<>> ->
-            {ok, Verification};
-        #{path := Path} = Rel when is_binary(Path), byte_size(Path) > 0 ->
-            case uri_string:parse(Server) of
-                #{scheme := Scheme, host := Host} = Base
-                  when (Scheme =:= <<"http">> orelse Scheme =:= <<"https">>), Host =/= <<>> ->
-                    PortPart = case maps:find(port, Base) of
-                        {ok, Port} when is_integer(Port) -> [":", integer_to_binary(Port)];
-                        _ -> []
-                    end,
-                    QueryPart = case maps:find(query, Rel) of
-                        {ok, Q} when is_binary(Q), Q =/= <<>> -> ["?", Q];
-                        _ -> []
-                    end,
-                    JoinedPath = case binary:at(Path, 0) of
-                        $/ -> Path;
-                        _ -> <<(maps:get(path, Base, <<>>))/binary, "/", Path/binary>>
-                    end,
-                    {ok, iolist_to_binary([Scheme, "://", Host, PortPart, JoinedPath, QueryPart])};
-                _ -> {error, <<"Invalid OpenCode Console server URL.">>}
-            end;
-        _ -> {error, <<"Invalid OpenCode Console verification URL.">>}
-    end.
-
-poll_device(Server, DeviceCode, IntervalMs, Deadline, Progress) ->
-    case erlang:system_time(millisecond) >= Deadline of
-        true -> {error, <<"OpenCode Console device code expired.">>};
-        false ->
-            Progress(<<"Waiting for authorization in your browser…"/utf8>>),
-            receive
-                {input, _} -> ok
-            after IntervalMs -> ok
-            end,
-            Body = json:encode(#{
-                <<"grant_type">> => <<"urn:ietf:params:oauth:grant-type:device_code">>,
-                <<"device_code">> => DeviceCode,
-                <<"client_id">> => ?CLIENT_ID
-            }),
-            case post_json(<<Server/binary, "/auth/device/token">>, Body) of
-                {ok, 200, Response} ->
-                    try json:decode(Response) of
-                        #{<<"access_token">> := <<_, _/binary>> = Access,
-                          <<"refresh_token">> := <<_, _/binary>> = Refresh} = Token ->
-                            ExpiresIn = positive_int(maps:get(<<"expires_in">>, Token, 3600), 3600),
-                            GrantedOrg = optional_binary(maps:get(<<"org_id">>, Token, undefined)),
-                            build_credential(Server, Access, Refresh, ExpiresIn, GrantedOrg);
-                        #{<<"error">> := Error} ->
-                            handle_poll_error(Server, DeviceCode, IntervalMs, Deadline, Progress, Error);
-                        _ -> {error, <<"OpenCode Console token response is incomplete.">>}
-                    catch _:_ -> {error, <<"OpenCode Console token response is invalid.">>}
-                    end;
-                {ok, Status, Response} when Status =:= 400; Status =:= 428 ->
-                    case decode_error(Response) of
-                        {ok, Error} ->
-                            handle_poll_error(Server, DeviceCode, IntervalMs, Deadline, Progress, Error);
-                        error ->
-                            {error, albedo_http:failure(<<"OpenCode Console token exchange">>, Status, Response)}
-                    end;
-                {ok, Status, Response} ->
-                    {error, albedo_http:failure(<<"OpenCode Console token exchange">>, Status, Response)};
-                {error, Reason} ->
-                    {error, Reason}
-            end
-    end.
-
-handle_poll_error(Server, DeviceCode, IntervalMs, Deadline, Progress, <<"authorization_pending">>) ->
-    poll_device(Server, DeviceCode, IntervalMs, Deadline, Progress);
-handle_poll_error(Server, DeviceCode, IntervalMs, Deadline, Progress, <<"slow_down">>) ->
-    poll_device(Server, DeviceCode, IntervalMs + 5000, Deadline, Progress);
-handle_poll_error(_, _, _, _, _, <<"expired_token">>) ->
-    {error, <<"OpenCode Console device code expired.">>};
-handle_poll_error(_, _, _, _, _, <<"access_denied">>) ->
-    {error, <<"OpenCode Console authorization was denied.">>};
-handle_poll_error(_, _, _, _, _, Error) when is_binary(Error) ->
-    {error, <<"OpenCode Console authorization failed: ", Error/binary>>}.
-
-decode_error(Response) ->
-    try json:decode(Response) of
-        #{<<"error">> := Error} when is_binary(Error) -> {ok, Error};
-        _ -> error
-    catch _:_ -> error
-    end.
-
-build_credential(Server, Access, Refresh, ExpiresIn, GrantedOrg) ->
+build_credential(Server, #{<<"access_token">> := Access,
+                           <<"refresh_token">> := <<_, _/binary>> = Refresh} = Token) ->
+    ExpiresIn = positive_int(maps:get(<<"expires_in">>, Token, 3600), 3600),
+    GrantedOrg = optional_binary(maps:get(<<"org_id">>, Token, undefined)),
     User = fetch_user(Server, Access),
     Orgs = fetch_orgs(Server, Access),
     {OrgId, OrgName} = select_org(GrantedOrg, Orgs),
@@ -170,7 +70,9 @@ build_credential(Server, Access, Refresh, ExpiresIn, GrantedOrg) ->
     WithEmail = case Email of <<>> -> Base; _ -> Base#{<<"email">> => Email} end,
     WithOrg = case OrgId of <<>> -> WithEmail; _ -> WithEmail#{<<"orgId">> => OrgId} end,
     WithOrgName = case OrgName of <<>> -> WithOrg; _ -> WithOrg#{<<"orgName">> => OrgName} end,
-    {ok, WithOrgName}.
+    {ok, WithOrgName};
+build_credential(_Server, _Incomplete) ->
+    {error, <<"OpenCode Console token response is incomplete.">>}.
 
 fetch_user(Server, Access) ->
     case get_json(<<Server/binary, "/api/user">>, Access) of
@@ -235,14 +137,12 @@ account(Credential) when is_map(Credential) ->
         false -> BaseLabel
     end,
     Now = erlang:system_time(millisecond),
-    Detail = iolist_to_binary([
-        <<"opencode go account">>,
-        case Selected of true -> <<" · selected"/utf8>>; false -> <<>> end,
+    Detail = iolist_to_binary(
         case albedo_accounts:limited(Credential, Now) of
-            true -> [<<" · limited until "/utf8>>, albedo_accounts:local_time(maps:get(<<"limitedUntil">>, Credential))];
-            false -> <<>>
+            true -> [<<"limited until ">>, albedo_accounts:local_time(maps:get(<<"limitedUntil">>, Credential))];
+            false -> []
         end
-    ]),
+    ),
     {account, credential_identity(Credential), Label, Detail, Selected};
 account(_) ->
     {account, <<>>, <<"invalid OpenCode Go account">>, <<>>, false}.

@@ -29,9 +29,14 @@ pub fn encode_with_policy(
   request: Request,
 ) -> Result(StringTree, Error) {
   use _ <- result.try(validate(request))
+  let #(instructions, developer) = layout(protocol, policy, request)
   let reasoning = echoes_reasoning(protocol, request.input)
   let include_reasoning = includes_reasoning(protocol, request)
   use input <- result.try(encode_inputs(protocol, reasoning, request.input, []))
+  let input = case developer {
+    Some(context) -> [message(Responses, "developer", context), ..input]
+    None -> input
+  }
   let fields = [
     #("model", json.string(request.model)),
     #("stream", json.bool(True)),
@@ -42,7 +47,8 @@ pub fn encode_with_policy(
         OpenAI
         | types.OpenCodeGo(_, _)
         | types.OpenCodeZen(_, _, _)
-        | types.Mistral(_) -> request.max_output_tokens
+        | types.Mistral(_)
+        | types.GitHubCopilot(_) -> request.max_output_tokens
         Codex(_, _) -> None
       }
       [
@@ -60,11 +66,11 @@ pub fn encode_with_policy(
         },
         json.array(_, json.string),
       )
-      |> optional("instructions", request.instructions, json.string)
+      |> optional("instructions", instructions, json.string)
       |> optional("max_output_tokens", max_tokens, json.int)
     }
     ChatCompletions -> {
-      let messages = case request.instructions {
+      let messages = case instructions {
         None -> input
         Some(text) -> [message(ChatCompletions, "system", text), ..input]
       }
@@ -176,10 +182,33 @@ pub fn encode_with_policy(
   let fields = case policy {
     OpenAI | Codex(_, _) ->
       optional(fields, "service_tier", options.service_tier, json.string)
-    types.OpenCodeGo(_, _) | types.OpenCodeZen(_, _, _) | types.Mistral(_) ->
-      fields
+    types.OpenCodeGo(_, _)
+    | types.OpenCodeZen(_, _, _)
+    | types.Mistral(_)
+    | types.GitHubCopilot(_) -> fields
   }
   Ok(json.to_string_tree(json.object(fields)))
+}
+
+/// The instructions a request sends, and the developer message that opens
+/// its input. Codex caches by prefix in the order instructions, tools, input,
+/// so there the workspace's context moves from the instructions to that
+/// message, as Codex CLI sends AGENTS.md: what every session shares (the base
+/// prompt, tool docs and tool schemas) then leads the prompt in one piece.
+/// Other servers get the instructions whole, since not every Responses server
+/// takes a developer message.
+fn layout(
+  protocol: Protocol,
+  policy: ProviderPolicy,
+  request: Request,
+) -> #(Option(String), Option(String)) {
+  case protocol, policy, types.split_instructions(request) {
+    Responses, Codex(_, _), Some(#(shared, context)) -> #(
+      Some(shared),
+      Some(string.trim_start(context)),
+    )
+    _, _, _ -> #(request.instructions, None)
+  }
 }
 
 fn validate(request: Request) -> Result(Nil, Error) {
@@ -479,6 +508,11 @@ fn encode_tool(protocol: Protocol, policy: ProviderPolicy, tool: Tool) -> Json {
     #("parameters", tool.parameters),
     #("strict", case policy {
       Codex(_, _) -> json.null()
+      // Copilot validates a strict schema literally, and albedo's tools declare
+      // optional properties (`python`'s `timeout_ms`), which strict mode forbids
+      // next to a `required` list. Ask for non-strict arguments until the tool
+      // schemas are strict-valid themselves.
+      types.GitHubCopilot(_) -> json.bool(False)
       OpenAI
       | types.OpenCodeGo(_, _)
       | types.OpenCodeZen(_, _, _)

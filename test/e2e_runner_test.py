@@ -3,6 +3,7 @@
 import ast
 import hashlib
 import importlib.util
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -60,18 +61,39 @@ class RunnerTests(unittest.TestCase):
                     ).hexdigest(),
                 )
 
-    def test_skill_fixture_filters_discovery_without_removing_assertions(self):
-        source = 'self.route = f"/sessions/{self.session}/catalog"\nassert original_checks\n'
+    def test_typed_response_adapters_preserve_assertions_and_reject_drift(self):
+        specifications = json.loads(
+            (Path(__file__).parent / "fixtures/typed-response-fixtures.json").read_text()
+        )
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "skills_test.py"
-            path.write_text(source)
-            checksum = hashlib.sha256(path.read_bytes()).hexdigest()
-            runner.synchronize_skills_catalog_fixture(path, expected_sha256=checksum)
-            self.assertEqual(
-                path.read_text(), source.replace('/catalog"', '/catalog?kind=skills"')
-            )
-            with self.assertRaisesRegex(RuntimeError, "skills fixture changed"):
-                runner.synchronize_skills_catalog_fixture(path, expected_sha256=checksum)
+            root = Path(directory)
+            for name, spec in specifications.items():
+                source = "\n".join(old for old, _ in spec["replacements"])
+                source += "\nassert original_checks\n"
+                (root / name).write_text(source)
+                spec["sha256"] = hashlib.sha256(source.encode()).hexdigest()
+            runner.synchronize_typed_response_fixtures(root, specifications)
+            snapshots = {name: (root / name).read_text() for name in specifications}
+            self.assertTrue(all("assert original_checks" in text for text in snapshots.values()))
+            self.assertIn("harness.message_text(item)", snapshots["kernel_detach_test.py"])
+            with self.assertRaisesRegex(RuntimeError, "fixture changed"):
+                runner.synchronize_typed_response_fixtures(root, specifications)
+            self.assertEqual(snapshots, {name: (root / name).read_text() for name in specifications})
+
+    def test_typed_response_text_helper_preserves_string_and_content_part_text(self):
+        specifications = json.loads(
+            (Path(__file__).parent / "fixtures/typed-response-fixtures.json").read_text()
+        )
+        source = specifications["harness.py"]["replacements"][0][1]
+        namespace = {}
+        exec(source.removesuffix("def prompt_text(request):"), namespace)
+        message_text = namespace["message_text"]
+        self.assertEqual(message_text({"content": "plain"}), "plain")
+        self.assertEqual(message_text({"content": [
+            {"type": "input_text", "text": "first"},
+            {"type": "input_image", "image_url": "fixture"},
+            {"type": "input_text", "text": "second"},
+        ]}), "firstsecond")
 
     def test_python_targets_use_the_actual_upstream_filename(self):
         targets = [case for case in runner.UPSTREAM_CASES if ":" in case]

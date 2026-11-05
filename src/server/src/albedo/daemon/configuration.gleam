@@ -273,7 +273,7 @@ pub fn validate_profile(
   let endpoint = string.trim(profile.endpoint)
   let key_valid = case profile.api_key {
     None -> True
-    Some(key) -> !has_control_characters(key, including_space: True)
+    Some(key) -> valid_api_key(key)
   }
   case
     valid_provider_name(name)
@@ -473,6 +473,17 @@ fn has_control_characters(
     let value = string.utf_codepoint_to_int(codepoint)
     value < 32 || value == 127 || include_space && value == 32
   })
+}
+
+/// Whether a key account's endpoint is one a profile could send to: an http or
+/// https URL with a host and no credentials, query or fragment.
+pub fn valid_key_endpoint(endpoint: String) -> Bool {
+  valid_endpoint(string.trim(endpoint), "openai")
+}
+
+/// Whether an API key holds no spaces or control characters.
+pub fn valid_api_key(key: String) -> Bool {
+  !has_control_characters(key, including_space: True)
 }
 
 fn valid_endpoint(endpoint: String, extension: String) -> Bool {

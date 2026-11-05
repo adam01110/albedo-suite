@@ -30,6 +30,7 @@ from albedo_api import (
     Host,
     PythonApi,
     OutputCapture,
+    PartialSave,
     Send,
     Text,
     check_timeout,
@@ -54,7 +55,7 @@ import shutil
 import sys
 import tempfile
 import time
-import uuid
+import secrets
 
 loop: asyncio.AbstractEventLoop
 capture_factory: Callable[[str], OutputCapture]
@@ -68,6 +69,7 @@ send: Send
 host: Host | None = None
 watch_output: Callable[[str, Callable[[], None]], None] | None = None
 forget_output: Callable[[str], None] | None = None
+current_cell: Callable[[], str | None] | None = None
 
 ACTIVE_LIMIT = 64  # active jobs in one kernel
 MAX_LISTED = 100  # jobs one `job_list` names, newest first
@@ -300,6 +302,37 @@ class JobFailed(RuntimeError):
         super().__init__(f"{head}. Its last lines:\n{last}" if last.strip() else head)
 
 
+class PendingText:
+    """`job.text()` before it is awaited. `await` binds to everything after
+    it, so `await job.text()[-2000:]` slices this object, not the text; each
+    slice is kept and applied once the text arrives."""
+
+    __slots__ = ("_read", "_keys")
+
+    def __init__(
+        self,
+        read: Callable[[], Coroutine[object, object, Text]],
+        keys: tuple[int | slice, ...] = (),
+    ) -> None:
+        self._read = read
+        self._keys = keys
+
+    def __getitem__(self, key: int | slice) -> PendingText:
+        return PendingText(self._read, (*self._keys, key))
+
+    def __await__(self) -> Generator[object, None, Text]:
+        return self._text().__await__()
+
+    async def _text(self) -> Text:
+        text = await self._read()
+        for key in self._keys:
+            text = Text(text[key])
+        return text
+
+    def __repr__(self) -> str:
+        return "<job output not read yet: await job.text()>"
+
+
 class Job(JobOutput):
     """One background program and the process group it owns."""
 
@@ -322,7 +355,7 @@ class Job(JobOutput):
         )  # whose output is our stdin
         self.feed = self.source._reader() if self.source is not None else None
         self.outlet = Outlet()
-        self.id: str = uuid.uuid4().hex
+        self.id: str = secrets.token_hex(16)
         self.requested_argv = list(argv if requested_argv is None else requested_argv)
         self.requested_command = shlex.join(self.requested_argv)
         self._routed = requested_argv is not None and argv != requested_argv
@@ -333,6 +366,8 @@ class Job(JobOutput):
         self.group: albedo_proc.Group | None = None
         self.exit_code: int | None = None
         self.timed_out: bool = False
+        self.timeout = timeout
+        self.cell = current_cell() if current_cell else None  # the cell that started it
         self._hooked: hook.Call | None = None  # set by run()
         self.started: float = loop.time()
         self.duration: float | None = None  # seconds it ran, once it ended
@@ -399,10 +434,12 @@ class Job(JobOutput):
         *args: object,
         cwd: str | os.PathLike[str] | None = None,
         env: dict[str, object] | None = None,
-        timeout: float = 300,
+        timeout: float | None = None,
     ) -> Job:
         """Start a program reading this job's output, like a shell `|`:
-        run("git", "log").pipe("rg", "fix"). Returns the reader's handle."""
+        run("git", "log").pipe("rg", "fix"). Returns the reader's handle,
+        which keeps this job's timeout unless given its own."""
+        timeout = self.timeout if timeout is None else timeout
         return run(program, *args, cwd=cwd, env=env, stdin=self, timeout=timeout)
 
     @property
@@ -536,11 +573,15 @@ class Job(JobOutput):
             self._read = True
         return self.exit_code
 
-    async def text(self, check: bool = True) -> Text:
+    def text(self, check: bool = True) -> PendingText:
         """Wait for the job and return its whole output as plain text: escape
         codes dropped, a redrawn line at its last draw. A job that exits
         nonzero or times out raises JobFailed with its last lines, unless
-        check=False."""
+        check=False. A slice taken before the await applies to the text, so
+        `await job.text()[-2000:]` is its last 2000 characters."""
+        return PendingText(lambda: self._text(check))
+
+    async def _text(self, check: bool) -> Text:
         await self
         output = plain(self.read())
         if check and (self.exit_code != 0 or self.timed_out):
@@ -720,6 +761,7 @@ class Job(JobOutput):
             "traced": self.traced,
             "read": self._read,
             "output": output,
+            "timeout": self.timeout,
         }
 
     @classmethod
@@ -742,6 +784,8 @@ class Job(JobOutput):
         job.process, job.group, job._hooked = None, None, None
         job.exit_code = cast("int | None", saved["exit_code"])
         job.timed_out = bool(saved["timed_out"])
+        job.timeout = float(cast(float, saved.get("timeout", 300)))
+        job.cell = None
         job.duration = float(cast(float, saved["duration"]))
         job.started = loop.time() - (time.time() - float(cast(float, saved["started"])))
         job.termination = albedo_proc.Termination(None, (), True)
@@ -859,7 +903,13 @@ def trim_retained() -> None:
 def save_jobs(path: str) -> list[dict[str, object]]:
     """The finished jobs, oldest first, and beside the state at `path` the
     listing the daemon serves while no kernel is attached (robot-docs/kernel.md)."""
-    book = [saved for job in retained.values() for saved in [job._saved()] if saved]
+    book, unsaved = [], []
+    for job in retained.values():
+        saved = job._saved()
+        if saved is None:
+            unsaved.append(f"job {job.id}")
+        else:
+            book.append(saved)
     listing = []
     for saved in book:
         if not saved["traced"]:
@@ -892,19 +942,28 @@ def save_jobs(path: str) -> list[dict[str, object]]:
         with contextlib.suppress(OSError):
             os.unlink(temporary)
         raise
+    if unsaved:
+        raise PartialSave(book, unsaved)
     return book
 
 
 def restore_jobs(book: object, captures: Mapping[str, OutputCapture]) -> None:
+    missing = []
     for saved in cast(list[dict[str, object]], book):
         id = cast(str, saved["id"])
         if id in jobs:
             continue
         output = cast(dict[str, object], saved["output"])
         capture = captures.get(id) or albedo_capture.Capture.revive(output)
+        spill = output.get("spill")
+        if isinstance(spill, str) and not os.path.exists(spill):
+            missing.append(id)
+            continue
         job = Job._restored(saved, capture)
         jobs[id] = retained[id] = job
     trim_retained()
+    if missing:
+        raise OSError(f"retained output missing for jobs {', '.join(missing)}")
 
 
 def job_record(job: Job) -> dict[str, object]:
@@ -1012,35 +1071,29 @@ def _name(job: dict[str, object]) -> str:
 
 def notice(facts: list[dict[str, object]]) -> dict[str, object]:
     """The wake turn's display text, model text, and the facts behind both."""
-    advice = (
-        " no user sent this message; use the result if the session's work needs"
-        " it, otherwise acknowledge briefly and stay idle.</system-note>"
-    )
+    advice = " if nothing else is needed, reply briefly and stay idle.</system-note>"
     if len(facts) == 1:
         [job] = facts
         reading = (
-            " its handle is the reference rem.run returned; its .tail() or"
-            f" await rem.output.read({job['id']!r}) on that connection reads its output."
+            f" read its output with .tail() or await rem.output.read({job['id']!r})."
             if job["host"]
-            else f" its handle is jobs[{job['id']!r}] in python; jobs[{job['id']!r}].tail() or"
-            f" output.read({job['id']!r}) reads its output."
+            else f" read its output with jobs[{job['id']!r}].tail() or output.read({job['id']!r})."
         )
         text = (
-            "<system-note>a background job finished with its result unread"
-            f"{job['where']}: {job['summary']}, command: {job['command']}."
-            + reading
-            + advice
+            "<system-note>a background job finished"
+            f"{job['where']} ({job['summary']}): {job['command']}." + reading + advice
         )
     else:
         listed = "; ".join(
-            f"{_name(job)}{job['where']}: {job['summary']}, command: {job['command']}"
+            f"{_name(job)}{job['where']} ({job['summary']}): {job['command']}"
             for job in facts
         )
         remote = any(job["host"] for job in facts)
         text = (
-            f"<system-note>{len(facts)} background jobs finished with their results"
-            f" unread: {listed}. jobs[id].tail() or output.read(id) reads one's"
-            " output." + (REMOTE_READING if remote else "") + advice
+            f"<system-note>{len(facts)} background jobs finished: {listed}."
+            " read output with jobs[id].tail() or output.read(id)."
+            + (REMOTE_READING if remote else "")
+            + advice
         )
     display = "\n".join(
         f"job finished{job['where']} ({job['summary']}): {job['command']}"
@@ -1184,9 +1237,18 @@ async def close() -> None:
         send({"type": "cleanup", "module": "run", "failures": failures})
 
 
+def cell_jobs(cell: str) -> list[tuple[str, str]]:
+    """The jobs `cell` started that still run, services aside: they are meant to."""
+    return [
+        (job.id, job.pipeline)
+        for job in active.values()
+        if job.cell == cell and job.duration is None and job.traced and not job.service
+    ]
+
+
 def setup(api: PythonApi) -> dict[str, object]:
     global loop, capture_factory, preview_limit, jobs, active, retained, send
-    global host, watch_output, forget_output
+    global host, watch_output, forget_output, current_cell
     loop, capture_factory, preview_limit, send = (
         api.loop,
         api.capture,
@@ -1194,6 +1256,7 @@ def setup(api: PythonApi) -> dict[str, object]:
         api.send,
     )
     host, watch_output, forget_output = api.host, api.watch_output, api.forget_output
+    current_cell = api.cell
 
     async def stop_local_job(job_id: str) -> dict[str, object] | None:
         job = jobs.get(job_id)
@@ -1211,4 +1274,6 @@ def setup(api: PythonApi) -> dict[str, object]:
         api.on_stop_job(stop_local_job)
     if api.on_job_view is not None:
         api.on_job_view(view_jobs)
+    if api.on_cell_jobs is not None:
+        api.on_cell_jobs(cell_jobs)
     return {"run": run, "jobs": jobs}

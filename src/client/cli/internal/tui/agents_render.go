@@ -17,6 +17,9 @@ func (m AgentsViewModel) paneHeader() []string {
 		width = max(1, m.Width-2)
 	}
 	rows := make([]string, 0, 12)
+	if f := m.folds[m.selected]; f != nil {
+		return m.foldPane(f, width)
+	}
 	n := m.nodes[m.selected]
 	if n == nil || width <= 0 {
 		return rows
@@ -92,8 +95,30 @@ func (m AgentsViewModel) paneHeader() []string {
 	return append(rows, live)
 }
 
+// foldPane lists a fold's closed agents, newest turn first, ending in a
+// blank row where an agent's pane has its tail heading.
+func (m AgentsViewModel) foldPane(f *agentFold, width int) []string {
+	glyph, verb := "▸ ", "enter or → shows them"
+	if f.open {
+		glyph, verb = "▾ ", "enter or ← folds them"
+	}
+	rows := []string{
+		DefaultStyles.Faint.Render(glyph) + DefaultStyles.Bold.Render(fmt.Sprintf("%d closed agents", len(f.members))),
+		DefaultStyles.Faint.Render(ansi.Truncate("under "+m.label(f.parent, "")+" · "+verb, width, "…")),
+		"",
+	}
+	for _, id := range f.members {
+		n := m.nodes[id]
+		rows = append(rows, ansi.Truncate(DefaultStyles.Faint.Render("✓ ")+n.name+DefaultStyles.Faint.Render("  "+n.model), width, "…"))
+	}
+	return append(rows, "")
+}
+
 func (m AgentsViewModel) pane(height int) []string {
 	rows := m.paneHeader()
+	if m.folds[m.selected] != nil {
+		return rows
+	}
 	room := max(0, height-len(rows))
 	if room == 0 || len(rows) == 0 {
 		return rows
@@ -143,17 +168,17 @@ func drawTail(line tailLine, width, limit int) []string {
 // graphOffset scrolls a tall swarm so the selected dot and its children's
 // dots stay in view, the selected one first when both do not fit.
 func (m AgentsViewModel) graphOffset(height int) int {
-	n := m.nodes[m.selected]
-	if n == nil {
+	_, y, ok := m.at(m.selected)
+	if !ok {
 		return 0
 	}
-	bottom := n.y + 3
+	bottom := y + 3
 	for _, child := range m.nodes {
 		if child.parent == m.selected {
 			bottom = max(bottom, child.y+2)
 		}
 	}
-	return max(0, min(bottom-height, n.y-1))
+	return max(0, min(bottom-height, y-1))
 }
 
 func (m AgentsViewModel) View() string {
@@ -240,17 +265,35 @@ func (m AgentsViewModel) View() string {
 	}
 	target := m.label(m.selected, "agent")
 	input := m.input.View()
-	if m.input.Value() == "" {
+	switch {
+	case m.input.Value() != "":
+	case m.folds[m.selected] != nil:
+		input = DefaultStyles.Faint.Render("closed agents, folded · pick one to message it")
+	default:
 		input = DefaultStyles.Faint.Render("message " + target + "…  or /spawn <name> <task>")
 	}
-	if n := m.nodes[m.rename.id]; n != nil && m.rename.active() {
+	hints := []hint{{"tab", "next agent"}, {"enter", "open or send"}, {"ctrl+r", "rename"}, {"ctrl+x", "delete"}, {"ctrl+f", "find"}, {"esc", "back"}}
+	if f := m.folds[m.selected]; f != nil {
+		hints = []hint{{"tab", "next agent"}, {"enter", "show"}, {"ctrl+f", "find"}, {"esc", "back"}}
+		if f.open {
+			hints[1].does = "fold"
+		}
+	}
+	switch n := m.nodes[m.rename.id]; {
+	case m.find.active():
+		out = append(out, " "+m.findLine(), footerLine(m.Width, []hint{{"↑↓", "next match"}, {"enter", "go there"}, {"esc", "back"}}, "", false))
+	case n != nil && m.rename.active():
 		out = append(out, " "+DefaultStyles.Prompt.Render("✎ ")+m.rename.view(m.Width-promptMarkWidth-1), " "+renameHints("restores "+renameBlank(n)))
-	} else {
+	default:
 		mode, action := "NORMAL", "open"
 		if m.navigation.editing {
 			mode, action = "INSERT", "send"
 		}
-		out = append(out, " "+promptLead()+input, footerLine(m.Width, []hint{{mode, ""}, {"hjkl/tab", "agent"}, {"i", "write"}, {"enter", action}, {"ctrl+r", "rename"}, {"ctrl+x", "delete"}, {"esc", "back"}}, "", false))
+		if m.folds[m.selected] == nil {
+			hints = []hint{{"hjkl/tab", "agent"}, {"i", "write"}, {"enter", action}, {"ctrl+r", "rename"}, {"ctrl+x", "delete"}, {"ctrl+f", "find"}, {"esc", "back"}}
+		}
+		hints = append([]hint{{mode, ""}}, hints...)
+		out = append(out, " "+promptLead()+input, footerLine(m.Width, hints, "", false))
 	}
 	return strings.Join(out, "\n")
 }

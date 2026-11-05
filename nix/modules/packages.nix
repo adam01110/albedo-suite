@@ -88,6 +88,8 @@
             gleam run -m suite_quota_test
             gleam run -m suite_codex_error_test
             gleam run -m suite_opencode_go_test
+            cp ${../../test/suite_bridge_test.gleam} test/suite_bridge_test.gleam
+            gleam run -m suite_bridge_test
             cp ${../../test/suite_zed_test.gleam} test/suite_zed_test.gleam
             gleam run -m suite_zed_test
             cp ${../../test/suite_zed_login_test.gleam} test/suite_zed_login_test.gleam
@@ -146,6 +148,7 @@
             go test ./internal/tui -run '^TestBase16' -count=1 -v
             go test ./internal/tui -run '^TestVim' -count=1 -v
             go test ./internal/tui -run '^TestNavigation' -count=1 -v
+            go test ./internal/tui -run '^TestUpstreamMerge' -count=1 -v
             go test ./internal/tui -run '^TestContext' -count=1 -v
             go test ./internal/tui -run '^TestQuota' -count=1 -v
             go test ./internal/tui -run '^TestProviderAvailability' -count=1 -v

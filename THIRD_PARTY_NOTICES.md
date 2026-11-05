@@ -1,7 +1,7 @@
 # Source attribution
 
 The files under `src/server/` and `src/client/` replace files from Albedo at
-revision `ff9d6dc0b83d4ee917f0e4b4dbf365a42684364d`,
+revision `b651ddea0748dc00f7d0c1493e72c14e27a2bf2f`,
 <https://tangled.org/okami.mom/albedo>. Albedo is copyright 2026 okami.mom,
 ptr.pet, aly.codes and the other contributors in its git history, licensed under
 the GNU Affero General Public License v3.0 only with the Classpath exception.
@@ -13,7 +13,7 @@ Suite-authored code, packaging, modules, helpers, tests and documentation are
 copyright 2026 Adam0 and licensed under the same AGPL-3.0-only with Classpath
 exception, except where third-party notices specify otherwise. The license update
 is dated 2026-11-02 and the suite modifications described below are dated
-2026-11-03. Earlier versions retain their original licenses.
+2026-11-05. Earlier versions retain their original licenses.
 
 The previous upstream pin was `154c6911d6a491aeeecacf26a06b6ae8c4bc70e1`,
 licensed under MPL 2.0. Original MPL-covered portions retained from that source
@@ -34,7 +34,9 @@ narrow native OAuth confirmation and native HTTP transport integration,
 explicit opt-in browser-session Zed USD budget inspection,
 OpenCode Go SDK-metadata routing and endpoint-scoped discovery caches on the
 native OAuth, account rotation and portable wire implementation,
+encrypted-reasoning history compatibility in the native Responses bridge,
 recoverable kernel startup failures with workspace validation,
+atomic concurrent SSH bundle publication with read-only staging cleanup,
 quota poller deadline recovery and newest-report projection,
 reversible provider-profile availability and model-discovery filtering,
 cache-stable startup reference reductions with on-demand API documentation,
@@ -54,9 +56,11 @@ endpoint-scoped cache
 fixtures; its provider catalog assertions are retained.
 `scripts/test-e2e.py` adds a kernel-reattachment readiness barrier to upstream
 `test/e2e/kernel_upgrade_test.py` from the current pinned revision; its
-forced-swap assertions are retained. It also scopes the pinned
-`test/e2e/skills_test.py` discovery query to skills so the suite's larger
-extension inventory does not hide skill assertions behind pagination.
+forced-swap assertions are retained. Guarded text adapters for native
+`harness.py`, `kernel_detach_test.py`, `cache_miss_test.py` and
+`image_limits_test.py` and `repetition_test.py` accept typed
+Responses content parts without removing their assertions. Skill discovery now
+uses upstream's native catalog filtering without a suite fixture change.
 
 Upstream's complete third-party notices are preserved in
 `LICENSES/albedo-THIRD_PARTY_NOTICES.md`. Dependencies and packaged runtime

@@ -1,5 +1,5 @@
 -module('albedo@harness@extensions@mcp@client').
--export([start/2, pid/1, close/1, capabilities/1, list/4, request/4, request_with/5, on_change/2]).
+-export([start/2, pid/1, close/1, capabilities/1, description/1, list/4, request/4, request_with/5, on_change/2]).
 
 start(Transport, _) ->
     ets:insert(lazy_mcp_test, {last_transport, Transport}),
@@ -11,6 +11,7 @@ start(Transport, _) ->
 close(Client) -> Client ! stop, ok.
 pid(Client) -> Client.
 capabilities(_) -> #{}.
+description(_) -> <<>>.
 on_change(_, _) -> nil.
 
 list(_, <<"tools/list">>, <<"tools">>, _) ->

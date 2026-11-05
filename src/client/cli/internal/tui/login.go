@@ -142,22 +142,24 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 		if msg.Gen != m.Generation {
 			return m, nil
 		}
-		m.SignIns = msg.Listed.Logins
-		m.Accounts = msg.Listed.Accounts
+		if msg.Loaded {
+			m.SignIns = msg.Listed.Logins
+			m.Accounts = msg.Listed.Accounts
+		}
 		if msg.Profiles != nil {
 			m.Profiles = *msg.Profiles
 		}
-
-		if msg.Err != nil && m.Error == "" {
-			m.Error = msg.Err.Error()
-		}
 		if m.Step == StepSaving {
+			removed := m.Removing
 			m.Removing = removal{}
-			m.Step = StepChoose
-			if msg.Err == nil {
-				m.Error = ""
+			m.Error, m.Status = "", ""
+			if msg.Err != nil {
+				m.Error = m.refusalError(removed, msg.Err)
 			}
 			return m, m.backToChoose()
+		}
+		if msg.Err != nil && m.Error == "" {
+			m.Error = msg.Err.Error()
 		}
 		m.buildChoosePicker()
 		if m.Hint != "" {
@@ -323,9 +325,15 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 			return m, m.toggleProvider()
 		case m.Step == StepChoose && key == "ctrl+d":
 			if item, ok := m.ChoosePicker.Highlighted(); ok {
-				if account, accountOK := m.accountAt(item.ID); accountOK && account.Source == "env" {
-					m.Status = "environment accounts are read-only and cannot be removed"
-					return m, nil
+				if account, accountOK := m.accountAt(item.ID); accountOK {
+					if account.Source == "env" {
+						m.Status = "environment accounts are read-only and cannot be removed"
+						return m, nil
+					}
+					if refusal := m.removalRefusal(account); refusal != "" {
+						m.Error, m.Status = "", refusal
+						return m, nil
+					}
 				}
 				if target, ok := m.removalFor(item.ID); ok {
 					return m, m.confirmRemoval(target)

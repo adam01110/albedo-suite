@@ -46,6 +46,7 @@ type AppModel struct {
 	afterReset       string
 	pendingCreations map[string]pendingOperation
 	ActiveSession    *daemon.Session
+	titleMode        titleMode
 	openBrowser      func(url string)
 	Conn             *daemon.Connection
 	Profiles         config.Profiles
@@ -124,6 +125,7 @@ func NewAppModel(conn *daemon.Connection, bootstrap Bootstrap, initialSession *d
 		panic("tui.NewAppModel requires a daemon connection")
 	}
 	m := &AppModel{
+		titleMode:     windowTitleMode(),
 		Conn:          conn,
 		Profiles:      bootstrap.Settings.Profiles,
 		ActiveSession: initialSession,

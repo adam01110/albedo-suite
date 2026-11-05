@@ -13,33 +13,37 @@ import (
 // listEntry is one entry of a list screen: how it draws, what the filter
 // matches, and what its detail pane says.
 type listEntry struct {
-	key     string // names the row across reloads, so the cursor stays on it
-	group   string // sections of one group sit together under its heading
-	section string // rows of one section sit together under its rule
-	lead    string // styled state before the name, padded to the widest
-	name    string // what the filter underlines
-	desc    string // faint after the name, and searched
-	tag     string // styled, at the right edge
-	faint   bool   // a row that is done with, drawn faint unless selected
+	key     string                             // names the row across reloads, so the cursor stays on it
+	group   string                             // sections of one group sit together under its heading
+	section string                             // rows of one section sit together under its rule
+	lead    string                             // styled state before the name, padded to the widest
+	name    string                             // what the filter underlines
+	desc    string                             // faint after the name, and searched
+	tag     string                             // styled, at the right edge
+	detail  func(width int) []string           // the pane's lines; nil leaves it blank
+	draw    func(width int, hits []int) string // optional row contents, without selection
 	search  []string
-	detail  func(width int) []string // the pane's lines; nil leaves it blank
+	heading bool // selectable heading for a foldable group
+	hidden  bool // hidden only while the filter is empty
+	faint   bool // a row that is done with, drawn faint unless selected
 }
 
 type listShown struct {
-	row  int
 	hits []int
+	row  int
 }
 
 // listView shares filtering, navigation and rendering across list screens.
 type listView struct {
 	navigation searchNavigation
-	input      textinput.Model
 	rows       []listEntry
 	shown      []listShown
+	// Empty is said when there are no rows at all.
+	Empty      string
+	groupTitle func(group string, width int) string
+	input      textinput.Model
 	Cursor     int
 	height     int
-	// Empty is said when there are no rows at all.
-	Empty string
 }
 
 // newFilter is a focused search field.
@@ -86,6 +90,17 @@ func (l *listView) refilter(keep string) {
 	var order []bucket
 	buckets := map[bucket][]scored{}
 	for i, r := range l.rows {
+		if r.heading {
+			if len(words) == 0 {
+				b := bucket{r.group, r.section}
+				order = append(order, b)
+				buckets[b] = []scored{{shown: listShown{row: i}}}
+			}
+			continue
+		}
+		if r.hidden && len(words) == 0 {
+			continue
+		}
 		rank, hits, ok := matchFields(words, append([]string{r.name, r.desc}, r.search...)...)
 		if !ok {
 			continue
@@ -94,7 +109,7 @@ func (l *listView) refilter(keep string) {
 		if _, seen := buckets[b]; !seen {
 			order = append(order, b)
 		}
-		buckets[b] = append(buckets[b], scored{listShown{i, hits}, rank})
+		buckets[b] = append(buckets[b], scored{listShown{row: i, hits: hits}, rank})
 	}
 	if len(words) > 0 {
 		for _, g := range buckets {
@@ -111,6 +126,17 @@ func (l *listView) refilter(keep string) {
 		}
 		sections[b.group] = append(sections[b.group], b)
 	}
+	// Foldable headings stay with matching children; closed groups remain browsable.
+	for i, r := range l.rows {
+		if !r.heading || len(words) == 0 {
+			continue
+		}
+		b := bucket{r.group, r.section}
+		if _, exists := buckets[b]; !exists {
+			continue
+		}
+		buckets[b] = append([]scored{{shown: listShown{row: i}}}, buckets[b]...)
+	}
 	l.shown = l.shown[:0]
 	for _, group := range groups {
 		for _, b := range sections[group] {
@@ -120,6 +146,9 @@ func (l *listView) refilter(keep string) {
 		}
 	}
 	l.Cursor = max(0, slices.IndexFunc(l.shown, func(s listShown) bool { return l.rows[s.row].key == keep }))
+	if keep == "" && len(words) > 0 && len(l.shown) > 1 && l.rows[l.shown[0].row].heading {
+		l.Cursor = 1
+	}
 }
 
 func (l listView) highlighted() (listEntry, bool) {
@@ -221,7 +250,13 @@ func (l listView) list(width, height int) []string {
 			if len(all) > 0 {
 				all = append(all, line{shown: -1})
 			}
-			all = append(all, line{text: groupHeading(r.group, width), shown: -1})
+			heading := groupHeading(r.group, width)
+			if l.groupTitle != nil {
+				heading = l.groupTitle(r.group, width)
+			}
+			if heading != "" {
+				all = append(all, line{text: heading, shown: -1})
+			}
 		}
 		if r.section != "" && (prev == nil || prev.group != r.group || prev.section != r.section) {
 			run := 1
@@ -245,7 +280,17 @@ func (l listView) list(width, height int) []string {
 	// A window never ends on a heading with none of its rows under it, and
 	// one that starts inside a group shows that group's heading on top.
 	start, cut := windowStart(len(all), selectedAt, height), len(all) > height && height >= 3
-	orphan := func() bool { return cut && start < len(all)-height && all[start+height-2].shown < 0 }
+	headingAt := func(at int) bool {
+		if all[at].shown < 0 {
+			return true
+		}
+		r := l.rows[l.shown[all[at].shown].row]
+		if !r.heading || at+1 >= len(all) || all[at+1].shown < 0 {
+			return false
+		}
+		return l.rows[l.shown[all[at+1].shown].row].group == r.group
+	}
+	orphan := func() bool { return cut && start < len(all)-height && headingAt(start+height-2) }
 	for orphan() && start > 0 && selectedAt < start+height-3 {
 		start--
 	}
@@ -260,6 +305,10 @@ func (l listView) list(width, height int) []string {
 	}, start, width, height)
 	if cut && start > 0 && all[start+1].shown >= 0 {
 		for i := start; i >= 0; i-- {
+			if all[i].shown >= 0 && l.rows[l.shown[all[i].shown].row].heading {
+				out[0] = svFit(l.row(l.shown[all[i].shown], false, width, leadW, nameW), width)
+				break
+			}
 			if all[i].shown < 0 && all[i].text != "" {
 				out[0] = svFit(all[i].text, width)
 				break
@@ -271,6 +320,17 @@ func (l listView) list(width, height int) []string {
 
 func (l listView) row(s listShown, selected bool, width, leadW, nameW int) string {
 	r := l.rows[s.row]
+	if r.draw != nil {
+		bar := " "
+		if selected {
+			bar = selectBar()
+		}
+		line := bar + " " + r.draw(max(1, width-3), s.hits)
+		if selected {
+			return selectedLine(line, width)
+		}
+		return line
+	}
 	bar, nameStyle := " ", lipgloss.NewStyle()
 	switch {
 	case selected:

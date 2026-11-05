@@ -7,7 +7,9 @@ import albedo/daemon/acp
 import albedo/daemon/acp_attachments
 import albedo/daemon/acp_session
 import albedo/daemon/active_output
+import albedo/daemon/agents
 import albedo/daemon/bus
+import albedo/daemon/child_failure
 import albedo/daemon/context_snapshot
 import albedo/daemon/conversation
 import albedo/daemon/event_buffer
@@ -17,7 +19,6 @@ import albedo/daemon/history
 import albedo/daemon/http_history
 import albedo/daemon/images
 import albedo/daemon/mail
-import albedo/daemon/message_content
 import albedo/daemon/operations
 import albedo/daemon/requests
 import albedo/daemon/session_activity
@@ -44,6 +45,7 @@ import albedo/daemon/turn.{type Submission, Submission}
 import albedo/daemon/usage
 import albedo/harness/cache_fade
 import albedo/harness/command
+import albedo/harness/compaction
 import albedo/harness/extension
 import albedo/harness/extension/selection
 import albedo/harness/extensions/python/kernel as python
@@ -165,6 +167,16 @@ pub type Interruption {
     run_id: Option(String),
     requested: Bool,
     cancelled_input_ids: List(String),
+  )
+}
+
+/// What `/kernel restart` stopped: the kernel the session held (None when it
+/// held none), its background jobs, and the cells that were still running.
+pub type KernelRestart {
+  KernelRestart(
+    old_kernel_id: Option(String),
+    stopped_jobs: List(String),
+    ended_cells: List(String),
   )
 }
 
@@ -291,6 +303,15 @@ pub type Message {
     Result(runtime.KernelUpgrade, String),
     Subject(Result(runtime.KernelUpgrade, String)),
   )
+  /// `/kernel restart`, by the user (None) or by the named agent that
+  /// started this session.
+  RestartKernel(Option(String), Subject(Result(KernelRestart, String)))
+  /// The runtime stopped the old kernel, or says why it could not.
+  KernelRestarted(
+    Result(Nil, String),
+    KernelRestart,
+    Subject(Result(KernelRestart, String)),
+  )
   Read(
     Option(Cursor),
     Subject(Result(#(Cursor, List(json.Json), Option(Unobserved)), String)),
@@ -315,11 +336,24 @@ pub type Message {
     Option(conversation.ToolIdentity),
     conversation.Follow,
     Subject(Result(#(Int, Option(Int)), String)),
+    Subject(Nil),
   )
-  CommitFits(String, List(transcript.ImageFit), Subject(Result(Nil, String)))
+  CommitFits(
+    String,
+    List(transcript.ImageFit),
+    Subject(Result(Nil, String)),
+    Subject(Nil),
+  )
   /// The worker's stream broke for this reason after it showed output, and
   /// the turn goes on from that output.
-  Salvage(String, String, Subject(Result(List(types.Input), String)))
+  Salvage(
+    String,
+    String,
+    Subject(Result(List(types.Input), String)),
+    Subject(Nil),
+  )
+  /// A write `write_then` queued has committed; this goes on from it.
+  Landed(fn(State) -> State)
   RecordContext(String, context_snapshot.Snapshot, Bool, Subject(Nil))
   ReportPin(String, Option(Int), Subject(Nil))
   /// The worker's turn call succeeded; the session's extensions hear it.
@@ -333,16 +367,20 @@ pub type Message {
   CallInBackground(
     types.Request,
     requests.Prefix,
-    Subject(Result(Option(types.Usage), String)),
+    Subject(Result(compaction.Answer, String)),
   )
   /// A background call's worker finished.
-  BackgroundFinished(String, Int, Result(Option(types.Usage), String))
+  BackgroundFinished(String, Int, Result(compaction.Answer, String))
   Compact(Option(String), Subject(Result(turn.CompactionReport, String)))
   ReloadData(Subject(Result(session_extensions.Reloaded, String)))
   /// An extension asks for a refresh and gives its reason; see
   /// `extension.Session`.
   RefreshRequested(String)
-  DrainSteering(String, Subject(Result(List(types.Input), String)))
+  DrainSteering(
+    String,
+    Subject(Result(List(types.Input), String)),
+    Subject(Nil),
+  )
   ReadContext(Subject(context_snapshot.Snapshot))
   Finished(String, Result(Nil, String))
   Down(process.Down)
@@ -415,16 +453,25 @@ pub type Message {
   WorkspaceReady(String, WorkspaceProbe, Result(Nil, String))
   /// Start a turn for what waits in the queue, now that the kernel is here.
   StartQueued
+  /// The receipt goes to the first subject once the store commits it.
   AdmitOperation(
     operations.Request,
     Submission,
     Subject(Result(operations.Receipt, String)),
+    Subject(Admission),
   )
   /// Recheck the ACP lease at admission, inside its ordering authority.
   AdmitACP(
     operations.Request,
     Submission,
     acp.Digest,
+    Subject(Result(operations.Receipt, String)),
+    Subject(Admission),
+  )
+  /// The store committed an admission; its receipt goes to the subject.
+  AdmissionCommitted(
+    Submission,
+    Result(operations.Receipt, String),
     Subject(Result(operations.Receipt, String)),
   )
   PublishACPOverlay(
@@ -451,11 +498,13 @@ pub fn start(
 ) -> Result(Session, actor.StartError) {
   actor.new_with_initialiser(10_000, fn(self) {
     label("albedo_session", info.id)
+    // The one write a start waits for: registration is ordered with deletion
+    // claims on the writer. Orphaned shell commands end in the same turn.
     use _ <- result.try(
       store.query(runtime.ledger(host), fn(db) {
         use _ <- result.try(family.available_in(db, info.id))
         live_register(info.id, self)
-        Ok(Nil)
+        shell_commands.interrupt_orphans_in(db, info.id)
       }),
     )
     use latest_usage <- result.try(conversation.load_usage(
@@ -475,10 +524,6 @@ pub fn start(
       info.id,
     ))
     use prepared_head <- result.try(conversation.prepared_head(
-      runtime.ledger(host),
-      info.id,
-    ))
-    use _ <- result.try(shell_commands.interrupt_orphans(
       runtime.ledger(host),
       info.id,
     ))
@@ -518,10 +563,13 @@ pub fn start(
         home: home,
         self: self,
         history: None,
+        results_settled: False,
         latest_usage: latest_usage,
         activity: activity,
         pending_switch: None,
         steering: steering,
+        admitting: 0,
+        finishing: False,
         active_submissions: [],
         sequence: 0,
         events: event_buffer.new(),
@@ -541,6 +589,7 @@ pub fn start(
         closing: False,
         blocked_until: 0,
         kernel_blocked: False,
+        holding_failure: False,
         generation: generation,
         tool_progress: tool_progress_state.new(),
         progress_timer_token: 0,
@@ -559,6 +608,7 @@ pub fn start(
         output_timer: None,
         output_published_at: clock.monotonic_ms(),
         publish_output: PublishOutput,
+        landed: Landed,
       )
     // Background jobs and cells wake through their kernel host routes; the
     // registered closure lands a completion notice as an ordinary submit, so
@@ -994,6 +1044,21 @@ pub fn evict_history(session: Session) -> Bool {
   actor.call(session, 5000, EvictHistory)
 }
 
+/// `write` for `write_then`, answering also the history's boundary right
+/// after it: the session publishes the rows that commit wrote, not ones a
+/// commit queued after it already added.
+fn with_boundary(
+  state: State,
+  write: fn() -> Result(a, String),
+) -> fn() -> Result(#(a, conversation.Snapshot), String) {
+  let #(ledger, session) = #(runtime.ledger(state.host), state.info.id)
+  fn() {
+    use value <- result.try(write())
+    use boundary <- result.try(conversation.committed_snapshot(ledger, session))
+    Ok(#(value, boundary))
+  }
+}
+
 fn answer(
   state: State,
   reply: Subject(a),
@@ -1253,6 +1318,97 @@ fn upgraded_kernel(
   list.each(parked, process.send(state.self, _))
   process.send(state.self, StartQueued)
   answer(state, reply, outcome)
+}
+
+/// Replace the session's kernel with an empty one, stopping what runs first.
+/// `by` names the agent that asked, None for the user.
+pub fn restart_kernel(
+  session: Session,
+  by: Option(String),
+) -> Result(KernelRestart, String) {
+  actor_call.try_call(session, 185_000, RestartKernel(by, _))
+  |> result.replace_error(
+    "kernel restart response unavailable; inspect the session kernel",
+  )
+  |> result.flatten
+}
+
+/// The restart report as the HTTP route and `/kernel restart` return it.
+pub fn kernel_restart_json(report: KernelRestart) -> json.Json {
+  json.object([
+    #("old_kernel_id", json.nullable(report.old_kernel_id, json.string)),
+    #(
+      "stopped_jobs",
+      json.array(list.take(report.stopped_jobs, 200), json.string),
+    ),
+    #(
+      "ended_cells",
+      json.array(list.take(report.ended_cells, 200), json.string),
+    ),
+  ])
+}
+
+/// Stops the running turn and cancels queued inputs as esc does, then
+/// restarts once a boot, release or workspace move under way has settled.
+fn begin_restart(
+  state: State,
+  by: Option(String),
+  reply: Subject(Result(KernelRestart, String)),
+) -> actor.Next(State, Message) {
+  use <- bool.lazy_guard(state.closing, fn() {
+    answer(state, reply, Error("session is closing"))
+  })
+  case operations.cancel(runtime.ledger(state.host), state.info.id) {
+    Error(error) -> answer(state, reply, Error(error))
+    Ok(_) -> {
+      let #(state, _) = stop_waiting(state)
+      case replacing_kernel(state) || state.booting != None {
+        True -> actor.continue(park(state, RestartKernel(by, reply)))
+        False -> restart_now(state, by, reply)
+      }
+    }
+  }
+}
+
+/// Discards the saved variables and asks the runtime to stop the kernel; the
+/// next turn boots an empty one. The reply waits for the stop.
+fn restart_now(
+  state: State,
+  by: Option(String),
+  reply: Subject(Result(KernelRestart, String)),
+) -> actor.Next(State, Message) {
+  let old = state.kernel
+  let observed =
+    option.then(old, fn(kernel) {
+      runtime.kernel_observation(kernel) |> option.from_result
+    })
+  let jobs =
+    option.map(observed, fn(observed) { observed.running_jobs })
+    |> option.unwrap([])
+  let _ = option.map(old, session_namespace.forget)
+  discard_state(state.home, state.info.id)
+  let #(state, cells) = session_namespace.restarted(state, jobs, by)
+  let report =
+    KernelRestart(
+      option.map(observed, fn(observed) { observed.instance_id }),
+      list.map(jobs, fn(job) { job.id }),
+      cells,
+    )
+  let self = state.self
+  // The restart and any later Open are sent by this actor, in that order.
+  runtime.restart_session_async(state.host, state.info.id, fn(stopped) {
+    process.send(self, KernelRestarted(stopped, report, reply))
+  })
+  actor.continue(
+    session_state.State(
+      ..state,
+      kernel: None,
+      released: None,
+      context: session_state.unprepared(),
+    )
+    |> session_state.announce
+    |> session_state.invalidate("session", "/sessions/" <> state.info.id),
+  )
 }
 
 fn call_submit(
@@ -1636,14 +1792,17 @@ fn handle(
     WorkspaceReady(token, purpose, result) ->
       actor.continue(workspace_ready(state, token, purpose, result))
     StartQueued -> actor.continue(start_queued(state))
-    AdmitOperation(operation, submission, reply) ->
-      admit_operation(state, operation, submission, reply)
-    AdmitACP(operation, submission, digest, reply) ->
+    AdmitOperation(operation, submission, committed, reply) ->
+      admit_operation(state, operation, submission, committed, reply)
+    AdmitACP(operation, submission, digest, committed, reply) ->
       case acp_attachments.holds(state.info.id, digest), editor_ready(state) {
-        False, _ -> answer(state, reply, Error("attachment_lost"))
-        True, Error(reason) -> answer(state, reply, Error(reason))
-        True, Ok(_) -> admit_operation(state, operation, submission, reply)
+        False, _ -> answer(state, reply, Decided(Error("attachment_lost")))
+        True, Error(reason) -> answer(state, reply, Decided(Error(reason)))
+        True, Ok(_) ->
+          admit_operation(state, operation, submission, committed, reply)
       }
+    AdmissionCommitted(submission, result, committed) ->
+      admission_committed(state, submission, result, committed)
     PublishACPOverlay(digest, generation, candidate, reply) -> {
       let pending =
         acp_attachments.read(state.info.id).0.readiness != acp_attachments.Ready
@@ -1708,8 +1867,12 @@ fn handle(
     // The dispatcher retries letters it cannot see were admitted; one already
     // queued or committed here is accepted again without a second copy.
     Submit(Submission(source: turn.Mail(id, _), ..) as submission, reply) ->
+      // A letter in a turn whose commit is still queued is held too.
       case
-        turn.holds_letter(state.steering, id),
+        turn.holds_letter(
+          list.append(state.steering, state.active_submissions),
+          id,
+        ),
         mail.undelivered(runtime.ledger(state.host), id)
       {
         True, _ -> answer(state, reply, Ok(True))
@@ -1854,6 +2017,9 @@ fn handle(
 
     UpgradeKernel(reply) -> begin_upgrade(state, reply)
     UpgradeCompletion(outcome, reply) -> upgraded_kernel(state, outcome, reply)
+    RestartKernel(by, reply) -> begin_restart(state, by, reply)
+    KernelRestarted(stopped, report, reply) ->
+      answer(state, reply, result.replace(stopped, report))
     ReadFast(reply) -> {
       let value = {
         use body <- result.try(session_provider.read_fast(state))
@@ -2153,97 +2319,163 @@ fn handle(
       actor.continue(session_state.flush_output(
         session_state.State(..state, output_timer: None),
       ))
-    Commit(id, [], stage, _, _, conversation.Follow(None, None), reply) ->
+    Commit(
+      id,
+      [],
+      stage,
+      _,
+      _,
+      conversation.Follow(None, None, None),
+      answer,
+      ack,
+    ) -> {
       // The worker's move to the model after its tools' results saves
       // nothing new: a restart resumes a turn left at Tool or Model alike,
       // so the stage reaches the store with the response's own commit.
+      process.send(ack, Nil)
       case turn.owner(state.activity, id) {
-        Some(_) ->
-          answer(
+        Some(_) -> {
+          process.send(answer, Ok(#(usage.now(), None)))
+          actor.continue(
             session_state.State(
               ..state,
               activity: turn.committed(state.activity, id, stage),
             ),
-            reply,
-            Ok(#(usage.now(), None)),
           )
-        _ -> answer(state, reply, Error("stale run"))
+        }
+        _ -> {
+          process.send(answer, Error("stale run"))
+          actor.continue(state)
+        }
       }
-    Commit(id, inputs, stage, thought_ms, tool, follow, reply) ->
-      case stage == conversation.Idle && !turn.live(state.activity, id) {
-        True -> answer(state, reply, Error("cancelled final reply"))
-        False ->
-          case turn.owner(state.activity, id) {
-            Some(_) -> {
-              // Completed tool results are saved even when cancellation was requested.
-              let written =
-                conversation.commit_response(
-                  runtime.ledger(state.host),
-                  state.info.id,
-                  inputs,
-                  stage,
-                  Some(state.info.provider),
-                  thought_ms,
-                  id,
-                  tool,
-                  follow,
-                )
+    }
+    Commit(id, inputs, stage, thought_ms, tool, follow, answer, ack) -> {
+      process.send(ack, Nil)
+      let cancelled_final =
+        stage == conversation.Idle && !turn.live(state.activity, id)
+      case turn.owner(state.activity, id) {
+        Some(_) if cancelled_final -> {
+          process.send(answer, Error("cancelled final reply"))
+          actor.continue(state)
+        }
+        Some(_) -> {
+          // Completed tool results are saved even when cancellation was requested.
+          let #(ledger, session, provider) = #(
+            runtime.ledger(state.host),
+            state.info.id,
+            Some(state.info.provider),
+          )
+          session_state.write_then(
+            state,
+            with_boundary(state, fn() {
+              conversation.commit_response(
+                ledger,
+                session,
+                inputs,
+                stage,
+                provider,
+                thought_ms,
+                id,
+                tool,
+                follow,
+              )
+            }),
+            fn(state, written) {
+              process.send(
+                answer,
+                result.map(written, fn(written) { written.0 }),
+              )
               case written {
-                Ok(#(timestamp, _)) ->
-                  answer(
-                    session_history.remember_response(
-                      session_state.State(
-                        ..state,
-                        activity: turn.committed(state.activity, id, stage),
-                      ),
-                      inputs,
-                      timestamp,
-                      thought_ms,
-                    )
-                      |> remember_usage(follow.usage),
-                    reply,
-                    written,
+                Ok(#(#(timestamp, _), boundary)) ->
+                  session_history.remember_response_committed(
+                    session_state.State(
+                      ..state,
+                      activity: turn.committed(state.activity, id, stage),
+                    ),
+                    inputs,
+                    timestamp,
+                    thought_ms,
+                    boundary,
+                    follow.phase,
                   )
-                Error(_) -> answer(state, reply, written)
+                  |> remember_usage(follow.usage)
+                Error(_) -> state
               }
-            }
-            _ -> answer(state, reply, Error("stale run"))
-          }
+            },
+          )
+          |> actor.continue
+        }
+        _ -> {
+          process.send(answer, Error("stale run"))
+          actor.continue(state)
+        }
       }
-    Salvage(id, reason, reply) ->
+    }
+    Salvage(id, reason, answer, ack) -> {
+      process.send(ack, Nil)
       case turn.owner(state.activity, id) {
         Some(run) if !run.cancelled -> {
-          let #(state, written) =
-            session_salvage.commit(state, run, session_salvage.CutOff(reason))
-          answer(state, reply, written)
-        }
-        _ -> answer(state, reply, Ok([]))
-      }
-    CommitFits(id, fits, reply) ->
-      case turn.owner(state.activity, id) {
-        Some(_) ->
-          case
-            conversation.commit_fits(
-              runtime.ledger(state.host),
-              state.info.id,
-              fits,
-              state.info.provider,
+          let #(state, write) =
+            session_salvage.gather(state, run, session_salvage.CutOff(reason))
+          session_state.write_then(state, write, fn(state, written) {
+            process.send(
+              answer,
+              result.map(written, fn(salvaged) {
+                option.map(salvaged, fn(salvaged) { salvaged.inputs })
+                |> option.unwrap([])
+              }),
             )
-          {
-            Ok(timestamp) -> {
-              answer(
-                session_history.remember_fits(state, fits, timestamp),
-                reply,
-                Ok(Nil),
-              )
-            }
-            Error(error) -> answer(state, reply, Error(error))
-          }
-        None -> answer(state, reply, Error("stale run"))
+            session_salvage.remember(state, written |> result.unwrap(None))
+          })
+          |> actor.continue
+        }
+        _ -> {
+          process.send(answer, Ok([]))
+          actor.continue(state)
+        }
       }
+    }
+    CommitFits(id, fits, answer, ack) -> {
+      process.send(ack, Nil)
+      case turn.owner(state.activity, id) {
+        Some(_) -> {
+          let #(ledger, session, provider) = #(
+            runtime.ledger(state.host),
+            state.info.id,
+            state.info.provider,
+          )
+          session_state.write_then(
+            state,
+            with_boundary(state, fn() {
+              conversation.commit_fits(ledger, session, fits, provider)
+            }),
+            fn(state, written) {
+              process.send(answer, result.replace(written, Nil))
+              case written {
+                Ok(#(timestamp, boundary)) ->
+                  session_history.remember_fits(
+                    state,
+                    fits,
+                    timestamp,
+                    boundary,
+                  )
+                Error(_) -> state
+              }
+            },
+          )
+          |> actor.continue
+        }
+        None -> {
+          process.send(answer, Error("stale run"))
+          actor.continue(state)
+        }
+      }
+    }
+    Landed(continue) -> actor.continue(continue(state))
     // Inputs that wait for the turn to end stay queued; the run's end starts
     // the next turn with them.
-    DrainSteering(id, reply) ->
+    DrainSteering(id, answer, ack) -> {
+      process.send(ack, Nil)
       case
         turn.live(state.activity, id),
         case turn.exclusive(state.active_submissions) {
@@ -2251,55 +2483,80 @@ fn handle(
           False -> list.partition(state.steering, turn.steers)
         }
       {
-        False, _ -> answer(state, reply, Error("cancelled"))
-        True, #([], _) -> answer(state, reply, Ok([]))
+        False, _ -> {
+          process.send(answer, Error("cancelled"))
+          actor.continue(state)
+        }
+        True, #([], _) -> {
+          process.send(answer, Ok([]))
+          actor.continue(state)
+        }
         True, #(queued, held) -> {
           let inputs = session_submission.inputs(queued)
-          case
-            conversation.commit_operations(
-              runtime.ledger(state.host),
-              state.info.id,
-              inputs,
-              conversation.Model,
-              Some(state.info.provider),
-              turn.letters(queued),
-              session_submission.commits(queued, 0),
-              session_submission.shells(queued, 0),
-              id,
-              state.info.cwd,
-              [],
+          let #(ledger, session, provider, cwd) = #(
+            runtime.ledger(state.host),
+            state.info.id,
+            Some(state.info.provider),
+            state.info.cwd,
+          )
+          let letters = turn.letters(queued)
+          let commits = session_submission.commits(queued, 0)
+          let shells = session_submission.shells(queued, 0)
+          // The drained inputs join the run now, so a retried letter finds
+          // them held; a failed commit puts them back in the queue.
+          let drained =
+            session_state.State(
+              ..state,
+              steering: held,
+              active_submissions: list.append(state.active_submissions, queued),
             )
-          {
-            Error(error) -> answer(state, reply, Error(error))
-            Ok(timestamp) -> {
-              let state =
-                session_submission.emit(
-                  session_history.remember(state, inputs, timestamp),
-                  queued,
-                  timestamp,
-                )
-              answer(
-                session_state.State(
-                  ..state,
-                  steering: held,
-                  active_submissions: list.append(
-                    state.active_submissions,
-                    queued,
-                  ),
-                )
-                  |> session_submission.membership(id)
-                  |> publish_steered_shells(
-                    session_submission.shells(queued, 0),
-                    id,
-                    timestamp,
-                  ),
-                reply,
-                Ok(inputs),
+          drained
+          |> session_state.write_then(
+            with_boundary(drained, fn() {
+              conversation.commit_operations(
+                ledger,
+                session,
+                inputs,
+                conversation.Model,
+                provider,
+                letters,
+                commits,
+                shells,
+                id,
+                cwd,
+                [],
               )
-            }
-          }
+            }),
+            fn(state, written) {
+              process.send(answer, result.replace(written, inputs))
+              case written {
+                Error(_) ->
+                  session_state.State(
+                    ..state,
+                    steering: list.append(queued, state.steering),
+                    active_submissions: list.filter(
+                      state.active_submissions,
+                      fn(active) { !list.contains(queued, active) },
+                    ),
+                  )
+                Ok(#(timestamp, boundary)) ->
+                  session_history.remember_committed(
+                    state,
+                    inputs,
+                    timestamp,
+                    boundary,
+                  )
+                  |> session_submission.emit(queued, timestamp)
+                  |> session_submission.membership(id)
+                  |> publish_steered_shells(shells, id, timestamp)
+              }
+            },
+          )
+          |> actor.continue
         }
       }
+    }
+
     ReportPin(id, head, reply) -> {
       process.send(reply, Nil)
       case turn.live(state.activity, id), head, state.pin {
@@ -2311,30 +2568,32 @@ fn handle(
             ),
           )
         True, Some(head), loop.Unpinned -> actor.continue(prepared(state, head))
-        True, None, loop.Pinned(..) ->
-          case
-            conversation.clear_prompt_pin(
-              runtime.ledger(state.host),
-              state.info.id,
-            )
-          {
-            Ok(_) ->
-              actor.continue(
-                session_state.State(
-                  ..state,
-                  pin: loop.Unpinned,
-                  prepared_head: None,
-                ),
-              )
-            Error(error) ->
-              actor.continue(session_state.emit(
-                state,
-                view.error(
-                  "compaction finished but the pinned system prompt could not be released: "
-                  <> error,
-                ),
-              ))
-          }
+        True, None, loop.Pinned(..) -> {
+          let #(ledger, session) = #(runtime.ledger(state.host), state.info.id)
+          session_state.write_then(
+            state,
+            fn() { conversation.clear_prompt_pin(ledger, session) },
+            fn(state, cleared) {
+              case cleared {
+                Ok(_) ->
+                  session_state.State(
+                    ..state,
+                    pin: loop.Unpinned,
+                    prepared_head: None,
+                  )
+                Error(error) ->
+                  session_state.emit(
+                    state,
+                    view.error(
+                      "compaction finished but the pinned system prompt could not be released: "
+                      <> error,
+                    ),
+                  )
+              }
+            },
+          )
+          |> actor.continue
+        }
         _, _, _ -> actor.continue(state)
       }
     }
@@ -2524,9 +2783,9 @@ fn handle(
               releasing: None,
               context: session_state.unprepared(),
             )
-              |> session_state.emit(view.note(
-                "daemon",
-                session_namespace.released_text(saved, "nothing was attached"),
+              |> session_namespace.noted(session_namespace.released_text(
+                saved,
+                "nothing was attached",
               )),
             reply,
             True,
@@ -3001,6 +3260,34 @@ fn forget(state: State) -> Nil {
   cleanup_registrations(state.info.id)
 }
 
+/// `/kernel restart <session>`: the user may name any session, the model only
+/// its own children and peers. The registry reaches the other session.
+fn restart_another(
+  db: store.Store,
+  id: String,
+  to: String,
+  caller: command.Caller,
+) -> Result(json.Json, String) {
+  use address <- result.try(family.resolve(db, id, to))
+  let by = case caller {
+    command.UserCall -> Ok(None)
+    command.ModelCall ->
+      case family.owns(db, id, address.session) {
+        True -> Ok(Some(family.name_of(db, id)))
+        False ->
+          Error(
+            "you can only restart the kernels of your own children or peers",
+          )
+      }
+  }
+  use by <- result.try(by)
+  case agents.call(agents.RestartKernel(address.session, by)) {
+    Ok(agents.RestartedKernel(report)) -> Ok(report)
+    Ok(_) -> Error("kernel restart answered unexpectedly")
+    Error(reason) -> Error(reason)
+  }
+}
+
 /// The registered command state seam: one operation in, session state out.
 ///
 /// Runs on whichever process invoked the command (the kernel's host-call
@@ -3097,6 +3384,10 @@ fn command_op(
           #("failure", json.nullable(report.failure, json.string)),
         ])
       })
+    command.KernelRestart ->
+      restart_kernel(session, None) |> result.map(kernel_restart_json)
+    command.KernelRestartOf(to, caller) ->
+      restart_another(runtime.ledger(host), id, to, caller)
     command.KernelJobs(project) ->
       capture(session)
       |> result.try(fn(captured) {
@@ -3299,9 +3590,6 @@ fn prepare_submission(
     editor_ready(state)
     |> result.map_error(Rejected),
   )
-  use state <- result.try(
-    session_history.ensure_history(state) |> result.map_error(Rejected),
-  )
   use #(state, client) <- result.try(
     session_provider.configured_client(state) |> result.map_error(Rejected),
   )
@@ -3317,11 +3605,18 @@ fn prepare_submission(
 /// a crash interrupted, which only the kernel can recover.
 fn turn_ready(state: State) -> #(State, Bool) {
   let #(state, kernel) = session_namespace.ready(state)
-  let state = session_history.ensure_history(state) |> result.unwrap(state)
-  case session_history.needs_kernel(state.history) {
-    True -> #(state, kernel != None)
-    False -> #(state, session_state.composition(state) != None)
+  case kernel, session_state.composition(state) {
+    Some(_), Some(_) -> #(state, True)
+    kernel, composition ->
+      case owes_results(state) {
+        True -> #(state, kernel != None)
+        False -> #(state, composition != None)
+      }
   }
+}
+
+fn owes_results(state: State) -> Bool {
+  !state.results_settled && session_history.unanswered(state) != []
 }
 
 /// `kernel_or_park` for a turn: the state when it can start now, else `work`
@@ -3334,10 +3629,7 @@ fn turn_or_park(state: State, work: Message) -> Result(State, State) {
       case turn_ready(state) {
         #(state, True) -> Ok(state)
         #(state, False) ->
-          case
-            option.is_none(state.booting)
-            && !session_history.needs_kernel(state.history)
-          {
+          case option.is_none(state.booting) && !owes_results(state) {
             True -> Error(request_composition(state, work))
             False -> Error(park(state, work))
           }
@@ -3617,11 +3909,12 @@ fn request_kernel(state: State) -> Nil {
 /// parked work. Queued letters are not lost: they stay undelivered, and the
 /// dispatcher offers them again.
 /// Adopting revives saved variables only for a session with history, so the
-/// history is loaded first, as the old synchronous open did.
+/// transcript is asked what it holds first.
 fn adopt(state: State, kernel: runtime.Session) -> State {
-  session_history.ensure_history(state)
-  |> result.unwrap(state)
-  |> session_namespace.adopt(kernel)
+  let held =
+    conversation.held(runtime.ledger(state.host), state.info.id)
+    |> result.unwrap(conversation.Held(False, False))
+  session_namespace.adopt(state, kernel, held)
   |> session_prompt.reconcile_prompt
 }
 
@@ -3630,25 +3923,26 @@ fn adopt(state: State, kernel: runtime.Session) -> State {
 fn prepared(state: State, head: Int) -> State {
   let moved = state.prepared_head != Some(head)
   let state = session_state.State(..state, prepared_head: Some(head))
+  let #(ledger, session) = #(runtime.ledger(state.host), state.info.id)
   case moved {
     False -> state
     True ->
-      case
-        conversation.save_prepared_head(
-          runtime.ledger(state.host),
-          state.info.id,
-          head,
-        )
-      {
-        Ok(_) -> state
-        Error(error) ->
-          session_state.emit(
-            state,
-            view.error(
-              "the prepared request head could not be saved: " <> error,
-            ),
-          )
-      }
+      session_state.write_then(
+        state,
+        fn() { conversation.save_prepared_head(ledger, session, head) },
+        fn(state, saved) {
+          case saved {
+            Ok(_) -> state
+            Error(error) ->
+              session_state.emit(
+                state,
+                view.error(
+                  "the prepared request head could not be saved: " <> error,
+                ),
+              )
+          }
+        },
+      )
   }
 }
 
@@ -3724,6 +4018,11 @@ fn kernel_opened(
               process.send(reply, Error(why))
               state
             }
+            // Nothing booted, so the restart has only saved variables to drop.
+            RestartKernel(_, _) -> {
+              process.send(state.self, work)
+              state
+            }
             StartSummary(_, _, _, ack) -> {
               process.send(ack, Error(why))
               state
@@ -3778,63 +4077,69 @@ fn blocked_queued(state: State, error: String, retry_at: Option(Int)) -> State {
 
 /// A session that ends still owing replies sends each requester its last words,
 /// marked unreviewed. Letters already queued here mean it is not done yet.
-fn answer_parent(state: State, outcome: Result(Nil, String)) -> State {
+fn answer_parent(
+  state: State,
+  outcome: Result(Nil, String),
+) -> #(State, Option(fn() -> List(Result(mail.Letter, String)))) {
   let db = runtime.ledger(state.host)
   let owed = case turn.starts_turn(state.steering) {
     True -> []
     False -> mail.owed_requesters(db, state.info.id) |> result.unwrap([])
   }
   case owed {
-    [] -> state
+    [] -> #(state, None)
     requesters -> {
       let #(state, words) = last_words(state)
       let body = case outcome, words {
         Ok(_), Some(text) -> text
         Ok(_), None -> "(finished without writing anything)"
-        Error(error), Some(text) -> "run failed: " <> error <> "\n\n" <> text
-        Error(error), None -> "run failed: " <> error
+        Error(error), _ -> child_failure.format(error, words)
       }
-      list.fold(requesters, state, fn(state, requester) {
-        case
-          mail.post(
-            db,
-            mail.new_id(),
-            requester,
-            Some(state.info.id),
-            family.name_of(db, state.info.id),
-            mail.Answer(unreviewed: True),
-            body,
-          )
-        {
-          Ok(letter) -> {
-            let _ = process.spawn_unlinked(fn() { mail.deliver(letter) })
-            state
-          }
-          Error(error) ->
-            session_state.emit(
-              state,
-              view.error("could not answer requester: " <> error),
+      let #(session, name) = #(state.info.id, family.name_of(db, state.info.id))
+      #(
+        state,
+        Some(fn() {
+          list.map(requesters, fn(requester) {
+            mail.post(
+              db,
+              mail.new_id(),
+              requester,
+              Some(session),
+              name,
+              mail.Answer(unreviewed: True),
+              body,
             )
-        }
-      })
+          })
+        }),
+      )
     }
   }
 }
 
+/// Hands each posted answer to its requester, or says why it was not posted.
+fn answered(state: State, posted: List(Result(mail.Letter, String))) -> State {
+  list.fold(posted, state, fn(state, posted) {
+    case posted {
+      Ok(letter) -> {
+        let _ = process.spawn_unlinked(fn() { mail.deliver(letter) })
+        state
+      }
+      Error(error) ->
+        session_state.emit(
+          state,
+          view.error("could not answer requester: " <> error),
+        )
+    }
+  })
+}
+
 /// The newest assistant text in this session's transcript.
 fn last_words(state: State) -> #(State, Option(String)) {
-  case session_history.ensure_history(state) {
-    Error(_) -> #(state, None)
-    Ok(state) -> #(
-      state,
-      option.unwrap(state.history, [])
-        |> list.find_map(fn(entry) {
-          message_content.visible_assistant_text(entry.input)
-          |> option.to_result(Nil)
-        })
-        |> option.from_result,
-    )
-  }
+  #(
+    state,
+    conversation.last_assistant_text(runtime.ledger(state.host), state.info.id)
+      |> result.unwrap(None),
+  )
 }
 
 /// Whether this session's durable family member has been closed.
@@ -3948,11 +4253,15 @@ fn cached_workspace_error(state: State) -> Option(SubmissionError) {
   }
 }
 
+/// How long an idle parent waits for more of its children to report failure.
+const failure_hold_ms = 400
+
 fn admit_within_limits(
   state: State,
   submission: Submission,
   reply: Subject(Result(Bool, SubmissionError)),
 ) -> actor.Next(State, Message) {
+  let failed_child = result.is_ok(session_submission.failed_child(submission))
   case turn.admit(state.activity, submission, list.length(state.steering)) {
     turn.Reject(turn.Busy) -> answer(state, reply, Error(Busy))
     turn.Reject(turn.Oversized) ->
@@ -3970,6 +4279,21 @@ fn admit_within_limits(
         reply,
         Ok(True),
       )
+    // Children that fail together land in one turn: the first waits briefly
+    // so its siblings join it.
+    turn.Start if failed_child -> {
+      let _ = clock.send_after(state.self, failure_hold_ms, StartQueued)
+      answer(
+        session_state.State(
+          ..state,
+          steering: list.append(state.steering, [submission]),
+          holding_failure: True,
+        )
+          |> session_state.announce,
+        reply,
+        Ok(True),
+      )
+    }
     turn.Start ->
       case turn_ready(state) {
         // It starts once the kernel boots, not behind another turn, so to
@@ -4001,15 +4325,7 @@ fn resume(state: State) -> State {
         session_state.State(..state, activity: turn.Resting),
         submission_error(err),
       )
-    Ok(#(state, kernel, client, history, run_id)) ->
-      start_worker(
-        state,
-        kernel,
-        client,
-        history,
-        turn.Turn(None, False),
-        run_id,
-      )
+    Ok(#(state, opening)) -> start_turn(state, opening)
   }
 }
 
@@ -4077,6 +4393,7 @@ fn compact(
       Some(strategy) -> Ok(strategy)
       None -> Error("no compaction strategy is enabled")
     })
+    use state <- result.try(session_history.ensure_history(state))
     use history <- result.try(projected_inputs(state))
     use _ <- result.try(case history {
       [] -> Error("no conversation history to compact")
@@ -4110,7 +4427,7 @@ fn compact(
         state,
         kernel,
         client,
-        history,
+        session_run.Given(history),
         turn.Compaction(
           reply,
           turn.CompactionReport(..report, effective_strategy: Some(strategy)),
@@ -4206,10 +4523,7 @@ fn select_strategy(
 fn prepare_turn_pipeline(
   state: State,
   submissions: List(Submission),
-) -> Result(
-  #(State, runtime.Prepared, extension.Upstream, List(types.Input), String),
-  #(State, SubmissionError),
-) {
+) -> Result(#(State, Opening), #(State, SubmissionError)) {
   use state <- result.try(case turn.running(state.activity) {
     Some(_) -> Ok(state)
     None ->
@@ -4221,10 +4535,11 @@ fn prepare_turn_pipeline(
   )
   // `turn_ready` holds the turn for a kernel when calls need recovering.
   let recovered = case state.kernel {
+    Some(_) if state.results_settled -> []
     Some(held) ->
       session_history.recover_pending(
         state.host,
-        state.history,
+        session_history.unanswered(state),
         held,
         client.images,
       )
@@ -4239,46 +4554,129 @@ fn prepare_turn_pipeline(
       session_submission.inputs(submissions),
     )
     |> with_notice(state.notice)
-  use history <- result.try(
-    projected_inputs(session_history.remember(state, accepted, 0))
-    |> result.map_error(fn(err) { #(state, Rejected(err)) }),
-  )
   let run_id = mail.new_id()
-  use timestamp <- result.try(
+  let #(ledger, session, provider, cwd) = #(
+    runtime.ledger(state.host),
+    state.info.id,
+    Some(state.info.provider),
+    state.info.cwd,
+  )
+  let letters = turn.letters(submissions)
+  let commits = session_submission.commits(submissions, list.length(recovered))
+  let shells = session_submission.shells(submissions, list.length(recovered))
+  let outcomes =
+    list.filter_map(recovered, fn(result) {
+      case result.0 {
+        types.ToolOutput(id, _, _) -> Ok(#(id, result.1))
+        _ -> Error(Nil)
+      }
+    })
+  let commit = fn() {
     conversation.commit_operations(
-      runtime.ledger(state.host),
-      state.info.id,
+      ledger,
+      session,
       accepted,
       conversation.Model,
-      Some(state.info.provider),
-      turn.letters(submissions),
-      session_submission.commits(submissions, list.length(recovered)),
-      session_submission.shells(submissions, list.length(recovered)),
+      provider,
+      letters,
+      commits,
+      shells,
       run_id,
-      state.info.cwd,
-      list.filter_map(recovered, fn(result) {
-        case result.0 {
-          types.ToolOutput(id, _, _) -> Ok(#(id, result.1))
-          _ -> Error(Nil)
-        }
-      }),
+      cwd,
+      outcomes,
     )
-    |> result.map_error(fn(err) { #(state, Rejected(err)) }),
-  )
+  }
+  // The inputs leave the queue now; the turn's commit, which the worker
+  // waits for, puts them back if it fails.
   let state =
-    session_history.remember(state, accepted, timestamp)
-    |> session_submission.emit(submissions, timestamp)
-    |> fn(state) {
+    session_state.State(
+      ..state,
+      steering: waiting,
+      active_submissions: submissions,
+      blocked_until: 0,
+      kernel_blocked: False,
+    )
+  Ok(#(
+    state,
+    Opening(
+      kernel,
+      client,
+      run_id,
+      submissions,
+      accepted,
+      with_boundary(state, commit),
+    ),
+  ))
+}
+
+/// A turn ready to start: what its worker runs on, and the write that
+/// commits its inputs before the worker may begin.
+type Opening {
+  Opening(
+    kernel: runtime.Prepared,
+    client: extension.Upstream,
+    run_id: String,
+    submissions: List(Submission),
+    accepted: List(types.Input),
+    commit: fn() -> Result(#(Int, conversation.Snapshot), String),
+  )
+}
+
+/// Starts the turn's worker and queues the commit of its inputs; the worker
+/// waits for that commit, so the session goes on answering meanwhile.
+fn start_turn(state: State, opening: Opening) -> State {
+  let Opening(kernel, client, run_id, submissions, accepted, commit) = opening
+  start_worker(
+    state,
+    kernel,
+    client,
+    session_run.ThroughOpening,
+    turn.Turn(None, False),
+    run_id,
+  )
+  |> session_state.write_then(commit, fn(state, committed) {
+    opened(state, run_id, submissions, accepted, committed)
+  })
+}
+
+/// The turn's inputs are committed: its worker may begin. A failed commit
+/// ends the worker before it did anything and puts the inputs back.
+fn opened(
+  state: State,
+  run_id: String,
+  submissions: List(Submission),
+  accepted: List(types.Input),
+  committed: Result(#(Int, conversation.Snapshot), String),
+) -> State {
+  case committed, turn.owner(state.activity, run_id) {
+    Ok(#(timestamp, boundary)), run -> {
+      case run {
+        Some(run) -> turn.open(run, boundary.upper)
+        None -> Nil
+      }
+      session_state.State(..state, notice: None)
+      |> session_history.remember_committed(accepted, timestamp, boundary)
+      |> session_submission.emit(submissions, timestamp)
+      |> session_state.announce
+    }
+    Error(error), Some(run) -> {
+      process.demonitor_process(run.monitor)
+      kill(run.pid)
+      bus.running(state.info.id, False)
       session_state.State(
         ..state,
-        notice: None,
-        steering: waiting,
-        active_submissions: submissions,
-        blocked_until: 0,
-        kernel_blocked: False,
+        activity: turn.Resting,
+        steering: list.append(
+          list.filter(submissions, fn(submission) { submission != restart_note }),
+          state.steering,
+        ),
+        active_submissions: [],
       )
+      |> failed_queued(error)
+      |> session_state.announce
     }
-  Ok(#(state, kernel, client, history, run_id))
+    Error(_), None -> state
+  }
 }
 
 fn editor_ready(state: State) -> Result(Nil, String) {
@@ -4306,19 +4704,8 @@ fn start_now(
   // Notes queued while idle ride along ahead of this message.
   case prepare_turn_pipeline(state, list.append(state.steering, [submission])) {
     Error(#(state, err)) -> answer(state, reply, Error(err))
-    Ok(#(state, kernel, client, history, run_id)) ->
-      answer(
-        start_worker(
-          state,
-          kernel,
-          client,
-          history,
-          turn.Turn(None, False),
-          run_id,
-        ),
-        reply,
-        Ok(False),
-      )
+    Ok(#(state, opening)) ->
+      answer(start_turn(state, opening), reply, Ok(False))
   }
 }
 
@@ -4331,7 +4718,15 @@ fn finish_run(
     // A background call holds the session like a compaction run does, but
     // commits nothing and never reaches the transcript.
     turn.Background(reply) ->
-      background_finish(state, run, reply, result.replace(outcome, None))
+      background_finish(
+        state,
+        run,
+        reply,
+        result.replace(
+          outcome,
+          compaction.Answer(None, Error(compaction.empty_summary)),
+        ),
+      )
     turn.Summary(_, _, reply) -> summary_finish(state, run, reply, outcome)
     _ -> finish_turn(state, run, outcome)
   }
@@ -4342,6 +4737,7 @@ fn finish_turn(
   run: turn.Run,
   outcome: Result(Nil, String),
 ) -> actor.Next(State, Message) {
+  use <- bool.guard(state.finishing, actor.continue(state))
   process.demonitor_process(run.monitor)
   // A session closing for deletion keeps nothing of the turn.
   let state = case run.work, run.cancelled, outcome {
@@ -4352,20 +4748,49 @@ fn finish_turn(
       salvage(state, run, session_salvage.Failed(error))
     _, _, _ -> state
   }
-  let persisted =
-    conversation.finish_turn(
-      runtime.ledger(state.host),
-      conversation.RunCompletion(
-        state.info.id,
-        run.id,
-        turn.final_stage(run, outcome),
-        case run.cancelled, outcome {
-          True, _ -> "interrupted"
-          _, Error(_) -> "failed"
-          _, Ok(_) -> "completed"
-        },
-      ),
+  let ledger = runtime.ledger(state.host)
+  let completion =
+    conversation.RunCompletion(
+      state.info.id,
+      run.id,
+      turn.final_stage(run, outcome),
+      case run.cancelled, outcome {
+        True, _ -> "interrupted"
+        _, Error(_) -> "failed"
+        _, Ok(_) -> "completed"
+      },
     )
+  // The run holds the session until its end is durable, so nothing starts
+  // behind a turn the store still calls running.
+  session_state.State(..state, finishing: True)
+  |> session_state.write_then(
+    fn() { conversation.finish_turn(ledger, completion) },
+    fn(state, persisted) {
+      // Its requesters' answers are posted before the session reads idle, so
+      // whoever waits on it sees them once it does.
+      let #(state, answers) = case run.work, run.cancelled, persisted {
+        turn.Turn(..), False, Ok(_) -> answer_parent(state, outcome)
+        _, _, _ -> #(state, None)
+      }
+      case answers {
+        None -> finished_turn(state, run, outcome, persisted)
+        Some(post) ->
+          session_state.write_then(state, post, fn(state, posted) {
+            answered(state, posted) |> finished_turn(run, outcome, persisted)
+          })
+      }
+    },
+  )
+  |> actor.continue
+}
+
+fn finished_turn(
+  state: State,
+  run: turn.Run,
+  outcome: Result(Nil, String),
+  persisted: Result(Int, String),
+) -> State {
+  let state = session_state.State(..state, finishing: False)
   let state = clear_tool_progress(session_state.flush_output(state))
   let state =
     session_state.State(
@@ -4379,6 +4804,14 @@ fn finish_turn(
   // A webhook or wake refused while this run held the session can
   // be admitted now.
   mail.waiting()
+  let state =
+    session_state.State(
+      ..state,
+      results_settled: case run.work, run.cancelled, outcome, persisted {
+        turn.Turn(..), False, Ok(_), Ok(_) -> True
+        _, _, _, _ -> state.results_settled
+      },
+    )
   let state = case run.work, run.cancelled, outcome, persisted {
     _, _, _, Error(error) ->
       session_state.emit(
@@ -4440,10 +4873,6 @@ fn finish_turn(
     }
     _ -> Nil
   }
-  let state = case run.work, run.cancelled, persisted {
-    turn.Turn(..), False, Ok(_) -> answer_parent(state, outcome)
-    _, _, _ -> state
-  }
   let state = case run.work, persisted {
     turn.Turn(..), Ok(_) -> {
       let ids = turn.operations(state.active_submissions)
@@ -4466,7 +4895,7 @@ fn finish_turn(
     |> session_state.announce
   report_end(state, run)
   process.send(state.self, Collect)
-  actor.continue(start_queued(state) |> request_resting_release)
+  start_queued(state) |> request_resting_release
 }
 
 /// Released now: live kernels are near the memory budget, or this one holds
@@ -4517,14 +4946,18 @@ fn salvage(
   run: turn.Run,
   ending: session_salvage.Ending,
 ) -> State {
-  case session_salvage.commit(state, run, ending) {
-    #(state, Ok(_)) -> state
-    #(state, Error(error)) ->
-      session_state.emit(
-        state,
-        view.Failure(Some(run.id), "salvage_failed", error),
-      )
-  }
+  let #(state, write) = session_salvage.gather(state, run, ending)
+  let run_id = run.id
+  session_state.write_then(state, write, fn(state, written) {
+    case written {
+      Ok(salvaged) -> session_salvage.remember(state, salvaged)
+      Error(error) ->
+        session_state.emit(
+          state,
+          view.Failure(Some(run_id), "salvage_failed", error),
+        )
+    }
+  })
 }
 
 /// An extension's background call starts only while nothing else holds the
@@ -4534,7 +4967,7 @@ fn start_background(
   state: State,
   request: types.Request,
   prefix: requests.Prefix,
-  reply: Subject(Result(Option(types.Usage), String)),
+  reply: Subject(Result(compaction.Answer, String)),
 ) -> State {
   let refused = fn(state, reason) {
     process.send(reply, Error(reason))
@@ -4565,8 +4998,8 @@ fn start_background(
 fn background_finish(
   state: State,
   run: turn.Run,
-  reply: Subject(Result(Option(types.Usage), String)),
-  outcome: Result(Option(types.Usage), String),
+  reply: Subject(Result(compaction.Answer, String)),
+  outcome: Result(compaction.Answer, String),
 ) -> actor.Next(State, Message) {
   process.demonitor_process(run.monitor)
   process.send(reply, case run.cancelled {
@@ -4662,7 +5095,7 @@ fn start_summary(
           stirred(state),
           kernel,
           client,
-          inputs,
+          session_run.Given(inputs),
           turn.Summary(instructions, last, out),
           mail.new_id(),
           run_messages(),
@@ -4806,7 +5239,7 @@ fn children_working(host: runtime.Runtime, id: String) -> Bool {
 }
 
 fn start_queued(state: State) -> State {
-  let state = flush_shell(state)
+  let state = flush_shell(session_state.State(..state, holding_failure: False))
   case turn.running(state.activity) {
     Some(_) -> state
     None ->
@@ -4944,15 +5377,7 @@ fn start_in_workspace(state: State) -> State {
     Ok(state) ->
       case prepare_turn_pipeline(state, state.steering) {
         Error(#(state, err)) -> failed_queued(state, submission_error(err))
-        Ok(#(state, kernel, client, history, run_id)) ->
-          start_worker(
-            state,
-            kernel,
-            client,
-            history,
-            turn.Turn(None, False),
-            run_id,
-          )
+        Ok(#(state, opening)) -> start_turn(state, opening)
       }
   }
 }
@@ -4980,7 +5405,7 @@ fn start_worker(
   state: State,
   kernel: runtime.Prepared,
   client: extension.Upstream,
-  model_history: List(types.Input),
+  history: session_run.History,
   work: turn.Work,
   run_id: String,
 ) -> State {
@@ -4990,7 +5415,7 @@ fn start_worker(
     state,
     kernel,
     client,
-    model_history,
+    history,
     work,
     run_id,
     run_messages(),
@@ -5260,13 +5685,17 @@ fn follow_up(state: State) -> State {
   }
 }
 
-/// Admission commits before kernel or provider preparation begins.
+/// Admission commits before kernel or provider preparation begins. The
+/// session decides at once and the store commits the receipt off the actor:
+/// the caller waits for that commit while the session and its store live.
 pub fn admit_durable(
   worker: Session,
   operation: operations.Request,
   submission: Submission,
 ) -> Result(operations.Receipt, String) {
-  actor.call(worker, 15_000, AdmitOperation(operation, submission, _))
+  let committed = process.new_subject()
+  actor.call(worker, 15_000, AdmitOperation(operation, submission, committed, _))
+  |> admitted(worker, committed)
 }
 
 pub fn admit_acp(
@@ -5275,7 +5704,38 @@ pub fn admit_acp(
   submission: Submission,
   digest: acp.Digest,
 ) -> Result(operations.Receipt, String) {
-  actor.call(worker, 15_000, AdmitACP(operation, submission, digest, _))
+  let committed = process.new_subject()
+  actor.call(worker, 15_000, AdmitACP(
+    operation,
+    submission,
+    digest,
+    committed,
+    _,
+  ))
+  |> admitted(worker, committed)
+}
+
+/// What the session decided about an input before any write.
+pub opaque type Admission {
+  Decided(Result(operations.Receipt, String))
+  /// The receipt arrives on the caller's subject once this store commits it.
+  Committing(store.Store)
+}
+
+fn admitted(
+  admission: Admission,
+  worker: Session,
+  committed: Subject(Result(operations.Receipt, String)),
+) -> Result(operations.Receipt, String) {
+  case admission {
+    Decided(result) -> result
+    Committing(ledger) -> {
+      let assert Ok(owner) = process.subject_owner(worker)
+      store.await_delivery(ledger, committed, owner)
+      |> result.replace_error("admission_interrupted")
+      |> result.flatten
+    }
+  }
 }
 
 pub fn publish_acp_overlay(
@@ -5310,24 +5770,24 @@ fn admit_operation(
   state: State,
   operation: operations.Request,
   submission: Submission,
-  reply: Subject(Result(operations.Receipt, String)),
+  committed: Subject(Result(operations.Receipt, String)),
+  reply: Subject(Admission),
 ) -> actor.Next(State, Message) {
   let db = runtime.ledger(state.host)
   case operations.check(db, operation) {
-    Error(error) -> answer(state, reply, Error(error))
-    Ok(Some(receipt)) -> answer(state, reply, Ok(receipt))
+    Error(error) -> answer(state, reply, Decided(Error(error)))
+    Ok(Some(receipt)) -> answer(state, reply, Decided(Ok(receipt)))
     Ok(None) -> {
       let #(state, image_error) = refused_image(state, submission)
+      let queued = list.length(state.steering) + state.admitting
       let refusal = case
         image_error,
-        turn.admit(state.activity, submission, list.length(state.steering))
+        turn.admit(state.activity, submission, queued)
       {
         Some(reason), _ ->
           Some(operations.Rejection(409, "image_rejected", reason))
         _, turn.Reject(turn.Busy) -> {
-          case
-            turn.admit(turn.Resting, submission, list.length(state.steering))
-          {
+          case turn.admit(turn.Resting, submission, queued) {
             turn.Reject(turn.Busy) ->
               Some(operations.Rejection(
                 429,
@@ -5351,55 +5811,102 @@ fn admit_operation(
         _, _ -> None
       }
       case refusal {
-        Some(reason) ->
-          answer(state, reply, operations.reject(db, operation, reason))
+        Some(reason) -> {
+          operations.reject_then(db, operation, reason, process.send(
+            committed,
+            _,
+          ))
+          answer(state, reply, Committing(db))
+        }
         None -> {
-          case
-            operations.admit_pending(
-              db,
-              operation,
-              session_submission.encode(submission),
-              202,
-              "",
-            )
-          {
-            Error(error) -> answer(state, reply, Error(error))
-            Ok(receipt) -> {
-              let state =
-                session_state.State(
-                  ..state,
-                  kernel_blocked: case submission.source {
-                    turn.Chat | turn.Continue -> False
-                    _ -> state.kernel_blocked
-                  },
-                  steering: list.append(state.steering, [submission]),
-                )
-              process.send(state.self, StartQueued)
-              answer(
-                session_submission.observed(state, submission)
-                  |> session_state.announce,
-                reply,
-                Ok(receipt),
+          let self = state.self
+          operations.admit_pending_then(
+            db,
+            operation,
+            session_submission.encode(submission),
+            202,
+            "",
+            fn(result) {
+              process.send(
+                self,
+                AdmissionCommitted(submission, result, committed),
               )
-            }
-          }
+            },
+          )
+          answer(
+            session_state.State(..state, admitting: state.admitting + 1),
+            reply,
+            Committing(db),
+          )
         }
       }
     }
   }
 }
 
+/// A committed admission joins the queue unless a cancellation that ran after
+/// its commit (an interrupt, a close) already took it off the store's.
+fn admission_committed(
+  state: State,
+  submission: Submission,
+  result: Result(operations.Receipt, String),
+  committed: Subject(Result(operations.Receipt, String)),
+) -> actor.Next(State, Message) {
+  let state = session_state.State(..state, admitting: state.admitting - 1)
+  let state = case result {
+    Error(_) -> state
+    Ok(receipt) -> {
+      let id = receipt.operation.id
+      let held =
+        list.any(
+          list.append(state.steering, state.active_submissions),
+          fn(queued) { queued.operation_id == Some(id) },
+        )
+      case operations.input_outcome(runtime.ledger(state.host), id), held {
+        Ok(Some(outcome)), False
+          if outcome.receipt.delivery == Some("pending")
+        -> {
+          process.send(state.self, StartQueued)
+          session_state.State(
+            ..state,
+            kernel_blocked: case submission.source {
+              turn.Chat | turn.Continue -> False
+              _ -> state.kernel_blocked
+            },
+            steering: list.append(state.steering, [submission]),
+          )
+          |> session_state.emit(view.Input(
+            outcome,
+            Some(session_submission.display(submission)),
+          ))
+          |> session_state.announce
+        }
+        _, _ -> state
+      }
+    }
+  }
+  process.send(committed, result)
+  actor.continue(state)
+}
+
 fn interrupt_waiting(
   state: State,
   reply: Subject(Bool),
 ) -> actor.Next(State, Message) {
+  let #(state, stopped) = stop_waiting(state)
+  answer(state, reply, stopped)
+}
+
+/// Cancels the running turn, or the one waiting for the kernel, and drops
+/// what was queued behind it; the Bool says whether there was any.
+fn stop_waiting(state: State) -> #(State, Bool) {
   let waiting = state.steering != [] || waiting_turn(state)
   case turn.running(state.activity), waiting {
     None, True -> {
       let state =
         clear_tool_progress(state)
         |> session_submission.refresh_ids(turn.operations(state.steering))
-      answer(
+      #(
         session_state.State(
           ..state,
           steering: [],
@@ -5417,15 +5924,14 @@ fn interrupt_waiting(
           }),
         )
           |> session_state.announce,
-        reply,
         True,
       )
     }
-    None, False -> answer(state, reply, False)
+    None, False -> #(state, False)
     Some(run), _ -> {
       interrupt_kernel(state)
       let _ = clock.send_after(state.self, 2500, Abort(run.id))
-      answer(
+      #(
         session_state.State(
           ..clear_tool_progress(refuse_acquires(state)),
           steering: [],
@@ -5434,7 +5940,6 @@ fn interrupt_waiting(
           activity: cancel_turn(state),
         )
           |> session_state.announce,
-        reply,
         True,
       )
     }

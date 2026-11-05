@@ -11,7 +11,7 @@ import sys
 import time
 import unittest
 
-from harness import Albedo, Provider, exclusive, python, text, alive
+from harness import Albedo, Provider, exclusive, python, text, alive, mcp_operations
 
 SERVER = Path(__file__).with_name("fake_mcp_server.py")
 REMOTE = "REMOTE_SCHEMA_SENTINEL"
@@ -124,8 +124,8 @@ class LazyMcpTests(unittest.TestCase):
                 if item.get("type") == "function_call_output"
             ]
             self.assertTrue(outputs)
-            result = json.loads(outputs[-1])
-            self.assertNotIn("error", result, outputs[-1])
+            result = json.loads(outputs[-1].split("\n", 1)[0])
+            self.assertEqual(result["status"], "ok", outputs[-1])
             self.assertIn("LAZY_CELL_OK", outputs[-1])
         if self.lazy:
             for request in requests:
@@ -279,10 +279,10 @@ assert 'after idle' in result.content[0].text
 
     def test_eager_default_is_unchanged(self):
         request = self.turn()
-        self.assertTrue(
-            any(tool["name"].startswith("mcp_fake_echo_") for tool in request["tools"])
-        )
-        self.assertIn(REMOTE, request["instructions"])
+        self.assertIn("fake/echo", mcp_operations(request))
+        self.assertEqual([tool["name"] for tool in request["tools"]], ["python"])
+        self.assertNotIn(REMOTE, request["instructions"])
+        self.turn("assert any('REMOTE_SCHEMA_SENTINEL' in item.description for item in await mcp.tools('fake'))")
         self.assertTrue(self.starts("fake"))
         self.assertTrue(self.starts("other"))
         self.assertFalse(self.starts("disabled"))

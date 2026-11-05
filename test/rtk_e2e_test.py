@@ -144,7 +144,9 @@ sys.exit(int(os.environ.get('FAIL', '0')))
 
     async def test_routing_is_private_in_job_surfaces(self):
         self.fixture()
-        with patch.object(plugin.albedo_trace, "note", wraps=plugin.albedo_trace.note) as note:
+        with patch.object(
+            plugin.albedo_trace, "note", wraps=plugin.albedo_trace.note
+        ) as note:
             job = plugin.run("cargo", "check", env={**self.env, "FAIL": "7"})
         note.assert_called_once_with("run", "cargo check")
         self.assertTrue(job._routed)
@@ -156,7 +158,7 @@ sys.exit(int(os.environ.get('FAIL', '0')))
         self.assertTrue(str(failure.exception).startswith("cargo check exited 7"))
         self.assertEqual(plugin.job_record(job)["command"], "cargo check")
         wake = plugin.notice([job._facts()])
-        self.assertIn("command: cargo check", wake["text"])
+        self.assertIn("): cargo check.", wake["text"])
         for surface in (str(failure.exception), repr(job), str(wake)):
             self.assertNotIn(job._executed_argv[0], surface)
         self.assertNotIn("RTK", plugin.run.__doc__)

@@ -37,7 +37,7 @@ var customProviders = []customProvider{
 	{
 		ID:              "add-alibaba",
 		Label:           "Alibaba",
-		Detail:          "api key · token plan · Qwen, DeepSeek, GLM",
+		Detail:          "Qwen, DeepSeek, GLM",
 		Extension:       "openai",
 		DefaultName:     "alibaba",
 		DefaultURL:      "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
@@ -46,7 +46,7 @@ var customProviders = []customProvider{
 	{
 		ID:            "add-opencode-go",
 		Label:         "OpenCode Go",
-		Detail:        "api key · subscription · Qwen, GLM, Kimi, DeepSeek, MiMo",
+		Detail:        "Qwen, GLM, Kimi, DeepSeek, MiMo",
 		Extension:     "opencode-go",
 		DefaultName:   "opencode-go",
 		DefaultURL:    "https://opencode.ai/inference/go/v1",
@@ -55,7 +55,7 @@ var customProviders = []customProvider{
 	{
 		ID:            "add-opencode-zen",
 		Label:         "OpenCode Zen",
-		Detail:        "pay per token · free models need no key",
+		Detail:        "free models need no key",
 		Extension:     "opencode-zen",
 		DefaultName:   "opencode-zen",
 		DefaultURL:    "https://opencode.ai/zen/v1",
@@ -65,7 +65,7 @@ var customProviders = []customProvider{
 	{
 		ID:            "add-perplexity",
 		Label:         "Perplexity",
-		Detail:        "api key · agent api · web search",
+		Detail:        "agent API and web search",
 		Extension:     "perplexity",
 		DefaultName:   "perplexity",
 		DefaultURL:    "https://api.perplexity.ai/v1",
@@ -74,16 +74,26 @@ var customProviders = []customProvider{
 	{
 		ID:            "add-mistral",
 		Label:         "Mistral",
-		Detail:        "api key · Mistral, Devstral, Magistral models",
+		Detail:        "Mistral, Devstral, Magistral",
 		Extension:     "mistral",
 		DefaultName:   "mistral",
 		DefaultURL:    "https://api.mistral.ai/v1",
 		FixedProtocol: "chat_completions",
 	},
 	{
+		ID:            "add-github-copilot",
+		Label:         "GitHub Copilot",
+		Detail:        "gpt, claude, gemini, grok",
+		Extension:     "github-copilot",
+		DefaultName:   "github-copilot",
+		DefaultURL:    "https://api.githubcopilot.com",
+		FixedProtocol: "chat_completions",
+		Optional:      true,
+	},
+	{
 		ID:            "add-anthropic",
 		Label:         "Anthropic",
-		Detail:        "api key · console billing · Claude models",
+		Detail:        "API key · Claude models",
 		Extension:     "claude",
 		DefaultName:   "anthropic",
 		FixedProtocol: "chat_completions",
@@ -92,7 +102,7 @@ var customProviders = []customProvider{
 	{
 		ID:            "add-bedrock",
 		Label:         "Amazon Bedrock",
-		Detail:        "aws credentials · Claude models",
+		Detail:        "AWS credentials · Claude models",
 		Extension:     "bedrock",
 		DefaultName:   "bedrock",
 		FixedProtocol: "chat_completions",
@@ -101,7 +111,7 @@ var customProviders = []customProvider{
 	{
 		ID:            "add-bedrock-converse",
 		Label:         "Amazon Bedrock Converse",
-		Detail:        "aws credentials · Converse streaming · Bedrock models",
+		Detail:        "AWS credentials · Converse API",
 		Extension:     "bedrock",
 		DefaultName:   "bedrock-converse",
 		FixedProtocol: "chat_completions",
@@ -111,7 +121,7 @@ var customProviders = []customProvider{
 	{
 		ID:            "add-vertex",
 		Label:         "Google Vertex AI",
-		Detail:        "application default credentials · Gemini models",
+		Detail:        "application default credentials",
 		Extension:     "vertex",
 		DefaultName:   "vertex",
 		FixedProtocol: "chat_completions",
@@ -120,7 +130,7 @@ var customProviders = []customProvider{
 	{
 		ID:              "add-ollama",
 		Label:           "Ollama Cloud",
-		Detail:          "api key · ollama.com cloud models",
+		Detail:          "ollama.com cloud models",
 		Extension:       "openai",
 		DefaultName:     "ollama-cloud",
 		DefaultURL:      "https://ollama.com/v1",
@@ -129,7 +139,7 @@ var customProviders = []customProvider{
 	{
 		ID:              "add-openrouter",
 		Label:           "OpenRouter",
-		Detail:          "api key · models from many providers",
+		Detail:          "models from many providers",
 		Extension:       "openai",
 		DefaultName:     "openrouter",
 		DefaultURL:      "https://openrouter.ai/api/v1",
@@ -171,6 +181,12 @@ func (p customProvider) facts() []loginFact {
 	return facts
 }
 
+// draft is a new profile as this row starts it: its extension, API, default
+// endpoint and protocol.
+func (p customProvider) draft() config.Settings {
+	return config.Settings{Extension: p.Extension, API: p.FixedAPI, BaseURL: p.DefaultURL, Protocol: cmp.Or(p.FixedProtocol, p.DefaultProtocol, "responses")}
+}
+
 func customProviderByID(id string) (customProvider, bool) {
 	for _, p := range customProviders {
 		if p.ID == id {
@@ -180,15 +196,21 @@ func customProviderByID(id string) (customProvider, bool) {
 	return customProvider{}, false
 }
 
-// custom finds the api-key provider by the draft's extension, the first row with
-// it, since a draft does not remember which row began it. Rows that share an
-// extension must agree on the flags read through here.
-func (m LoginModel) custom() (customProvider, bool) {
-	i := slices.IndexFunc(customProviders, func(p customProvider) bool { return p.Extension == m.Draft.Extension })
+// customFor finds the api-key provider row for an extension, the first row
+// with it. Rows that share an extension must agree on the flags read through
+// here.
+func customFor(extension string) (customProvider, bool) {
+	i := slices.IndexFunc(customProviders, func(p customProvider) bool { return p.Extension == extension })
 	if i < 0 {
 		return customProvider{}, false
 	}
 	return customProviders[i], true
+}
+
+// custom is the row for the draft's extension, since a draft does not
+// remember which row began it.
+func (m LoginModel) custom() (customProvider, bool) {
+	return customFor(m.Draft.Extension)
 }
 
 func (m LoginModel) optionalKey() bool {
@@ -265,7 +287,7 @@ func (m *LoginModel) advanceToModels() tea.Cmd {
 
 func (m *LoginModel) startCustomProvider(p customProvider) tea.Cmd {
 	m.Name = p.DefaultName
-	m.Draft = config.Settings{Extension: p.Extension, API: p.FixedAPI, BaseURL: p.DefaultURL, Protocol: cmp.Or(p.FixedProtocol, p.DefaultProtocol, "responses")}
+	m.Draft = p.draft()
 	m.Step = StepName
 	m.TextInput.Placeholder = p.DefaultName
 	return m.promptInput("", false)

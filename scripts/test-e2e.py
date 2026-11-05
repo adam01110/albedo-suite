@@ -3,6 +3,7 @@
 
 import argparse
 import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -83,21 +84,22 @@ def synchronize_kernel_upgrade_fixture(
     path.write_text(source.replace(original, original + barrier))
 
 
-def synchronize_skills_catalog_fixture(
-    path,
-    *,
-    expected_sha256="91f82a89139547b2999c4a7af8fa79aa9518a8d682b230bb2e37b90c02fe7b0c",
-):
-    """Skill assertions must not depend on the installed extension count."""
-    original = 'self.route = f"/sessions/{self.session}/catalog"'
-    source_bytes = path.read_bytes()
-    source = source_bytes.decode()
-    if (
-        hashlib.sha256(source_bytes).hexdigest() != expected_sha256
-        or source.count(original) != 1
-    ):
-        raise RuntimeError("skills fixture changed; review its catalog pagination")
-    path.write_text(source.replace(original, original[:-1] + '?kind=skills"'))
+def synchronize_typed_response_fixtures(directory, specifications):
+    """Keep native text assertions while accepting typed Responses content."""
+    writes = {}
+    for name, spec in specifications.items():
+        path = directory / name
+        original = path.read_bytes()
+        if hashlib.sha256(original).hexdigest() != spec["sha256"]:
+            raise RuntimeError(f"typed Responses fixture changed: {name}")
+        source = original.decode()
+        for old, new in spec["replacements"]:
+            if old not in source:
+                raise RuntimeError(f"typed Responses fixture pattern changed: {name}")
+            source = source.replace(old, new)
+        writes[path] = source
+    for path, source in writes.items():
+        path.write_text(source)
 
 
 def prepare_source(upstream, destination, suite):
@@ -110,7 +112,10 @@ def prepare_source(upstream, destination, suite):
 
     cases_directory = destination / "test/e2e"
     synchronize_kernel_upgrade_fixture(cases_directory / "kernel_upgrade_test.py")
-    synchronize_skills_catalog_fixture(cases_directory / "skills_test.py")
+    synchronize_typed_response_fixtures(
+        cases_directory,
+        json.loads((suite / "test/fixtures/typed-response-fixtures.json").read_text()),
+    )
     for name in SUITE_CASES:
         shutil.copyfile(suite / "test" / name, cases_directory / name)
     shutil.copytree(

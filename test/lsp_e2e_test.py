@@ -104,8 +104,8 @@ class LspE2ETests(unittest.TestCase):
                 if entry.get("type") == "function_call_output"
             ]
             self.assertTrue(outputs)
-            result = json.loads(outputs[-1])
-            self.assertNotIn("error", result, outputs[-1])
+            result = json.loads(outputs[-1].split("\n", 1)[0])
+            self.assertEqual(result["status"], "ok", outputs[-1])
             self.assertIn("LSP_CELL_OK", outputs[-1])
         self.assertIn("LSP_FINAL_OK", json.dumps(self.app.history(self.session)))
         return requests

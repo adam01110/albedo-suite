@@ -77,10 +77,11 @@ func bareHost(h string) string {
 	return h[strings.LastIndex(h, "@")+1:]
 }
 
-// hostRows are the hosts the text completes. A word only offers hosts it
-// starts, after the folders it matches, so a local filter reads as it
-// always did; with an @ every known host matches what follows it, and the
-// typed user goes with the completion.
+// hostRows are the hosts the text completes. An empty query lists known
+// hosts under their own rule; a word offers hosts it starts, after the
+// folders it matches, so a local filter reads as it always did; with an @
+// every known host matches what follows it, and the typed user goes with
+// the completion.
 func hostRows(kind queryKind, text string, known []daemon.KnownHost) []folderRow {
 	user, name := "", text
 	if i := strings.LastIndex(text, "@"); kind == queryHosts && i >= 0 {
@@ -92,7 +93,7 @@ func hostRows(kind queryKind, text string, known []daemon.KnownHost) []folderRow
 	}
 	var matches []fuzzy.Match
 	switch {
-	case kind == queryHosts:
+	case kind == queryHosts || name == "":
 		matches = fuzzyNames(name, names)
 	case name != "":
 		for i, n := range names {
@@ -255,6 +256,16 @@ func (m FolderPicker) known() []daemon.KnownHost {
 	for _, h := range m.hosts {
 		add(h)
 	}
+	slices.SortStableFunc(out, func(a, b daemon.KnownHost) int {
+		offline := func(h daemon.KnownHost) int {
+			switch m.probe(h.Host).State {
+			case "unreachable", "unsupported", "needs_auth":
+				return 1
+			}
+			return 0
+		}
+		return offline(a) - offline(b)
+	})
 	return out
 }
 
@@ -350,7 +361,7 @@ func (m *FolderPicker) rebuild() {
 	m.cursor = 0
 	if i := slices.IndexFunc(m.rows, func(r folderRow) bool { return r.path == before.path }); i >= 0 {
 		m.cursor = i
-	} else if !listing && segment == "" && len(m.rows) > 1 && !m.browse {
+	} else if !listing && segment == "" && len(m.rows) > 1 && !m.rows[1].hostRow && !m.browse {
 		m.cursor = 1 // the current folder leads; the likeliest move is the next
 	}
 }

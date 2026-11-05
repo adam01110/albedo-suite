@@ -75,7 +75,10 @@ func TestNavigationSearchableScreens(t *testing.T) {
 	t.Run("extensions", func(t *testing.T) {
 		m := NewExtensionPickerModel(nil, "s")
 		m.Loading = false
-		m.setRows(rows)
+		m.setExtensions([]ExtensionItem{
+			{Name: "one", Description: "hjkl first", Shelf: "reach"},
+			{Name: "two", Description: "hjkl second", Shelf: "reach"},
+		})
 		checkNavigationList(t, m, ExtensionPickerModel.Update, func(m ExtensionPickerModel) int { return m.Cursor }, func(m ExtensionPickerModel) string { return m.input.Value() })
 	})
 	t.Run("capabilities", func(t *testing.T) {

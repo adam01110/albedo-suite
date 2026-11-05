@@ -75,9 +75,13 @@ pub fn encode(
 /// OpenCode Go's `/messages` route.
 pub fn encode_body(request: Request) -> Result(StringTree, Error) {
   use <- bool.guard(
-    request.model == "" || request.max_output_tokens == Some(0),
-    Error(InvalidRequest("invalid Bedrock model or output token limit")),
+    request.model == "",
+    Error(InvalidRequest("invalid Bedrock model")),
   )
+  use max_tokens <- result.try(types.required_output_limit(
+    request,
+    "Anthropic Messages",
+  ))
   use messages <- result.try(
     list.try_fold(request.input, [], fn(acc, input) {
       add(request.model, acc, input)
@@ -95,7 +99,7 @@ pub fn encode_body(request: Request) -> Result(StringTree, Error) {
   let fields = [
     #("model", json.string(request.model)),
     #("messages", json.preprocessed_array(messages)),
-    #("max_tokens", json.int(option.unwrap(request.max_output_tokens, 8192))),
+    #("max_tokens", json.int(max_tokens)),
     #("stream", json.bool(True)),
   ]
   let fields = case request.instructions {

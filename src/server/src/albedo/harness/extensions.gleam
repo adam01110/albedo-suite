@@ -13,6 +13,7 @@ import albedo/harness/extensions/discord/extension as discord
 import albedo/harness/extensions/exa/extension as exa
 import albedo/harness/extensions/files/extension as files
 import albedo/harness/extensions/formatter/extension as formatter
+import albedo/harness/extensions/github_copilot/extension as github_copilot
 import albedo/harness/extensions/hooks/extension as hooks
 import albedo/harness/extensions/instructions/extension as instructions
 import albedo/harness/extensions/lcm/extension as lcm
@@ -30,6 +31,7 @@ import albedo/harness/extensions/opencode_go/extension as opencode_go
 import albedo/harness/extensions/opencode_zen/extension as opencode_zen
 import albedo/harness/extensions/paperclips/extension as paperclips
 import albedo/harness/extensions/perplexity/extension as perplexity
+import albedo/harness/extensions/persistent_agent/extension as persistent_agent
 import albedo/harness/extensions/proxy/extension as proxy
 import albedo/harness/extensions/python/extension as python
 import albedo/harness/extensions/remote/extension as remote
@@ -89,6 +91,7 @@ pub fn declared() -> Config {
       antigravity.extension(),
       opencode_go.extension(),
       opencode_zen.extension(),
+      github_copilot.extension(),
       bedrock.extension(),
       claude.extension(),
       vertex.extension(),
@@ -112,6 +115,7 @@ pub fn declared() -> Config {
       // After lcm-memory: the archive covers history past LCM's folds.
       snapcompact.memory(),
       lcm.extension(),
+      persistent_agent.extension(),
       notes.extension(),
       mcp.configured_extension(),
       mcp.editor_extension(),
@@ -134,7 +138,7 @@ pub fn declared() -> Config {
       "models", "openai", "codex", "antigravity", "opencode-go", "opencode-zen",
       "bedrock", "claude", "vertex", "rolling", "snapcompact-memory",
       "lcm-memory", "notes", "remote", "browser", "warm", "exa", "perplexity",
-      "mistral", "web-search", "editor-mcp", "zed",
+      "mistral", "github-copilot", "web-search", "editor-mcp", "zed",
     ],
   )
 }

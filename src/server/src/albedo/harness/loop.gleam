@@ -19,6 +19,7 @@ import albedo/harness/cache_ttl
 import albedo/harness/compaction
 import albedo/harness/extension
 import albedo/harness/extensions/python/cells as journal
+import albedo/harness/extensions/python/view as python_view
 import albedo/harness/hook
 import albedo/harness/repetition
 import albedo/harness/runtime
@@ -156,11 +157,41 @@ pub type Pin {
   Pinned(prompt: conversation.PinnedPrompt, head: Option(Int))
 }
 
+/// Why a turn ended without finishing, with what it said first. A turn
+/// names no output limit of its own, so a `LengthLimit` says which one
+/// `ceiling` gave `request` and where it came from.
 pub fn stopped_message(
   finish: types.Finish,
   output: List(types.ReplayItem),
+  ceiling: extension.OutputCeiling,
+  request: types.Request,
 ) -> String {
   let failure = "model stopped: " <> string.inspect(finish)
+  let failure = case finish, ceiling {
+    types.LengthLimit, extension.ModelCeiling(tokens, window, source) ->
+      failure
+      <> limit_sent(
+        tokens,
+        window,
+        request,
+        "the model's ceiling is " <> int.to_string(tokens) <> " from " <> source,
+      )
+    types.LengthLimit, extension.FallbackCeiling(window) ->
+      failure
+      <> limit_sent(
+        extension.output_fallback,
+        window,
+        request,
+        "no output limit in the model list; albedo's fallback of "
+          <> int.to_string(extension.output_fallback),
+      )
+    types.LengthLimit, extension.NoCeiling ->
+      failure <> " at the provider's own output limit; albedo sent none"
+    types.LengthLimit, extension.ProviderCeiling ->
+      failure
+      <> " at the provider's own output limit; albedo sends this provider none"
+    _, _ -> failure
+  }
   let response =
     output
     |> list.map(message_content.output_text)
@@ -169,6 +200,30 @@ pub fn stopped_message(
   case response {
     "" -> failure
     response -> failure <> "\n\n" <> response
+  }
+}
+
+/// The limit a `LengthLimit` stopped at: `tokens` clamped to the window, then
+/// `origin`, where `tokens` came from.
+fn limit_sent(
+  tokens: Int,
+  window: Option(Int),
+  request: types.Request,
+  origin: String,
+) -> String {
+  case extension.output_limit(tokens, window, request) {
+    extension.OutputLimit(sent, False) ->
+      " at the "
+      <> int.to_string(sent)
+      <> "-token output limit albedo sent; "
+      <> origin
+    extension.OutputLimit(sent, True) ->
+      " at the "
+      <> int.to_string(sent)
+      <> "-token output limit albedo sent, clamped to fit the window: the prompt leaves no more of its "
+      <> int.to_string(option.unwrap(window, 0))
+      <> " tokens; "
+      <> origin
   }
 }
 
@@ -220,8 +275,7 @@ fn converse(
     Pinned(..) -> Nil
   }
   let state = warn_small(state, prepared.observation)
-  let current_instructions = request_instructions(state)
-  let request = request(state, current_instructions, history)
+  let request = request(state, request_prompt(state), history)
   state.record_context(
     state.profile,
     state.upstream.protocol,
@@ -329,7 +383,15 @@ fn converse(
     },
     turn.thought_ms,
     None,
-    conversation.Follow(row, Some(completed_usage)),
+    conversation.Follow(
+      row,
+      Some(completed_usage),
+      case turn.finish, turn.tool_calls {
+        types.Complete, [] -> Some("final")
+        types.Complete, _ | types.ToolCalls, _ -> Some("commentary")
+        _, _ -> None
+      },
+    ),
   ))
   let speechless_turn = !state.allow_empty_reply && speechless(turn)
   let state =
@@ -364,7 +426,13 @@ fn converse(
             }
           }
         }
-        _ -> Error(stopped_message(turn.finish, turn.output))
+        _ ->
+          Error(stopped_message(
+            turn.finish,
+            turn.output,
+            state.upstream.output,
+            request,
+          ))
       }
     calls -> {
       use ran <- result.try(
@@ -492,17 +560,21 @@ pub fn compact(state: Loop, inputs: List(types.Input)) -> Result(Nil, String) {
       ))
   }
   state.report_pin(Some(evicted))
-  let instructions = case changed {
-    True -> kernel_instructions(state.prepared)
-    False -> request_instructions(state)
+  let prompt = case changed {
+    True -> kernel_prompt(state.prepared)
+    False -> request_prompt(state)
   }
   // A forced compaction keeps the default options; an ordinary turn sets effort.
+  let compacted = request(state, prompt, history)
   state.record_context(
     state.profile,
     state.upstream.protocol,
     types.Request(
-      ..request(state, instructions, history),
-      options: types.defaults,
+      ..compacted,
+      options: types.Options(
+        ..types.defaults,
+        shared_instructions: compacted.options.shared_instructions,
+      ),
     ),
     prepared.observation,
     prepared.compacted,
@@ -531,6 +603,7 @@ pub fn summarize_branch(
           <> wish
         None -> compaction.branch_summary_instructions
       },
+      None,
     ),
   )
 }
@@ -538,12 +611,12 @@ pub fn summarize_branch(
 /// One background call: `request` sent exactly as given — never rebuilt
 /// through `prepare`, which could compact or call the summarizer — and
 /// recorded under `prefix`. It commits nothing and publishes nothing; it
-/// answers the call's usage.
+/// answers the call's usage and its reply's text.
 pub fn background(
   state: CallContext,
   request: types.Request,
   prefix: requests.Prefix,
-) -> Result(Option(types.Usage), String) {
+) -> Result(compaction.Answer, String) {
   call(
     state,
     requests.Background,
@@ -558,7 +631,13 @@ pub fn background(
     1,
   )
   |> result.try(whole)
-  |> result.map(fn(attempt) { attempt.1.usage })
+  |> result.map(fn(attempt) {
+    let turn = attempt.1
+    compaction.Answer(
+      turn.usage,
+      compaction.reply_text(visible_text(turn), turn.finish),
+    )
+  })
   |> result.map_error(describe(state.upstream, request.model, _))
 }
 
@@ -888,7 +967,7 @@ fn prepare(
     state.model,
     request_source(state.upstream, state.model),
     extension.clean_endpoint(state.upstream.endpoint),
-    request_instructions(state),
+    prompt_text(request_prompt(state)),
     summarize(state, _),
     original,
     force,
@@ -898,11 +977,14 @@ fn prepare(
     fn(rows) {
       rows
       |> list.reverse
-      |> list.map(fn(row) { transcript.Entry(row.1, None, row.0, None, None) })
+      |> list.map(fn(row) {
+        transcript.Entry(row.1, None, row.0, None, None, None)
+      })
       |> projection.for_model(state.profile, state.upstream.protocol)
       // The projection answers newest first, as the session keeps history.
       |> result.map(list.reverse)
     },
+    fn() { cached(state) },
   )
 }
 
@@ -1106,7 +1188,7 @@ fn go_on(
       use kept <- result.try(
         kept
         |> list.reverse
-        |> list.map(transcript.Entry(_, None, None, None, None))
+        |> list.map(transcript.Entry(_, None, None, None, None, None))
         |> projection.for_model(state.profile, state.upstream.protocol),
       )
       run(
@@ -1243,24 +1325,80 @@ fn accepted_timeout(error: types.Error) -> Bool {
   }
 }
 
-fn request_instructions(state: Loop) -> String {
-  instructions_for(state.pin, state.prepared)
+/// What a request says before the conversation: the system prompt, how many
+/// of its leading bytes every session shares, and the turns that open the
+/// conversation.
+type Prompt {
+  Prompt(instructions: String, shared: Int, opening: List(types.Input))
 }
 
-/// The system prompt a request carries: the pinned one while a pin holds,
-/// else the kernel's current one.
-fn instructions_for(pin: Pin, kernel: runtime.Prepared) -> String {
+fn request_prompt(state: Loop) -> Prompt {
+  prompt_for(state.pin, state.prepared)
+}
+
+/// The prompt a request carries: the pinned one while a pin holds, else the
+/// kernel's current one.
+fn prompt_for(pin: Pin, kernel: runtime.Prepared) -> Prompt {
   case pin {
-    Pinned(prompt, _) -> prompt.instructions <> context_text(prompt.context)
-    Unpinned -> kernel_instructions(kernel)
+    Pinned(prompt, _) -> prompt_of(prompt.instructions, prompt.context)
+    Unpinned -> kernel_prompt(kernel)
   }
+}
+
+fn kernel_prompt(kernel: runtime.Prepared) -> Prompt {
+  prompt_of(runtime.instructions(kernel), runtime.context(kernel))
+}
+
+/// `instructions`, which every session shares, then the workspace's context
+/// blocks. The memory snapshot opens the conversation instead, as the notes
+/// the model wrote for itself: it reads them in its own voice, and a memory
+/// that changed leaves the system prompt cached.
+fn prompt_of(instructions: String, context: List(types.Input)) -> Prompt {
+  let #(notes, blocks) =
+    list.partition(context, fn(input) {
+      case input {
+        types.User(text) -> string.starts_with(text, memory_block)
+        _ -> False
+      }
+    })
+  let opening =
+    list.flat_map(notes, fn(input) {
+      case input {
+        types.User(text) -> {
+          let notes = case string.split_once(text, memory_block) {
+            Ok(#(_, body)) -> string.replace(body, "\n</extension-context>", "")
+            Error(Nil) -> text
+          }
+          [
+            types.User(notes_prompt),
+            types.Assistant("<memory.md>\n" <> notes <> "\n</memory.md>"),
+          ]
+        }
+        _ -> []
+      }
+    })
+  Prompt(
+    instructions <> context_text(blocks),
+    string.byte_size(instructions),
+    opening,
+  )
+}
+
+const memory_block = "<extension-context name=\"memory\">\n"
+
+const notes_prompt =
+  "These are the notes you have written for yourself in this workspace's memory."
+
+/// The prompt's text, as compaction counts it against the window.
+fn prompt_text(prompt: Prompt) -> String {
+  prompt.instructions <> context_text(prompt.opening)
 }
 
 /// The request this loop state implies for one prepared history: its model,
 /// tools, and effort setting.
 fn request(
   state: Loop,
-  instructions: String,
+  prompt: Prompt,
   history: List(types.Input),
 ) -> types.Request {
   request_for(
@@ -1268,7 +1406,7 @@ fn request(
     state.effort,
     state.prepared,
     state.upstream.images,
-    instructions,
+    prompt,
     history,
   )
 }
@@ -1315,29 +1453,31 @@ fn request_for(
   effort: Option(String),
   kernel: runtime.Prepared,
   images: types.ImageLimits,
-  instructions: String,
+  prompt: Prompt,
   history: List(types.Input),
 ) -> types.Request {
-  let #(instructions, history) = readable(images, instructions, history)
+  let history =
+    list.append(prompt.opening, list.map(history, python_view.request_input))
+  let #(instructions, history) = readable(images, prompt.instructions, history)
   types.Request(
     model,
     Some(instructions),
     tool_results.pair(history),
     runtime.tools(kernel),
     None,
-    types.Options(..types.defaults, effort: effort),
+    types.Options(
+      ..types.defaults,
+      effort: effort,
+      shared_instructions: prompt.shared,
+    ),
   )
-}
-
-fn kernel_instructions(kernel: runtime.Prepared) -> String {
-  runtime.instructions(kernel) <> context_text(runtime.context(kernel))
 }
 
 fn context_text(context: List(types.Input)) -> String {
   context
   |> list.filter_map(fn(input) {
     case input {
-      types.User(text) -> Ok(text)
+      types.User(text) | types.Assistant(text) -> Ok(text)
       _ -> Error(Nil)
     }
   })
@@ -1428,14 +1568,14 @@ pub fn rebuild_observed(
     model,
     request_source(upstream, model),
     extension.clean_endpoint(upstream.endpoint),
-    instructions_for(pin, kernel),
+    prompt_text(prompt_for(pin, kernel)),
     original,
     upstream.images,
   ))
   let history = prepared.inputs
-  let instructions = instructions_for(settled(pin, original, history), kernel)
+  let prompt = prompt_for(settled(pin, original, history), kernel)
   let request =
-    request_for(model, effort, kernel, upstream.images, instructions, history)
+    request_for(model, effort, kernel, upstream.images, prompt, history)
   #(
     request,
     request_prefix(request, original, prepared.observation),
@@ -1503,12 +1643,109 @@ fn summarize(
     evicted,
     max_output_tokens,
     instructions,
+    replay,
   ) = request
-  // The evicted history goes out as the conversation it was, so a provider
-  // reads its own signed or encrypted reasoning the way a turn would, and a
-  // foreign model's turns replay as that model's wire replays them. The
-  // session's tools ride along because a provider may refuse tool calls in
-  // a request that defines none; the summary asks for none.
+  let summary_request = case replay {
+    Some(current) -> replayed(state, model, current, instructions)
+    None -> separate(state, model, previous, evicted, instructions)
+  }
+  let summary_request =
+    types.Request(..summary_request, max_output_tokens: Some(max_output_tokens))
+  use #(_, turn, _, _) <- result.try(
+    call(
+      call_context(state),
+      requests.Summarizer,
+      summary_request,
+      // The summarizer's history is exactly what it says; nothing replaced.
+      requests.direct_prefix(
+        option.unwrap(summary_request.instructions, ""),
+        summary_request.tools,
+        summary_request.input,
+      ),
+      state.publish,
+      fn(_) { types.Continue },
+      fn(_, _) { types.Continue },
+      fn(_) { Nil },
+      keep_nothing,
+      1,
+    )
+    |> result.try(whole)
+    |> result.map_error(fn(error) {
+      "summarizer provider request failed: "
+      <> describe(state.upstream, model, error)
+    }),
+  )
+  compaction.reply_text(visible_text(turn), turn.finish)
+}
+
+/// The request a turn would send now, under its own prompt, tools, tool
+/// choice and cache marks, with the summary asked for in a note at its end:
+/// the provider reads everything before the note from the cache the
+/// session's last request wrote (compaction offers it only while `cached`
+/// holds). Changing the tool choice would invalidate its cache of the
+/// messages, so the note asks for no tool call instead.
+fn replayed(
+  state: Loop,
+  model: String,
+  current: List(types.Input),
+  instructions: String,
+) -> types.Request {
+  request_for(
+    model,
+    state.effort,
+    state.prepared,
+    state.upstream.images,
+    request_prompt(state),
+    list.append(current, [types.User(note.wrap("compaction", instructions))]),
+  )
+}
+
+/// Whether the provider still holds the session's last turn request in its
+/// cache, so a request that extends it reads that prefix: the same model and
+/// head as a request sent now, sent or kept warm inside the lifetime its
+/// cache marks or the cache table give, with a tenth spare. Once that cache
+/// is gone, extending the request would pay full price for all of it, tail
+/// included. A provider whose cache has no clock never counts as cached.
+fn cached(state: Loop) -> Bool {
+  let now = request(state, request_prompt(state), [])
+  let head =
+    requests.direct_prefix(option.unwrap(now.instructions, ""), now.tools, [])
+    |> fn(prefix) { prefix.head_hash }
+  case requests.last_turn(runtime.ledger(state.host), state.session) {
+    Ok(Some(#(turn, pings))) -> {
+      let entry =
+        cache_ttl.for_call(state.profile, state.upstream.endpoint, now.model)
+      let latest = list.last(pings) |> result.unwrap(turn)
+      let since = case cache_ttl.from_start(entry) {
+        True -> latest.started_ms
+        False -> latest.finished_ms
+      }
+      let marks = list.map(turn.cache_marks, fn(mark) { mark.ttl_seconds })
+      case cache_ttl.lifetime(marks, entry) {
+        None -> False
+        Some(_) if turn.model != now.model -> False
+        Some(_) if turn.head_hash != head -> False
+        Some(seconds) -> requests.now() < since + seconds * 900
+      }
+    }
+    _ -> False
+  }
+}
+
+/// A summarizer request of its own. The evicted history goes out as the
+/// conversation it was, so a provider reads its own signed or encrypted
+/// reasoning the way a turn would, and a foreign model's turns replay as
+/// that model's wire replays them. The session's tools ride along because a
+/// provider may refuse tool calls in a request that defines none; the
+/// summary asks for none, and since nothing sends this prefix again, it
+/// writes no cache.
+fn separate(
+  state: Loop,
+  model: String,
+  previous: Option(String),
+  evicted: List(types.Input),
+  instructions: String,
+) -> types.Request {
   let opening = case previous {
     Some(previous) -> [
       types.User("<previous-summary>\n" <> previous <> "\n</previous-summary>"),
@@ -1527,57 +1764,27 @@ fn summarize(
       state.effort,
       state.prepared,
       state.upstream.images,
-      instructions,
+      Prompt(instructions, 0, []),
       history,
     )
-  let summary_request =
-    types.Request(
-      ..base,
-      max_output_tokens: Some(max_output_tokens),
-      // Nothing sends this prefix again, so a cache write would be paid for
-      // and never read.
-      options: types.Options(
-        ..base.options,
-        tool_choice: Some(types.NoTool),
-        cache: False,
-      ),
-    )
-  use #(_, turn, _, _) <- result.try(
-    call(
-      call_context(state),
-      requests.Summarizer,
-      summary_request,
-      // The summarizer's history is exactly what it says; nothing replaced.
-      requests.direct_prefix(
-        instructions,
-        summary_request.tools,
-        summary_request.input,
-      ),
-      state.publish,
-      fn(_) { types.Continue },
-      fn(_, _) { types.Continue },
-      fn(_) { Nil },
-      keep_nothing,
-      1,
-    )
-    |> result.try(whole)
-    |> result.map_error(fn(error) {
-      "summarizer provider request failed: "
-      <> describe(state.upstream, model, error)
-    }),
+  types.Request(
+    ..base,
+    options: types.Options(
+      ..base.options,
+      tool_choice: Some(types.NoTool),
+      cache: False,
+    ),
   )
-  let text =
-    turn.output
-    |> list.filter_map(fn(item) {
-      message_content.visible_assistant_text(types.Replay(item))
-      |> option.to_result(Nil)
-    })
-    |> string.join("")
-    |> string.trim
-  case text {
-    "" -> Error(compaction.empty_summary)
-    value -> Ok(value)
-  }
+}
+
+/// What a reply shows a reader: its visible text, without reasoning.
+fn visible_text(turn: types.Turn) -> String {
+  turn.output
+  |> list.filter_map(fn(item) {
+    message_content.visible_assistant_text(types.Replay(item))
+    |> option.to_result(Nil)
+  })
+  |> string.join("")
 }
 
 /// The turn that closes a summarizer request: everything before it is the

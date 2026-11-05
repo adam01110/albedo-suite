@@ -172,6 +172,7 @@
         python3 -m unittest discover -s ${../../test} -p lazy_mcp_python_test.py -v
         python3 ${../../test}/lsp_test.py -v
         python3 ${../../test}/remote_path_test.py -v
+        python3 ${../../test}/remote_staging_test.py -v
         python3 -m unittest discover -s ${../../test} -p rtk_python_test.py -v
         python3 -m unittest discover -s ${../../test} -p rtk_e2e_test.py -v
         python3 ${../../test}/fff_test.py -v

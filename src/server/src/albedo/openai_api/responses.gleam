@@ -115,7 +115,7 @@ fn created(
       ),
     )
   use id <- result.try(run(value, decoder, "response.created"))
-  use #(state, events) <- result.try(record_id(state, id))
+  let #(state, events) = record_id(state, id)
   Ok(#(state, events, None))
 }
 
@@ -333,7 +333,7 @@ fn completed(
     decode.at(["response"], response_decoder(False)),
     "response.completed",
   ))
-  use #(state, started) <- result.try(record_id(state, response.id))
+  let #(state, started) = record_id(state, response.id)
   let authoritative = case response.output {
     [] ->
       state.streamed_output
@@ -373,7 +373,7 @@ fn incomplete(
     decode.at(["response"], response_decoder(True)),
     "response.incomplete",
   ))
-  use #(state, started) <- result.try(record_id(state, response.id))
+  let #(state, started) = record_id(state, response.id)
   use output <- result.try(replay_output(response.output))
   let finish = case response.incomplete_reason {
     Some("max_output_tokens") -> types.LengthLimit
@@ -483,13 +483,9 @@ fn read(
 fn record_id(
   state: State,
   incoming: Option(String),
-) -> Result(#(State, List(types.Event)), types.Error) {
-  use #(id, events) <- result.try(types.merge_response_id(
-    state.response_id,
-    incoming,
-    "Responses response id changed",
-  ))
-  Ok(#(State(..state, response_id: id), events))
+) -> #(State, List(types.Event)) {
+  let #(id, events) = types.merge_response_id(state.response_id, incoming)
+  #(State(..state, response_id: id), events)
 }
 
 fn replay_output(

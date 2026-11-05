@@ -698,8 +698,11 @@ put_key(Home, Provider, Id, Endpoint, Key, Label0) ->
         ensure(re:run(Id, <<"^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$">>, [{capture, none}]) =:= match,
             400, <<"identity_invalid">>, <<"Account identity must be a UUIDv7.">>),
         ensure(byte_size(Key) > 0 andalso byte_size(Key) =< 16384, 400, <<"invalid_request">>, <<"api_key is required.">>),
-        ensure(byte_size(Endpoint) =< 4096 andalso valid_key_input(Endpoint, Key),
-            400, <<"invalid_request">>, <<"Invalid endpoint or API key.">>),
+        ensure(Endpoint =/= <<>>, 400, <<"invalid_request">>, <<"endpoint is required.">>),
+        ensure(byte_size(Endpoint) =< 4096 andalso 'albedo@daemon@configuration':valid_key_endpoint(Endpoint),
+            400, <<"invalid_request">>, <<"Invalid endpoint: use an http or https URL with a host, and no credentials, query or fragment.">>),
+        ensure('albedo@daemon@configuration':valid_api_key(Key),
+            400, <<"invalid_request">>, <<"Invalid API key: it must not contain spaces or control characters.">>),
         Label = case Label0 of <<>> -> albedo_key_accounts:label(Key); _ -> Label0 end,
         ensure(byte_size(Label) > 0 andalso byte_size(Label) =< 256, 400, <<"invalid_request">>, <<"label must contain 1 to 256 bytes.">>),
         Creds = albedo_settings_store:read(Home, <<"creds.json">>), Accounts = albedo_settings_store:object(<<"accounts">>, Creds),
@@ -729,14 +732,6 @@ put_key(Home, Provider, Id, Endpoint, Key, Label0) ->
         [Public] = [A || A <- key_projection(Provider, albedo_settings_store:object(<<"accounts">>, albedo_settings_store:read(Home, <<"creds.json">>)), Profiles), maps:get(<<"id">>, A) =:= Id],
         {ok, {Created, iolist_to_binary(json:encode(Public))}}
     end) catch throw:{http,S,C,D} -> {error,{S,C,D}}; _:_ -> {error,{503,<<"auth_unavailable">>,<<"Provider account storage is unavailable.">>}} end.
-
-valid_key_input(Endpoint, Key) ->
-    case 'albedo@daemon@configuration':validate_profile(<<"key">>, #{
-        <<"extension">> => <<"openai">>, <<"baseUrl">> => Endpoint,
-        <<"apiKey">> => Key, <<"model">> => <<"key">>, <<"protocol">> => <<"responses">>}) of
-        {ok, _} -> true;
-        _ -> false
-    end.
 
 auth_snapshot(Home, Logins) ->
     try locked(Home, fun() ->

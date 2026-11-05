@@ -93,7 +93,7 @@ fn resolve_with(
   case qualified {
     Ok(#(profile, model)) ->
       case
-        profile.name == parent.provider
+        profile.name == parent_provider(home, parent)
         && model == parent.model
         || offers(lookup, profile, model)
       {
@@ -101,7 +101,7 @@ fn resolve_with(
         False -> Error("model is not available from provider " <> profile.name)
       }
     Error(_) -> {
-      use current <- result.try(configuration.named(home, parent.provider))
+      use current <- result.try(current(home, parent))
       let model = case requested {
         "" -> parent.model
         _ -> requested
@@ -117,6 +117,25 @@ fn resolve_with(
           )
       }
     }
+  }
+}
+
+/// The parent's profile. A legacy session has none recorded until its client
+/// is configured, and runs on the flat config's.
+fn current(
+  home: String,
+  parent: conversation.Info,
+) -> Result(configuration.Provider, String) {
+  case parent.provider {
+    "" -> configuration.legacy(home)
+    name -> configuration.named(home, name)
+  }
+}
+
+fn parent_provider(home: String, parent: conversation.Info) -> String {
+  case current(home, parent) {
+    Ok(provider) -> provider.name
+    Error(_) -> parent.provider
   }
 }
 
@@ -158,14 +177,15 @@ pub fn available(
       fn(_) { False },
     )
     |> list.zip(profiles, _)
+  let provider = parent_provider(home, info)
   let #(same, other) =
-    list.partition(listings, fn(listing) { { listing.0 }.name == info.provider })
+    list.partition(listings, fn(listing) { { listing.0 }.name == provider })
   let qualified = fn(listing: #(configuration.Provider, List(String))) {
     list.map(listing.1, fn(model) { { listing.0 }.name <> "/" <> model })
   }
   let current = case same {
     [] -> []
-    _ -> [info.provider <> "/" <> info.model]
+    _ -> [provider <> "/" <> info.model]
   }
   list.unique(list.append(
     current,

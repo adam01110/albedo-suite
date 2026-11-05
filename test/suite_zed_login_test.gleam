@@ -54,6 +54,7 @@ pub fn main() {
 
 pub fn header_case(endpoint: String) -> Nil {
   let request = openai_api.request("fixture-model", [types.User("hello")])
+  let request = types.Request(..request, max_output_tokens: Some(512))
   let assert Ok(exchange) =
     wire.encode("anthropic", endpoint, "fixture-jwt", "session", request)
   let assert Error(types.HttpError(401, _)) =
@@ -77,6 +78,7 @@ pub fn inference(
 ) -> Result(types.Turn, types.Error) {
   let request =
     openai_api.request("browser-fixture-model", [types.User("hello")])
+  let request = types.Request(..request, max_output_tokens: Some(512))
   let assert Ok(provider) = route(home, endpoint, token, request.model)
   let assert Ok(exchange) =
     wire.encode(provider, endpoint, token, "clean-home-session", request)

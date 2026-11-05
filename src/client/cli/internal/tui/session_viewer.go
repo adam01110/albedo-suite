@@ -534,6 +534,9 @@ func (m SessionViewer) Update(msg tea.Msg) (SessionViewer, tea.Cmd) {
 			}
 		}
 		if !m.navigation.editing {
+			if !m.ArchiveView && m.SearchInput.Value() == "" && msg.Text == "@" {
+				return m, func() tea.Msg { return SessionFoldersMsg{Query: "@"} }
+			}
 			if msg.String() == "n" {
 				return m, func() tea.Msg { return ChatNewSessionMsg{} }
 			}
@@ -565,8 +568,8 @@ func (m SessionViewer) Update(msg tea.Msg) (SessionViewer, tea.Cmd) {
 		case key == "ctrl+r":
 			m.startRename()
 			return m, nil
-		case !m.ArchiveView && (key == "ctrl+f" || (m.SearchInput.Value() == "" && msg.Text == "~")):
-			// A path typed into an empty search means a folder.
+		case !m.ArchiveView && (key == "ctrl+f" || (m.SearchInput.Value() == "" && (msg.Text == "~" || msg.Text == "@"))):
+			// A path or @host typed into an empty search opens the folder picker.
 			query := msg.Text
 			return m, func() tea.Msg { return SessionFoldersMsg{Query: query} }
 		case key == "tab" || key == "shift+tab" || ((key == "left" || key == "right") && m.SearchInput.Value() == ""):

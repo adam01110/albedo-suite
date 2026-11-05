@@ -29,6 +29,7 @@ fn encoded(model: String, choice: types.ToolChoice) -> String {
   let request =
     types.Request(
       ..request,
+      max_output_tokens: Some(512),
       tools: [
         types.Tool(
           "python",

@@ -14,6 +14,7 @@ import albedo/openai_api/types.{
 import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode
+import gleam/int
 import gleam/json.{type Json}
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -175,6 +176,7 @@ fn generation_config(request: Request) -> Result(Json, Error) {
   use thinking <- result.try(thinking_config(
     request.model,
     request.options.effort,
+    request.max_output_tokens,
   ))
   let fields = case thinking {
     [] -> []
@@ -220,6 +222,7 @@ type Thinking {
 fn thinking_config(
   model: String,
   effort: Option(String),
+  limit: Option(Int),
 ) -> Result(List(#(String, Json)), Error) {
   let model = string.lowercase(model)
   let levels = Levels(["minimal", "low", "medium", "high"])
@@ -277,7 +280,8 @@ fn thinking_config(
             "high" -> Ok(high)
             _ -> Error(unsupported)
           }
-          result.map(budget, fn(n) { #("thinkingBudget", json.int(n)) })
+          use budget <- result.map(budget)
+          #("thinkingBudget", json.int(answer_room(budget, limit)))
         }
         Levels(efforts) ->
           case list.contains(efforts, effort) {
@@ -289,6 +293,16 @@ fn thinking_config(
       use control <- result.map(control)
       [control, ..thoughts]
     }
+  }
+}
+
+/// A thinking budget that leaves `limit`, which counts thinking too, room for
+/// an answer: at most the limit less 1024, though never under the 128 a
+/// thinking model needs to think at all.
+fn answer_room(budget: Int, limit: Option(Int)) -> Int {
+  case limit {
+    Some(limit) -> int.min(budget, int.max(limit - 1024, 128))
+    None -> budget
   }
 }
 

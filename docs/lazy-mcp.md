@@ -3,6 +3,8 @@
 Set `programs.albedo.mcp.lazy = true` to defer connections until requested.
 The Home Manager option defaults to true. Without Home Manager, Albedo keeps
 upstream eager discovery when `mcp.lazy` is absent or false in `extensions.json`.
+Upstream now exposes MCP operations only through Python in either mode; eager
+startup context lists operation names, not remote schemas or descriptions.
 
 ## Discovering and using servers
 
@@ -36,12 +38,18 @@ Use the Python API to discover and load servers:
 # Names, descriptions and state; no connections.
 await mcp.servers()
 await mcp.tools()                           # List already-loaded operations.
+await mcp.search("API docs", limit=5)        # Rank loaded operations without connecting.
 await mcp.tools("docs")                     # Load docs and return tool summaries.
 await mcp.load("docs")                      # Load docs and return full definitions.
 await mcp.describe("docs/search")           # Load if needed and return one schema.
 await mcp.call("docs/search", query="Nix")   # Load if needed and call once.
 await mcp.unload("docs")                    # Stop docs and discard its catalogue.
 ```
+
+ACP editor servers share the native `mcp` Python binding through separate
+`editor_mcp` routes. Listing, searching, describing and calling editor operations
+does not load a configured server. Their lifecycle remains owned by the editor;
+`servers()` and `unload()` manage configured servers only.
 
 Loading a server does not add its tool definitions to subsequent model requests.
 The model receives descriptions and schemas only as results of the Python

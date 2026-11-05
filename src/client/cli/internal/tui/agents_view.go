@@ -60,6 +60,12 @@ type agentsSeedErrMsg struct {
 }
 
 type agentsFrameMsg struct{ Gen int }
+
+// agentsSettleMsg ends the hold that started at Until, unless a later key renewed it.
+type agentsSettleMsg struct {
+	Until time.Time
+	Gen   int
+}
 type agentsSentMsg struct {
 	Handle   *daemon.OperationHandle
 	Draft    string
@@ -91,6 +97,7 @@ func (m agentsEventsMsg) gen() int        { return m.Gen }
 func (m agentsStreamClosedMsg) gen() int  { return m.Gen }
 func (m agentsReconnectMsg) gen() int     { return m.Gen }
 func (m agentsFrameMsg) gen() int         { return m.Gen }
+func (m agentsSettleMsg) gen() int        { return m.Gen }
 
 type agentMail struct {
 	who      string
@@ -104,6 +111,7 @@ type agentNode struct {
 	latestInput, latestAnswer      string
 	currentRequest, latestProgress string
 	id, parent, name, model        string
+	fold                           string // the fold it is in, open or not
 	address                        string // how its family mails it; a rename leaves it
 	progressByCallID               map[string]*daemon.ToolProgress
 	progressOrder                  []string
@@ -116,6 +124,7 @@ type agentNode struct {
 	rate                           float64
 	flash                          float64
 	phase                          float64
+	createdAt, activityAt          int64 // unix milliseconds; activityAt is a turn's start or end
 	depth                          int
 	chars                          int
 	x, y                           int
@@ -158,6 +167,10 @@ type AgentsViewModel struct {
 	cancel            context.CancelFunc
 	Conn              *daemon.Connection
 	nodes             map[string]*agentNode
+	folds             map[string]*agentFold // by fold id, rebuilt by layout
+	expanded          map[string]bool       // parents whose closed agents are shown
+	held              map[string]agentRank  // the ranks the order holds to
+	holdUntil         time.Time
 	SessionID         string
 	root              string
 	selected          string
@@ -169,6 +182,7 @@ type AgentsViewModel struct {
 	order     []string
 	input     textinput.Model
 	rename    renameField
+	find      agentFind
 	tailCache agentTailCache
 	Width     int
 	clock     float64
@@ -184,7 +198,18 @@ const (
 	agentsFrame   = 120 * time.Millisecond
 	agentsSlotW   = 16
 	agentsLevelGp = 2
+	// agentsHold is how long the order holds still after the selection moves.
+	agentsHold       = 3 * time.Second
+	agentsFoldPrefix = "fold:"
 )
+
+// agentFold is the one dot a parent's closed leaf agents fold into.
+type agentFold struct {
+	id, parent string
+	members    []string
+	x, y       int
+	open       bool
+}
 
 var agentsBars = []rune("▁▂▃▄▅▆▇█")
 
@@ -197,6 +222,8 @@ func NewAgentsViewModel(conn *daemon.Connection, sessionID string) AgentsViewMod
 		pendingOperations: map[string]agentPendingOperation{},
 		SessionID:         sessionID,
 		nodes:             map[string]*agentNode{},
+		folds:             map[string]*agentFold{},
+		expanded:          map[string]bool{},
 		heat:              map[string]float64{},
 		selected:          sessionID,
 		input:             input,
@@ -274,6 +301,7 @@ func (m AgentsViewModel) update(msg tea.Msg) (AgentsViewModel, tea.Cmd) {
 			n.cursor = nil
 			m.apply(daemon.AgentEvent{Type: "activity", Session: wire.Session.ID, Cursor: wire.Cursor, Activity: &wire.Activity, CurrentProgress: wire.CurrentProgress, Running: wire.Running})
 			n.model = wire.Session.Model
+			n.createdAt, n.activityAt = millis(wire.Session.CreatedAt), millis(wire.Session.ActivityAt)
 			n.depth = wire.Depth
 			n.running = wire.Running
 			n.closed = wire.Closed
@@ -401,6 +429,13 @@ func (m AgentsViewModel) update(msg tea.Msg) (AgentsViewModel, tea.Cmd) {
 		}
 		m.snapshotInFlight = true
 		return m, m.snapshotCmd(m.Gen)
+
+	case agentsSettleMsg:
+		if msg.Until.Equal(m.holdUntil) {
+			m.holdUntil = time.Time{}
+			m.layout()
+		}
+		return m, nil
 
 	case agentsFrameMsg:
 		m.step()

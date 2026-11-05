@@ -1176,7 +1176,13 @@ type ExtensionMetadata struct {
 	Context       bool `json:"context"`
 	Plugins       []ID `json:"plugins"`
 	PythonModules []ID `json:"python_modules"`
-	Tools         []ID `json:"tools"`
+
+	// Shelf Where a client shows the extension. Presentation only.
+	Shelf string `json:"shelf"`
+
+	// Summary One line a client shows beside the name; null when the extension has none.
+	Summary *string `json:"summary" nullable:"true"`
+	Tools   []ID    `json:"tools"`
 }
 
 // ExtensionSettings defines model for ExtensionSettings.
@@ -1338,6 +1344,18 @@ type Glance struct {
 	URL ResourceURL `json:"url"`
 }
 
+// GlobalExtension Installed extension and its resolved global default, independent of session overrides.
+type GlobalExtension struct {
+	Description string  `json:"description"`
+	Diagnostic  *string `json:"diagnostic" nullable:"true"`
+	Enabled     bool    `json:"enabled"`
+
+	// ID Opaque identity. Never infer a resource type or route from its contents.
+	ID          ID   `json:"id"`
+	Quarantined bool `json:"quarantined"`
+	Requires    []ID `json:"requires"`
+}
+
 // HTTPCommand defines model for HTTPCommand.
 type HTTPCommand struct {
 	Arguments         []FormField `json:"arguments"`
@@ -1361,11 +1379,14 @@ type HistoryEntry struct {
 	CreatedAt       *Timestamp        `json:"created_at" nullable:"true"`
 
 	// ID Opaque identity. Never infer a resource type or route from its contents.
-	ID       ID           `json:"id"`
-	InputID  *ID          `json:"input_id" nullable:"true"`
-	Kind     string       `json:"kind"`
-	Mail     *HistoryMail `json:"mail,omitempty" nullable:"true"`
-	Position Counter      `json:"position"`
+	ID      ID           `json:"id"`
+	InputID *ID          `json:"input_id" nullable:"true"`
+	Kind    string       `json:"kind"`
+	Mail    *HistoryMail `json:"mail,omitempty" nullable:"true"`
+
+	// Phase Assistant response phase. Null for legacy rows, unfinished responses, and non-assistant entries.
+	Phase    *string `json:"phase" nullable:"true"`
+	Position Counter `json:"position"`
 
 	// ThinkingDurationMs Observed thinking duration, when recorded.
 	ThinkingDurationMs *Counter `json:"thinking_duration_ms,omitempty" nullable:"true"`
@@ -1739,6 +1760,15 @@ type KernelJob struct {
 
 	// StartedAt Wall-clock milliseconds since the epoch when the owner recorded the job. Zero when unknown, which clients treat as settled work.
 	StartedAt Counter `json:"started_at"`
+}
+
+// KernelRestartResult defines model for KernelRestartResult.
+type KernelRestartResult struct {
+	EndedCells []ID `json:"ended_cells"`
+
+	// OldKernelID The kernel the session held when the restart began; null when it held none. A kernel only recorded for the session is stopped too.
+	OldKernelID *ID  `json:"old_kernel_id" nullable:"true"`
+	StoppedJobs []ID `json:"stopped_jobs"`
 }
 
 // KernelUpgradeResult defines model for KernelUpgradeResult.
@@ -2278,15 +2308,17 @@ type ProgressPreview struct {
 
 // ProviderProfile defines model for ProviderProfile.
 type ProviderProfile struct {
-	Enabled   *bool `json:"enabled,omitempty"`
-	AccountID *ID   `json:"account_id" nullable:"true"`
+	AccountID *ID `json:"account_id" nullable:"true"`
 
 	// AccountIDs Accounts this profile rotates between after a limit, by id. Null when it does not rotate. Exclusive with `account_id`; with neither, a profile uses one account (its saved key, the environment key, or the provider's selected or first account) and never switches.
 	AccountIDs []ID `json:"account_ids" nullable:"true"`
 
 	// API Bedrock API mode. Null or omission means messages; replay protocol is unchanged.
-	API      *string `json:"api,omitempty" nullable:"true"`
-	Effort   *string `json:"effort" nullable:"true"`
+	API    *string `json:"api,omitempty" nullable:"true"`
+	Effort *string `json:"effort" nullable:"true"`
+
+	// Enabled Whether this saved profile participates in model discovery and selection.
+	Enabled  *bool   `json:"enabled,omitempty"`
 	Endpoint *string `json:"endpoint" nullable:"true"`
 
 	// Extension Opaque identity. Never infer a resource type or route from its contents.
@@ -2303,16 +2335,18 @@ type ProviderProfile struct {
 
 // ProviderProfilePatch Partial existing profile; extension and model required when creating a new map entry.
 type ProviderProfilePatch struct {
-	Enabled   *bool `json:"enabled,omitempty"`
-	AccountID *ID   `json:"account_id,omitempty" nullable:"true"`
+	AccountID *ID `json:"account_id,omitempty" nullable:"true"`
 
 	// AccountIDs Accounts this profile rotates between after a limit, by id. Null when it does not rotate. Exclusive with `account_id`; with neither, a profile uses one account (its saved key, the environment key, or the provider's selected or first account) and never switches.
 	AccountIDs []ID `json:"account_ids,omitempty" nullable:"true"`
 
 	// API Bedrock API mode. Omission preserves an existing value; new and legacy profiles without a value use messages; converse selects streaming Converse.
-	API      *string `json:"api,omitempty"`
-	APIKey   *string `json:"api_key,omitempty" nullable:"true"`
-	Effort   *string `json:"effort,omitempty" nullable:"true"`
+	API    *string `json:"api,omitempty"`
+	APIKey *string `json:"api_key,omitempty" nullable:"true"`
+	Effort *string `json:"effort,omitempty" nullable:"true"`
+
+	// Enabled Temporarily disable or restore a saved profile without deleting credentials.
+	Enabled  *bool   `json:"enabled,omitempty"`
 	Endpoint *string `json:"endpoint,omitempty" nullable:"true"`
 
 	// Extension Opaque identity. Never infer a resource type or route from its contents.
@@ -2826,12 +2860,17 @@ type SelectionPatch struct {
 
 // Server Examples: {"build":"example-build","capabilities":{"collection_invalidation":1,"durable_inputs":1,"session_replay":1,"storage_report":1,"tool_progress":1},"digest":null,"extensions":[{"name":"work","version":1}],"instance_id":"instance-1","notices":[],"protocol":3,"quota":null,"state":"ready"}
 type Server struct {
+	// APIDigest Digest of the HTTP contract this daemon serves (docs/openapi.yaml without prose or examples), as cli/tools/apigen computes it. A client generated from a different digest may reject responses, so it refuses to attach and names the side to rebuild or restart. Absent from daemons that predate it.
+	APIDigest    *string          `json:"api_digest,omitempty"`
 	Build        *string          `json:"build" nullable:"true"`
 	Capabilities map[string]int64 `json:"capabilities"`
 
 	// Digest Content digest of the running code tree; update information, not attachment compatibility.
-	Digest     *string `json:"digest" nullable:"true"`
-	Extensions []struct {
+	Digest *string `json:"digest" nullable:"true"`
+
+	// ExtensionInventory Returned only with include=extensions. Includes disabled and quarantined extensions; never prepares a session.
+	ExtensionInventory []GlobalExtension `json:"extension_inventory,omitempty"`
+	Extensions         []struct {
 		// Name Opaque identity. Never infer a resource type or route from its contents.
 		Name    ID    `json:"name"`
 		Version int64 `json:"version"`
@@ -4584,6 +4623,9 @@ type CancelInputJSONRequestBody = EmptyRequest
 // InterruptSessionJSONRequestBody defines body for InterruptSession for application/json ContentType.
 type InterruptSessionJSONRequestBody = InterruptRequest
 
+// RestartKernelJSONRequestBody defines body for RestartKernel for application/json ContentType.
+type RestartKernelJSONRequestBody = EmptyRequest
+
 // UpgradeKernelJSONRequestBody defines body for UpgradeKernel for application/json ContentType.
 type UpgradeKernelJSONRequestBody = EmptyRequest
 
@@ -5717,6 +5759,24 @@ type ClientInterface interface {
 	//
 	// Corresponds with POST /sessions/{session_id}/interrupt (the `InterruptSession` operationId).
 	InterruptSession(ctx context.Context, sessionID ID, body InterruptSessionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// RestartKernelWithBody Replace the session's kernel with an empty one
+	//
+	// Stop the running turn and cancel queued inputs as an interrupt does, discard the saved variables, and stop the kernel and its jobs. The response waits for the stop; the next turn boots an empty kernel. A stop that fails answers 503 kernel_restart_failed.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /sessions/{session_id}/kernel/restart (the `RestartKernel` operationId).
+	RestartKernelWithBody(ctx context.Context, sessionID ID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// RestartKernel Replace the session's kernel with an empty one
+	//
+	// Stop the running turn and cancel queued inputs as an interrupt does, discard the saved variables, and stop the kernel and its jobs. The response waits for the stop; the next turn boots an empty kernel. A stop that fails answers 503 kernel_restart_failed.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /sessions/{session_id}/kernel/restart (the `RestartKernel` operationId).
+	RestartKernel(ctx context.Context, sessionID ID, body RestartKernelJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// UpgradeKernelWithBody Explicitly upgrade an idle kernel
 	//
@@ -8217,6 +8277,44 @@ func (c *Client) InterruptSessionWithBody(ctx context.Context, sessionID ID, con
 // Corresponds with POST /sessions/{session_id}/interrupt (the `InterruptSession` operationId).
 func (c *Client) InterruptSession(ctx context.Context, sessionID ID, body InterruptSessionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewInterruptSessionRequest(c.Server, sessionID, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// RestartKernelWithBody Replace the session's kernel with an empty one
+//
+// Stop the running turn and cancel queued inputs as an interrupt does, discard the saved variables, and stop the kernel and its jobs. The response waits for the stop; the next turn boots an empty kernel. A stop that fails answers 503 kernel_restart_failed.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /sessions/{session_id}/kernel/restart (the `RestartKernel` operationId).
+func (c *Client) RestartKernelWithBody(ctx context.Context, sessionID ID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRestartKernelRequestWithBody(c.Server, sessionID, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// RestartKernel Replace the session's kernel with an empty one
+//
+// Stop the running turn and cancel queued inputs as an interrupt does, discard the saved variables, and stop the kernel and its jobs. The response waits for the stop; the next turn boots an empty kernel. A stop that fails answers 503 kernel_restart_failed.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /sessions/{session_id}/kernel/restart (the `RestartKernel` operationId).
+func (c *Client) RestartKernel(ctx context.Context, sessionID ID, body RestartKernelJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRestartKernelRequest(c.Server, sessionID, body)
 	if err != nil {
 		return nil, err
 	}
@@ -14195,6 +14293,53 @@ func NewInterruptSessionRequestWithBody(server string, sessionID ID, contentType
 	}
 
 	operationPath := fmt.Sprintf("/sessions/%s/interrupt", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewRestartKernelRequest calls the generic RestartKernel builder with application/json body
+func NewRestartKernelRequest(server string, sessionID ID, body RestartKernelJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewRestartKernelRequestWithBody(server, sessionID, "application/json", bodyReader)
+}
+
+// NewRestartKernelRequestWithBody constructs an http.Request for the RestartKernel method, with any body, and a specified content type
+func NewRestartKernelRequestWithBody(server string, sessionID ID, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/sessions/%s/kernel/restart", pathParam0)
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}

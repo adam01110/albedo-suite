@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import asyncio
 import codecs
-import difflib
 import fnmatch
 import hashlib
 import os
@@ -1184,6 +1183,8 @@ def _words(text: str) -> str:
 
 
 def _closest(content: str, needle: str) -> str:
+    import difflib  # only a failed edit asks
+
     lines, needle_lines = content.splitlines(), needle.splitlines()
     head = next((line.strip() for line in needle_lines if line.strip()), "")
     if not lines or not head:
@@ -1233,6 +1234,8 @@ def _missing(target: Path, original: str) -> str:
     parent = target.parent
     if not parent.is_dir():
         return message
+    import difflib  # only a missing path asks
+
     close = difflib.get_close_matches(
         target.name, [entry.name for entry in parent.iterdir()], n=3, cutoff=0.35
     )

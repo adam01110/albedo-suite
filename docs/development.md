@@ -65,9 +65,12 @@ Use `--case <name>` for focused work; omit it for the full upstream-update run.
 
 Tests use fake providers, temporary homes and local servers. They do not
 activate your configuration, read your credentials or contact live providers.
-The runner adjusts two checksum-guarded upstream fixtures: it waits for kernel
-reattachment before testing a forced upgrade and filters skill discovery to
-avoid extension-count-dependent pagination. Changed fixtures require review.
+The runner waits for kernel reattachment before testing a forced upgrade. It
+also adapts native harness, kernel-detach, cache-miss, image-limit and repetition
+text extraction to the
+suite's typed Responses content parts, preserving their assertions. These six
+upstream fixtures are checksum-guarded and require review when changed. Skill
+discovery uses upstream's native catalog filter.
 
 Additional supervised RTK/FFF tests run in the flake Python check.
 `test/fff_test.py` exercises search through the production Erlang registry;
@@ -159,6 +162,15 @@ Remove this source replacement, its baseline checksum and inventory entry, and
 its package check when upstream handles these envelopes without dumping raw
 payloads.
 
+## Remote bundle staging
+
+Concurrent SSH kernel starts publish their complete bundle with an atomic
+directory rename. A connection that loses publication removes only its own
+staging tree, including read-only directories shipped by Nix; it never moves a
+second tree inside the winning bundle. A conflicting nonempty bundle is refused.
+`test/remote_staging_test.py` covers writable/read-only duplicate staging,
+concurrent first publication and incomplete-target rejection.
+
 ## Job readiness
 
 The suite preserves upstream `Job.text()` and `Job.wait_for()`. The readiness
@@ -208,7 +220,11 @@ required by either layer; their settings are additive public configuration.
 The pristine upstream provider handles OpenCode Go OAuth, account rotation and
 protocol selection. Suite wire/catalog additions preserve SDK-metadata routing;
 package checks exercise rotation, OAuth organization headers and all four wire
-routes. See [provider configuration](configuration.md#opencode-go).
+routes. The native Responses bridge replaces the old local adapter; its narrow
+reasoning-detail extension preserves encrypted items in both existing histories
+and new turns, without changing native sparse tool-call indices.
+`test/suite_bridge_test.gleam` checks both replay paths and index correlation.
+See [provider configuration](configuration.md#opencode-go).
 
 `upstream/pin.json` records the current Albedo revision; `flake.lock` records
 NUR. Do not maintain a second pin history here. Lazy MCP uses upstream's native

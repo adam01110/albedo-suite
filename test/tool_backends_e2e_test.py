@@ -146,8 +146,8 @@ class ToolBackendsTests(unittest.TestCase):
         first = self.session
         code = (
             f"assert len(await files.find('BACKEND_NEEDLE', {str(self.root)!r})) == 1\n"
-            f"parallel = await asyncio.gather(*(files.paths(path={str(self.root)!r}) for _ in range(8)))\n"
-            "assert all(parallel)\n"
+            f"searches = await asyncio.gather(*(files.paths(path={str(self.root)!r}) for _ in range(8)))\n"
+            "assert all(searches)\n"
             "fff = sys.modules['albedo_plugins.files']._fff\n"
             "assert not hasattr(fff, 'job'), 'legacy per-kernel worker state returned'\n"
             "print('BACKEND_VERIFIED', fff.worker_pid)"

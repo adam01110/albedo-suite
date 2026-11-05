@@ -239,7 +239,7 @@ func (m ChatModel) header(width int) string {
 		workspace = homePath(workspace)
 	} else {
 		host = cmp.Or(m.Host, host)
-		lead = host + ":"
+		lead = "● " + host + ":"
 		workspace = scpRelative(underHome(workspace, m.hostHome))
 	}
 	model := m.Model
@@ -292,11 +292,11 @@ func (m ChatModel) header(width int) string {
 func (m ChatModel) hostSegment(host string) string {
 	switch m.Status.KernelLink {
 	case "booting", "reattaching", "busy":
-		return DefaultStyles.Faint.Render(host)
+		return DefaultStyles.Faint.Render("◌ " + host)
 	case "lost":
-		return DefaultStyles.Error.Render(host)
+		return DefaultStyles.Error.Render("○ " + host)
 	}
-	return hostStyle(host).Render(host)
+	return hostStyle(host).Render("● " + host)
 }
 
 // reaching is the remote host a booting or reattaching kernel is on.

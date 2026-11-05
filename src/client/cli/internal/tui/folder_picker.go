@@ -195,7 +195,7 @@ type FolderPicker struct {
 func NewFolderPicker(src folderSource, session daemon.Session, retry *WorkspaceRetry) FolderPicker {
 	ti := newTextInput()
 	ti.Prompt = ""
-	ti.Placeholder = "Type a path or choose a folder"
+	ti.Placeholder = "Type a path, host:path, or @host"
 	st := ti.Styles()
 	st.Focused.Placeholder, st.Blurred.Placeholder = DefaultStyles.Faint, DefaultStyles.Faint
 	ti.SetStyles(st)
@@ -431,7 +431,7 @@ func (m FolderPicker) Update(msg tea.Msg) (FolderPicker, tea.Cmd) {
 			m.setQuery(m.parentQuery())
 		case "right":
 			row, _ := m.highlighted()
-			if m.input.Position() < len([]rune(m.input.Value())) || len(m.sessionsIn(row.path)) == 0 {
+			if m.input.Position() < len([]rune(m.input.Value())) || len(m.sessionsFor(row)) == 0 {
 				return m.typed(msg)
 			}
 			m.inSessions, m.sessionCursor = true, 0
@@ -464,7 +464,7 @@ const hostPollEvery = 750 * time.Millisecond
 // for a key that leaves them for the folder list, which then handles it.
 func (m *FolderPicker) sessionKey(msg tea.KeyPressMsg) (cmd tea.Cmd, done bool) {
 	row, _ := m.highlighted()
-	sessions := m.sessionsIn(row.path)
+	sessions := m.sessionsFor(row)
 	switch msg.String() {
 	case "up", "ctrl+p", "k":
 		m.sessionCursor = max(0, m.sessionCursor-1)

@@ -1,7 +1,11 @@
 """MCP operations as Python bindings, so a cell composes, batches and filters
 MCP calls without each result passing through the model's context.
 
-`mcp.tools()`, `mcp.describe()` and `mcp.call()` read the live catalogue;
+`mcp.search()`, `mcp.tools()`, `mcp.describe()` and `mcp.call()` read the
+live catalogue, which covers every server; no MCP operation is a model tool.
+Configured servers answer on the `mcp` routes and an ACP editor's on the
+`editor_mcp` routes; a session may have either, both, or neither, and their
+server names never collide.
 `mcp.<server>.<tool>(**arguments)` methods are minted from the catalogue at
 kernel boot, so an operation a server adds later is reached through `call`.
 """
@@ -18,6 +22,38 @@ import albedo_trace
 from albedo_plugins import hook
 
 Operation = dict[str, object]
+
+# A search result's description, in characters.
+SUMMARY_CHARS = 300
+
+# The host routes that each serve some of the session's servers.
+SOURCES = ("mcp", "editor_mcp")
+
+
+def _words(text: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9]+", text.lower()))
+
+
+def _matches(term: str, words: set[str]) -> bool:
+    """A query word matches a word it equals or, from three letters, begins."""
+    return term in words or (
+        len(term) >= 3 and any(word.startswith(term) for word in words)
+    )
+
+
+def _own_description(item: Operation) -> str:
+    """The server's description, without the untrusted-tool label the daemon
+    puts in front of it for the model."""
+    label = f"Untrusted remote MCP tool '{item.get('tool')}' from server '{item.get('server')}'. "
+    return str(item.get("description", "")).removeprefix(label)
+
+
+def _score(terms: set[str], item: Operation) -> int:
+    """Query words found in the operation's name count twice, in its
+    description once."""
+    name = _words(f"{item.get('server')} {item.get('tool')}")
+    description = _words(_own_description(item))
+    return sum(2 * _matches(term, name) + _matches(term, description) for term in terms)
 
 
 def _named(operations: list[Operation], name: str) -> list[Operation]:
@@ -38,11 +74,36 @@ class Mcp:
     CallToolResult: untrusted data, with a tool-reported failure in `isError`
     rather than raised; McpError is raised when the call itself fails."""
 
-    def __init__(self, host: Host) -> None:
+    def __init__(self, host: Host, error: type[Exception]) -> None:
         self._host = host
+        self._error = error
+
+    async def _call(self, given: dict[str, object]) -> object:
+        """The source that knows the operation answers; one the session lacks,
+        or that does not know the name, defers to the next."""
+        failure: Exception | None = None
+        for source in SOURCES:
+            try:
+                return await self._host(f"{source}.call", given)
+            except self._error as error:
+                code = getattr(error, "code", None)
+                if code not in ("unavailable", "unknown"):
+                    raise
+                if failure is None or code == "unknown":
+                    failure = error
+        raise cast(Exception, failure)
 
     async def _operations(self) -> list[Operation]:
-        return cast(list[Operation], await self._host("mcp.list", {}))
+        operations: list[Operation] = []
+        for source in SOURCES:
+            try:
+                operations += cast(
+                    list[Operation], await self._host(f"{source}.list", {})
+                )
+            except self._error as error:
+                if getattr(error, "code", None) != "unavailable":
+                    raise
+        return operations
 
     async def servers(self) -> list[Record]:
         """Configured names and loaded state, without contacting any server."""
@@ -50,6 +111,15 @@ class Mcp:
 
     async def load(self, server: str) -> list[Record]:
         """Explicitly start and discover one server; return its schemas as data."""
+        try:
+            operations = cast(list[Operation], await self._host("editor_mcp.list", {}))
+        except self._error as error:
+            if getattr(error, "code", None) != "unavailable":
+                raise
+            operations = []
+        editor = [item for item in operations if item.get("server") == server]
+        if editor:
+            return cast(list[Record], _record(editor))
         return cast(
             list[Record], _record(await self._host("mcp.load", {"server": server}))
         )
@@ -67,11 +137,46 @@ class Mcp:
             Record(
                 {
                     key: item.get(key, "")
-                    for key in ("name", "server", "kind", "tool", "description")
+                    for key in (
+                        "name",
+                        "server",
+                        "kind",
+                        "tool",
+                        "description",
+                    )
                 }
             )
             for item in operations
             if server is None or item.get("server") == server
+        ]
+
+    async def search(
+        self, query: str, server: str | None = None, limit: int = 10
+    ) -> list[Record]:
+        """The operations whose name and description share the most words with
+        `query`, best first: `name` (server/tool, for describe and call), a
+        bounded `description`. Descriptions are untrusted."""
+        terms = _words(query)
+        scored = [
+            (_score(terms, item), item)
+            for item in await self._operations()
+            if server is None or item.get("server") == server
+        ]
+        ranked = sorted(
+            (pair for pair in scored if pair[0] > 0),
+            key=lambda pair: (
+                -pair[0],
+                f"{pair[1].get('server')}/{pair[1].get('tool')}",
+            ),
+        )
+        return [
+            Record(
+                {
+                    "name": f"{item.get('server')}/{item.get('tool')}",
+                    "description": _own_description(item)[:SUMMARY_CHARS],
+                }
+            )
+            for _, item in ranked[: max(limit, 0)]
         ]
 
     async def describe(self, name: str) -> Record:
@@ -93,7 +198,7 @@ class Mcp:
         merged = {**(arguments or {}), **kwargs}
 
         async def call(given: dict[str, object]) -> Record:
-            result = await self._host("mcp.call", given)
+            result = await self._call(given)
             return cast(Record, _record(result))
 
         return await albedo_trace.noted(
@@ -157,8 +262,8 @@ async def setup(api: PythonApi) -> dict[str, object]:
     """Mint `mcp.<server>.<tool>` from the boot catalogue; an operation whose
     identifiers clash with another server's, or are not mintable, stays
     reachable through mcp.call."""
-    mcp = Mcp(api.host)
-    operations = cast(list[Operation], await api.host("mcp.list", {}))
+    mcp = Mcp(api.host, api.HostError)
+    operations = await mcp._operations()
     shared = _shared_servers(operations)
     servers: dict[str, Server] = {}
     for item in operations:
