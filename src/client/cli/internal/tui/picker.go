@@ -24,7 +24,6 @@ type PickerSelectMsg struct {
 type PickerCancelMsg struct{}
 
 type PickerModel struct {
-	navigation  searchNavigation
 	Title       string
 	Items       []PickerItem
 	Filtered    []PickerItem
@@ -146,30 +145,7 @@ func (m PickerModel) Update(msg tea.Msg) (PickerModel, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
-		if m.WithSearch {
-			var done bool
-			msg, done = m.navigation.key(msg, &m.SearchInput, false)
-			if done {
-				return m, nil
-			}
-		}
-		if m.navigation.move(msg, &m.Cursor, len(m.Filtered), m.Height) {
-			return m, nil
-		}
-		key := msg.String()
-		if !m.WithSearch {
-			switch key {
-			case "k":
-				key = "up"
-			case "j":
-				key = "down"
-			case "h":
-				key = "esc"
-			case "l":
-				key = "enter"
-			}
-		}
-		switch key {
+		switch msg.String() {
 		case "esc", "ctrl+c", "ctrl+d":
 			return m, func() tea.Msg { return PickerCancelMsg{} }
 		case "enter":
@@ -191,7 +167,6 @@ func (m PickerModel) Update(msg tea.Msg) (PickerModel, tea.Cmd) {
 	}
 
 	if m.WithSearch {
-		m.navigation.paste(msg, &m.SearchInput)
 		var tiCmd tea.Cmd
 		m.SearchInput, tiCmd = m.SearchInput.Update(msg)
 		m.applyFilter()
@@ -214,9 +189,10 @@ func (m PickerModel) View() string {
 	b.WriteString(selectableRows(lines, m.Cursor, m.Height, m.Height, m.Width))
 	b.WriteByte('\n')
 	if m.WithSearch {
-		b.WriteString(m.navigation.filterLine(m.SearchInput))
+		b.WriteString(promptLead())
+		b.WriteString(m.SearchInput.View())
 	}
 	b.WriteByte('\n')
-	b.WriteString(keyHints(hint{"j/k", "select"}, hint{"l/enter", "choose"}, hint{"h/esc", "cancel"}))
+	b.WriteString(keyHints(hint{"↑↓", "select"}, hint{"enter", "choose"}, hint{"esc", "cancel"}))
 	return b.String()
 }

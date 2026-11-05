@@ -147,8 +147,7 @@
             go test ./internal/daemon -count=1
             go test ./internal/tui -run '^TestBase16' -count=1 -v
             go test ./internal/tui -run '^TestVim' -count=1 -v
-            go test ./internal/tui -run '^TestNavigation' -count=1 -v
-            go test ./internal/tui -run '^TestUpstreamMerge' -count=1 -v
+            go test ./internal/tui -run '^TestComposerScope' -count=1 -v
             go test ./internal/tui -run '^TestContext' -count=1 -v
             go test ./internal/tui -run '^TestQuota' -count=1 -v
             go test ./internal/tui -run '^TestProviderAvailability' -count=1 -v

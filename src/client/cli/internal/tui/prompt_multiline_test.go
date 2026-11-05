@@ -44,7 +44,7 @@ func frame(t *testing.T, m ChatModel, height int) []string {
 	if !strings.Contains(lines[len(lines)-2], "─") {
 		t.Fatalf("expected the separator above the footer, got %q", lines[len(lines)-2])
 	}
-	if !strings.Contains(lines[len(lines)-1], m.vimMode()) || !strings.Contains(lines[len(lines)-1], "normal") && !strings.Contains(lines[len(lines)-1], "actions") {
+	if !strings.Contains(lines[len(lines)-1], m.vimMode()) || !strings.Contains(lines[len(lines)-1], "normal") && !strings.Contains(lines[len(lines)-1], "type") {
 		t.Fatalf("expected the footer last, got %q", lines[len(lines)-1])
 	}
 	return lines

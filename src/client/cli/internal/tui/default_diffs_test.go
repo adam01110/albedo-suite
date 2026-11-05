@@ -1,6 +1,7 @@
 package tui
 
 import (
+	tea "charm.land/bubbletea/v2"
 	"testing"
 
 	"albedo/cli/internal/daemon"
@@ -17,11 +18,9 @@ func TestDefaultDiffVisibility(t *testing.T) {
 	app := &AppModel{State: AppStateChat, Chat: model, ActiveSession: &daemon.Session{ID: "default-diffs"}, Width: 80, Height: 24}
 	app.Chat.SetSize(80, 24)
 	for _, expected := range []bool{false, true} {
-		for _, key := range " vd" {
-			app.Update(navigationKey(key))
-		}
+		app.Update(tea.KeyPressMsg{Code: 'j', Mod: tea.ModCtrl})
 		if app.Chat.Flags.Diffs != expected {
-			t.Fatal("space v d did not toggle default diffs")
+			t.Fatal("Ctrl+J did not toggle default diffs")
 		}
 	}
 }

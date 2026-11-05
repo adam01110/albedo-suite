@@ -157,56 +157,26 @@ func TestVimUnfinishedYankDoesNotWriteClipboard(t *testing.T) {
 	}
 }
 
-func TestNavigationSessionsLeaderFromEitherChatFocus(t *testing.T) {
-	for _, reading := range []bool{false, true} {
-		chat := newTestChatModel(t, &daemon.Session{ID: "s"})
-		chat.SetSize(120, 28)
-		vimKeys(&chat, "i", "d", "r", "a", "f", "t", "esc")
-		if reading {
-			chat.readerFocus(true)
-		}
-		before := chat.vimSnapshot()
-		m := &AppModel{State: AppStateChat, Chat: chat, ActiveSession: &daemon.Session{ID: "s"}, Width: 120, Height: 28}
-		m.Update(navigationKey(' '))
-		if m.workspaceOverlay == nil || !m.workspaceOverlay.leader {
-			t.Fatal("Space did not open leader")
-		}
-		_, cmd := m.Update(navigationKey('s'))
-		if cmd == nil {
-			t.Fatal("space s did not open sessions")
-		}
-		if m.Chat.vimSnapshot() != before || !m.Chat.vim.normal || m.Chat.reader.active != reading {
-			t.Fatal("leader changed draft or focus")
-		}
-		if m.workspaceOverlay != nil || m.Chat.leader != nil {
-			t.Fatal("leader remained open")
-		}
-	}
-}
-
 func TestVimUnlabelledInputBoundary(t *testing.T) {
 	for _, width := range []int{8, 40, 80, 120} {
 		m := newTestChatModel(t, &daemon.Session{ID: "s"})
 		m.SetSize(width, 24)
 		m.TextArea.SetValue("draft")
 		m.syncLayout()
-		for _, reading := range []bool{false, true} {
-			m.readerFocus(reading)
-			rule := ansi.Strip(m.composeRule(m.chatWidth()))
-			if strings.Contains(rule, "compose") || !strings.Contains(rule, "─") || ansi.StringWidth(rule) != m.chatWidth() {
-				t.Fatalf("width=%d rule=%q", width, rule)
-			}
-			footer := ansi.Strip(m.renderFooter())
-			if strings.Contains(footer, "COMPOSER") || strings.Contains(footer, "COMPOSE") {
-				t.Fatal("uppercase compose label remains in footer")
-			}
-			rows := strings.Split(ansi.Strip(m.View()), "\n")
-			if len(rows) != 24 {
-				t.Fatalf("width=%d reading=%v rows=%d: %q", width, reading, len(rows), rows)
-			}
-			if !strings.Contains(strings.Join(rows, "\n"), rule) || slices.Contains(strings.Fields(strings.Join(rows, "\n")), "compose") {
-				t.Fatal("redundant compose label remains")
-			}
+		rule := ansi.Strip(m.composeRule(m.chatWidth()))
+		if strings.Contains(rule, "compose") || !strings.Contains(rule, "─") || ansi.StringWidth(rule) != m.chatWidth() {
+			t.Fatalf("width=%d rule=%q", width, rule)
+		}
+		footer := ansi.Strip(m.renderFooter())
+		if strings.Contains(footer, "COMPOSER") || strings.Contains(footer, "COMPOSE") {
+			t.Fatal("uppercase compose label remains in footer")
+		}
+		rows := strings.Split(ansi.Strip(m.View()), "\n")
+		if len(rows) != 24 {
+			t.Fatalf("width=%d rows=%d: %q", width, len(rows), rows)
+		}
+		if !strings.Contains(strings.Join(rows, "\n"), rule) || slices.Contains(strings.Fields(strings.Join(rows, "\n")), "compose") {
+			t.Fatal("redundant compose label remains")
 		}
 	}
 }

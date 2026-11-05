@@ -48,8 +48,8 @@ treefmt run.
 
 ## Terminal UX
 
-[Vim-first terminal interface](vim-ux.md) defines modes, focus, navigation and
-action discovery, including intentionally changed control-key bindings.
+[Composer editing](vim.md) defines input-only NORMAL/INSERT modes. Lists,
+forms, agents and transcript navigation use the upstream keyboard controls.
 
 ## Daemon tests
 

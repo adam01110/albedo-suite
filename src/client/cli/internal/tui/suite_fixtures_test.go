@@ -10,6 +10,10 @@ import (
 	"testing"
 )
 
+func navigationKey(r rune) tea.KeyPressMsg {
+	return tea.KeyPressMsg{Code: r, Text: string(r)}
+}
+
 func pageAt(width, height int, doc *PageDocument) PageViewModel {
 	m := NewPageViewModel(nil, "s", "/paperclips")
 	m.SetSize(width, height)

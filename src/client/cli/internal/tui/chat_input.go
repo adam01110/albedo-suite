@@ -15,23 +15,15 @@ func (m *ChatModel) handleInput(msg tea.Msg) (tea.Cmd, bool) {
 	if cmd, handled := m.handleTerminalClipboard(msg); handled {
 		return cmd, true
 	}
-	if _, ok := msg.(tea.PasteMsg); ok && m.reader.active {
-		if m.reader.searching {
-			var cmd tea.Cmd
-			m.reader.search, cmd = m.reader.search.Update(msg)
-			return cmd, true
-		}
-		return nil, true
-	}
 	var cmds []tea.Cmd
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
 		// The selector owns keys while open, before chat navigation or composer input.
 		if len(m.effortOptions) > 0 {
 			switch msg.String() {
-			case "left", "up", "h", "k":
+			case "left", "up":
 				m.effortSelected = max(0, m.effortSelected-1)
-			case "right", "down", "l", "j":
+			case "right", "down":
 				m.effortSelected = min(len(m.effortOptions)-1, m.effortSelected+1)
 			case "enter", "esc":
 				level := m.effortOptions[m.effortSelected]
@@ -53,13 +45,19 @@ func (m *ChatModel) handleInput(msg tea.Msg) (tea.Cmd, bool) {
 			}
 		}
 
-		if msg.String() == "left" && !m.reader.active && m.TextArea.Value() == "" {
+		if msg.String() == "left" && m.TextArea.Value() == "" {
 			return func() tea.Msg { return ChatBackToSessionsMsg{} }, true
 		}
 
-		if msg.String() == "ctrl+c" {
+		if msg.String() == "ctrl+c" || (msg.String() == "ctrl+d" && m.TextArea.Focused() && m.TextArea.Value() == "") {
 			m.Close()
 			return func() tea.Msg { return ChatQuitMsg{} }, true
+		}
+		if msg.String() == "ctrl+s" {
+			return func() tea.Msg { return ChatBackToSessionsMsg{} }, true
+		}
+		if msg.String() == "ctrl+o" {
+			return func() tea.Msg { return ChatOpenAgentsMsg{} }, true
 		}
 		if msg.String() == "ctrl+n" {
 			return func() tea.Msg { return ChatNewSessionMsg{} }, true
@@ -69,17 +67,6 @@ func (m *ChatModel) handleInput(msg tea.Msg) (tea.Cmd, bool) {
 			return nil, true
 		}
 
-		if cmd, handled := m.handleReader(msg); handled {
-			return cmd, true
-		}
-		if m.vim.normal && (msg.String() == "ctrl+d" || msg.String() == "ctrl+u") {
-			delta := max(1, m.Viewport.Height()/2)
-			if msg.String() == "ctrl+u" {
-				delta = -delta
-			}
-			m.scrollBy(delta)
-			return nil, true
-		}
 		if cmd, handled := m.handleVim(msg); handled {
 			return cmd, true
 		}
@@ -169,8 +156,12 @@ func (m *ChatModel) handleInput(msg tea.Msg) (tea.Cmd, bool) {
 			}
 			m.refreshViewportContent()
 			return nil, true
-		case "ctrl+k":
-			m.Flags.Compaction = !m.Flags.Compaction
+		case "ctrl+j", "ctrl+k":
+			if msg.String() == "ctrl+j" {
+				m.Flags.Diffs = !m.Flags.Diffs
+			} else {
+				m.Flags.Compaction = !m.Flags.Compaction
+			}
 			m.rebuildSettledLines()
 			m.refreshViewportContent()
 			return nil, true

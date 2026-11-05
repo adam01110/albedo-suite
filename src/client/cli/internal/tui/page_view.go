@@ -306,20 +306,9 @@ func (m PageViewModel) Update(msg tea.Msg) (PageViewModel, tea.Cmd) {
 	return m, cmd
 }
 
-// keyPress keeps list navigation separate from prompts and confirmations.
+// keyPress routes a key by the mode the page is in. A bare letter only ever
+// reaches the filter or a prompt; actions run from chords.
 func (m PageViewModel) keyPress(msg tea.KeyPressMsg) (PageViewModel, tea.Cmd) {
-	if m.Mode == modeBrowse {
-		if !m.navigation.editing {
-			if chord := map[string]rune{"a": 'a', "r": 'r'}[msg.String()]; chord != 0 {
-				msg = tea.KeyPressMsg{Code: chord, Mod: tea.ModCtrl}
-			}
-		}
-		var done bool
-		msg, done = m.navigation.key(msg, &m.input, false)
-		if done {
-			return m, nil
-		}
-	}
 	key := msg.String()
 	if m.Mode == modeConfirm {
 		if m.confirm.key(msg) {
@@ -378,7 +367,7 @@ func (m PageViewModel) browseKey(msg tea.KeyPressMsg) (PageViewModel, tea.Cmd) {
 	if m.Doc == nil {
 		return m, nil
 	}
-	if key == "ctrl+a" || key == "enter" {
+	if key == "ctrl+a" {
 		if len(m.Doc.Actions) > 0 {
 			m.Mode, m.ActionIndex = modeActions, 0
 		}
@@ -409,13 +398,11 @@ func (m PageViewModel) chord(key string) (PageAction, bool) {
 // actionsKey moves through the actions menu and runs the one entered on.
 func (m PageViewModel) actionsKey(key string) (PageViewModel, tea.Cmd) {
 	switch key {
-	case "up", "ctrl+p", "k":
+	case "up", "ctrl+p":
 		m.ActionIndex = max(0, m.ActionIndex-1)
-	case "down", "ctrl+n", "j":
+	case "down", "ctrl+n":
 		m.ActionIndex = min(len(m.Doc.Actions)-1, m.ActionIndex+1)
-	case "h", "q":
-		m.Mode = modeBrowse
-	case "enter", "l":
+	case "enter":
 		act := m.Doc.Actions[m.ActionIndex]
 		if act.Row && m.currentRow() == nil {
 			m.Error = "Select a row for this action."
@@ -439,9 +426,9 @@ func (m PageViewModel) choiceKey(key string) (PageViewModel, tea.Cmd) {
 		return m, nil
 	}
 	switch key {
-	case "left", "up", "h", "k":
+	case "left", "up":
 		m.ChoiceIndex = (m.ChoiceIndex - 1 + len(opts)) % len(opts)
-	case "right", "down", "l", "j":
+	case "right", "down":
 		m.ChoiceIndex = (m.ChoiceIndex + 1) % len(opts)
 	case "enter":
 		cmd := m.runAction(*m.CurrentAction, opts[m.ChoiceIndex])

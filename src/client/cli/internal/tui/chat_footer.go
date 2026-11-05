@@ -91,7 +91,7 @@ func (m ChatModel) activeGlances() []sidebarGlance {
 // a sidebar, the ones that did not fit its height with one.
 func (m ChatModel) glanceCounts() []string {
 	omitted := m.activeGlances()
-	if m.sidebarWidth() > 0 && m.leader == nil {
+	if m.sidebarWidth() > 0 {
 		_, omitted = m.sidebarRows()
 	}
 	var counts []string
@@ -171,33 +171,27 @@ func (m ChatModel) glanceRows(g sidebarGlance, limit int) []string {
 func (m ChatModel) renderFooter() string {
 	width := m.chatWidth()
 	right, compact := m.contextStat()
-	commands := hint{"space", "actions"}
+	commands := hint{"i", "type"}
 	if !m.vim.normal {
 		commands = hint{"esc", "normal"}
-	}
-	sessions := hint{"tab", "transcript"}
-	if m.reader.active {
-		sessions = hint{"tab", "composer"}
 	}
 	modeStyle := DefaultStyles.You
 	if !m.vim.normal {
 		modeStyle = DefaultStyles.Success
 	}
 	mode := hint{modeStyle.Bold(true).Render(m.vimMode()), ""}
-	focus := strings.TrimPrefix(m.readerStatus(), m.vimMode()+" · ")
-	if m.reader.searching {
-		return ansi.Truncate(m.readerStatus(), width, "…")
-	}
-	if width >= 60 && m.reader.active {
-		mode.does = focus
-	}
+	sessions := hint{"←", "sessions"}
 	candidates := []struct {
 		right string
 		left  []hint
 	}{
-		{left: []hint{mode, commands, sessions, {"F2", "workspace"}, {"F1", "keys"}}, right: right},
-		{left: []hint{mode, commands, sessions, {"F1", "keys"}}, right: compact},
+		{left: []hint{mode, sessions, commands, {"shift+↑↓", "your messages"}, {"ctrl+j", "diffs"}, {"ctrl+o", "agents"}}, right: right},
+		{left: []hint{mode, sessions, commands, {"ctrl+j", "diffs"}, {"ctrl+o", "agents"}}, right: right},
+		{left: []hint{mode, sessions, commands, {"ctrl+o", "agents"}}, right: compact},
+		{left: []hint{mode, sessions, commands}, right: compact},
+		{left: []hint{mode, commands, {"ctrl+j", "diffs"}}, right: compact},
 		{left: []hint{mode, commands}, right: compact},
+		{left: []hint{mode, {"/", ""}}, right: compact},
 	}
 	if slices.ContainsFunc(m.History.Entries(), func(e HistoryEntry) bool { return e.Kind == EntryShell }) {
 		candidates = append([]struct {
@@ -215,7 +209,7 @@ func (m ChatModel) renderFooter() string {
 			return left + strings.Repeat(" ", gap) + c.right
 		}
 	}
-	return ansi.Truncate(keyHints(hint{mode.key, ""}), width, "…")
+	return ansi.Truncate(keyHints(mode), width, "…")
 }
 
 // contextStat is how much of the prompt was read from cache, fading as the

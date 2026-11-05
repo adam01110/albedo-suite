@@ -369,30 +369,22 @@ func (m ContextInspectorModel) Update(msg tea.Msg) (ContextInspectorModel, tea.C
 func (m ContextInspectorModel) readerKey(msg tea.KeyPressMsg) (ContextInspectorModel, tea.Cmd) {
 	d := m.Detail
 	switch msg.String() {
-	case "esc", "ctrl+c", "q":
+	case "esc", "ctrl+c", "ctrl+d":
 		m.Detail = nil
 		m.Generation = nextPageGeneration()
 	case "r":
 		d.Raw, d.Scroll = !d.Raw, 0
-	case "up", "k":
+	case "up":
 		d.scroll(-1)
-	case "down", "j":
+	case "down":
 		d.scroll(1)
-	case "ctrl+u":
-		d.scroll(-max(1, d.visible/2))
-	case "ctrl+d":
-		d.scroll(max(1, d.visible/2))
-	case "home":
-		d.Scroll = 0
-	case "end", "G":
-		d.Scroll = max(0, len(d.wrapped)-d.visible)
 	case "pgup":
 		d.scroll(-max(1, d.visible))
 	case "pgdown":
 		d.scroll(max(1, d.visible))
-	case "left", "right", "h", "l":
+	case "left", "right":
 		page := d.Page - 1
-		if msg.String() == "right" || msg.String() == "l" {
+		if msg.String() == "right" {
 			page = d.Page + 1
 		}
 		if page >= 0 && page < d.Section.Pages {
@@ -405,12 +397,6 @@ func (m ContextInspectorModel) readerKey(msg tea.KeyPressMsg) (ContextInspectorM
 }
 
 func (m ContextInspectorModel) sectionsKey(msg tea.KeyPressMsg) (ContextInspectorModel, tea.Cmd) {
-	var done bool
-	msg, done = m.navigation.key(msg, &m.input, false)
-	if done {
-		return m, nil
-	}
-
 	switch msg.String() {
 	case "esc", "ctrl+c", "ctrl+d":
 		return m, func() tea.Msg { return ContextDoneMsg{} }

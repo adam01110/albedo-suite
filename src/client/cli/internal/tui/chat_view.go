@@ -63,11 +63,8 @@ func (m ChatModel) chatWidth() int { return max(1, m.Width-2*chatMargin) }
 // sidebarWidth is 0 without glances or room for them. The transcript keeps at
 // least 72 columns beside a sidebar of 28 to 32.
 func (m ChatModel) sidebarWidth() int {
-	if m.leader != nil && m.Height-6-m.chromeRows() < 11 {
-		return 0
-	}
 	room := m.chatWidth() - 72 - 2
-	if room < 28 || m.leader == nil && len(m.activeGlances()) == 0 {
+	if room < 28 || len(m.activeGlances()) == 0 {
 		return 0
 	}
 	return min(32, room)
@@ -313,17 +310,6 @@ func (m ChatModel) reaching() string {
 // reused, and a frame nothing changed in returns the string the last one
 // returned, so Bubble Tea's own comparison can skip parsing and painting it.
 func (m *ChatModel) View() string {
-	if m.reader.active {
-		if m.Follow {
-			m.reader.row = max(0, len(m.frameLines)-1)
-		} else {
-			previous := m.reader.row
-			m.readerAnchor()
-			if previous != m.reader.row {
-				m.readerReveal()
-			}
-		}
-	}
 	if m.frame == nil {
 		m.frame = &frameCache{}
 	}
@@ -342,7 +328,7 @@ func (m *ChatModel) View() string {
 		rows = append(rows, "")
 	}
 
-	rows = append(rows, m.readerRows(m.body())...)
+	rows = append(rows, m.body()...)
 	// one row: a job's command may span lines
 	status := oneLine(m.statusLine())
 	// the face trails the text, so its frames never move anything
@@ -556,9 +542,6 @@ func (c *frameCache) glances(m ChatModel) sidebarBlock {
 func (m ChatModel) sidebarColumn() []string {
 	if m.sidebarWidth() <= 0 {
 		return nil
-	}
-	if m.leader != nil {
-		return m.leader.leaderRows(m.sidebarWidth(), m.Viewport.Height())
 	}
 	if m.frame != nil {
 		return m.frame.glances(m).column

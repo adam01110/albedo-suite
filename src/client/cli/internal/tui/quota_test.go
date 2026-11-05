@@ -827,7 +827,6 @@ func TestQuotaModelFlow(t *testing.T) {
 		}
 
 		// Type text to narrow shown rows
-		m, _ = m.Update(navigationKey('/'))
 		for _, char := range "anthropic" {
 			m, _ = m.Update(tea.KeyPressMsg{Code: char, Text: string(char)})
 		}
@@ -885,7 +884,6 @@ func TestQuotaModelFlow(t *testing.T) {
 		m := quotaModel(120, 30)
 
 		// Filter directly to the broken deepseek reading
-		m, _ = m.Update(navigationKey('/'))
 		for _, char := range "deepseek" {
 			m, _ = m.Update(tea.KeyPressMsg{Code: char, Text: string(char)})
 		}

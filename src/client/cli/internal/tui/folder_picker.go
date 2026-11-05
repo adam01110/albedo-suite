@@ -140,7 +140,6 @@ type cachedFolderPreview struct {
 // folder. Browsing, from the sessions view, it starts a session in the
 // folder instead. Either way → steps into the folder's sessions to open one.
 type FolderPicker struct {
-	navigation  searchNavigation
 	readCtx     context.Context
 	cancelReads context.CancelFunc
 	src         folderSource
@@ -393,23 +392,6 @@ func (m FolderPicker) Update(msg tea.Msg) (FolderPicker, tea.Cmd) {
 				return m, cmd
 			}
 		}
-		original := msg.String()
-		var done bool
-		msg, done = m.navigation.key(msg, &m.input, false)
-		if done {
-			return m, nil
-		}
-		if m.navigation.move(msg, &m.cursor, len(m.rows), m.Height) {
-			return m, m.follow()
-		}
-		if !m.navigation.editing {
-			if original == "h" {
-				msg = tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift}
-			}
-			if original == "l" {
-				msg = tea.KeyPressMsg{Code: tea.KeyTab}
-			}
-		}
 		switch msg.String() {
 		case "esc", "ctrl+c", "ctrl+d":
 			return m, func() tea.Msg { return FolderPickerCancelMsg{} }
@@ -445,7 +427,6 @@ func (m FolderPicker) Update(msg tea.Msg) (FolderPicker, tea.Cmd) {
 			return m.typed(msg)
 		}
 	case tea.PasteMsg:
-		m.navigation.paste(msg, &m.input)
 		return m.typed(msg)
 	}
 	return m, m.follow()
@@ -466,16 +447,16 @@ func (m *FolderPicker) sessionKey(msg tea.KeyPressMsg) (cmd tea.Cmd, done bool) 
 	row, _ := m.highlighted()
 	sessions := m.sessionsFor(row)
 	switch msg.String() {
-	case "up", "ctrl+p", "k":
+	case "up", "ctrl+p":
 		m.sessionCursor = max(0, m.sessionCursor-1)
-	case "down", "ctrl+n", "j":
+	case "down", "ctrl+n":
 		m.sessionCursor = max(0, min(len(sessions)-1, m.sessionCursor+1))
 	case "enter":
 		if m.sessionCursor < len(sessions) {
 			s := sessions[m.sessionCursor]
 			return func() tea.Msg { return FolderOpenSessionMsg{Session: s} }, true
 		}
-	case "left", "esc", "h":
+	case "left", "esc":
 		m.inSessions = false
 	default:
 		m.inSessions = false

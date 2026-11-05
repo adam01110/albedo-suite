@@ -14,7 +14,8 @@ Both suite packages include the same Vim support.
 ## Modes and application keys
 
 New chat models start in `NORMAL`; press `i` to type. The footer puts the mode
-first, followed by `space actions` in NORMAL or `esc normal` in INSERT. The mode
+first, followed by ordinary application shortcuts and `i type` in NORMAL or
+`esc normal` in INSERT. The mode
 label is bold: `NORMAL` uses the
 theme's cyan and `INSERT` its green (Base16 base0C/base0B when configured).
 This edits only the unsent composer, never the transcript or already-submitted
@@ -27,15 +28,13 @@ messages.
 | `i` / `a` | Insert at / after the cursor, including while an agent runs. |
 | `I` / `A` | Insert at the first nonblank / end of the logical line. |
 | `o` / `O` | Open one line below / above and enter Insert mode. |
-| `/` in Normal mode | Open workspace destinations without editing the draft; **not** composer search. |
-| `Space` in Normal mode | Open grouped actions in the sidebar; see [leader bindings](vim-ux.md#workspace-and-help). |
-| `F2` / `F1` | Workspace destinations / searchable keyboard reference. |
+| `/` in Normal mode | Insert `/` at the cursor and enter Insert mode for slash commands. |
 | `Enter` | Submit using the existing composer rules, in either mode. |
 | `Shift+Enter` | Insert a newline, in either mode. |
 
 Arrows, transcript paging, menus and external-editor integration retain their
-application behavior. Chat navigation via `Ctrl+s`/`Ctrl+o` and the `Ctrl+j` diff
-toggle are replaced by the Space leader; other control/Alt shortcuts remain.
+application behavior. `Ctrl+s` opens sessions, `Ctrl+o` opens agents, and
+`Ctrl+j` toggles diffs in either input mode; other control/Alt shortcuts remain.
 `Ctrl+r` in Normal mode performs Vim-style redo. Unsupported unmodified
 Normal-mode keys
 are generally consumed without inserting text; they do not invoke Vim features.
@@ -47,35 +46,10 @@ already delivered to the agent and newer uncancelled inputs are not restored.
 
 ## Navigation outside the composer
 
-Searchable lists open in `NORMAL`: `j`/`k` move down/up, `h` goes back and
-`l` acts like Enter. This includes sessions, login pickers, extensions,
-capabilities (MCP, skills and instructions), configuration, checkpoints, context,
-webhooks, Discord and command-backed pages. Existing confirmations still require
-Enter; navigation letters never confirm a pending mutation.
-
-Press `/` to edit the search, including queries starting with `h`, `j`, `k` or
-`l`. Other printable keys do not enter search implicitly. In `SEARCH`, hjkl
-and spaces are literal text. `Esc` returns to navigation while
-keeping the filter; a second `Esc` leaves the screen. Arrow keys and control
-shortcuts remain available. The search line displays the current mode.
-
-- Model picker: `j`/`k` select models; `h`/`l` adjust reasoning effort.
-- Folder browser: `j`/`k` select folders; `h` ascends and `l` descends. Use the
-  right arrow to enter a folder's session pane; `h` returns from it. `/` edits
-  the path, so enter `//` to start an absolute path from an empty query. From
-  sessions, `Ctrl+f` still opens folder browsing.
-- Agents: hjkl cycle agents. `i` enters message editing; `Esc` preserves the
-  draft and resumes navigation. `/spawn` remains a literal message command.
-- Context reader: `j`/`k` scroll; `h`/`l` change pages.
-- Choice menus and effort selector: `h`/`k` select previous; `l`/`j` select next.
-- MCP transport row: `h`/`l` change transport; `j`/`k` move focus.
-
-Normal-mode composer motions edit the draft, even when it is empty. Tab switches
-to transcript focus, where `j`/`k` navigate rows, `h` returns to sessions, and `/`
-starts transcript FIND. Tab returns to the composer without changing its draft.
-
-Text prompts, rename fields, credentials and form text fields remain ordinary
-text entry; hjkl are not intercepted there.
+NORMAL/INSERT modes apply only to the chat input. Lists and search fields accept
+text immediately; use arrows and the existing control-key shortcuts to navigate.
+Agents, forms and transcript scrolling retain upstream behavior. There is no
+Space leader, workspace launcher, global keyboard reference or transcript mode.
 
 ## Motions
 
@@ -109,8 +83,8 @@ text objects are. Character finds do not cross newlines or wrap around.
 | `u` / `Ctrl+r` | Undo / redo composer changes, with counts. |
 
 There is one composer-local register, populated by yank and deletion. It is not
-Vim's named/numbered register system and is not the system clipboard. Application
-clipboard shortcuts remain separate.
+Vim's named/numbered register system. Yanks also use the application clipboard
+transport; application clipboard shortcuts remain available.
 
 Undo stores up to 100 snapshots. An insertion or change and its following typed
 text undo together after returning to Normal mode. Paste, external-editor results
@@ -159,7 +133,7 @@ language-aware, and does not provide all Vim text-object edge-case semantics.
 | --- | --- |
 | Modes | Characterwise, linewise and blockwise Visual mode (`v`, `V`, `Ctrl+v`); Replace mode (`R`). |
 | Repetition and automation | Dot-repeat (`.`), macro recording/playback (`q`, `@`), mappings and vimrc configuration. |
-| Search | Buffer search (`/`, `?`, `n`, `N`, `*`, `#`), regular expressions and substitution. `/` opens workspace destinations in composer NORMAL; slash commands remain available in INSERT. |
+| Search | Buffer search (`/`, `?`, `n`, `N`, `*`, `#`), regular expressions and substitution. `/` enters INSERT with a slash; slash commands remain available in INSERT. |
 | Other motions | `W/B/E`, `%`, `ge/gE`, paragraph/sentence motions, marks, jumps and Vim window/screen motions. |
 | Other edits | `s/S`, `Y`, `J/gJ`, indentation (`>/<`), case operators (`~/gu/gU`), formatting and numeric increment/decrement. |
 | Other text objects | Sentences, paragraphs, tags, Visual-mode objects and plugin-defined objects. |

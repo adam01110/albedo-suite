@@ -94,7 +94,6 @@ type liveRowsKey struct {
 const liveFrame = 120 * time.Millisecond
 
 type ChatModel struct {
-	leader            *workspaceOverlay
 	streamCtx         context.Context
 	Usage             *daemon.Usage
 	progressByCallID  map[string]*daemon.ToolProgress
@@ -183,7 +182,6 @@ type ChatModel struct {
 	Viewport    pane
 
 	transcript         transcriptState
-	reader             transcriptNavigation
 	vim                vimState
 	TextArea           textarea.Model
 	burstRowsKey       burstRowsKey

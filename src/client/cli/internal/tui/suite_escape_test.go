@@ -178,18 +178,22 @@ func TestSuiteEscapeDeferredUntilSendAccepted(t *testing.T) {
 	}
 }
 
-func TestSuiteEscapeEffortVimKeys(t *testing.T) {
+func TestSuiteEscapeEffortArrowKeys(t *testing.T) {
 	m := newTestChatModel(t, &daemon.Session{ID: "s"})
 	m.SetSize(80, 24)
 	m.Status.Running = true
 	m.effortOptions = []string{"low", "medium", "high"}
-	vimKeys(&m, "j", "l", "l")
-	if m.effortSelected != 2 {
-		t.Fatal("j/l must move right with clamping")
-	}
-	vimKeys(&m, "h", "k", "k")
+	vimKeys(&m, "j", "l", "h", "k")
 	if m.effortSelected != 0 {
-		t.Fatal("h/k must move left with clamping")
+		t.Fatal("Vim letters must not navigate the effort selector")
+	}
+	vimKeys(&m, "right", "down", "right")
+	if m.effortSelected != 2 {
+		t.Fatal("arrows must move right with clamping")
+	}
+	vimKeys(&m, "left", "up", "left")
+	if m.effortSelected != 0 {
+		t.Fatal("arrows must move left with clamping")
 	}
 	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
 	if len(m.effortOptions) != 0 || m.Stopping {
