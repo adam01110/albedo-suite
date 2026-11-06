@@ -14,7 +14,7 @@ that needs a passphrase, a second factor or a new host key answers
 the bundle over, so a waiting client can say so, then one JSON object:
 `{state, detail, os, arch, home, cpus, python}` and, once the home is known,
 the `commands` answer: `{argv, control, bundle, bridge, signal, remove,
-gather, auth_sock}`, the complete remote commands the daemon runs there.
+gather, relay, auth_sock}`, the complete remote commands the daemon runs there.
 state is ready, needs_auth, unreachable or unsupported. A ready probe has checked python >= 3.11 and staged the content-hashed bundle
 under `~/.albedo-remote/<digest>`. `commands` needs no network, for a host
 known only from a kernel's record while ssh is down. `hosts` lists the `Host`
@@ -217,6 +217,9 @@ def commands(target: str, home: str) -> dict[str, object]:
         ),
         "remove": in_login_shell('read -r run && rm -rf -- "$run"'),
         "gather": in_login_shell(python + shlex.quote(f"{bundle}/albedo_gather.py")),
+        "relay": in_login_shell(
+            python + shlex.quote(f"{bundle}/albedo_transfer_relay.py")
+        ),
     }
     socket = agent_socket()
     if socket is not None:

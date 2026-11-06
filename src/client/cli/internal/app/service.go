@@ -20,6 +20,7 @@ type Service struct {
 	Existing func(context.Context) (*daemon.Connection, error)
 }
 type OpenOptions struct {
+	CyberAccess          *string
 	SessionID, Workspace string
 	Fresh, Terminal      bool
 	Latest               bool
@@ -78,7 +79,7 @@ func (s *Service) PrepareOpen(ctx context.Context, options OpenOptions) (Prepare
 	}
 	configured := settings.Profiles.Active != ""
 
-	if !configured && !options.Terminal {
+	if !configured && (!options.Terminal || accessValue(options.CyberAccess) == "daybreak_blue") {
 		return PreparedOpen{}, errors.New("no model provider is configured; run albedo login in a terminal to set one up")
 	}
 
@@ -94,7 +95,7 @@ func (s *Service) PrepareOpen(ctx context.Context, options OpenOptions) (Prepare
 		}
 		initial = &captured
 	} else if configured && (fresh || len(sessions) == 0) {
-		created, createErr := daemon.CreateSession(ctx, conn, daemon.CreateSessionRequest{Workspace: absWorkspace})
+		created, createErr := daemon.CreateSession(ctx, conn, daemon.CreateSessionRequest{Workspace: absWorkspace, CyberAccess: accessValue(options.CyberAccess)})
 		if createErr != nil {
 			return PreparedOpen{}, createErr
 		}

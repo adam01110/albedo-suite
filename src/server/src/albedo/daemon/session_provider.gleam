@@ -56,6 +56,7 @@ pub fn configured_client(
     state.info.protocol,
     state.info.effort,
     state.info.fast,
+    state.info.cyber_access,
   ))
   Ok(#(state, client))
 }

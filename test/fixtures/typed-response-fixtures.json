@@ -1,6 +1,6 @@
 {
   "harness.py": {
-    "sha256": "73093a6a8b5192b0e97ccfb55da5efd258211dc81f359c3cb4c58d6d7dc07189",
+    "sha256": "9f1626f07e9d889f653c00d60f5d8ba2e4f352817a6031a4c4d0de68d77d5fcd",
     "replacements": [
       [
         "def prompt_text(request):",

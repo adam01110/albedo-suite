@@ -130,6 +130,7 @@ type ChatModel struct {
 	Workspace           string
 	Host                string // the label of a remote workspace's host; "" when local
 	Model               string
+	CyberAccess         string
 	Effort              string
 	Fast                bool
 	Provider            string
@@ -148,6 +149,16 @@ type ChatModel struct {
 	// direnvAsk is the blocked .envrc the question above the composer offers
 	// to allow; empty when nothing asks.
 	direnvAsk string
+	// moved is where the session went when it moved to another daemon; the
+	// banner above the composer offers to open it there. movedNote is the
+	// attach in flight or, with movedFailed, why the last one failed.
+	moved     *daemon.SessionMoved
+	movedNote string
+	// movePending is the session's move waiting in its checklist; the
+	// banner's enter reopens it.
+	movePending *daemon.SessionMovePending
+	// moveStatus is a move to another daemon whose box was put away.
+	moveStatus string
 
 	// burstRows is the rendered frame of the trailing run of compact entries.
 	// Its key names every input the rows depend on, so a refresh that changes
@@ -234,6 +245,7 @@ type ChatModel struct {
 	interruptPending  bool
 	hostAuth          *hostSignIn
 	sentHere          bool
+	movedFailed       bool
 	// graphemes says the terminal measures grapheme clusters (mode 2027),
 	// which Bubble Tea turns off when it hands the terminal to the editor.
 	graphemes bool
@@ -281,10 +293,13 @@ func NewChatModel(session *daemon.Session, client *daemon.ChatClient) ChatModel 
 		Workspace:    session.Workspace,
 		Host:         sessionHost(*session),
 		Model:        session.Model,
+		CyberAccess:  session.CyberAccess,
 		Effort:       session.Effort,
 		Fast:         session.Fast,
 		Provider:     session.Provider,
 		Glances:      session.Glances,
+		moved:        session.Moved,
+		movePending:  session.MovePending,
 		client:       client,
 		History:      bh,
 		Renderer:     TranscriptRenderer{Workspace: session.Workspace, highlights: &highlightCache{}},

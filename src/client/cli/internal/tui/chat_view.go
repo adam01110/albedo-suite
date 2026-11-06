@@ -127,6 +127,9 @@ func (m ChatModel) renderThought() string {
 }
 
 func (m ChatModel) statusLine() string {
+	if m.moveStatus != "" {
+		return m.moveStatus
+	}
 	if m.TurnFailed || m.Notices.HasError() {
 		return "Reply failed · see error above"
 	}
@@ -240,6 +243,9 @@ func (m ChatModel) header(width int) string {
 		workspace = scpRelative(underHome(workspace, m.hostHome))
 	}
 	model := m.Model
+	if m.CyberAccess == "daybreak_blue" {
+		model += " · Daybreak Blue"
+	}
 	if m.Effort != "" {
 		model += ":" + m.Effort
 	}
@@ -356,6 +362,7 @@ func (m *ChatModel) View() string {
 	if len(m.effortOptions) == 0 {
 		rows = append(rows, m.chipStrip(width)...)
 		rows = append(rows, m.direnvRows(width)...)
+		rows = append(rows, m.movedRows(width)...)
 	}
 	rows = append(rows, m.composeRule(width))
 	if len(m.effortOptions) > 0 {

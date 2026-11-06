@@ -1311,6 +1311,30 @@ type FormField struct {
 	Type        string   `json:"type"`
 }
 
+// ForwardedAck defines model for ForwardedAck.
+type ForwardedAck struct {
+	// Error Why the letter was not admitted; null when it was.
+	Error *string `json:"error" nullable:"true"`
+	ID    string  `json:"id"`
+
+	// Retry Send it again later (a full inbox) rather than bouncing it.
+	Retry bool `json:"retry"`
+}
+
+// ForwardedLetter defines model for ForwardedLetter.
+type ForwardedLetter struct {
+	Body string `json:"body"`
+	ID   string `json:"id"`
+	Kind string `json:"kind"`
+
+	// Recipient Opaque identity. Never infer a resource type or route from its contents.
+	Recipient ID `json:"recipient"`
+
+	// Sender Opaque identity. Never infer a resource type or route from its contents.
+	Sender     ID     `json:"sender"`
+	SenderName string `json:"sender_name"`
+}
+
 // Generation 128 random bits encoded as unpadded base64url; new for each session actor lifetime.
 type Generation = string
 
@@ -2037,7 +2061,11 @@ type Model struct {
 	CapKey ID `json:"cap_key"`
 
 	// CompactAt The window the user saved for this model, below its own; null or absent follows the model.
-	CompactAt              *Counter `json:"compact_at,omitempty" nullable:"true"`
+	CompactAt   *Counter `json:"compact_at,omitempty" nullable:"true"`
+	CyberAccess *struct {
+		Detail *string `json:"detail,omitempty"`
+		Status string  `json:"status"`
+	} `json:"cyber_access,omitempty"`
 	DefaultContextTokens   *Counter `json:"default_context_tokens" nullable:"true"`
 	EffectiveContextTokens *Counter `json:"effective_context_tokens" nullable:"true"`
 	Efforts                []struct {
@@ -2106,10 +2134,70 @@ type ModelSettingsResource struct {
 	Value ModelSettings `json:"value"`
 }
 
+// Move defines model for Move.
+type Move struct {
+	// Bindings What finish disarms here, listed from checklist on.
+	Bindings []MoveBinding `json:"bindings"`
+	Error    *MoveError    `json:"error" nullable:"true"`
+	ID       string        `json:"id"`
+
+	// Lost What the target could not restore, such as the python namespace.
+	Lost     []string     `json:"lost"`
+	Progress MoveProgress `json:"progress"`
+
+	// Reason Why the move waits, such as a turn still running or the target out of reach.
+	Reason *string `json:"reason" nullable:"true"`
+
+	// SessionID Opaque identity. Never infer a resource type or route from its contents.
+	SessionID ID `json:"session_id"`
+
+	// State At checklist the target is live and the sessions here still are too, until finish disarms the bindings and marks them moved.
+	State string `json:"state"`
+
+	// Target [user@]host:/absolute/path
+	Target          string  `json:"target"`
+	TargetHome      *string `json:"target_home" nullable:"true"`
+	TargetSessionID *string `json:"target_session_id" nullable:"true"`
+}
+
+// MoveBinding defines model for MoveBinding.
+type MoveBinding struct {
+	// Detail A schedule's prompt and cadence, a webhook's name, the bot's name and channels.
+	Detail string `json:"detail"`
+
+	// Error Why disarming this binding failed.
+	Error *string `json:"error" nullable:"true"`
+	ID    string  `json:"id"`
+	Kind  string  `json:"kind"`
+	Label string  `json:"label"`
+
+	// NewURL The webhook url on the target to point senders at; null when the target has none.
+	NewURL *string `json:"new_url" nullable:"true"`
+
+	// OldURL The webhook url senders post to here.
+	OldURL *string `json:"old_url" nullable:"true"`
+	Status string  `json:"status"`
+}
+
+// MoveError defines model for MoveError.
+type MoveError struct {
+	Code   string `json:"code"`
+	Detail string `json:"detail"`
+}
+
+// MoveProgress defines model for MoveProgress.
+type MoveProgress struct {
+	BytesDone  int64 `json:"bytes_done"`
+	BytesTotal int64 `json:"bytes_total"`
+}
+
 // NewSessionIntent defines model for NewSessionIntent.
 type NewSessionIntent struct {
 	// ContextWindow Tokens this session compacts against instead of the model's catalogued window. Null uses the model's window.
-	ContextWindow   *int64  `json:"context_window,omitempty" nullable:"true"`
+	ContextWindow *int64 `json:"context_window,omitempty" nullable:"true"`
+
+	// CyberAccess Explicit Blue at creation; null or omission selects standard.
+	CyberAccess     *string `json:"cyber_access,omitempty" nullable:"true"`
 	Effort          *string `json:"effort" nullable:"true"`
 	Kind            string  `json:"kind"`
 	Model           *ID     `json:"model" nullable:"true"`
@@ -2123,7 +2211,10 @@ type NewSessionIntent struct {
 // NewSessionRequest Examples: {"kind":"new","workspace":"/workspace/project"}
 type NewSessionRequest struct {
 	// ContextWindow Tokens this session compacts against instead of the model's catalogued window. Null uses the model's window.
-	ContextWindow   *int64  `json:"context_window,omitempty" nullable:"true"`
+	ContextWindow *int64 `json:"context_window,omitempty" nullable:"true"`
+
+	// CyberAccess Explicit Blue at creation; null or omission selects standard.
+	CyberAccess     *string `json:"cyber_access,omitempty" nullable:"true"`
 	Effort          *string `json:"effort,omitempty" nullable:"true"`
 	Kind            string  `json:"kind"`
 	Model           *ID     `json:"model,omitempty" nullable:"true"`
@@ -2908,6 +2999,7 @@ type Session struct {
 	Creation        *Creation      `json:"creation" nullable:"true"`
 	CurrentProgress []ToolProgress `json:"current_progress"`
 	Cursor          *Cursor        `json:"cursor" nullable:"true"`
+	CyberAccess     *string        `json:"cyber_access,omitempty" nullable:"true"`
 	Depth           int64          `json:"depth"`
 	Effort          *string        `json:"effort" nullable:"true"`
 
@@ -2925,8 +3017,14 @@ type Session struct {
 	Kernel     Kernel  `json:"kernel"`
 
 	// Location Parsed workspace and daemon-resolved display label. Reading this metadata does not connect to the remote host.
-	Location        SessionLocation    `json:"location"`
-	Model           *ID                `json:"model" nullable:"true"`
+	Location SessionLocation `json:"location"`
+	Model    *ID             `json:"model" nullable:"true"`
+
+	// MovePending Set while a move of this session waits at its checklist; the session is still live here.
+	MovePending *SessionMovePending `json:"move_pending,omitempty" nullable:"true"`
+
+	// Moved Set once the session moved to another daemon; it then refuses new input (409 session_moved).
+	Moved           *SessionMoved      `json:"moved,omitempty" nullable:"true"`
 	Name            string             `json:"name"`
 	ParentID        *ID                `json:"parent_id" nullable:"true"`
 	PendingInputs   []PendingInput     `json:"pending_inputs"`
@@ -2996,8 +3094,11 @@ type SessionCompactedEvent struct {
 // SessionConfiguration Examples: {"effort":null,"fast":false,"id":"01a0fcea-2b00-7000-8000-000000000001","model":"example-model","name":null,"preferences":{"archived":false,"pin_order":null,"pinned":false},"provider_profile":"personal","revision":"config-1","selection":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"workspace":"/workspace/project"}
 type SessionConfiguration struct {
 	// ContextWindow Tokens this session compacts against instead of the model's catalogued window. Null uses the model's window.
-	ContextWindow *int64  `json:"context_window,omitempty" nullable:"true"`
-	Effort        *string `json:"effort" nullable:"true"`
+	ContextWindow *int64 `json:"context_window,omitempty" nullable:"true"`
+
+	// CyberAccess Explicit session-scoped Codex Blue intent; null sends ordinary requests.
+	CyberAccess *string `json:"cyber_access,omitempty" nullable:"true"`
+	Effort      *string `json:"effort" nullable:"true"`
 
 	// Fast Provider fast-mode setting; defaults off and may affect billing.
 	Fast bool `json:"fast"`
@@ -3139,6 +3240,23 @@ type SessionMessageEvent struct {
 	Type     string  `json:"type"`
 }
 
+// SessionMovePending defines model for SessionMovePending.
+type SessionMovePending struct {
+	Host       string `json:"host"`
+	TransferID string `json:"transfer_id"`
+}
+
+// SessionMoved defines model for SessionMoved.
+type SessionMoved struct {
+	// At UTC RFC 3339.
+	At         Timestamp `json:"at"`
+	Host       string    `json:"host"`
+	TransferID string    `json:"transfer_id"`
+
+	// Workspace [user@]host:/absolute/path
+	Workspace string `json:"workspace"`
+}
+
 // SessionNoteEvent defines model for SessionNoteEvent.
 type SessionNoteEvent struct {
 	Data struct {
@@ -3173,8 +3291,11 @@ type SessionPatch struct {
 	CatalogRevision *ID `json:"catalog_revision,omitempty"`
 
 	// ContextWindow Tokens this session compacts against instead of the model's catalogued window. Null uses the model's window.
-	ContextWindow *int64  `json:"context_window,omitempty" nullable:"true"`
-	Effort        *string `json:"effort,omitempty" nullable:"true"`
+	ContextWindow *int64 `json:"context_window,omitempty" nullable:"true"`
+
+	// CyberAccess Select Blue for this session; null explicitly clears it.
+	CyberAccess *string `json:"cyber_access,omitempty" nullable:"true"`
+	Effort      *string `json:"effort,omitempty" nullable:"true"`
 
 	// Fast Enable provider fast mode; enabling requires a supported capability and may affect billing.
 	Fast *bool `json:"fast,omitempty"`
@@ -3289,6 +3410,7 @@ type SessionSummary struct {
 	CreatedAt       *Timestamp     `json:"created_at" nullable:"true"`
 	CurrentProgress []ToolProgress `json:"current_progress"`
 	Cursor          *Cursor        `json:"cursor" nullable:"true"`
+	CyberAccess     *string        `json:"cyber_access,omitempty" nullable:"true"`
 	Depth           int64          `json:"depth"`
 	Effort          *string        `json:"effort" nullable:"true"`
 	Fast            bool           `json:"fast"`
@@ -3297,8 +3419,14 @@ type SessionSummary struct {
 	ID ID `json:"id"`
 
 	// Location Parsed workspace and daemon-resolved display label. Reading this metadata does not connect to the remote host.
-	Location        SessionLocation    `json:"location"`
-	Model           *ID                `json:"model" nullable:"true"`
+	Location SessionLocation `json:"location"`
+	Model    *ID             `json:"model" nullable:"true"`
+
+	// MovePending Set while a move of this session waits at its checklist; the session is still live here.
+	MovePending *SessionMovePending `json:"move_pending,omitempty" nullable:"true"`
+
+	// Moved Set once the session moved to another daemon; it then refuses new input (409 session_moved).
+	Moved           *SessionMoved      `json:"moved,omitempty" nullable:"true"`
 	Name            string             `json:"name"`
 	ParentID        *ID                `json:"parent_id" nullable:"true"`
 	Preferences     SessionPreferences `json:"preferences"`
@@ -3702,6 +3830,140 @@ type TraceContent struct {
 	Trace ToolTrace `json:"trace"`
 }
 
+// TransferManifest defines model for TransferManifest.
+type TransferManifest struct {
+	ID string `json:"id"`
+
+	// Origin The source home's identity.
+	Origin   string `json:"origin"`
+	Protocol int64  `json:"protocol"`
+	Root     string `json:"root"`
+	Segments []struct {
+		Bytes   int64    `json:"bytes"`
+		Columns []string `json:"columns"`
+
+		// Digest SHA-256
+		Digest  string `json:"digest"`
+		Kind    string `json:"kind"`
+		Name    string `json:"name"`
+		Owner   string `json:"owner"`
+		Rows    int64  `json:"rows"`
+		Version int64  `json:"version"`
+	} `json:"segments"`
+	Sessions []string `json:"sessions"`
+
+	// Watermark The highest transcript position exported.
+	Watermark int64  `json:"watermark"`
+	Workspace string `json:"workspace"`
+}
+
+// TransferOccurrence defines model for TransferOccurrence.
+type TransferOccurrence struct {
+	// Detail The delivery id the source gave a webhook event.
+	Detail *string `json:"detail,omitempty" nullable:"true"`
+
+	// Key The due time in unix seconds, the event id, or the letter id.
+	Key  string `json:"key"`
+	Kind string `json:"kind"`
+
+	// Origin The schedule's id on the source, the hook id, or empty for a letter.
+	Origin string `json:"origin"`
+}
+
+// TransferOccurrences defines model for TransferOccurrences.
+type TransferOccurrences struct {
+	Occurrences []TransferOccurrence `json:"occurrences"`
+}
+
+// TransferPreflight defines model for TransferPreflight.
+type TransferPreflight struct {
+	Available bool `json:"available"`
+
+	// Bytes The move's size, when known before export.
+	Bytes *int64 `json:"bytes" nullable:"true"`
+
+	// Reason Why the move is unavailable, in words for a person.
+	Reason *string `json:"reason" nullable:"true"`
+
+	// RunsThere Whether each session can run on the target, in the order of sessions; empty when the target was not reached. A session that can't and has no alternative makes available false with its reason; one with alternatives leaves the pick to the client (the move's profiles).
+	RunsThere []TransferRunsThere `json:"runs_there"`
+
+	// Sessions The session and its same-workspace descendants, which move together.
+	Sessions     []ID                 `json:"sessions"`
+	TargetDaemon TransferTargetDaemon `json:"target_daemon"`
+}
+
+// TransferRunsThere defines model for TransferRunsThere.
+type TransferRunsThere struct {
+	// Alternatives The target's other profiles offering the model, when this one does not.
+	Alternatives []string `json:"alternatives"`
+	Model        string   `json:"model"`
+
+	// Name The session's family name
+	Name string `json:"name"`
+
+	// Ok The target has this profile and it offers this model.
+	Ok      bool   `json:"ok"`
+	Profile string `json:"profile"`
+
+	// Reason Why it can't run there, in words for a person.
+	Reason *string `json:"reason" nullable:"true"`
+
+	// SessionID Opaque identity. Never infer a resource type or route from its contents.
+	SessionID ID `json:"session_id"`
+}
+
+// TransferRunsThereRequest defines model for TransferRunsThereRequest.
+type TransferRunsThereRequest struct {
+	// Profiles Sessions to switch to another profile as they go live, session id to profile.
+	Profiles map[string]string        `json:"profiles,omitempty"`
+	Sessions []TransferSessionProfile `json:"sessions"`
+}
+
+// TransferSessionProfile defines model for TransferSessionProfile.
+type TransferSessionProfile struct {
+	Model   string `json:"model"`
+	Profile string `json:"profile"`
+
+	// SessionID Opaque identity. Never infer a resource type or route from its contents.
+	SessionID ID `json:"session_id"`
+}
+
+// TransferStatus defines model for TransferStatus.
+type TransferStatus struct {
+	Bytes int64 `json:"bytes"`
+
+	// Error Why activation last stopped; a retry resumes it.
+	Error *struct {
+		Code   string `json:"code"`
+		Detail string `json:"detail"`
+	} `json:"error" nullable:"true"`
+
+	// Home This daemon's home.
+	Home string `json:"home"`
+
+	// Lost What could not be restored, such as "python namespace".
+	Lost     []string `json:"lost"`
+	Received []int64  `json:"received"`
+	Rows     struct {
+		Done  int64 `json:"done"`
+		Total int64 `json:"total"`
+	} `json:"rows"`
+
+	// SessionID The root session
+	SessionID string `json:"session_id"`
+
+	// State importing and installing are still inert; active is live.
+	State string `json:"state"`
+}
+
+// TransferTargetDaemon defines model for TransferTargetDaemon.
+type TransferTargetDaemon struct {
+	Home     *string `json:"home" nullable:"true"`
+	Host     string  `json:"host"`
+	Protocol *int64  `json:"protocol" nullable:"true"`
+}
+
 // TreeChild defines model for TreeChild.
 type TreeChild struct {
 	Changed  Counter `json:"changed"`
@@ -4055,6 +4317,9 @@ type Problem413 = Problem
 // Problem415 Examples: {"code":"queue_full","decision":{"input":{"acceptance_order":null,"accepted_at":null,"admission":"rejected","blocking_reason":null,"client_id":"draft-1","delivery":null,"http_status":429,"id":"01a0fcea-2b00-7000-8000-000000000002","kind":"message","problem":{"code":"queue_full","detail":"This session already has 32 waiting inputs.","status":429,"title":"Queue full","type":"about:blank"},"session_id":"01a0fcea-2b00-7000-8000-000000000001","transcript_position":null,"turn":null},"kind":"input"},"detail":"This session already has 32 waiting inputs.","status":429,"title":"Queue full","type":"about:blank"}
 type Problem415 = Problem
 
+// Problem422 Examples: {"code":"queue_full","decision":{"input":{"acceptance_order":null,"accepted_at":null,"admission":"rejected","blocking_reason":null,"client_id":"draft-1","delivery":null,"http_status":429,"id":"01a0fcea-2b00-7000-8000-000000000002","kind":"message","problem":{"code":"queue_full","detail":"This session already has 32 waiting inputs.","status":429,"title":"Queue full","type":"about:blank"},"session_id":"01a0fcea-2b00-7000-8000-000000000001","transcript_position":null,"turn":null},"kind":"input"},"detail":"This session already has 32 waiting inputs.","status":429,"title":"Queue full","type":"about:blank"}
+type Problem422 = Problem
+
 // Problem428 Examples: {"code":"queue_full","decision":{"input":{"acceptance_order":null,"accepted_at":null,"admission":"rejected","blocking_reason":null,"client_id":"draft-1","delivery":null,"http_status":429,"id":"01a0fcea-2b00-7000-8000-000000000002","kind":"message","problem":{"code":"queue_full","detail":"This session already has 32 waiting inputs.","status":429,"title":"Queue full","type":"about:blank"},"session_id":"01a0fcea-2b00-7000-8000-000000000001","transcript_position":null,"turn":null},"kind":"input"},"detail":"This session already has 32 waiting inputs.","status":429,"title":"Queue full","type":"about:blank"}
 type Problem428 = Problem
 
@@ -4064,11 +4329,17 @@ type Problem429 = Problem
 // Problem503 Examples: {"code":"queue_full","decision":{"input":{"acceptance_order":null,"accepted_at":null,"admission":"rejected","blocking_reason":null,"client_id":"draft-1","delivery":null,"http_status":429,"id":"01a0fcea-2b00-7000-8000-000000000002","kind":"message","problem":{"code":"queue_full","detail":"This session already has 32 waiting inputs.","status":429,"title":"Queue full","type":"about:blank"},"session_id":"01a0fcea-2b00-7000-8000-000000000001","transcript_position":null,"turn":null},"kind":"input"},"detail":"This session already has 32 waiting inputs.","status":429,"title":"Queue full","type":"about:blank"}
 type Problem503 = Problem
 
+// Problem507 Examples: {"code":"queue_full","decision":{"input":{"acceptance_order":null,"accepted_at":null,"admission":"rejected","blocking_reason":null,"client_id":"draft-1","delivery":null,"http_status":429,"id":"01a0fcea-2b00-7000-8000-000000000002","kind":"message","problem":{"code":"queue_full","detail":"This session already has 32 waiting inputs.","status":429,"title":"Queue full","type":"about:blank"},"session_id":"01a0fcea-2b00-7000-8000-000000000001","transcript_position":null,"turn":null},"kind":"input"},"detail":"This session already has 32 waiting inputs.","status":429,"title":"Queue full","type":"about:blank"}
+type Problem507 = Problem
+
 // AnswerLoginParams defines parameters for AnswerLogin.
 type AnswerLoginParams struct {
 	// IfMatch Observed canonical representation validator. Wildcards and weak validators are not accepted.
 	IfMatch IfMatch `json:"If-Match"`
 }
+
+// RunMovedAgentCallJSONBody defines parameters for RunMovedAgentCall.
+type RunMovedAgentCallJSONBody = map[string]interface{}
 
 // GetArtifactLatestVersionParams defines parameters for GetArtifactLatestVersion.
 type GetArtifactLatestVersionParams struct {
@@ -4267,6 +4538,26 @@ type ListHostsParams struct {
 	Next   *Next  `form:"next,omitempty" json:"next,omitempty"`
 }
 
+// AdmitForwardedMailJSONBody defines parameters for AdmitForwardedMail.
+type AdmitForwardedMailJSONBody struct {
+	// Host The sending daemon's host name.
+	Host    string            `json:"host"`
+	Letters []ForwardedLetter `json:"letters"`
+
+	// Origin The sending daemon's identity.
+	Origin string `json:"origin"`
+}
+
+// CollectForwardedMailJSONBody defines parameters for CollectForwardedMail.
+type CollectForwardedMailJSONBody struct {
+	Acks []ForwardedAck `json:"acks"`
+	Host string         `json:"host"`
+
+	// Origin The collecting daemon's identity.
+	Origin string `json:"origin"`
+	WaitMs int64  `json:"wait_ms"`
+}
+
 // ListModelsParams defines parameters for ListModels.
 type ListModelsParams struct {
 	View *string `form:"view,omitempty" json:"view,omitempty"`
@@ -4278,10 +4569,16 @@ type ListModelsParams struct {
 	Host            *string `form:"host,omitempty" json:"host,omitempty"`
 	Model           *ID     `form:"model,omitempty" json:"model,omitempty"`
 	ProviderProfile *ID     `form:"provider_profile,omitempty" json:"provider_profile,omitempty"`
-	Provider        *ID     `form:"provider,omitempty" json:"provider,omitempty"`
-	Endpoint        *string `form:"endpoint,omitempty" json:"endpoint,omitempty"`
-	Limit           *Limit  `form:"limit,omitempty" json:"limit,omitempty"`
-	Next            *Next   `form:"next,omitempty" json:"next,omitempty"`
+
+	// Session Existing session whose selected account scopes Daybreak Blue support; with initial=true, a preallocated new session ID selects its exact future account.
+	Session *ID `form:"session,omitempty" json:"session,omitempty"`
+
+	// Initial true permits preview with a new future session ID; requires provider_profile and session. Existing session IDs are rejected.
+	Initial  *string `form:"initial,omitempty" json:"initial,omitempty"`
+	Provider *ID     `form:"provider,omitempty" json:"provider,omitempty"`
+	Endpoint *string `form:"endpoint,omitempty" json:"endpoint,omitempty"`
+	Limit    *Limit  `form:"limit,omitempty" json:"limit,omitempty"`
+	Next     *Next   `form:"next,omitempty" json:"next,omitempty"`
 }
 
 // GetServerParams defines parameters for GetServer.
@@ -4461,6 +4758,16 @@ type CancelInputParams struct {
 	AlbedoAttachmentToken *AttachmentTokenOptional `json:"Albedo-Attachment-Token,omitempty"`
 }
 
+// MoveSessionToDaemonJSONBody defines parameters for MoveSessionToDaemon.
+type MoveSessionToDaemonJSONBody struct {
+	// Profiles The target profile a session runs on there, by session id, for sessions whose own profile the target lacks (preflight's alternatives). Part of the move; a repeat with another mapping is 409 transfer_conflict. Activation fails the move with profile_unavailable when a session still can't run there.
+	Profiles map[string]string `json:"profiles,omitempty"`
+
+	// Target [user@]host:/absolute/path
+	Target     string `json:"target"`
+	TransferID string `json:"transfer_id"`
+}
+
 // GetShellCommandOutputParams defines parameters for GetShellCommandOutput.
 type GetShellCommandOutputParams struct {
 	Offset *int64 `form:"offset,omitempty" json:"offset,omitempty"`
@@ -4508,6 +4815,48 @@ type AttachTerminalParams struct {
 	Shell *string `form:"shell,omitempty" json:"shell,omitempty"`
 }
 
+// GetTransferPreflightParams defines parameters for GetTransferPreflight.
+type GetTransferPreflightParams struct {
+	SessionID ID     `form:"session_id" json:"session_id"`
+	Target    string `form:"target" json:"target"`
+}
+
+// ExportTransferJSONBody defines parameters for ExportTransfer.
+type ExportTransferJSONBody struct {
+	SessionID string `json:"session_id"`
+}
+
+// GetTransferSegmentParams defines parameters for GetTransferSegment.
+type GetTransferSegmentParams struct {
+	Offset *int64 `form:"offset,omitempty" json:"offset,omitempty"`
+}
+
+// StageTransferParams defines parameters for StageTransfer.
+type StageTransferParams struct {
+	// Workspace The absolute path on this host the sessions activate into.
+	Workspace string `form:"workspace" json:"workspace"`
+}
+
+// RecordTransferFamilyJSONBody defines parameters for RecordTransferFamily.
+type RecordTransferFamilyJSONBody struct {
+	Host   string `json:"host"`
+	Origin string `json:"origin"`
+	Stubs  []struct {
+		// Member Opaque identity. Never infer a resource type or route from its contents.
+		Member   ID     `json:"member"`
+		Name     string `json:"name"`
+		Relation string `json:"relation"`
+
+		// SessionID Opaque identity. Never infer a resource type or route from its contents.
+		SessionID ID `json:"session_id"`
+	} `json:"stubs"`
+}
+
+// PutTransferSegmentParams defines parameters for PutTransferSegment.
+type PutTransferSegmentParams struct {
+	Offset *int64 `form:"offset,omitempty" json:"offset,omitempty"`
+}
+
 // GetWorkspacesParams defines parameters for GetWorkspaces.
 type GetWorkspacesParams struct {
 	Location *Workspace `form:"location,omitempty" json:"location,omitempty"`
@@ -4529,6 +4878,9 @@ type AnswerLoginApplicationMergePatchPlusJSONRequestBody = LoginPatch
 
 // CreateLoginJSONRequestBody defines body for CreateLogin for application/json ContentType.
 type CreateLoginJSONRequestBody = LoginRequest
+
+// RunMovedAgentCallJSONRequestBody defines body for RunMovedAgentCall for application/json ContentType.
+type RunMovedAgentCallJSONRequestBody = RunMovedAgentCallJSONBody
 
 // ReportArtifactErrorTextRequestBody defines body for ReportArtifactError for text/plain ContentType.
 type ReportArtifactErrorTextRequestBody = ArtifactError
@@ -4593,6 +4945,12 @@ type PatchWorkApplicationMergePatchPlusJSONRequestBody = WorkPatch
 // ProbeHostJSONRequestBody defines body for ProbeHost for application/json ContentType.
 type ProbeHostJSONRequestBody = EmptyRequest
 
+// AdmitForwardedMailJSONRequestBody defines body for AdmitForwardedMail for application/json ContentType.
+type AdmitForwardedMailJSONRequestBody AdmitForwardedMailJSONBody
+
+// CollectForwardedMailJSONRequestBody defines body for CollectForwardedMail for application/json ContentType.
+type CollectForwardedMailJSONRequestBody CollectForwardedMailJSONBody
+
 // ShutdownServerJSONRequestBody defines body for ShutdownServer for application/json ContentType.
 type ShutdownServerJSONRequestBody = ShutdownRequest
 
@@ -4629,6 +4987,9 @@ type RestartKernelJSONRequestBody = EmptyRequest
 // UpgradeKernelJSONRequestBody defines body for UpgradeKernel for application/json ContentType.
 type UpgradeKernelJSONRequestBody = EmptyRequest
 
+// MoveSessionToDaemonJSONRequestBody defines body for MoveSessionToDaemon for application/json ContentType.
+type MoveSessionToDaemonJSONRequestBody MoveSessionToDaemonJSONBody
+
 // ReloadSessionJSONRequestBody defines body for ReloadSession for application/json ContentType.
 type ReloadSessionJSONRequestBody = ReloadRequest
 
@@ -4643,6 +5004,24 @@ type RecordVisitJSONRequestBody = EmptyRequest
 
 // PatchSettingsApplicationMergePatchPlusJSONRequestBody defines body for PatchSettings for application/merge-patch+json ContentType.
 type PatchSettingsApplicationMergePatchPlusJSONRequestBody = SettingsPatch
+
+// CheckTransferProfilesJSONRequestBody defines body for CheckTransferProfiles for application/json ContentType.
+type CheckTransferProfilesJSONRequestBody = TransferRunsThereRequest
+
+// ExportTransferJSONRequestBody defines body for ExportTransfer for application/json ContentType.
+type ExportTransferJSONRequestBody ExportTransferJSONBody
+
+// StageTransferJSONRequestBody defines body for StageTransfer for application/json ContentType.
+type StageTransferJSONRequestBody = TransferManifest
+
+// ActivateTransferJSONRequestBody defines body for ActivateTransfer for application/json ContentType.
+type ActivateTransferJSONRequestBody = TransferRunsThereRequest
+
+// RecordTransferFamilyJSONRequestBody defines body for RecordTransferFamily for application/json ContentType.
+type RecordTransferFamilyJSONRequestBody RecordTransferFamilyJSONBody
+
+// RecordTransferOccurrencesJSONRequestBody defines body for RecordTransferOccurrences for application/json ContentType.
+type RecordTransferOccurrencesJSONRequestBody = TransferOccurrences
 
 // RequestEditorFn is the function signature for the RequestEditor callback function
 type RequestEditorFn func(ctx context.Context, req *http.Request) error
@@ -4842,6 +5221,24 @@ type ClientInterface interface {
 	//
 	// Corresponds with GET /events (the `GetEvents` operationId).
 	GetEvents(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// RunMovedAgentCallWithBody Run a handle call on a session that moved here
+	//
+	// Called by the daemon the session moved from, through its relay, after it authorized the caller as it would have before the move. The body is the handle call's own arguments; the answer is what the call answers.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /extensions/agents/sessions/{session_id}/{op} (the `RunMovedAgentCall` operationId).
+	RunMovedAgentCallWithBody(ctx context.Context, sessionID ID, op string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// RunMovedAgentCall Run a handle call on a session that moved here
+	//
+	// Called by the daemon the session moved from, through its relay, after it authorized the caller as it would have before the move. The body is the handle call's own arguments; the answer is what the call answers.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /extensions/agents/sessions/{session_id}/{op} (the `RunMovedAgentCall` operationId).
+	RunMovedAgentCall(ctx context.Context, sessionID ID, op string, body RunMovedAgentCallJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ReportArtifactErrorWithBody Record a failure in the page
 	//
@@ -5316,7 +5713,7 @@ type ClientInterface interface {
 
 	// DeliverWebhookWithBody Accept signed external data durably
 	//
-	// Authenticate configured HMAC-SHA256 over the exact raw body. A daemon bearer is not a substitute. Signature header name and prefix come from hook configuration. Same event ID and body returns original admission; changed body conflicts. Pending inbox limit 1000. Raw body maximum 65536 bytes.
+	// Authenticate configured HMAC-SHA256 over the exact raw body. A daemon bearer is not a substitute. Signature header name and prefix come from hook configuration. Same event ID and body returns original admission; changed body conflicts. A hook whose session moved to another daemon answers 410 naming the url to send to there. Pending inbox limit 1000. Raw body maximum 65536 bytes.
 	//
 	// Takes any type of body and a specified content type.
 	//
@@ -5445,6 +5842,42 @@ type ClientInterface interface {
 	//
 	// Corresponds with POST /hosts/{host}/probe (the `ProbeHost` operationId).
 	ProbeHost(ctx context.Context, host ID, body ProbeHostJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// AdmitForwardedMailWithBody Admit letters from a daemon this one's sessions moved from
+	//
+	// Called by that daemon through its relay. Each letter is admitted once by its id; a repeat is acknowledged again without a copy. A sender that does not live here is kept with the origin daemon and host, so a reply goes back there.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /mail/forwarded (the `AdmitForwardedMail` operationId).
+	AdmitForwardedMailWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// AdmitForwardedMail Admit letters from a daemon this one's sessions moved from
+	//
+	// Called by that daemon through its relay. Each letter is admitted once by its id; a repeat is acknowledged again without a copy. A sender that does not live here is kept with the origin daemon and host, so a reply goes back there.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /mail/forwarded (the `AdmitForwardedMail` operationId).
+	AdmitForwardedMail(ctx context.Context, body AdmitForwardedMailJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// CollectForwardedMailWithBody Collect the letters waiting here for the calling daemon
+	//
+	// A long-poll the daemon sessions moved from keeps open through its relay. It settles the letters the caller acknowledges (admitted, or refused, which bounces them to their sender here), then answers the letters waiting for it, holding the call until one is queued or wait_ms (at most five minutes) ends.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /mail/forwarded/collect (the `CollectForwardedMail` operationId).
+	CollectForwardedMailWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// CollectForwardedMail Collect the letters waiting here for the calling daemon
+	//
+	// A long-poll the daemon sessions moved from keeps open through its relay. It settles the letters the caller acknowledges (admitted, or refused, which bounces them to their sender here), then answers the letters waiting for it, holding the call until one is queued or wait_ms (at most five minutes) ends.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /mail/forwarded/collect (the `CollectForwardedMail` operationId).
+	CollectForwardedMail(ctx context.Context, body CollectForwardedMailJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListModels Read provider model metadata
 	//
@@ -5796,6 +6229,24 @@ type ClientInterface interface {
 	// Corresponds with POST /sessions/{session_id}/kernel/upgrade (the `UpgradeKernel` operationId).
 	UpgradeKernel(ctx context.Context, sessionID ID, body UpgradeKernelJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// MoveSessionToDaemonWithBody Move a session and its same-workspace descendants to another host's daemon
+	//
+	// The source daemon drives the move to the end whether or not the client stays, and a restart resumes it from its state. A repeat with the same transfer id and target answers the move as it stands. Once active the sessions here are marked moved and refuse new input (409 session_moved).
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /sessions/{session_id}/move (the `MoveSessionToDaemon` operationId).
+	MoveSessionToDaemonWithBody(ctx context.Context, sessionID ID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// MoveSessionToDaemon Move a session and its same-workspace descendants to another host's daemon
+	//
+	// The source daemon drives the move to the end whether or not the client stays, and a restart resumes it from its state. A repeat with the same transfer id and target answers the move as it stands. Once active the sessions here are marked moved and refuse new input (409 session_moved).
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /sessions/{session_id}/move (the `MoveSessionToDaemon` operationId).
+	MoveSessionToDaemon(ctx context.Context, sessionID ID, body MoveSessionToDaemonJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// ReloadSessionWithBody Reload composition, models or both
 	//
 	// Session reload requires idle. Both targets return separate outcomes, preserving confirmed success when the other fails. Lost-response replay is not automatic.
@@ -5936,6 +6387,180 @@ type ClientInterface interface {
 	//
 	// Corresponds with GET /terminals/{terminal_id} (the `AttachTerminal` operationId).
 	AttachTerminal(ctx context.Context, terminalID ID, params *AttachTerminalParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetTransferPreflight Whether a session could move to another daemon now
+	//
+	// Answers within about ten seconds. A target out of reach, a daemon there that speaks another transfer protocol, a session mid-turn or one that already moved is available false with the reason, not an error.
+	//
+	// Corresponds with GET /transfers/preflight (the `GetTransferPreflight` operationId).
+	GetTransferPreflight(ctx context.Context, params *GetTransferPreflightParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetTransferProtocol The session transfer protocol this daemon speaks
+	//
+	// A source's preflight reads it through the relay before it exports anything.
+	//
+	// Corresponds with GET /transfers/protocol (the `GetTransferProtocol` operationId).
+	GetTransferProtocol(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// CheckTransferProfilesWithBody Whether sessions moving here can run on the profiles they name
+	//
+	// Called by a source through the relay. For each session, ok when this daemon has the profile and it offers the model; otherwise problem says which is missing and alternatives lists the profiles here offering the model.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /transfers/runs-there (the `CheckTransferProfiles` operationId).
+	CheckTransferProfilesWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// CheckTransferProfiles Whether sessions moving here can run on the profiles they name
+	//
+	// Called by a source through the relay. For each session, ok when this daemon has the profile and it offers the model; otherwise problem says which is missing and alternatives lists the profiles here offering the model.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /transfers/runs-there (the `CheckTransferProfiles` operationId).
+	CheckTransferProfiles(ctx context.Context, body CheckTransferProfilesJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetTransfer Read a move this daemon drives
+	//
+	// Corresponds with GET /transfers/{transfer_id} (the `GetTransfer` operationId).
+	GetTransfer(ctx context.Context, transferID string, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetTransferExport Read an export's manifest
+	//
+	// Corresponds with GET /transfers/{transfer_id}/export (the `GetTransferExport` operationId).
+	GetTransferExport(ctx context.Context, transferID string, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ExportTransferWithBody Export a session and its same-workspace descendants for a move
+	//
+	// One consistent snapshot per transfer id; a repeat answers the same manifest. Every session in scope must be idle.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /transfers/{transfer_id}/export (the `ExportTransfer` operationId).
+	ExportTransferWithBody(ctx context.Context, transferID string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ExportTransfer Export a session and its same-workspace descendants for a move
+	//
+	// One consistent snapshot per transfer id; a repeat answers the same manifest. Every session in scope must be idle.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /transfers/{transfer_id}/export (the `ExportTransfer` operationId).
+	ExportTransfer(ctx context.Context, transferID string, body ExportTransferJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetTransferSegment Read one chunk of an exported segment
+	//
+	// At most 512 KiB from offset; an empty body past the end.
+	//
+	// Corresponds with GET /transfers/{transfer_id}/export/segments/{index} (the `GetTransferSegment` operationId).
+	GetTransferSegment(ctx context.Context, transferID string, index int64, params *GetTransferSegmentParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// FinishTransfer Disarm the source's bindings and finish a move waiting at its checklist
+	//
+	// Disarms every binding the move lists (schedules and heartbeats deleted, webhooks answering 410 with their new url, the discord bot stopped), reports what this daemon delivered after the export snapshot to the target so it skips those, then marks the sessions moved and the move active. A step that fails leaves the move at checklist with that binding's status failed and the move's error set; a repeat goes on from there, and a repeat once active answers the move.
+	//
+	// Corresponds with POST /transfers/{transfer_id}/finish (the `FinishTransfer` operationId).
+	FinishTransfer(ctx context.Context, transferID string, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// CancelTransferImport Cancel an import that is not live yet
+	//
+	// Removes the rows activation applied, last segment first, then the staged files; poll until cancelled. Refused once the import is installing or active.
+	//
+	// Corresponds with DELETE /transfers/{transfer_id}/import (the `CancelTransferImport` operationId).
+	CancelTransferImport(ctx context.Context, transferID string, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetTransferImport Read a staged transfer's progress
+	//
+	// Corresponds with GET /transfers/{transfer_id}/import (the `GetTransferImport` operationId).
+	GetTransferImport(ctx context.Context, transferID string, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// StageTransferWithBody Stage a source's manifest, inactive
+	//
+	// Refuses an unknown owner or table version, a session that already lives here, or too little free space, before any byte arrives. A repeat with the same manifest and workspace answers the status; another workspace is a conflict.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with PUT /transfers/{transfer_id}/import (the `StageTransfer` operationId).
+	StageTransferWithBody(ctx context.Context, transferID string, params *StageTransferParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// StageTransfer Stage a source's manifest, inactive
+	//
+	// Refuses an unknown owner or table version, a session that already lives here, or too little free space, before any byte arrives. A repeat with the same manifest and workspace answers the status; another workspace is a conflict.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with PUT /transfers/{transfer_id}/import (the `StageTransfer` operationId).
+	StageTransfer(ctx context.Context, transferID string, params *StageTransferParams, body StageTransferJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ActivateTransferWithBody Make a ready import live, in bounded batches
+	//
+	// Answers at once and goes on in the background; poll the import until its state is active. The sessions stay invisible and inert (stage importing) until one commit makes them live. A repeat answers the status and never applies a row twice. A row whose key this daemon already holds sends the import back to ready with error transfer_collision, nothing applied. A body names what each session runs on here; a ready import with a session that can't is refused with 422 profile_unavailable before anything applies, and the profiles it names are switched in the commit that makes the sessions live.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /transfers/{transfer_id}/import/activate (the `ActivateTransfer` operationId).
+	ActivateTransferWithBody(ctx context.Context, transferID string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ActivateTransfer Make a ready import live, in bounded batches
+	//
+	// Answers at once and goes on in the background; poll the import until its state is active. The sessions stay invisible and inert (stage importing) until one commit makes them live. A repeat answers the status and never applies a row twice. A row whose key this daemon already holds sends the import back to ready with error transfer_collision, nothing applied. A body names what each session runs on here; a ready import with a session that can't is refused with 422 profile_unavailable before anything applies, and the profiles it names are switched in the commit that makes the sessions live.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /transfers/{transfer_id}/import/activate (the `ActivateTransfer` operationId).
+	ActivateTransfer(ctx context.Context, transferID string, body ActivateTransferJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// RecordTransferFamilyWithBody Record the relatives the moved sessions left on the source
+	//
+	// Called by the source as the import goes live. Each stub names a moved session, a relative of it on the source (its parent, a child, or a sibling) and the name it addresses it by, so "parent" and those names keep resolving here to the same session ids. A repeat updates them.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /transfers/{transfer_id}/import/family (the `RecordTransferFamily` operationId).
+	RecordTransferFamilyWithBody(ctx context.Context, transferID string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// RecordTransferFamily Record the relatives the moved sessions left on the source
+	//
+	// Called by the source as the import goes live. Each stub names a moved session, a relative of it on the source (its parent, a child, or a sibling) and the name it addresses it by, so "parent" and those names keep resolving here to the same session ids. A repeat updates them.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /transfers/{transfer_id}/import/family (the `RecordTransferFamily` operationId).
+	RecordTransferFamily(ctx context.Context, transferID string, body RecordTransferFamilyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// RecordTransferOccurrencesWithBody Record what the source delivered after its export, so this daemon skips it
+	//
+	// Called by the source when it finishes a move. Each occurrence is a schedule (its source id and due time, in seconds), a webhook event (hook id and event id) or a letter (its id); a repeat records nothing twice. The schedule due scan, webhook intake and discord delivery skip a recorded occurrence.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /transfers/{transfer_id}/import/occurrences (the `RecordTransferOccurrences` operationId).
+	RecordTransferOccurrencesWithBody(ctx context.Context, transferID string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// RecordTransferOccurrences Record what the source delivered after its export, so this daemon skips it
+	//
+	// Called by the source when it finishes a move. Each occurrence is a schedule (its source id and due time, in seconds), a webhook event (hook id and event id) or a letter (its id); a repeat records nothing twice. The schedule due scan, webhook intake and discord delivery skip a recorded occurrence.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /transfers/{transfer_id}/import/occurrences (the `RecordTransferOccurrences` operationId).
+	RecordTransferOccurrences(ctx context.Context, transferID string, body RecordTransferOccurrencesJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ReadyTransfer Verify every staged segment; the import stays inactive
+	//
+	// A segment that fails its digest or framing is dropped and named, to be sent again.
+	//
+	// Corresponds with POST /transfers/{transfer_id}/import/ready (the `ReadyTransfer` operationId).
+	ReadyTransfer(ctx context.Context, transferID string, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PutTransferSegmentWithBody Write one chunk of a staged segment
+	//
+	// Offsets resume where the segment's bytes end; a repeat of bytes already there is accepted, different bytes are not.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with PUT /transfers/{transfer_id}/import/segments/{index} (the `PutTransferSegment` operationId).
+	PutTransferSegmentWithBody(ctx context.Context, transferID string, index int64, params *PutTransferSegmentParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetWorkspaces Browse recent locations or a directory
 	//
@@ -6190,6 +6815,44 @@ func (c *Client) CreateLogin(ctx context.Context, loginID UUIDv7, body CreateLog
 // Corresponds with GET /events (the `GetEvents` operationId).
 func (c *Client) GetEvents(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetEventsRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// RunMovedAgentCallWithBody Run a handle call on a session that moved here
+//
+// Called by the daemon the session moved from, through its relay, after it authorized the caller as it would have before the move. The body is the handle call's own arguments; the answer is what the call answers.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /extensions/agents/sessions/{session_id}/{op} (the `RunMovedAgentCall` operationId).
+func (c *Client) RunMovedAgentCallWithBody(ctx context.Context, sessionID ID, op string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRunMovedAgentCallRequestWithBody(c.Server, sessionID, op, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// RunMovedAgentCall Run a handle call on a session that moved here
+//
+// Called by the daemon the session moved from, through its relay, after it authorized the caller as it would have before the move. The body is the handle call's own arguments; the answer is what the call answers.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /extensions/agents/sessions/{session_id}/{op} (the `RunMovedAgentCall` operationId).
+func (c *Client) RunMovedAgentCall(ctx context.Context, sessionID ID, op string, body RunMovedAgentCallJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRunMovedAgentCallRequest(c.Server, sessionID, op, body)
 	if err != nil {
 		return nil, err
 	}
@@ -7303,7 +7966,7 @@ func (c *Client) ListHookDeliveries(ctx context.Context, hookID ID, params *List
 
 // DeliverWebhookWithBody Accept signed external data durably
 //
-// Authenticate configured HMAC-SHA256 over the exact raw body. A daemon bearer is not a substitute. Signature header name and prefix come from hook configuration. Same event ID and body returns original admission; changed body conflicts. Pending inbox limit 1000. Raw body maximum 65536 bytes.
+// Authenticate configured HMAC-SHA256 over the exact raw body. A daemon bearer is not a substitute. Signature header name and prefix come from hook configuration. Same event ID and body returns original admission; changed body conflicts. A hook whose session moved to another daemon answers 410 naming the url to send to there. Pending inbox limit 1000. Raw body maximum 65536 bytes.
 //
 // Takes any type of body and a specified content type.
 //
@@ -7583,6 +8246,82 @@ func (c *Client) ProbeHostWithBody(ctx context.Context, host ID, contentType str
 // Corresponds with POST /hosts/{host}/probe (the `ProbeHost` operationId).
 func (c *Client) ProbeHost(ctx context.Context, host ID, body ProbeHostJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewProbeHostRequest(c.Server, host, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// AdmitForwardedMailWithBody Admit letters from a daemon this one's sessions moved from
+//
+// Called by that daemon through its relay. Each letter is admitted once by its id; a repeat is acknowledged again without a copy. A sender that does not live here is kept with the origin daemon and host, so a reply goes back there.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /mail/forwarded (the `AdmitForwardedMail` operationId).
+func (c *Client) AdmitForwardedMailWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewAdmitForwardedMailRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// AdmitForwardedMail Admit letters from a daemon this one's sessions moved from
+//
+// Called by that daemon through its relay. Each letter is admitted once by its id; a repeat is acknowledged again without a copy. A sender that does not live here is kept with the origin daemon and host, so a reply goes back there.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /mail/forwarded (the `AdmitForwardedMail` operationId).
+func (c *Client) AdmitForwardedMail(ctx context.Context, body AdmitForwardedMailJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewAdmitForwardedMailRequest(c.Server, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// CollectForwardedMailWithBody Collect the letters waiting here for the calling daemon
+//
+// A long-poll the daemon sessions moved from keeps open through its relay. It settles the letters the caller acknowledges (admitted, or refused, which bounces them to their sender here), then answers the letters waiting for it, holding the call until one is queued or wait_ms (at most five minutes) ends.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /mail/forwarded/collect (the `CollectForwardedMail` operationId).
+func (c *Client) CollectForwardedMailWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCollectForwardedMailRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// CollectForwardedMail Collect the letters waiting here for the calling daemon
+//
+// A long-poll the daemon sessions moved from keeps open through its relay. It settles the letters the caller acknowledges (admitted, or refused, which bounces them to their sender here), then answers the letters waiting for it, holding the call until one is queued or wait_ms (at most five minutes) ends.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /mail/forwarded/collect (the `CollectForwardedMail` operationId).
+func (c *Client) CollectForwardedMail(ctx context.Context, body CollectForwardedMailJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCollectForwardedMailRequest(c.Server, body)
 	if err != nil {
 		return nil, err
 	}
@@ -8363,6 +9102,44 @@ func (c *Client) UpgradeKernel(ctx context.Context, sessionID ID, body UpgradeKe
 	return c.Client.Do(req)
 }
 
+// MoveSessionToDaemonWithBody Move a session and its same-workspace descendants to another host's daemon
+//
+// The source daemon drives the move to the end whether or not the client stays, and a restart resumes it from its state. A repeat with the same transfer id and target answers the move as it stands. Once active the sessions here are marked moved and refuse new input (409 session_moved).
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /sessions/{session_id}/move (the `MoveSessionToDaemon` operationId).
+func (c *Client) MoveSessionToDaemonWithBody(ctx context.Context, sessionID ID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewMoveSessionToDaemonRequestWithBody(c.Server, sessionID, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// MoveSessionToDaemon Move a session and its same-workspace descendants to another host's daemon
+//
+// The source daemon drives the move to the end whether or not the client stays, and a restart resumes it from its state. A repeat with the same transfer id and target answers the move as it stands. Once active the sessions here are marked moved and refuse new input (409 session_moved).
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /sessions/{session_id}/move (the `MoveSessionToDaemon` operationId).
+func (c *Client) MoveSessionToDaemon(ctx context.Context, sessionID ID, body MoveSessionToDaemonJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewMoveSessionToDaemonRequest(c.Server, sessionID, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 // ReloadSessionWithBody Reload composition, models or both
 //
 // Session reload requires idle. Both targets return separate outcomes, preserving confirmed success when the other fails. Lost-response replay is not automatic.
@@ -8664,6 +9441,400 @@ func (c *Client) CloseTerminal(ctx context.Context, terminalID ID, reqEditors ..
 // Corresponds with GET /terminals/{terminal_id} (the `AttachTerminal` operationId).
 func (c *Client) AttachTerminal(ctx context.Context, terminalID ID, params *AttachTerminalParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewAttachTerminalRequest(c.Server, terminalID, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetTransferPreflight Whether a session could move to another daemon now
+//
+// Answers within about ten seconds. A target out of reach, a daemon there that speaks another transfer protocol, a session mid-turn or one that already moved is available false with the reason, not an error.
+//
+// Corresponds with GET /transfers/preflight (the `GetTransferPreflight` operationId).
+func (c *Client) GetTransferPreflight(ctx context.Context, params *GetTransferPreflightParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetTransferPreflightRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetTransferProtocol The session transfer protocol this daemon speaks
+//
+// A source's preflight reads it through the relay before it exports anything.
+//
+// Corresponds with GET /transfers/protocol (the `GetTransferProtocol` operationId).
+func (c *Client) GetTransferProtocol(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetTransferProtocolRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// CheckTransferProfilesWithBody Whether sessions moving here can run on the profiles they name
+//
+// Called by a source through the relay. For each session, ok when this daemon has the profile and it offers the model; otherwise problem says which is missing and alternatives lists the profiles here offering the model.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /transfers/runs-there (the `CheckTransferProfiles` operationId).
+func (c *Client) CheckTransferProfilesWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCheckTransferProfilesRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// CheckTransferProfiles Whether sessions moving here can run on the profiles they name
+//
+// Called by a source through the relay. For each session, ok when this daemon has the profile and it offers the model; otherwise problem says which is missing and alternatives lists the profiles here offering the model.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /transfers/runs-there (the `CheckTransferProfiles` operationId).
+func (c *Client) CheckTransferProfiles(ctx context.Context, body CheckTransferProfilesJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCheckTransferProfilesRequest(c.Server, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetTransfer Read a move this daemon drives
+//
+// Corresponds with GET /transfers/{transfer_id} (the `GetTransfer` operationId).
+func (c *Client) GetTransfer(ctx context.Context, transferID string, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetTransferRequest(c.Server, transferID)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetTransferExport Read an export's manifest
+//
+// Corresponds with GET /transfers/{transfer_id}/export (the `GetTransferExport` operationId).
+func (c *Client) GetTransferExport(ctx context.Context, transferID string, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetTransferExportRequest(c.Server, transferID)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// ExportTransferWithBody Export a session and its same-workspace descendants for a move
+//
+// One consistent snapshot per transfer id; a repeat answers the same manifest. Every session in scope must be idle.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /transfers/{transfer_id}/export (the `ExportTransfer` operationId).
+func (c *Client) ExportTransferWithBody(ctx context.Context, transferID string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewExportTransferRequestWithBody(c.Server, transferID, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// ExportTransfer Export a session and its same-workspace descendants for a move
+//
+// One consistent snapshot per transfer id; a repeat answers the same manifest. Every session in scope must be idle.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /transfers/{transfer_id}/export (the `ExportTransfer` operationId).
+func (c *Client) ExportTransfer(ctx context.Context, transferID string, body ExportTransferJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewExportTransferRequest(c.Server, transferID, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetTransferSegment Read one chunk of an exported segment
+//
+// At most 512 KiB from offset; an empty body past the end.
+//
+// Corresponds with GET /transfers/{transfer_id}/export/segments/{index} (the `GetTransferSegment` operationId).
+func (c *Client) GetTransferSegment(ctx context.Context, transferID string, index int64, params *GetTransferSegmentParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetTransferSegmentRequest(c.Server, transferID, index, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// FinishTransfer Disarm the source's bindings and finish a move waiting at its checklist
+//
+// Disarms every binding the move lists (schedules and heartbeats deleted, webhooks answering 410 with their new url, the discord bot stopped), reports what this daemon delivered after the export snapshot to the target so it skips those, then marks the sessions moved and the move active. A step that fails leaves the move at checklist with that binding's status failed and the move's error set; a repeat goes on from there, and a repeat once active answers the move.
+//
+// Corresponds with POST /transfers/{transfer_id}/finish (the `FinishTransfer` operationId).
+func (c *Client) FinishTransfer(ctx context.Context, transferID string, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewFinishTransferRequest(c.Server, transferID)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// CancelTransferImport Cancel an import that is not live yet
+//
+// Removes the rows activation applied, last segment first, then the staged files; poll until cancelled. Refused once the import is installing or active.
+//
+// Corresponds with DELETE /transfers/{transfer_id}/import (the `CancelTransferImport` operationId).
+func (c *Client) CancelTransferImport(ctx context.Context, transferID string, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCancelTransferImportRequest(c.Server, transferID)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetTransferImport Read a staged transfer's progress
+//
+// Corresponds with GET /transfers/{transfer_id}/import (the `GetTransferImport` operationId).
+func (c *Client) GetTransferImport(ctx context.Context, transferID string, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetTransferImportRequest(c.Server, transferID)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// StageTransferWithBody Stage a source's manifest, inactive
+//
+// Refuses an unknown owner or table version, a session that already lives here, or too little free space, before any byte arrives. A repeat with the same manifest and workspace answers the status; another workspace is a conflict.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with PUT /transfers/{transfer_id}/import (the `StageTransfer` operationId).
+func (c *Client) StageTransferWithBody(ctx context.Context, transferID string, params *StageTransferParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewStageTransferRequestWithBody(c.Server, transferID, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// StageTransfer Stage a source's manifest, inactive
+//
+// Refuses an unknown owner or table version, a session that already lives here, or too little free space, before any byte arrives. A repeat with the same manifest and workspace answers the status; another workspace is a conflict.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with PUT /transfers/{transfer_id}/import (the `StageTransfer` operationId).
+func (c *Client) StageTransfer(ctx context.Context, transferID string, params *StageTransferParams, body StageTransferJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewStageTransferRequest(c.Server, transferID, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// ActivateTransferWithBody Make a ready import live, in bounded batches
+//
+// Answers at once and goes on in the background; poll the import until its state is active. The sessions stay invisible and inert (stage importing) until one commit makes them live. A repeat answers the status and never applies a row twice. A row whose key this daemon already holds sends the import back to ready with error transfer_collision, nothing applied. A body names what each session runs on here; a ready import with a session that can't is refused with 422 profile_unavailable before anything applies, and the profiles it names are switched in the commit that makes the sessions live.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /transfers/{transfer_id}/import/activate (the `ActivateTransfer` operationId).
+func (c *Client) ActivateTransferWithBody(ctx context.Context, transferID string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewActivateTransferRequestWithBody(c.Server, transferID, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// ActivateTransfer Make a ready import live, in bounded batches
+//
+// Answers at once and goes on in the background; poll the import until its state is active. The sessions stay invisible and inert (stage importing) until one commit makes them live. A repeat answers the status and never applies a row twice. A row whose key this daemon already holds sends the import back to ready with error transfer_collision, nothing applied. A body names what each session runs on here; a ready import with a session that can't is refused with 422 profile_unavailable before anything applies, and the profiles it names are switched in the commit that makes the sessions live.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /transfers/{transfer_id}/import/activate (the `ActivateTransfer` operationId).
+func (c *Client) ActivateTransfer(ctx context.Context, transferID string, body ActivateTransferJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewActivateTransferRequest(c.Server, transferID, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// RecordTransferFamilyWithBody Record the relatives the moved sessions left on the source
+//
+// Called by the source as the import goes live. Each stub names a moved session, a relative of it on the source (its parent, a child, or a sibling) and the name it addresses it by, so "parent" and those names keep resolving here to the same session ids. A repeat updates them.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /transfers/{transfer_id}/import/family (the `RecordTransferFamily` operationId).
+func (c *Client) RecordTransferFamilyWithBody(ctx context.Context, transferID string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRecordTransferFamilyRequestWithBody(c.Server, transferID, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// RecordTransferFamily Record the relatives the moved sessions left on the source
+//
+// Called by the source as the import goes live. Each stub names a moved session, a relative of it on the source (its parent, a child, or a sibling) and the name it addresses it by, so "parent" and those names keep resolving here to the same session ids. A repeat updates them.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /transfers/{transfer_id}/import/family (the `RecordTransferFamily` operationId).
+func (c *Client) RecordTransferFamily(ctx context.Context, transferID string, body RecordTransferFamilyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRecordTransferFamilyRequest(c.Server, transferID, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// RecordTransferOccurrencesWithBody Record what the source delivered after its export, so this daemon skips it
+//
+// Called by the source when it finishes a move. Each occurrence is a schedule (its source id and due time, in seconds), a webhook event (hook id and event id) or a letter (its id); a repeat records nothing twice. The schedule due scan, webhook intake and discord delivery skip a recorded occurrence.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /transfers/{transfer_id}/import/occurrences (the `RecordTransferOccurrences` operationId).
+func (c *Client) RecordTransferOccurrencesWithBody(ctx context.Context, transferID string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRecordTransferOccurrencesRequestWithBody(c.Server, transferID, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// RecordTransferOccurrences Record what the source delivered after its export, so this daemon skips it
+//
+// Called by the source when it finishes a move. Each occurrence is a schedule (its source id and due time, in seconds), a webhook event (hook id and event id) or a letter (its id); a repeat records nothing twice. The schedule due scan, webhook intake and discord delivery skip a recorded occurrence.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /transfers/{transfer_id}/import/occurrences (the `RecordTransferOccurrences` operationId).
+func (c *Client) RecordTransferOccurrences(ctx context.Context, transferID string, body RecordTransferOccurrencesJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRecordTransferOccurrencesRequest(c.Server, transferID, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// ReadyTransfer Verify every staged segment; the import stays inactive
+//
+// A segment that fails its digest or framing is dropped and named, to be sent again.
+//
+// Corresponds with POST /transfers/{transfer_id}/import/ready (the `ReadyTransfer` operationId).
+func (c *Client) ReadyTransfer(ctx context.Context, transferID string, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewReadyTransferRequest(c.Server, transferID)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PutTransferSegmentWithBody Write one chunk of a staged segment
+//
+// Offsets resume where the segment's bytes end; a repeat of bytes already there is accepted, different bytes are not.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with PUT /transfers/{transfer_id}/import/segments/{index} (the `PutTransferSegment` operationId).
+func (c *Client) PutTransferSegmentWithBody(ctx context.Context, transferID string, index int64, params *PutTransferSegmentParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPutTransferSegmentRequestWithBody(c.Server, transferID, index, params, contentType, body)
 	if err != nil {
 		return nil, err
 	}
@@ -9044,6 +10215,60 @@ func NewGetEventsRequest(server string) (*http.Request, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	return req, nil
+}
+
+// NewRunMovedAgentCallRequest calls the generic RunMovedAgentCall builder with application/json body
+func NewRunMovedAgentCallRequest(server string, sessionID ID, op string, body RunMovedAgentCallJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewRunMovedAgentCallRequestWithBody(server, sessionID, op, "application/json", bodyReader)
+}
+
+// NewRunMovedAgentCallRequestWithBody constructs an http.Request for the RunMovedAgentCall method, with any body, and a specified content type
+func NewRunMovedAgentCallRequestWithBody(server string, sessionID ID, op string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithOptions("simple", false, "op", op, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/extensions/agents/sessions/%s/%s", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
 
 	return req, nil
 }
@@ -12165,6 +13390,86 @@ func NewProbeHostRequestWithBody(server string, host ID, contentType string, bod
 	return req, nil
 }
 
+// NewAdmitForwardedMailRequest calls the generic AdmitForwardedMail builder with application/json body
+func NewAdmitForwardedMailRequest(server string, body AdmitForwardedMailJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewAdmitForwardedMailRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewAdmitForwardedMailRequestWithBody constructs an http.Request for the AdmitForwardedMail method, with any body, and a specified content type
+func NewAdmitForwardedMailRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/mail/forwarded")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewCollectForwardedMailRequest calls the generic CollectForwardedMail builder with application/json body
+func NewCollectForwardedMailRequest(server string, body CollectForwardedMailJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewCollectForwardedMailRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewCollectForwardedMailRequestWithBody constructs an http.Request for the CollectForwardedMail method, with any body, and a specified content type
+func NewCollectForwardedMailRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/mail/forwarded/collect")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
 // NewListModelsRequest constructs an http.Request for the ListModels method
 func NewListModelsRequest(server string, params *ListModelsParams) (*http.Request, error) {
 	var err error
@@ -12244,6 +13549,30 @@ func NewListModelsRequest(server string, params *ListModelsParams) (*http.Reques
 		if params.ProviderProfile != nil {
 
 			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "provider_profile", *params.ProviderProfile, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.Session != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "session", *params.Session, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.Initial != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "initial", *params.Initial, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
 				return nil, err
 			} else {
 				for _, qp := range strings.Split(queryFrag, "&") {
@@ -14406,6 +15735,53 @@ func NewUpgradeKernelRequestWithBody(server string, sessionID ID, contentType st
 	return req, nil
 }
 
+// NewMoveSessionToDaemonRequest calls the generic MoveSessionToDaemon builder with application/json body
+func NewMoveSessionToDaemonRequest(server string, sessionID ID, body MoveSessionToDaemonJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewMoveSessionToDaemonRequestWithBody(server, sessionID, "application/json", bodyReader)
+}
+
+// NewMoveSessionToDaemonRequestWithBody constructs an http.Request for the MoveSessionToDaemon method, with any body, and a specified content type
+func NewMoveSessionToDaemonRequestWithBody(server string, sessionID ID, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/sessions/%s/move", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
 // NewReloadSessionRequest calls the generic ReloadSession builder with application/json body
 func NewReloadSessionRequest(server string, sessionID ID, body ReloadSessionJSONRequestBody) (*http.Request, error) {
 	var bodyReader io.Reader
@@ -15129,6 +16505,731 @@ func NewAttachTerminalRequest(server string, terminalID ID, params *AttachTermin
 	if err != nil {
 		return nil, err
 	}
+
+	return req, nil
+}
+
+// NewGetTransferPreflightRequest constructs an http.Request for the GetTransferPreflight method
+func NewGetTransferPreflightRequest(server string, params *GetTransferPreflightParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/transfers/preflight")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if queryFrag, err := runtime.StyleParamWithOptions("form", true, "session_id", params.SessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+			return nil, err
+		} else {
+			for _, qp := range strings.Split(queryFrag, "&") {
+				rawQueryFragments = append(rawQueryFragments, qp)
+			}
+		}
+
+		if queryFrag, err := runtime.StyleParamWithOptions("form", true, "target", params.Target, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+			return nil, err
+		} else {
+			for _, qp := range strings.Split(queryFrag, "&") {
+				rawQueryFragments = append(rawQueryFragments, qp)
+			}
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetTransferProtocolRequest constructs an http.Request for the GetTransferProtocol method
+func NewGetTransferProtocolRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/transfers/protocol")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewCheckTransferProfilesRequest calls the generic CheckTransferProfiles builder with application/json body
+func NewCheckTransferProfilesRequest(server string, body CheckTransferProfilesJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewCheckTransferProfilesRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewCheckTransferProfilesRequestWithBody constructs an http.Request for the CheckTransferProfiles method, with any body, and a specified content type
+func NewCheckTransferProfilesRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/transfers/runs-there")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewGetTransferRequest constructs an http.Request for the GetTransfer method
+func NewGetTransferRequest(server string, transferID string) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "transfer_id", transferID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/transfers/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetTransferExportRequest constructs an http.Request for the GetTransferExport method
+func NewGetTransferExportRequest(server string, transferID string) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "transfer_id", transferID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/transfers/%s/export", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewExportTransferRequest calls the generic ExportTransfer builder with application/json body
+func NewExportTransferRequest(server string, transferID string, body ExportTransferJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewExportTransferRequestWithBody(server, transferID, "application/json", bodyReader)
+}
+
+// NewExportTransferRequestWithBody constructs an http.Request for the ExportTransfer method, with any body, and a specified content type
+func NewExportTransferRequestWithBody(server string, transferID string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "transfer_id", transferID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/transfers/%s/export", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewGetTransferSegmentRequest constructs an http.Request for the GetTransferSegment method
+func NewGetTransferSegmentRequest(server string, transferID string, index int64, params *GetTransferSegmentParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "transfer_id", transferID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithOptions("simple", false, "index", index, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "integer", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/transfers/%s/export/segments/%s", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if params.Offset != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "offset", *params.Offset, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewFinishTransferRequest constructs an http.Request for the FinishTransfer method
+func NewFinishTransferRequest(server string, transferID string) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "transfer_id", transferID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/transfers/%s/finish", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewCancelTransferImportRequest constructs an http.Request for the CancelTransferImport method
+func NewCancelTransferImportRequest(server string, transferID string) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "transfer_id", transferID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/transfers/%s/import", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetTransferImportRequest constructs an http.Request for the GetTransferImport method
+func NewGetTransferImportRequest(server string, transferID string) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "transfer_id", transferID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/transfers/%s/import", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewStageTransferRequest calls the generic StageTransfer builder with application/json body
+func NewStageTransferRequest(server string, transferID string, params *StageTransferParams, body StageTransferJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewStageTransferRequestWithBody(server, transferID, params, "application/json", bodyReader)
+}
+
+// NewStageTransferRequestWithBody constructs an http.Request for the StageTransfer method, with any body, and a specified content type
+func NewStageTransferRequestWithBody(server string, transferID string, params *StageTransferParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "transfer_id", transferID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/transfers/%s/import", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if queryFrag, err := runtime.StyleParamWithOptions("form", true, "workspace", params.Workspace, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+			return nil, err
+		} else {
+			for _, qp := range strings.Split(queryFrag, "&") {
+				rawQueryFragments = append(rawQueryFragments, qp)
+			}
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+	}
+
+	req, err := http.NewRequest(http.MethodPut, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewActivateTransferRequest calls the generic ActivateTransfer builder with application/json body
+func NewActivateTransferRequest(server string, transferID string, body ActivateTransferJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewActivateTransferRequestWithBody(server, transferID, "application/json", bodyReader)
+}
+
+// NewActivateTransferRequestWithBody constructs an http.Request for the ActivateTransfer method, with any body, and a specified content type
+func NewActivateTransferRequestWithBody(server string, transferID string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "transfer_id", transferID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/transfers/%s/import/activate", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewRecordTransferFamilyRequest calls the generic RecordTransferFamily builder with application/json body
+func NewRecordTransferFamilyRequest(server string, transferID string, body RecordTransferFamilyJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewRecordTransferFamilyRequestWithBody(server, transferID, "application/json", bodyReader)
+}
+
+// NewRecordTransferFamilyRequestWithBody constructs an http.Request for the RecordTransferFamily method, with any body, and a specified content type
+func NewRecordTransferFamilyRequestWithBody(server string, transferID string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "transfer_id", transferID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/transfers/%s/import/family", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewRecordTransferOccurrencesRequest calls the generic RecordTransferOccurrences builder with application/json body
+func NewRecordTransferOccurrencesRequest(server string, transferID string, body RecordTransferOccurrencesJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewRecordTransferOccurrencesRequestWithBody(server, transferID, "application/json", bodyReader)
+}
+
+// NewRecordTransferOccurrencesRequestWithBody constructs an http.Request for the RecordTransferOccurrences method, with any body, and a specified content type
+func NewRecordTransferOccurrencesRequestWithBody(server string, transferID string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "transfer_id", transferID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/transfers/%s/import/occurrences", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewReadyTransferRequest constructs an http.Request for the ReadyTransfer method
+func NewReadyTransferRequest(server string, transferID string) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "transfer_id", transferID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/transfers/%s/import/ready", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewPutTransferSegmentRequestWithBody constructs an http.Request for the PutTransferSegment method, with any body, and a specified content type
+func NewPutTransferSegmentRequestWithBody(server string, transferID string, index int64, params *PutTransferSegmentParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "transfer_id", transferID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithOptions("simple", false, "index", index, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "integer", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/transfers/%s/import/segments/%s", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if params.Offset != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "offset", *params.Offset, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+	}
+
+	req, err := http.NewRequest(http.MethodPut, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
 
 	return req, nil
 }

@@ -502,6 +502,11 @@ func (m *FolderPicker) move() tea.Cmd {
 	case target == m.workspace() && m.retry == nil:
 		return func() tea.Msg { return FolderPickerCancelMsg{} }
 	}
+	if _, _, remote := splitHost(target); remote {
+		// another host asks whether the agent goes too
+		retry := m.retry
+		return func() tea.Msg { return cdAskMsg{Target: target, Retry: retry} }
+	}
 	m.moving, m.notice = true, ""
 	return moveCmd(m.src, m.session.ID, m.workspace(), target, m.retry)
 }

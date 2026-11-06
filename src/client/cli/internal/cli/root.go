@@ -96,7 +96,7 @@ func preserveFile(writer *checkedWriter) io.Writer {
 }
 
 func NewRoot(deps Dependencies) *cobra.Command {
-	var prompt, session, model, rawWindow string
+	var prompt, session, model, rawWindow, cyberAccess string
 	var timeout time.Duration
 	root := &cobra.Command{Use: "albedo", Short: "persistent coding sessions", Args: cobra.NoArgs, SilenceErrors: true, SilenceUsage: true}
 	root.CompletionOptions.DisableDefaultCmd = true
@@ -104,31 +104,36 @@ func NewRoot(deps Dependencies) *cobra.Command {
 	root.Flags().StringVarP(&prompt, "prompt", "p", "", "create a session in cwd and wait for its reply")
 	root.Flags().StringVarP(&session, "session", "s", "", "send the prompt to an existing session")
 	root.Flags().StringVarP(&model, "model", "m", "", "model id or provider/model; requires --prompt")
+	root.Flags().StringVar(&cyberAccess, "cyber-access", "", "daybreak_blue or standard; requires --prompt")
 	root.Flags().DurationVar(&timeout, "timeout", 0, "stop the turn after this long (90s, 10m); unlimited when omitted")
 	root.Flags().StringVarP(&rawWindow, "context-window", "c", "", "tokens the session compacts against instead of the model's window (100k, 150000); requires --prompt")
 	root.RunE = func(cmd *cobra.Command, _ []string) error {
 		if !cmd.Flags().Changed("prompt") {
-			for _, name := range []string{"session", "model", "timeout", "context-window"} {
+			for _, name := range []string{"session", "model", "timeout", "context-window", "cyber-access"} {
 				if cmd.Flags().Changed(name) {
 					return fmt.Errorf("--%s requires --prompt", name)
 				}
 			}
 			return open(cmd, deps, app.OpenOptions{Workspace: deps.Workspace})
 		}
+		access, err := parseCyberAccess(cmd, cyberAccess)
+		if err != nil {
+			return err
+		}
 		if cmd.Flags().Changed("timeout") && timeout <= 0 {
 			return errors.New("--timeout must be positive, such as 90s or 10m")
 		}
 		var window int64
 		if cmd.Flags().Changed("context-window") {
-			parsed, err := daemon.ParseTokenWindow(rawWindow)
-			if err != nil {
+			parsed, parseErr := daemon.ParseTokenWindow(rawWindow)
+			if parseErr != nil {
 				return errors.New("--context-window must be a positive token count, such as 100k or 150000")
 			}
 			window = parsed
 		}
 		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		result, err := deps.Application.RunPrompt(ctx, app.PromptOptions{Prompt: prompt, SessionID: session, Workspace: deps.Workspace, Model: model, Timeout: timeout, ContextWindow: window})
+		result, err := deps.Application.RunPrompt(ctx, app.PromptOptions{Prompt: prompt, SessionID: session, Workspace: deps.Workspace, Model: model, CyberAccess: access, Timeout: timeout, ContextWindow: window})
 		if err != nil {
 			return err
 		}
@@ -174,13 +179,35 @@ func writeJSON(writer io.Writer, value any, indent bool) error {
 	return err
 }
 func newOpen(deps Dependencies) *cobra.Command {
-	return &cobra.Command{Use: "new [workspace]", Short: "start a fresh session", Args: cobra.MaximumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	var cyberAccess string
+	command := &cobra.Command{Use: "new [workspace]", Short: "start a fresh session", Args: cobra.MaximumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		access, err := parseCyberAccess(cmd, cyberAccess)
+		if err != nil {
+			return err
+		}
 		workspace := deps.Workspace
 		if len(args) > 0 {
 			workspace = args[0]
 		}
-		return open(cmd, deps, app.OpenOptions{Workspace: workspace, Fresh: true})
+		return open(cmd, deps, app.OpenOptions{Workspace: workspace, Fresh: true, CyberAccess: access})
 	}}
+	command.Flags().StringVar(&cyberAccess, "cyber-access", "", "daybreak_blue or standard")
+	return command
+}
+
+// parseCyberAccess validates before any connection or session side effect.
+func parseCyberAccess(cmd *cobra.Command, raw string) (*string, error) {
+	if !cmd.Flags().Changed("cyber-access") {
+		return nil, nil
+	}
+	switch raw {
+	case "standard":
+		return new(""), nil
+	case "daybreak_blue":
+		return new(raw), nil
+	default:
+		return nil, errors.New("--cyber-access must be daybreak_blue or standard")
+	}
 }
 func newResume(deps Dependencies) *cobra.Command {
 	return &cobra.Command{Use: "resume [session]", Short: "reopen a session by ID or prefix, or the newest one in cwd", Args: cobra.MaximumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {

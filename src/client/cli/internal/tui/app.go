@@ -2,6 +2,7 @@
 package tui
 
 import (
+	"albedo/cli/internal/attach"
 	"albedo/cli/internal/config"
 	"albedo/cli/internal/daemon"
 	"context"
@@ -98,7 +99,18 @@ type AppModel struct {
 
 	// Graphemes says the terminal measures grapheme clusters; see ChatModel.
 	Graphemes bool
-	Tick      TickFunc
+	// nested marks the model of an attached view, whose quitting returns to
+	// the view it is attached under.
+	nested bool
+	Tick   TickFunc
+
+	// cd is the /cd question while it is open or its move goes on.
+	cd *cdQuestion
+	// attachedTo is a moved session's new daemon while its view is open; it
+	// takes every message until it quits.
+	attachedTo *attachedApp
+	// openAttachment reaches a daemon on another host; nil uses ssh.
+	openAttachment func(ctx context.Context, host, home string) (*attach.Attachment, error)
 }
 
 func (m *AppModel) newChatModel(session *daemon.Session) ChatModel {
@@ -207,6 +219,12 @@ func (m *AppModel) Update(msg tea.Msg) (model tea.Model, resultCmd tea.Cmd) {
 			}
 		}
 	}()
+	if cmd, handled := m.updateAttached(msg); handled {
+		return m, cmd
+	}
+	if cmd, handled := m.handleCD(msg); handled {
+		return m, cmd
+	}
 	if cmd, handled := m.handleCommandInvocation(msg); handled {
 		return m, cmd
 	}
@@ -291,7 +309,7 @@ func (m *AppModel) Update(msg tea.Msg) (model tea.Model, resultCmd tea.Cmd) {
 
 	case ChatQuitMsg:
 		m.Chat.Close()
-		return m, tea.Quit
+		return m, m.quit()
 
 	case ChatBackToSessionsMsg:
 		return m, m.openSessions()
@@ -307,7 +325,7 @@ func (m *AppModel) Update(msg tea.Msg) (model tea.Model, resultCmd tea.Cmd) {
 		m.ModelPicker.Saving = true
 		m.ModelPicker.Error = ""
 		m.ModelGen++
-		return m, m.changeModelCmd(msg.Model, msg.Provider, msg.Effort, m.ModelGen)
+		return m, m.changeModelAccessCmd(msg.Model, msg.Provider, msg.Effort, new(msg.CyberAccess), m.ModelGen)
 
 	case ModelPickerCapsMsg:
 		return m, m.saveCapsCmd(msg)
@@ -538,7 +556,7 @@ func (m *AppModel) Update(msg tea.Msg) (model tea.Model, resultCmd tea.Cmd) {
 				m.State = AppStateChat
 				return m, nil
 			}
-			return m, tea.Quit
+			return m, m.quit()
 		}
 	}
 

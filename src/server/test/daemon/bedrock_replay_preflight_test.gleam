@@ -144,6 +144,7 @@ fn state(home: String, host: runtime.Runtime) -> session_state.State(Nil) {
       None,
       None,
       False,
+      None,
     )
   let ledger = runtime.ledger(host)
   let assert Ok(_) = conversation.create(ledger, info)
@@ -203,6 +204,9 @@ fn state(home: String, host: runtime.Runtime) -> session_state.State(Nil) {
     output_published_at: 0,
     publish_output: Nil,
     landed: fn(_) { Nil },
+    writing: 0,
+    captures: [],
+    moved: None,
   )
 }
 
@@ -349,6 +353,62 @@ pub fn same_model_native_reasoning_and_tool_metadata_switch_still_applies_test()
   saved(changed).revision |> should.equal(before.revision + 1)
   list.length(history(changed)) |> should.equal(4)
   Nil
+}
+
+/// Unrelated actor-side edits do not wait on a stale Blue catalog or fail
+/// merely because its capability could not be reverified now.
+pub fn blue_rename_skips_capability_lookup_and_preserves_saved_intent_test() -> Nil {
+  use home <- with_home
+  use original <- fixture(home)
+  let info =
+    conversation.Info(
+      ..original.info,
+      id: "blue-unrelated-rename",
+      cyber_access: Some("daybreak_blue"),
+    )
+  let assert Ok(_) = conversation.create(runtime.ledger(original.host), info)
+  let state =
+    session_state.State(..original, info: info, booting: Some(#(1, [])))
+  let #(changed, outcome) =
+    session_configure.change(
+      state,
+      session_configure.SelectName(Some("safe rename")),
+    )
+  let assert Ok(_) = outcome
+  saved(changed).name |> should.equal(Some("safe rename"))
+  saved(changed).cyber_access |> should.equal(Some("daybreak_blue"))
+}
+
+/// A queued legacy switch must never run a Standard upstream with persisted Blue.
+pub fn busy_blue_switch_clears_intent_for_same_and_changed_model_test() -> Nil {
+  use home <- with_home
+  use original <- fixture(home)
+  list.each([origin, target], fn(model) {
+    let info =
+      conversation.Info(
+        ..original.info,
+        id: "blue-" <> model,
+        cyber_access: Some("daybreak_blue"),
+      )
+    let assert Ok(_) = conversation.create(runtime.ledger(original.host), info)
+    let state =
+      session_state.State(..original, info: info, booting: Some(#(1, [])))
+    let assert Some("daybreak_blue") = saved(state).cyber_access
+    let assert Ok(#(_, _, candidate)) =
+      session_configure.validate_switch(state, model, "converse")
+    candidate.cyber_access |> should.equal(None)
+    let #(queued, result) =
+      session_switch.queue(state, "parent", "converse", model)
+    result |> should.equal(Ok(True))
+    saved(queued).cyber_access |> should.equal(Some("daybreak_blue"))
+    let #(changed, selection) =
+      session_switch.apply_pending(session_state.State(..queued, booting: None))
+    let assert Some(applied) = selection
+    applied.model |> should.equal(model)
+    changed.info.cyber_access |> should.equal(None)
+    saved(changed).cyber_access |> should.equal(None)
+    saved(changed).model |> should.equal(model)
+  })
 }
 
 pub fn untyped_and_plaintext_history_accept_cross_model_and_other_modes_are_unchanged_test() -> Nil {

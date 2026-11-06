@@ -7,6 +7,7 @@ import albedo/daemon/conversation
 import albedo/daemon/store
 import albedo/harness/extension
 import albedo/harness/extensions/mcp/sign_in
+import albedo/harness/extensions/mcp/transfer
 import albedo/harness/rpc
 import albedo/harness/settings
 import albedo/openai_api/types
@@ -188,6 +189,7 @@ pub fn configured_extension() -> extension.Extension {
     "Model Context Protocol servers with session-owned connections",
     ["python"],
     [
+      extension.TransferPlugin(transfer.adapter()),
       extension.SettingsPlugin(settings.declaration(config_section())),
       extension.LoginResolverPlugin(sign_in.resolve),
       extension.ManagedPlugin(fn(ledger, session, workspace) {

@@ -193,6 +193,52 @@ pub fn available(
   ))
 }
 
+/// Whether one session moving here can run here: `ok` when its profile
+/// exists here and offers its model; `alternatives` are the profiles that
+/// offer the model when it does not.
+pub type Fit {
+  Fit(
+    session: String,
+    profile: String,
+    model: String,
+    has_profile: Bool,
+    ok: Bool,
+    alternatives: List(String),
+  )
+}
+
+/// `wants` is each session's (id, profile, model). Every list is asked at
+/// most once, together, within one first fetch.
+pub fn fits(
+  host: runtime.Runtime,
+  home: String,
+  wants: List(#(String, String, String)),
+) -> List(Fit) {
+  let profiles = configuration.providers(home) |> result.unwrap([])
+  let lookup = lookup(host, home)
+  let listings =
+    concurrently(lookup, profiles, listed(lookup, _), [], fn(_) { False })
+    |> list.zip(profiles, _)
+  list.map(wants, fn(want) {
+    let #(session, profile, model) = want
+    let offering =
+      list.filter_map(listings, fn(listing) {
+        let #(found, models) = listing
+        case found.model == model || list.contains(models, model) {
+          True -> Ok(found.name)
+          False -> Error(Nil)
+        }
+      })
+    let has_profile = list.any(profiles, fn(found) { found.name == profile })
+    let ok = list.contains(offering, profile)
+    let alternatives = case ok {
+      True -> []
+      False -> offering
+    }
+    Fit(session, profile, model, has_profile, ok, alternatives)
+  })
+}
+
 /// `Error(Nil)` when `current` offers `model`, else the `others` that do, in
 /// profile order. `current` is asked first when its list is at hand; one that
 /// must be fetched is asked together with the others, so a slow endpoint and

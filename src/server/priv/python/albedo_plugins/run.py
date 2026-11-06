@@ -686,7 +686,11 @@ class Job(JobOutput):
     async def stop(self) -> albedo_proc.Termination:
         """End the job's process group. A failed attempt stays retryable."""
         self._read = True  # an explicit stop is its own report; no wake is owed
-        return await self._stop()
+        ending = await self._stop()
+        if ending.gone and not self.task.done():
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                await asyncio.shield(self.task)
+        return ending
 
     async def _stop(self, exited: bool = False) -> albedo_proc.Termination:
         """End the group; once the command `exited` on its own, what a process

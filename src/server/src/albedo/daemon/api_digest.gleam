@@ -2,4 +2,4 @@
 //// GET /server reports it so a client built from another contract can tell.
 
 pub const digest =
-  "42150d6b6f25aa62c52597c6a568e9c88c5a9b80f27304979ce63fd893c6c57b"
+  "3c0befc83156d0eb61b591db6fe61965dfadd68f0789c87d2b7636975b1ca31e"

@@ -187,6 +187,16 @@ pub fn encode_with_policy(
     | types.Mistral(_)
     | types.GitHubCopilot(_) -> fields
   }
+  let fields = case policy, protocol, options.cyber_access {
+    Codex(_, _), Responses, Some("daybreak_blue") -> [
+      #(
+        "access_programs",
+        json.object([#("cyber", json.string("daybreak_blue"))]),
+      ),
+      ..fields
+    ]
+    _, _, _ -> fields
+  }
   Ok(json.to_string_tree(json.object(fields)))
 }
 

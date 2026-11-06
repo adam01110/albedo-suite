@@ -42,7 +42,740 @@ tags:
 - name: discord
 - name: proxy
 - name: terminals
+- name: transfers
 paths:
+  /transfers/protocol:
+    get:
+      operationId: getTransferProtocol
+      summary: The session transfer protocol this daemon speaks
+      tags: [transfers]
+      description: A source's preflight reads it through the relay before it exports anything.
+      responses:
+        '200':
+          description: This daemon's transfer protocol.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [protocol]
+                properties:
+                  protocol: {type: integer, minimum: 1}
+        '401':
+          $ref: '#/components/responses/Problem401'
+  /transfers/preflight:
+    get:
+      operationId: getTransferPreflight
+      summary: Whether a session could move to another daemon now
+      tags: [transfers]
+      description: Answers within about ten seconds. A target out of reach, a daemon there that speaks another
+        transfer protocol, a session mid-turn or one that already moved is available false with the reason,
+        not an error.
+      parameters:
+      - name: session_id
+        in: query
+        required: true
+        schema:
+          $ref: '#/components/schemas/ID'
+      - name: target
+        in: query
+        required: true
+        schema:
+          type: string
+          description: '[user@]host:/absolute/path'
+      responses:
+        '200':
+          description: What a move there would find.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransferPreflight'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '404':
+          $ref: '#/components/responses/Problem404'
+  /transfers/{transfer_id}:
+    get:
+      operationId: getTransfer
+      summary: Read a move this daemon drives
+      tags: [transfers]
+      parameters:
+      - name: transfer_id
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: '^[0-9a-fA-F-]{8,64}$'
+      responses:
+        '200':
+          description: The move.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Move'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '404':
+          $ref: '#/components/responses/Problem404'
+  /sessions/{session_id}/move:
+    post:
+      operationId: moveSessionToDaemon
+      summary: Move a session and its same-workspace descendants to another host's daemon
+      tags: [transfers]
+      description: The source daemon drives the move to the end whether or not the client stays, and a restart
+        resumes it from its state. A repeat with the same transfer id and target answers the move as it stands.
+        Once active the sessions here are marked moved and refuse new input (409 session_moved).
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [transfer_id, target]
+              properties:
+                transfer_id:
+                  type: string
+                  pattern: '^[0-9a-fA-F-]{8,64}$'
+                target:
+                  type: string
+                  description: '[user@]host:/absolute/path'
+                profiles:
+                  type: object
+                  description: The target profile a session runs on there, by session id, for sessions whose own
+                    profile the target lacks (preflight's alternatives). Part of the move; a repeat with another
+                    mapping is 409 transfer_conflict. Activation fails the move with profile_unavailable when a
+                    session still can't run there.
+                  additionalProperties: {type: string}
+      responses:
+        '202':
+          description: The move, started or as it stands.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Move'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '409':
+          $ref: '#/components/responses/Problem409'
+        '422':
+          $ref: '#/components/responses/Problem422'
+  /transfers/{transfer_id}/finish:
+    post:
+      operationId: finishTransfer
+      summary: Disarm the source's bindings and finish a move waiting at its checklist
+      tags: [transfers]
+      description: Disarms every binding the move lists (schedules and heartbeats deleted, webhooks answering 410
+        with their new url, the discord bot stopped), reports what this daemon delivered after the export
+        snapshot to the target so it skips those, then marks the sessions moved and the move active. A step
+        that fails leaves the move at checklist with that binding's status failed and the move's error set; a
+        repeat goes on from there, and a repeat once active answers the move.
+      parameters:
+      - name: transfer_id
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: '^[0-9a-fA-F-]{8,64}$'
+      responses:
+        '200':
+          description: The move after this attempt, active or still at its checklist.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Move'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '409':
+          $ref: '#/components/responses/Problem409'
+  /transfers/{transfer_id}/export:
+    post:
+      operationId: exportTransfer
+      summary: Export a session and its same-workspace descendants for a move
+      tags: [transfers]
+      description: One consistent snapshot per transfer id; a repeat answers the same manifest. Every session in scope must be idle.
+      parameters:
+      - name: transfer_id
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: '^[0-9a-fA-F-]{8,64}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [session_id]
+              properties:
+                session_id:
+                  type: string
+      responses:
+        '200':
+          description: The manifest the target is given.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransferManifest'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '409':
+          $ref: '#/components/responses/Problem409'
+        '503':
+          $ref: '#/components/responses/Problem503'
+    get:
+      operationId: getTransferExport
+      summary: Read an export's manifest
+      tags: [transfers]
+      parameters:
+      - name: transfer_id
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: '^[0-9a-fA-F-]{8,64}$'
+      responses:
+        '200':
+          description: The manifest the target is given.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransferManifest'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '404':
+          $ref: '#/components/responses/Problem404'
+  /transfers/{transfer_id}/export/segments/{index}:
+    get:
+      operationId: getTransferSegment
+      summary: Read one chunk of an exported segment
+      tags: [transfers]
+      description: At most 512 KiB from offset; an empty body past the end.
+      parameters:
+      - name: transfer_id
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: '^[0-9a-fA-F-]{8,64}$'
+      - name: index
+        in: path
+        required: true
+        schema:
+          type: integer
+          minimum: 0
+      - name: offset
+        in: query
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+      responses:
+        '200':
+          description: Raw segment bytes.
+          content:
+            application/octet-stream:
+              schema:
+                {type: string, format: binary}
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '404':
+          $ref: '#/components/responses/Problem404'
+  /transfers/{transfer_id}/import:
+    put:
+      operationId: stageTransfer
+      summary: Stage a source's manifest, inactive
+      tags: [transfers]
+      description: Refuses an unknown owner or table version, a session that already lives here, or too little free space, before any byte arrives. A repeat with the same manifest and workspace answers the status; another workspace is a conflict.
+      parameters:
+      - name: transfer_id
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: '^[0-9a-fA-F-]{8,64}$'
+      - name: workspace
+        in: query
+        required: true
+        description: The absolute path on this host the sessions activate into.
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransferManifest'
+      responses:
+        '200':
+          description: The staged transfer.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransferStatus'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '409':
+          $ref: '#/components/responses/Problem409'
+        '415':
+          $ref: '#/components/responses/Problem415'
+        '422':
+          $ref: '#/components/responses/Problem422'
+        '507':
+          $ref: '#/components/responses/Problem507'
+    get:
+      operationId: getTransferImport
+      summary: Read a staged transfer's progress
+      tags: [transfers]
+      parameters:
+      - name: transfer_id
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: '^[0-9a-fA-F-]{8,64}$'
+      responses:
+        '200':
+          description: The staged transfer.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransferStatus'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '404':
+          $ref: '#/components/responses/Problem404'
+    delete:
+      operationId: cancelTransferImport
+      summary: Cancel an import that is not live yet
+      tags: [transfers]
+      description: Removes the rows activation applied, last segment first, then the staged files; poll until cancelled. Refused once the import is installing or active.
+      parameters:
+      - name: transfer_id
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: '^[0-9a-fA-F-]{8,64}$'
+      responses:
+        '202':
+          description: The import, cancelling.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransferStatus'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '409':
+          $ref: '#/components/responses/Problem409'
+  /transfers/{transfer_id}/import/segments/{index}:
+    put:
+      operationId: putTransferSegment
+      summary: Write one chunk of a staged segment
+      tags: [transfers]
+      description: Offsets resume where the segment's bytes end; a repeat of bytes already there is accepted, different bytes are not.
+      parameters:
+      - name: transfer_id
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: '^[0-9a-fA-F-]{8,64}$'
+      - name: index
+        in: path
+        required: true
+        schema:
+          type: integer
+          minimum: 0
+      - name: offset
+        in: query
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '200':
+          description: The staged transfer.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransferStatus'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '409':
+          $ref: '#/components/responses/Problem409'
+        '413':
+          $ref: '#/components/responses/Problem413'
+  /transfers/{transfer_id}/import/ready:
+    post:
+      operationId: readyTransfer
+      summary: Verify every staged segment; the import stays inactive
+      tags: [transfers]
+      description: A segment that fails its digest or framing is dropped and named, to be sent again.
+      parameters:
+      - name: transfer_id
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: '^[0-9a-fA-F-]{8,64}$'
+      responses:
+        '200':
+          description: The staged transfer.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransferStatus'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '409':
+          $ref: '#/components/responses/Problem409'
+  /transfers/{transfer_id}/import/occurrences:
+    post:
+      operationId: recordTransferOccurrences
+      summary: Record what the source delivered after its export, so this daemon skips it
+      tags: [transfers]
+      description: Called by the source when it finishes a move. Each occurrence is a schedule (its source id and
+        due time, in seconds), a webhook event (hook id and event id) or a letter (its id); a repeat records nothing
+        twice. The schedule due scan, webhook intake and discord delivery skip a recorded occurrence.
+      parameters:
+      - name: transfer_id
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: '^[0-9a-fA-F-]{8,64}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransferOccurrences'
+      responses:
+        '200':
+          description: How many occurrences were new here.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [recorded]
+                properties:
+                  recorded: {type: integer, minimum: 0}
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '409':
+          $ref: '#/components/responses/Problem409'
+  /transfers/runs-there:
+    post:
+      operationId: checkTransferProfiles
+      summary: Whether sessions moving here can run on the profiles they name
+      tags: [transfers]
+      description: Called by a source through the relay. For each session, ok when this daemon has the profile and it
+        offers the model; otherwise problem says which is missing and alternatives lists the profiles here offering
+        the model.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransferRunsThereRequest'
+      responses:
+        '200':
+          description: One answer per session, in order.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [sessions]
+                properties:
+                  sessions:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required: [session_id, ok, profile, model, problem, alternatives]
+                      properties:
+                        session_id:
+                          $ref: '#/components/schemas/ID'
+                        ok: {type: boolean}
+                        profile: {type: string}
+                        model: {type: string}
+                        problem:
+                          type: [string, 'null']
+                          enum: [no_profile, no_model, null]
+                        alternatives:
+                          type: array
+                          items: {type: string}
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+  /mail/forwarded:
+    post:
+      operationId: admitForwardedMail
+      summary: Admit letters from a daemon this one's sessions moved from
+      tags: [transfers]
+      description: Called by that daemon through its relay. Each letter is admitted once by its id; a repeat is
+        acknowledged again without a copy. A sender that does not live here is kept with the origin daemon and host,
+        so a reply goes back there.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [origin, host, letters]
+              properties:
+                origin: {type: string, description: The sending daemon's identity.}
+                host: {type: string, description: The sending daemon's host name.}
+                letters:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/ForwardedLetter'
+      responses:
+        '200':
+          description: One acknowledgement per letter.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [acks]
+                properties:
+                  acks:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ForwardedAck'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+  /mail/forwarded/collect:
+    post:
+      operationId: collectForwardedMail
+      summary: Collect the letters waiting here for the calling daemon
+      tags: [transfers]
+      description: A long-poll the daemon sessions moved from keeps open through its relay. It settles the letters
+        the caller acknowledges (admitted, or refused, which bounces them to their sender here), then answers the
+        letters waiting for it, holding the call until one is queued or wait_ms (at most five minutes) ends.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [origin, host, acks, wait_ms]
+              properties:
+                origin: {type: string, description: The collecting daemon's identity.}
+                host: {type: string}
+                acks:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/ForwardedAck'
+                wait_ms: {type: integer, minimum: 0}
+      responses:
+        '200':
+          description: The letters waiting for the caller, possibly none.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [letters]
+                properties:
+                  letters:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ForwardedLetter'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '503':
+          $ref: '#/components/responses/Problem503'
+  /transfers/{transfer_id}/import/family:
+    post:
+      operationId: recordTransferFamily
+      summary: Record the relatives the moved sessions left on the source
+      tags: [transfers]
+      description: Called by the source as the import goes live. Each stub names a moved session, a relative of it
+        on the source (its parent, a child, or a sibling) and the name it addresses it by, so "parent" and those names
+        keep resolving here to the same session ids. A repeat updates them.
+      parameters:
+      - name: transfer_id
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: '^[0-9a-fA-F-]{8,64}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [origin, host, stubs]
+              properties:
+                origin: {type: string}
+                host: {type: string}
+                stubs:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required: [session_id, member, relation, name]
+                    properties:
+                      session_id:
+                        $ref: '#/components/schemas/ID'
+                      member:
+                        $ref: '#/components/schemas/ID'
+                      relation:
+                        type: string
+                        enum: [parent, child, sibling]
+                      name: {type: string}
+      responses:
+        '200':
+          description: How many stubs were recorded.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [recorded]
+                properties:
+                  recorded: {type: integer, minimum: 0}
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '503':
+          $ref: '#/components/responses/Problem503'
+  /extensions/agents/sessions/{session_id}/{op}:
+    post:
+      operationId: runMovedAgentCall
+      summary: Run a handle call on a session that moved here
+      tags: [transfers]
+      description: Called by the daemon the session moved from, through its relay, after it authorized the caller as
+        it would have before the move. The body is the handle call's own arguments; the answer is what the call
+        answers.
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ID'
+      - name: op
+        in: path
+        required: true
+        schema:
+          type: string
+          enum: [messages, search_messages, cancel, close, switch]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: The call's answer.
+          content:
+            application/json:
+              schema: {}
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '422':
+          $ref: '#/components/responses/Problem422'
+  /transfers/{transfer_id}/import/activate:
+    post:
+      operationId: activateTransfer
+      summary: Make a ready import live, in bounded batches
+      tags: [transfers]
+      description: Answers at once and goes on in the background; poll the import until its state is active. The sessions stay invisible and inert (stage importing) until one commit makes them live. A repeat answers the status and never applies a row twice. A row whose key this daemon already holds sends the import back to ready with error transfer_collision, nothing applied. A body names what each session runs on here; a ready import with a session that can't is refused with 422 profile_unavailable before anything applies, and the profiles it names are switched in the commit that makes the sessions live.
+      parameters:
+      - name: transfer_id
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: '^[0-9a-fA-F-]{8,64}$'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransferRunsThereRequest'
+      responses:
+        '202':
+          description: The import, activating.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransferStatus'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '409':
+          $ref: '#/components/responses/Problem409'
+        '422':
+          $ref: '#/components/responses/Problem422'
   /terminals/{terminal_id}:
     get:
       operationId: attachTerminal
@@ -2746,6 +3479,19 @@ paths:
         required: false
         schema:
           $ref: '#/components/schemas/ID'
+      - name: session
+        in: query
+        required: false
+        description: Existing session whose selected account scopes Daybreak Blue support; with initial=true, a preallocated new session ID selects its exact future account.
+        schema:
+          $ref: '#/components/schemas/ID'
+      - name: initial
+        in: query
+        required: false
+        description: true permits preview with a new future session ID; requires provider_profile and session. Existing session IDs are rejected.
+        schema:
+          type: string
+          enum: ['true']
       - name: provider
         in: query
         required: false
@@ -4894,11 +5640,14 @@ paths:
           $ref: '#/components/responses/Problem404'
         '409':
           $ref: '#/components/responses/Problem409'
+        '410':
+          $ref: '#/components/responses/Problem410'
         '429':
           $ref: '#/components/responses/Problem429'
       description: Authenticate configured HMAC-SHA256 over the exact raw body. A daemon bearer is not
         a substitute. Signature header name and prefix come from hook configuration. Same event ID and
-        body returns original admission; changed body conflicts. Pending inbox limit 1000. Raw body maximum
+        body returns original admission; changed body conflicts. A hook whose session moved to another daemon
+        answers 410 naming the url to send to there. Pending inbox limit 1000. Raw body maximum
         65536 bytes.
       parameters:
       - name: hook_id
@@ -5921,6 +6670,18 @@ components:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/Problem'
+    Problem422:
+      description: Unknown transfer owner, table or version
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Problem507:
+      description: Not enough free space or staging room
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
     Problem409:
       description: Conflicting intent, busy state or stale catalog
       content:
@@ -5973,6 +6734,282 @@ components:
           schema:
             $ref: '#/components/schemas/Problem'
   schemas:
+    TransferPreflight:
+      type: object
+      additionalProperties: false
+      required: [available, reason, target_daemon, bytes, sessions, runs_there]
+      properties:
+        available: {type: boolean}
+        reason:
+          type: [string, 'null']
+          description: Why the move is unavailable, in words for a person.
+        target_daemon:
+          $ref: '#/components/schemas/TransferTargetDaemon'
+        bytes:
+          type: [integer, 'null']
+          description: The move's size, when known before export.
+        sessions:
+          type: array
+          description: The session and its same-workspace descendants, which move together.
+          items:
+            $ref: '#/components/schemas/ID'
+        runs_there:
+          type: array
+          description: Whether each session can run on the target, in the order of sessions; empty when the target
+            was not reached. A session that can't and has no alternative makes available false with its reason; one
+            with alternatives leaves the pick to the client (the move's profiles).
+          items:
+            $ref: '#/components/schemas/TransferRunsThere'
+    ForwardedLetter:
+      type: object
+      additionalProperties: false
+      required: [id, recipient, sender, sender_name, kind, body]
+      properties:
+        id: {type: string}
+        recipient:
+          $ref: '#/components/schemas/ID'
+        sender:
+          $ref: '#/components/schemas/ID'
+        sender_name: {type: string}
+        kind:
+          type: string
+          enum: [task, request, message, result, unreviewed]
+        body: {type: string}
+    ForwardedAck:
+      type: object
+      additionalProperties: false
+      required: [id, error, retry]
+      properties:
+        id: {type: string}
+        error:
+          type: [string, 'null']
+          description: Why the letter was not admitted; null when it was.
+        retry: {type: boolean, description: Send it again later (a full inbox) rather than bouncing it.}
+    TransferRunsThere:
+      type: object
+      additionalProperties: false
+      required: [session_id, name, ok, profile, model, reason, alternatives]
+      properties:
+        session_id:
+          $ref: '#/components/schemas/ID'
+        name: {type: string, description: The session's family name, else its name or title.}
+        ok: {type: boolean, description: The target has this profile and it offers this model.}
+        profile: {type: string}
+        model: {type: string}
+        reason:
+          type: [string, 'null']
+          description: Why it can't run there, in words for a person.
+        alternatives:
+          type: array
+          description: The target's other profiles offering the model, when this one does not.
+          items: {type: string}
+    TransferRunsThereRequest:
+      type: object
+      additionalProperties: false
+      required: [sessions]
+      properties:
+        sessions:
+          type: array
+          items:
+            $ref: '#/components/schemas/TransferSessionProfile'
+        profiles:
+          type: object
+          description: Sessions to switch to another profile as they go live, session id to profile.
+          additionalProperties: {type: string}
+    TransferSessionProfile:
+      type: object
+      additionalProperties: false
+      required: [session_id, profile, model]
+      properties:
+        session_id:
+          $ref: '#/components/schemas/ID'
+        profile: {type: string}
+        model: {type: string}
+    TransferTargetDaemon:
+      type: object
+      additionalProperties: false
+      required: [host, protocol, home]
+      properties:
+        host: {type: string}
+        protocol: {type: [integer, 'null']}
+        home: {type: [string, 'null']}
+    Move:
+      type: object
+      additionalProperties: false
+      required: [id, session_id, target, state, reason, progress, error, target_session_id, target_home, lost, bindings]
+      properties:
+        id: {type: string}
+        session_id:
+          $ref: '#/components/schemas/ID'
+        target: {type: string, description: '[user@]host:/absolute/path'}
+        state:
+          type: string
+          enum: [checking, exporting, copying, activating, checklist, active, failed]
+          description: At checklist the target is live and the sessions here still are too, until finish disarms
+            the bindings and marks them moved.
+        reason:
+          type: [string, 'null']
+          description: Why the move waits, such as a turn still running or the target out of reach.
+        progress:
+          $ref: '#/components/schemas/MoveProgress'
+        error:
+          anyOf:
+          - $ref: '#/components/schemas/MoveError'
+          - type: 'null'
+        target_session_id: {type: [string, 'null']}
+        target_home: {type: [string, 'null']}
+        lost:
+          type: array
+          description: What the target could not restore, such as the python namespace.
+          items: {type: string}
+        bindings:
+          type: array
+          description: What finish disarms here, listed from checklist on.
+          items:
+            $ref: '#/components/schemas/MoveBinding'
+    MoveBinding:
+      type: object
+      additionalProperties: false
+      required: [kind, id, label, detail, old_url, new_url, status, error]
+      properties:
+        kind:
+          type: string
+          enum: [schedule, heartbeat, webhook, discord]
+        id: {type: string}
+        label: {type: string}
+        detail:
+          type: string
+          description: A schedule's prompt and cadence, a webhook's name, the bot's name and channels.
+        old_url:
+          type: [string, 'null']
+          description: The webhook url senders post to here.
+        new_url:
+          type: [string, 'null']
+          description: The webhook url on the target to point senders at; null when the target has none.
+        status:
+          type: string
+          enum: [pending, disarmed, failed]
+        error:
+          type: [string, 'null']
+          description: Why disarming this binding failed.
+    TransferOccurrences:
+      type: object
+      additionalProperties: false
+      required: [occurrences]
+      properties:
+        occurrences:
+          type: array
+          maxItems: 10000
+          items:
+            $ref: '#/components/schemas/TransferOccurrence'
+    TransferOccurrence:
+      type: object
+      additionalProperties: false
+      required: [kind, origin, key]
+      properties:
+        kind:
+          type: string
+          enum: [schedule, webhook, letter]
+        origin:
+          type: string
+          description: The schedule's id on the source, the hook id, or empty for a letter.
+        key:
+          type: string
+          description: The due time in unix seconds, the event id, or the letter id.
+        detail:
+          type: [string, 'null']
+          description: The delivery id the source gave a webhook event.
+    MoveProgress:
+      type: object
+      additionalProperties: false
+      required: [bytes_done, bytes_total]
+      properties:
+        bytes_done: {type: integer, minimum: 0}
+        bytes_total: {type: integer, minimum: 0}
+    MoveError:
+      type: object
+      additionalProperties: false
+      required: [code, detail]
+      properties:
+        code: {type: string}
+        detail: {type: string}
+    SessionMovePending:
+      type: object
+      additionalProperties: false
+      required: [transfer_id, host]
+      properties:
+        transfer_id: {type: string}
+        host: {type: string}
+    SessionMoved:
+      type: object
+      additionalProperties: false
+      required: [host, workspace, transfer_id, at]
+      properties:
+        host: {type: string}
+        workspace: {type: string, description: '[user@]host:/absolute/path'}
+        transfer_id: {type: string}
+        at:
+          $ref: '#/components/schemas/Timestamp'
+    TransferManifest:
+      type: object
+      required: [protocol, id, origin, root, workspace, sessions, watermark, segments]
+      properties:
+        protocol: {type: integer}
+        id: {type: string}
+        origin: {type: string, description: The source home's identity.}
+        root: {type: string}
+        workspace: {type: string}
+        sessions:
+          type: array
+          items: {type: string}
+        watermark: {type: integer, description: The highest transcript position exported.}
+        segments:
+          type: array
+          items:
+            type: object
+            required: [kind, owner, name, version, columns, rows, bytes, digest]
+            properties:
+              kind: {type: string, enum: [rows, file]}
+              owner: {type: string}
+              name: {type: string}
+              version: {type: integer}
+              columns:
+                type: array
+                items: {type: string}
+              rows: {type: integer}
+              bytes: {type: integer}
+              digest: {type: string, description: SHA-256, lowercase hex.}
+    TransferStatus:
+      type: object
+      required: [state, bytes, received, rows, session_id, home, lost, error]
+      properties:
+        state:
+          type: string
+          enum: [staging, ready, importing, installing, active, cancelling, cancelled]
+          description: importing and installing are still inert; active is live.
+        bytes: {type: integer}
+        received:
+          type: array
+          items: {type: integer}
+        rows:
+          type: object
+          required: [done, total]
+          properties:
+            done: {type: integer}
+            total: {type: integer}
+        session_id: {type: string, description: The root session, the same id as on the source.}
+        home: {type: string, description: This daemon's home.}
+        lost:
+          type: array
+          items: {type: string}
+          description: What could not be restored, such as "python namespace".
+        error:
+          type: [object, 'null']
+          description: Why activation last stopped; a retry resumes it.
+          required: [code, detail]
+          properties:
+            code: {type: string}
+            detail: {type: string}
     TerminalClose:
       type: object
       required:
@@ -7839,6 +8876,9 @@ components:
           - type: 'null'
         fast:
           type: boolean
+        cyber_access:
+          type: [string, 'null']
+          enum: [daybreak_blue, null]
         status:
           $ref: '#/components/schemas/SessionStatus'
         preview:
@@ -7859,6 +8899,16 @@ components:
         acp:
           description: Present only for ACP-owned sessions. Attachment state is read separately from the session capture.
           $ref: '#/components/schemas/ACPState'
+        moved:
+          description: Set once the session moved to another daemon; it then refuses new input (409 session_moved).
+          anyOf:
+          - $ref: '#/components/schemas/SessionMoved'
+          - type: 'null'
+        move_pending:
+          description: Set while a move of this session waits at its checklist; the session is still live here.
+          anyOf:
+          - $ref: '#/components/schemas/SessionMovePending'
+          - type: 'null'
       description: Session live fields and cursor are captured together. ACP attachment metadata is read separately.
         Extra response fields may be ignored.
       required: [id, name, automatic_name, workspace, location, parent_id, root_id, address, depth, closed, created_at,
@@ -8081,6 +9131,10 @@ components:
         fast:
           type: boolean
           description: Provider fast-mode setting; defaults off and may affect billing.
+        cyber_access:
+          type: [string, 'null']
+          enum: [daybreak_blue, null]
+          description: Explicit session-scoped Codex Blue intent; null sends ordinary requests.
         context_window:
           description: Tokens this session compacts against instead of the model's catalogued window. Null uses
             the model's window.
@@ -8157,6 +9211,10 @@ components:
         fast:
           type: boolean
           description: Enable provider fast mode; enabling requires a supported capability and may affect billing.
+        cyber_access:
+          type: [string, 'null']
+          enum: [daybreak_blue, null]
+          description: Select Blue for this session; null explicitly clears it.
         context_window:
           description: Tokens this session compacts against instead of the model's catalogued window. Null uses
             the model's window.
@@ -8230,6 +9288,10 @@ components:
             minimum: 1
             maximum: 100000000
           - type: 'null'
+        cyber_access:
+          type: [string, 'null']
+          enum: [daybreak_blue, null]
+          description: Explicit Blue at creation; null or omission selects standard.
       required: [kind, workspace]
       additionalProperties: false
       examples:
@@ -8268,6 +9330,10 @@ components:
             minimum: 1
             maximum: 100000000
           - type: 'null'
+        cyber_access:
+          type: [string, 'null']
+          enum: [daybreak_blue, null]
+          description: Explicit Blue at creation; null or omission selects standard.
       required: [kind, workspace, name, provider_profile, model, effort]
       additionalProperties: false
     ForkSessionRequest:
@@ -11296,6 +12362,16 @@ components:
     Model:
       type: object
       properties:
+        cyber_access:
+          type: object
+          properties:
+            status:
+              type: string
+              enum: [supported, unsupported, unknown]
+            detail:
+              type: string
+          required: [status]
+          additionalProperties: false
         id:
           $ref: '#/components/schemas/ID'
         label:

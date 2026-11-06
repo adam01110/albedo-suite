@@ -14,6 +14,7 @@ import albedo/harness/extensions/skills/catalog
 import albedo/harness/extensions/skills/loads
 import albedo/harness/extensions/skills/rpc
 import albedo/harness/extensions/skills/service
+import albedo/harness/extensions/skills/transfer
 import albedo/harness/settings
 import gleam/dict
 import gleam/list
@@ -38,6 +39,7 @@ fn extension_with(home: fn() -> String) -> harness_extension.Extension {
     "Discover Agent Skills metadata and activate selected instructions or resources on demand.",
     ["python", "commands"],
     [
+      harness_extension.TransferPlugin(transfer.adapter()),
       harness_extension.GlancePlugin(service.sidebar, service.resource_url),
       harness_extension.ServicePlugin(harness_extension.Service(
         fn(_, _) {

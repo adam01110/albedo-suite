@@ -39,6 +39,15 @@ func (m *ChatModel) handleInput(msg tea.Msg) (tea.Cmd, bool) {
 			return nil, true
 		}
 
+		if m.moved != nil {
+			if cmd, handled := m.answerMoved(msg); handled {
+				return cmd, true
+			}
+		} else if m.movePending != nil && msg.String() == "enter" && m.TextArea.Value() == "" {
+			id := m.SessionID
+			return func() tea.Msg { return ChatChecklistMsg{SessionID: id} }, true
+		}
+
 		if m.direnvAsk != "" && m.TextArea.Value() == "" {
 			if cmd, handled := m.answerDirenv(msg); handled {
 				return cmd, true

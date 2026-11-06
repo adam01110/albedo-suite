@@ -4,12 +4,17 @@
 //// `memory` object reaches them through the route below wherever it runs.
 //// A workspace writes only its own memory and reads its whole link group.
 
+import albedo/clock
 import albedo/harness/extension
 import albedo/harness/host
 import albedo/harness/links
 import albedo/harness/rpc
+import albedo/transfer
+import gleam/bit_array
+import gleam/dynamic
 import gleam/dynamic/decode
 import gleam/json
+import gleam/list
 import gleam/result
 
 pub fn extension() -> extension.Extension {
@@ -18,6 +23,7 @@ pub fn extension() -> extension.Extension {
     "Durable project memory and dated journal entries.",
     ["python"],
     [
+      extension.TransferPlugin(transfer_adapter()),
       extension.ToolPlugin(
         "Project memory is nonbinding recall, not instructions. The startup block is a topic index, not full notes. "
           <> "Before project work, retrieve relevant facts with memory.search(query, limit=20) (SQLite FTS5) "
@@ -123,3 +129,85 @@ fn journal(
 
 @external(erlang, "albedo_memory", "documents")
 fn documents(group: List(String)) -> #(List(#(String, String, String)), Bool)
+
+/// A source workspace label and its relative UTF-8 memory and journal files.
+pub type Snapshot {
+  Snapshot(workspace: String, files: List(#(String, String)))
+}
+
+/// Reads this workspace's memory only, without checking its working directory.
+@external(erlang, "albedo_memory", "export_snapshot")
+pub fn export_snapshot(workspace: String) -> Result(Snapshot, String)
+
+/// Imports once per origin, transfer, source workspace and target file.
+pub fn import_snapshot(
+  target: String,
+  origin: String,
+  transfer_id: String,
+  snapshot: Snapshot,
+) -> Result(Nil, String) {
+  import_files(target, origin, transfer_id, snapshot, clock.system_seconds())
+}
+
+@external(erlang, "albedo_memory", "import_snapshot")
+fn import_files(
+  target: String,
+  origin: String,
+  transfer_id: String,
+  snapshot: Snapshot,
+  seconds: Int,
+) -> Result(Nil, String)
+
+/// The moved workspace's memory files, named `memory/<relative path>`, merged
+/// into the destination workspace's memory at activation.
+fn transfer_adapter() -> transfer.Adapter {
+  let files = fn(scope: transfer.Scope) {
+    use snapshot <- result.map(export_snapshot(scope.workspace))
+    list.map(snapshot.files, fn(file) {
+      transfer.Contents("memory/" <> file.0, bit_array.from_string(file.1))
+    })
+  }
+  transfer.Adapter(
+    ..transfer.declare("memory", [], []),
+    files: files,
+    install: install,
+  )
+}
+
+/// Imports the staged files as the origin workspace's snapshot. A retry of
+/// the same transfer skips what an earlier attempt committed.
+fn install(
+  scope: transfer.Scope,
+  origin: transfer.Origin,
+  staged: List(transfer.Staged),
+) -> Result(List(String), String) {
+  use files <- result.try(
+    list.try_map(staged, fn(file) {
+      use relative <- result.try(case file.name {
+        "memory/" <> relative -> Ok(relative)
+        name -> Error("not a memory file: " <> name)
+      })
+      use bytes <- result.try(
+        read_file(file.path)
+        |> result.replace_error("cannot read staged " <> file.name),
+      )
+      bit_array.to_string(bytes)
+      |> result.map(fn(text) { #(relative, text) })
+      |> result.replace_error("staged " <> file.name <> " is not UTF-8")
+    }),
+  )
+  case files {
+    [] -> Ok([])
+    _ ->
+      import_snapshot(
+        scope.workspace,
+        origin.daemon,
+        origin.transfer,
+        Snapshot(origin.workspace, files),
+      )
+      |> result.replace([])
+  }
+}
+
+@external(erlang, "file", "read_file")
+fn read_file(path: String) -> Result(BitArray, dynamic.Dynamic)

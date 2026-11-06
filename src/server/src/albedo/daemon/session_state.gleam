@@ -96,6 +96,9 @@ pub type State(message) {
     workspace_probe: Option(String),
     releasing: Option(List(message)),
     closing: Bool,
+    /// What this session answers to new input once it moved to another
+    /// daemon (`moves.watch`), or None while it lives here.
+    moved: Option(String),
     blocked_until: Int,
     /// Failed kernel startup waits for an explicit retry or workspace move.
     kernel_blocked: Bool,
@@ -128,6 +131,10 @@ pub type State(message) {
     publish_output: message,
     /// Wraps what goes on after a write `write_then` queued.
     landed: fn(fn(State(message)) -> State(message)) -> message,
+    /// Writes `write_then` queued whose `landed` step has not run yet, and
+    /// captures waiting to read the store and the stream at one boundary.
+    writing: Int,
+    captures: List(fn(State(message)) -> Nil),
   )
 }
 
@@ -144,7 +151,7 @@ pub fn write_then(
   store.query_then(runtime.ledger(state.host), fn(_) { write() }, fn(value) {
     process.send(self, wrap(landed(_, value)))
   })
-  state
+  State(..state, writing: state.writing + 1)
 }
 
 /// Deltas reach a client at most once a frame; a terminal draws no faster.
