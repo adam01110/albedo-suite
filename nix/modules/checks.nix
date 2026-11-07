@@ -69,6 +69,20 @@
       touch $out
     '';
 
+    checks.session-cost-e2e = runCommand "albedo-session-cost-e2e-tests" {nativeBuildInputs = [pkgs.python311];} ''
+      export ERL_AFLAGS="-public_key cacerts_path '\"${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt\"'"
+      python3 ${../../scripts/test-e2e.py} --source ${runtime.server.src} --suite ${../..} --package ${runtime} --case session_cost_e2e_test.py
+      touch $out
+    '';
+
+    checks.session-cost = runCommand "albedo-session-cost-tests" {nativeBuildInputs = [pkgs.beam29Packages.erlang];} ''
+      cp ${../../src/server/src/albedo/daemon/albedo_session_cost.erl} albedo_session_cost.erl
+      cp ${../../test/session_cost_tests.erl} session_cost_tests.erl
+      erlc -Werror -o . *.erl
+      erl +S 2:2 -noshell -pa . -eval 'session_cost_tests:run(), halt().'
+      touch $out
+    '';
+
     checks.native-mcp = runCommand "albedo-native-mcp-tests" {nativeBuildInputs = [pkgs.beam29Packages.erlang];} ''
       export ERL_AFLAGS="-public_key cacerts_path '\"${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt\"'"
       cp ${../../src/server/src/albedo/harness/extensions/mcp/albedo_mcp.erl} albedo_mcp.erl

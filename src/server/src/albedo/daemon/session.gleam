@@ -25,6 +25,7 @@ import albedo/daemon/requests
 import albedo/daemon/session_activity
 import albedo/daemon/session_configuration
 import albedo/daemon/session_configure
+import albedo/daemon/session_cost
 import albedo/daemon/session_extensions
 import albedo/daemon/session_history
 import albedo/daemon/session_last_call
@@ -153,6 +154,7 @@ pub type StatusRead {
     status: session_activity.Status,
     kernel: session_namespace.KernelObservation,
     usage: Option(usage.Metadata),
+    cost_usd: Option(Float),
     glances: Option(List(selection.Glance)),
   )
 }
@@ -1459,11 +1461,11 @@ fn summary_state(state: State) -> Summary {
   )
 }
 
-/// Everything the footer draws, from memory and the kernel's port owner: no
-/// store read, no composition read. `glances` is what the stream last
-/// published; a caller that finds none observes the composition itself. The
-/// caller finishes the kernel observation, as it does a capture's.
+/// Footer facts without a composition read. The caller prices the durable
+/// request ledger and finishes the kernel observation. `glances` is what the
+/// stream last published; a caller that finds none observes the composition.
 fn status_state(state: State) -> fn() -> Result(StatusRead, String) {
+  let ledger = runtime.ledger(state.host)
   let kernel = session_namespace.kernel_observer(state)
   // Bind the facts, not `state`, so the transcript stays in the actor.
   let #(id, cursor, status, usage, glances) = #(
@@ -1475,7 +1477,15 @@ fn status_state(state: State) -> fn() -> Result(StatusRead, String) {
   )
   fn() {
     use observed <- result.map(kernel())
-    StatusRead(id, cursor, status, observed, usage, glances)
+    StatusRead(
+      id,
+      cursor,
+      status,
+      observed,
+      usage,
+      session_cost.total(ledger, id),
+      glances,
+    )
   }
 }
 
@@ -4912,13 +4922,27 @@ fn finished_turn(
             )
           session_state.emit(
             session_state.State(..state, latest_usage: Some(metadata)),
-            view.Usage(metadata),
+            view.CostedUsage(
+              Some(metadata),
+              session_cost.total(runtime.ledger(state.host), state.info.id),
+            ),
           )
         }
         None -> state
       }
     }
     _, _, _, _ -> state
+  }
+  let state = case run.cancelled, outcome {
+    False, Ok(_) -> state
+    _, _ ->
+      session_state.emit(
+        state,
+        view.CostedUsage(
+          state.latest_usage,
+          session_cost.total(runtime.ledger(state.host), state.info.id),
+        ),
+      )
   }
   case run.work {
     turn.Compaction(reply, report) -> {
@@ -5196,7 +5220,10 @@ fn rewarmed(state: State, started: Int) -> State {
         Ok(_) ->
           session_state.emit(
             session_state.State(..state, latest_usage: Some(metadata)),
-            view.Usage(metadata),
+            view.CostedUsage(
+              Some(metadata),
+              session_cost.total(runtime.ledger(state.host), state.info.id),
+            ),
           )
         Error(_) -> state
       }
@@ -5508,7 +5535,10 @@ fn remember_usage(
         latest_usage: Some(metadata),
         context: context_snapshot.with_usage(state.context, metadata),
       )
-      |> session_state.emit(view.Usage(metadata))
+      |> session_state.emit(view.CostedUsage(
+        Some(metadata),
+        session_cost.total(runtime.ledger(state.host), state.info.id),
+      ))
   }
 }
 

@@ -19,6 +19,7 @@ SUITE_CASES = (
     "model_catalogs_test.py",
     "provider_availability_e2e_test.py",
     "prompt_context_e2e_test.py",
+    "session_cost_e2e_test.py",
     "opencode_go_e2e_test.py",
     "tool_backends_e2e_test.py",
     "tool_images_e2e_test.py",

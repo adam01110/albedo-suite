@@ -4065,8 +4065,11 @@ type Usage struct {
 	Model               *ID        `json:"model" nullable:"true"`
 	ObservedAt          *Timestamp `json:"observed_at" nullable:"true"`
 	PromptTokens        *Counter   `json:"prompt_tokens" nullable:"true"`
-	TokensPerSecond     *float64   `json:"tokens_per_second" nullable:"true"`
-	TotalTokens         *Counter   `json:"total_tokens" nullable:"true"`
+
+	// SessionCostUsd Session-wide estimated USD at catalog rates; null when any request is unpriced or unmetered.
+	SessionCostUsd  *float64 `json:"session_cost_usd,omitempty" nullable:"true"`
+	TokensPerSecond *float64 `json:"tokens_per_second" nullable:"true"`
+	TotalTokens     *Counter `json:"total_tokens" nullable:"true"`
 }
 
 // ValueSource For env, value is a daemon-host environment variable name.

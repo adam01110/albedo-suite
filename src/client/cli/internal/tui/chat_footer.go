@@ -171,6 +171,9 @@ func (m ChatModel) glanceRows(g sidebarGlance, limit int) []string {
 func (m ChatModel) renderFooter() string {
 	width := m.chatWidth()
 	right, compact := m.contextStat()
+	cost := DefaultStyles.Faint.Render(" · " + m.costStat())
+	right += cost
+	compact += cost
 	commands := hint{"i", "type"}
 	if !m.vim.normal {
 		commands = hint{"esc", "normal"}
@@ -281,4 +284,18 @@ func shortCount(n int) string {
 	default:
 		return strings.TrimSuffix(fmt.Sprintf("%.1f", float64(n)/1_000_000), ".0") + "m"
 	}
+}
+
+func (m ChatModel) costStat() string {
+	if m.Usage == nil || m.Usage.SessionCostUSD == nil {
+		return "cost n/a"
+	}
+	cost := *m.Usage.SessionCostUSD
+	if cost < 0 || math.IsNaN(cost) || math.IsInf(cost, 0) {
+		return "cost n/a"
+	}
+	if cost > 0 && cost < 0.01 {
+		return "~$<0.01"
+	}
+	return fmt.Sprintf("~$%.2f", cost)
 }

@@ -73,6 +73,7 @@ pub type Event {
   Note(entry_id: String, origin: String, text: String, mail: Option(json.Json))
   Retry(run_id: String, attempt: Int, reason: String, delay_ms: Int)
   Usage(usage.Metadata)
+  CostedUsage(Option(usage.Metadata), Option(Float))
   Committed(
     high_water: Int,
     replaces_live_ids: List(String),
@@ -192,6 +193,7 @@ pub fn encode(session: String, sequence: Int, event: Event) -> json.Json {
       ]),
     )
     Usage(metadata) -> #("usage", usage(Some(metadata)))
+    CostedUsage(metadata, cost) -> #("usage", costed_usage(metadata, cost))
     Committed(high_water, replaces_live_ids, replaces_all_live) -> #(
       "committed",
       json.object([
@@ -623,11 +625,27 @@ pub fn input(value: operations.InputOutcome) -> json.Json {
 }
 
 pub fn usage(metadata: Option(usage.Metadata)) -> json.Json {
+  json.object(usage_fields(metadata))
+}
+
+pub fn costed_usage(
+  metadata: Option(usage.Metadata),
+  cost: Option(Float),
+) -> json.Json {
+  json.object([
+    #("session_cost_usd", json.nullable(cost, json.float)),
+    ..usage_fields(metadata)
+  ])
+}
+
+fn usage_fields(
+  metadata: Option(usage.Metadata),
+) -> List(#(String, json.Json)) {
   let tokens = option.then(metadata, fn(value) { value.tokens })
   let counter = fn(read) { json.nullable(option.map(tokens, read), json.int) }
   let #(missed, drifted) =
     usage.loss_tokens(option.then(metadata, fn(value) { value.cache_loss }))
-  json.object([
+  [
     #(
       "model",
       json.nullable(
@@ -687,7 +705,7 @@ pub fn usage(metadata: Option(usage.Metadata)) -> json.Json {
           ])
         })
     }),
-  ])
+  ]
 }
 
 fn timestamp(value: Int) -> json.Json {

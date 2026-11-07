@@ -9703,6 +9703,12 @@ components:
     Usage:
       type: object
       properties:
+        session_cost_usd:
+          description: Session-wide estimated USD at catalog rates; null when any request is unpriced or unmetered.
+          anyOf:
+          - type: number
+            minimum: 0
+          - type: 'null'
         model:
           anyOf:
           - $ref: '#/components/schemas/ID'

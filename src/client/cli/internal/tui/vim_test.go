@@ -127,7 +127,7 @@ func TestVimFooter(t *testing.T) {
 			if b < 0 || width >= 80 && c < b || width == 40 && c < 0 {
 				t.Fatalf("width %d: %q", width, footer)
 			}
-			if width == 40 && !strings.HasSuffix(footer, "—/—") {
+			if width == 40 && !strings.HasSuffix(footer, "—/— · cost n/a") {
 				t.Fatal(footer)
 			}
 			if width == 120 && !strings.Contains(footer, "agents") {

@@ -3,7 +3,7 @@
 %% parsed once per file revision.
 
 -include_lib("kernel/include/file.hrl").
--export([refresh/3, reload/2, lookup/3, lookup_provider/3, list/3, env_names/2]).
+-export([refresh/3, reload/2, lookup/3, lookup_provider/3, list/3, env_names/2, prices/1]).
 
 -define(MAX_BYTES, 33554432).
 -define(REFRESH_PROCESS, albedo_models_refresh).
@@ -63,7 +63,7 @@ trim_model(_, Model) when is_map(Model) ->
     Limit = maps:with([<<"context">>, <<"output">>], field(<<"limit">>, Model)),
     Inputs = maps:with([<<"input">>], field(<<"modalities">>, Model)),
     Reasoning = maps:with([<<"reasoning_options">>], Model),
-    Trimmed = maps:merge(maps:with([<<"id">>, <<"provider">>], Model), Reasoning),
+    Trimmed = maps:merge(maps:with([<<"id">>, <<"provider">>, <<"cost">>], Model), Reasoning),
     {true, nonempty(<<"modalities">>, Inputs, nonempty(<<"limit">>, Limit, Trimmed))};
 trim_model(_, _) -> false.
 
@@ -149,7 +149,7 @@ from_index(Catalog, Revision) ->
     case file:read_file(index_path(Catalog)) of
         {ok, Bytes} ->
             try binary_to_term(Bytes, [safe]) of
-                {2, Revision, #{index := I, providers := P} = CatalogData} when is_map(I), is_map(P) ->
+                {3, Revision, #{index := I, providers := P} = CatalogData} when is_map(I), is_map(P) ->
                     persistent_term:put({?MODULE, Catalog}, {Revision, CatalogData}),
                     ok;
                 _ -> parse(Catalog, Revision)
@@ -165,7 +165,7 @@ parse(Catalog, Revision) ->
     case albedo_credentials:read_json(Catalog) of
         {ok, Decoded} when is_map(Decoded) ->
             {Providers, Index} = maps:fold(fun provider/3, {#{}, #{}}, Decoded),
-            CatalogData = #{index => Index, providers => Providers},
+            CatalogData = #{index => Index, providers => Providers, prices => price_index(Decoded)},
             Current = retrim(Catalog, Decoded, Revision),
             save_index(Catalog, Current, CatalogData),
             persistent_term:put({?MODULE, Catalog}, {Current, CatalogData}),
@@ -178,7 +178,7 @@ parse(Catalog, Revision) ->
 %% Best effort: without an index the next start parses the catalog again.
 save_index(Catalog, Revision, CatalogData) ->
     _ = albedo_credentials:write(index_path(Catalog),
-        term_to_binary({2, Revision, CatalogData}, [{compressed, 1}])),
+        term_to_binary({3, Revision, CatalogData}, [{compressed, 1}])),
     ok.
 
 %% A catalog cached before trimming existed is trimmed in place on first parse,
@@ -281,3 +281,20 @@ list(Catalog0, Provider0, Endpoint0) ->
     end.
 
 text(Value) -> unicode:characters_to_list(Value).
+
+%% Prices share the catalog's revision and parse; missing prices stay unknown.
+prices(Catalog) ->
+    case catalog(text(Catalog)) of
+        {ok, #{prices := Prices}} -> Prices;
+        _ -> #{}
+    end.
+
+price_index(Providers) ->
+    maps:fold(fun(Provider, Data, Acc) ->
+        maps:fold(fun(Id, Model, A) ->
+            case maps:get(<<"cost">>, Model, undefined) of
+                Cost when is_map(Cost) -> A#{{Provider, Id} => Cost};
+                _ -> A
+            end
+        end, Acc, field(<<"models">>, Data))
+    end, #{}, Providers).
