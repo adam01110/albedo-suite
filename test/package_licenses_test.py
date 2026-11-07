@@ -126,20 +126,6 @@ class PackageLicenseTests(unittest.TestCase):
                     (installed / path.relative_to(source)).read_bytes(),
                 )
 
-    def test_standalone_web_has_source_and_dependency_notices(self):
-        doc = PACKAGES["web"] / "share/doc/albedo-web"
-        self.assert_agpl_with_classpath_exception(doc)
-        self.assertIn("AGPL-3.0-only", (doc / "SOURCE.md").read_text())
-        self.assertEqual(
-            (doc / "THIRD_PARTY_NOTICES.md").read_bytes(),
-            (doc / "source/THIRD_PARTY_NOTICES.md").read_bytes(),
-        )
-        self.assertTrue((doc / "source/web/package-lock.json").is_file())
-        self.assertTrue((doc / "source/nix/packages/web.nix").is_file())
-        self.assertTrue(
-            (doc / "dependency-notices/node_modules/svelte/LICENSE.md").is_file()
-        )
-
     def test_fff_retains_agpl_adapter_and_mit_dependency_licenses(self):
         package = PACKAGES["fff"]
         doc = package / "share/licenses/albedo-fff"

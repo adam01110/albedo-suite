@@ -81,12 +81,6 @@
       touch $out
     '';
 
-    checks.web = runCommand "albedo-web-tests" {nativeBuildInputs = [pkgs.python311];} ''
-      export ERL_AFLAGS="-public_key cacerts_path '\"${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt\"'"
-      python3 ${../../scripts/test-e2e.py} --source ${runtime.server.src} --suite ${../..} --package ${runtime} --case web_e2e_test.py
-      touch $out
-    '';
-
     checks.native-mcp = runCommand "albedo-native-mcp-tests" {nativeBuildInputs = [pkgs.beam29Packages.erlang];} ''
       export ERL_AFLAGS="-public_key cacerts_path '\"${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt\"'"
       cp ${../../src/server/src/albedo/harness/extensions/mcp/albedo_mcp.erl} albedo_mcp.erl
@@ -104,7 +98,6 @@
       runtime.server
       suitePackages.albedo-patched
       suitePackages.albedo-patched.client
-      suitePackages.albedo-web
       # keep-sorted end
     ];
     assert pkgs.lib.licenses.toSPDX suitePackages.albedo-fff.meta.license == "(AGPL-3.0-only WITH Classpath-exception-2.0) AND MIT";
@@ -119,7 +112,6 @@
           patched = "${suitePackages.albedo-patched}";
           render = "${runtime.render}";
           server = "${runtime.server}";
-          web = "${runtime.web}";
           # keep-sorted end
         };
       } ''
@@ -129,6 +121,9 @@
 
     checks.package-layout = assert pkgs.lib.hasInfix "--no-preserve=mode" runtime.server.postPatch;
     assert pkgs.lib.hasInfix "--no-preserve=mode" runtime.client.postPatch;
+    assert !(suitePackages ? albedo-web);
+    assert !(runtime ? web);
+    assert !(suitePackages.albedo-patched ? web);
       runCommand "albedo-package-layout" {} ''
         test -f ${runtime}/lib/albedo/albedo/priv/python/albedo_formatter.py
         test -f ${runtime}/lib/albedo/albedo/priv/python/albedo_lsp.py
@@ -136,7 +131,10 @@
         test -f ${runtime}/lib/albedo/albedo/priv/python/albedo_rtk.py
         test -f ${runtime}/lib/albedo/albedo/priv/python/albedo_fff.mjs
         test -x ${suitePackages.albedo-fff}/bin/albedo-fff
-        test -f ${runtime.web}/index.html
+        if grep -E '/[^/]*-albedo-web(-|$)' ${pkgs.closureInfo {rootPaths = [runtime suitePackages.albedo-patched];}}/store-paths; then
+          echo "Suite runtime closure must not include the web UI" >&2
+          exit 1
+        fi
         touch $out
       '';
 

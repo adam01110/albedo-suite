@@ -22,8 +22,7 @@ it does not replace compatibility review.
 ## Packaged licenses and source
 
 Packages retain licenses, attribution and exact source snapshots under
-`share/doc/albedo-suite/`; the standalone web package uses
-`share/doc/albedo-web/`. See [corresponding source](package-sources.md) for
+`share/doc/albedo-suite/`. See [corresponding source](package-sources.md) for
 rebuild, distribution and network source-offer requirements.
 `checks.package-licenses` verifies installed notices and source correspondence,
 not an operator's network source offer.
@@ -230,15 +229,11 @@ See [provider configuration](configuration.md#opencode-go).
 NUR. Do not maintain a second pin history here. Lazy MCP uses upstream's native
 client, and Zed uses native transport method selection.
 
-NUR does not yet bundle the native web assets. `nix/modules/web.nix` builds the
-pinned upstream web client with upstream's dependency hash; both suite packages
-set `ALBEDO_WEB_DIST` on the CLI wrapper. Retire that bridge when NUR supplies
-its own web derivation and wrapper. No web source is replaced.
-
-`albedo web` serves through a daemon-owned child and keeps running after the
-command exits; `--stop` disables it. Packaging tests use `--foreground --local`
-to isolate the listener and verify per-command `ALBEDO_WEB_DIST` overrides.
-Managed serving uses the daemon's environment, not an invoking CLI's override.
+The suite packages ship the CLI and daemon without building or bundling the
+web UI. There is no `albedo-web` output or packaged `ALBEDO_WEB_DIST` default.
+Upstream's web-serving commands remain, but browser assets are not supplied.
+`checks.package-layout` verifies that neither package's runtime closure includes
+an `albedo-web` derivation. No upstream web source is replaced.
 
 ## Automated sparse upstream updates
 

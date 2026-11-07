@@ -179,12 +179,6 @@
             else package;
         }).overrideAttrs (old: {
           meta = (old.meta or {}) // {license = import ../albedo-license.nix {inherit (pkgs) lib;};};
-          passthru = (old.passthru or {}) // {web = self.packages.${pkgs.stdenv.hostPlatform.system}.albedo-web;};
-          buildCommand =
-            old.buildCommand
-            + ''
-              wrapProgram $out/bin/albedo --set-default ALBEDO_WEB_DIST ${self.packages.${pkgs.stdenv.hostPlatform.system}.albedo-web}
-            '';
         });
   in {
     packages = {
