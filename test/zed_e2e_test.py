@@ -131,7 +131,6 @@ class ZedE2ETests(unittest.TestCase):
         self.addCleanup(self.provider.close)
 
         def prepare(app):
-            app.env.pop("ZED_BILLING_SESSION", None)
             app.env.pop("ZED_TOKEN", None)
             accounts = [zed_account("zed-one", "41", ZED_JWT)]
             if extra:
@@ -195,32 +194,17 @@ class ZedE2ETests(unittest.TestCase):
         # an escaped history would hide it.
         return json.dumps(self.app.history(session), ensure_ascii=False)
 
-    def test_budget_command_is_discoverable_and_invocable_without_inference_credentials(self):
+    def test_budget_command_and_endpoint_are_removed(self):
         session = self.start(extra=True)
         self.turn(session)
         with self.app.api(f"/sessions/{session}/catalog") as response:
             commands = json.load(response)["loaded"]["commands"]
-        offered = [entry for entry in commands if entry["slash_name"] == "/zed-budget"]
-        self.assertEqual(len(offered), 1)
-        self.assertEqual(offered[0]["delivery"], "read")
-        self.assertEqual(offered[0]["operation"]["method"], "GET")
-        self.assertIn("/extensions/zed/budget", json.dumps(offered[0]["operation"]))
+        self.assertNotIn("/zed-budget", [entry["slash_name"] for entry in commands])
         before = (len(self.provider.requests), len(self.provider.get_headers))
-        with self.app.api("/extensions/zed/budget") as response:
-            result = json.load(response)
-        self.assertEqual(result["status"], "unconfigured")
-        self.assertIn("browser billing session", result["source"])
-        self.assertIn("Unverified", result["account_association"])
-        self.assertIn("not linked", result["account_association"])
-        self.assertNotIn(ZED_JWT, json.dumps(result))
-        self.assertNotIn(OTHER_ZED_JWT, json.dumps(result))
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            self.app.api("/extensions/zed/budget")
+        self.assertEqual(error.exception.code, 404)
         self.assertEqual(before, (len(self.provider.requests), len(self.provider.get_headers)))
-        self.app.env["ZED_BILLING_SESSION"] = "invalid;cookie"
-        self.app.restart()
-        with self.app.api("/extensions/zed/budget") as response:
-            invalid = json.load(response)
-        self.assertEqual(invalid["status"], "invalid_configuration")
-        self.assertNotIn("invalid;cookie", json.dumps(invalid))
 
     def test_native_stream_thinking_usage_and_metadata(self):
         session = self.start()
@@ -353,11 +337,11 @@ class ZedE2ETests(unittest.TestCase):
         headers = {k.lower(): v for k, v in self.provider.headers[-1].items()}
         self.assertEqual(headers["authorization"], "Bearer " + ZED_JWT)
 
-    def test_budget_route_rejects_other_methods_queries_and_paths(self):
+    def test_removed_budget_route_returns_not_found_for_all_requests(self):
         self.start()
         cases = [
-            ("POST", "/extensions/zed/budget", 400, "invalid_request"),
-            ("GET", "/extensions/zed/budget?account=one", 400, "invalid_request"),
+            ("POST", "/extensions/zed/budget", 404, "not_found"),
+            ("GET", "/extensions/zed/budget?account=one", 404, "not_found"),
             ("GET", "/extensions/zed/other", 404, "not_found"),
         ]
         for method, path, status, code in cases:

@@ -96,10 +96,8 @@ port, so such a profile is a test configuration and not a way to reach Zed. Ever
 other origin, including another loopback name or any `https` host, fails with that
 origin named.
 
-Do not put secrets in Nix or version control. Zed's browser billing session
-cookie is a separate credential: inference never reads or uses it, and only the
-opt-in `/zed-budget` page below reads it, from `ZED_BILLING_SESSION` in the
-daemon's environment.
+Do not put secrets in Nix or version control. Sign in through `/login zed`; no
+browser billing cookie is read.
 
 Public Home Manager configuration can select the provider without storing a
 secret:
@@ -226,58 +224,13 @@ bar. Zed reports no window and no reset time for this reading, so the row shows
 neither and none is inferred. A credential that was rejected or has expired
 fails the poll with a message naming `/login zed`; no other credential stands in.
 
-This row is not a token budget. Hosted-model spend in USD needs a separate
-browser billing session and stays in `/zed-budget`; the two readings are never
-merged, and neither is attributed to the other. Polling is the daemon's ordinary
-quota polling: one poll per account at a time, backoff on failure, readings
-recorded as reported, and the existing quota settings disable it.
-
-## Opt-in browser billing budget
-
-With the `zed` extension enabled, `/zed-budget` opens a native CLI status page
-showing hosted-model USD spend, limit and remaining budget. It is **not** the
-inference-account quota row, which carries edit-prediction usage only (see
-above). The quota store records percentages rather than currency budgets, and an
-inference-account credential cannot authenticate this browser billing endpoint.
-
-Explicitly supply the **value only** of a manually obtained `zed.session` browser
-cookie as `ZED_BILLING_SESSION` in the **daemon's environment** before starting
-Albedo. Do not include `zed.session=`, a `Cookie:` header or other cookies. An
-already-running daemon does not inherit a new CLI environment. Use your normal
-secret environment injection mechanism; never put the value in shell history,
-public configuration, Nix, a repository or a command argument. The cookie is a
-separate sensitive browser-session credential, not the inference credential saved
-by `/login zed`. Albedo never falls back to inference credentials and does not
-read browser storage, keyrings or the editor's credentials.
-
-The page is explicitly labeled **Zed browser billing session** and **unverified
-association**: it applies to the account behind that cookie, which may differ
-from the active inference profile. It never attaches the reading to an inference
-account or displays browser identity/personal metadata. Edit-prediction quota is
-separate and is not included. A missing/null spend or limit remains unknown;
-zero is a known zero, and over-limit remaining is negative. Malformed/negative/
-nonfinite or unsafe-range amounts fail with a schema error rather than becoming
-zero, unlimited or a percentage. Reset time is unknown; a plan subscription
-period is not treated as a spend reset. Plan metadata is not retained.
-
-Nothing fetches until the page is explicitly opened, and no request is made
-without a valid configured cookie value. Requests use only the fixed HTTPS
-`https://cloud.zed.dev/frontend/billing/usage` origin with verified TLS, no
-redirect following and no custom inference endpoint. Responses are capped at
-64 KiB, with a ten-second whole-call deadline. Only sanitized budget fields and
-a credential hash are cached in one memory-only slot for up to 60 seconds
-(failures for 15 seconds); the cookie and raw response are not written to disk.
-The page reports observation time so cached readings are identifiable. Rejected
-sessions (401/403), redirects, transport errors and schema changes produce
-sanitized status messages, never server response bodies. After replacing an
-expired cookie in the daemon environment, use the normal daemon lifecycle to
-apply it; this feature does not refresh or recover browser sessions.
-
-The billing endpoint is undocumented and may change independently of the public
-editor API. No live service compatibility or inference/billing identity match is
-assumed. Endpoint and field research:
-[CodexBar Zed notes](https://github.com/steipete/CodexBar/blob/main/docs/zed.md)
-and [firsthand billing report](https://github.com/steipete/CodexBar/issues/3172).
+This row is not a token budget. Hosted-model USD spend is not available through
+Albedo's native Zed account credential, so it is not displayed. The separate
+`/zed-budget` command has been removed: it required a manually supplied browser
+billing cookie whose identity could not be linked to the selected account.
+Polling uses the daemon's ordinary quota polling: one poll per account at a
+time, backoff on failure, readings recorded as reported, and the existing quota
+settings disable it.
 
 ## Verification and sources
 
@@ -288,14 +241,11 @@ Tests use fake credentials and local fixtures, not the user's Zed account:
 | `test/suite_zed_test.gleam` | Native request shapes, typed Responses items, strict schemas, thinking/signature replay, usage and NDJSON failures. |
 | `test/suite_zed_login_test.gleam` and its Erlang fixture | Loopback decryption, identity confirmation, expiry/cancel, persistence, account isolation, JWT renewal and rejected legacy credentials/origins. |
 | `test/suite_quota_test.gleam` | Numeric/unlimited edit-prediction readings, unusable payloads and rejected credentials. |
-| `test/zed_e2e_test.py` | Isolated daemon streaming, tool replay, Gemini routing, credential refusal and budget-page discovery without a billing cookie. |
-| `checks.zed-budget` | Billing value validation, credential isolation, redirect refusal, bounds, caching and source labels. |
+| `test/zed_e2e_test.py` | Isolated daemon streaming, tool replay, Gemini routing, credential refusal and removal of the unsupported billing command/endpoint. |
 
 Login tests map public HTTPS URLs to local fixtures using test-loaded transport
 code. Production has no origin override or credential-injection setting; only
-the loopback HTTP base URLs described above are permitted. Billing fixtures
-verify reader decisions and HTTP options, not the installed HTTP client's TLS,
-redirect or connection-pooling behavior.
+the loopback HTTP base URLs described above are permitted.
 
 Protocol references:
 

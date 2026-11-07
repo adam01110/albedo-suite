@@ -3,7 +3,7 @@
 //// A Zed inference account has exactly one reading about itself: account-level
 //// edit-prediction usage from `GET /client/users/me`, the identity endpoint the
 //// request path already validates against. Hosted-model spend is not here; it
-//// needs a separate browser billing session and stays in `/zed-budget`.
+//// is not available through the inference account credential.
 ////
 //// The reading is `plan.usage.edit_predictions`: how many edits were predicted
 //// and the plan's limit, which is a count or "unlimited". A count becomes the
@@ -25,7 +25,7 @@ const label = "Edit predictions"
 const limit_id = "edit-predictions"
 
 const scope =
-  "Account edit-prediction usage, not hosted-model spend (/zed-budget); Zed reports no window or reset"
+  "Account edit-prediction usage, not hosted-model spend; Zed reports no window or reset"
 
 /// The suite's feed for provider `zed`. The Zig usage core has no Zed provider,
 /// so this reading is Albedo's own; a failure is still a report error, as it is

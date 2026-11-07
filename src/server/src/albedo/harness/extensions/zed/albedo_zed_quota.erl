@@ -1,8 +1,8 @@
 -module(albedo_zed_quota).
 %% The one account reading a Zed inference credential can fetch about itself:
 %% account-level edit-prediction usage from the identity endpoint the request
-%% path already validates against. Hosted-model spend needs a separate browser
-%% billing session and stays in albedo_zed_budget.
+%% path already validates against. Hosted-model spend is not available through
+%% the inference account credential.
 -export([read/2]).
 
 -define(URL, <<"https://cloud.zed.dev/client/users/me">>).

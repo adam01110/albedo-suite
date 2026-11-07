@@ -1150,7 +1150,7 @@ func TestQuotaRowsFromTheDaemonsOwnLabels(t *testing.T) {
 
 // A Zed account's only reading is account-level edit-prediction usage, so the
 // row names that and shows no window or reset: the service reports neither, and
-// hosted-model spend belongs to /zed-budget.
+// hosted-model spend is not available through the inference credential.
 func TestQuotaZedAccountRow(t *testing.T) {
 	used := 25.0
 	zed := daemon.QuotaObservation{

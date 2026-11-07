@@ -31,7 +31,6 @@ FFF search,
 a native Zed provider using existing protocol adapters and bounded NDJSON framing,
 Zed browser callback/account confirmation and account-scoped inference JWT renewal,
 narrow native OAuth confirmation and native HTTP transport integration,
-explicit opt-in browser-session Zed USD budget inspection,
 OpenCode Go SDK-metadata routing and endpoint-scoped discovery caches on the
 native OAuth, account rotation and portable wire implementation,
 encrypted-reasoning history compatibility in the native Responses bridge,
