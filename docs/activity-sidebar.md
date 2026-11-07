@@ -13,11 +13,12 @@ injected into an existing turn does not. Replayed settled tools can reconstruct
 recent rows, but replayed progress never becomes live work. Older history paging
 preserves the latest turn.
 
-Tool names and cell titles describe invocations, not verified accomplishments.
-`finished` means the tool returned, not that tests passed or all subprocesses
-exited zero. Explicit errors and interruptions use warning rows; backgrounded
-Python cells remain neutral. If a stream or turn ends before a call result is
-observed, an `unknown` or `interrupted` count records the missing outcomes.
+Rows show the agent's cell title without a tool-name or status prefix. Titles
+describe activity, not verified accomplishments. Active work retains its active
+marker; explicit errors and interruptions use warning markers, while returned
+and backgrounded Python cells remain neutral. If a stream or turn ends before a
+call result is observed, an `unknown` or `interrupted` count records the missing
+outcomes.
 Resumed work replaces that uncertainty count.
 
 Labels are single-line, terminal-control-stripped and display-width-truncated.
@@ -34,9 +35,9 @@ background jobs · 1
 ● go test ./...
 
 activity · 3
-● running · python · update tes…
-! error · python · check fixture
-○ finished · python · inspect i…
+● update tests
+! check fixture
+○ inspect inputs
 ```
 
 Regression tests cover stream reduction, concurrency, neutral subprocess

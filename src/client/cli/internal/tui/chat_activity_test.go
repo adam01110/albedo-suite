@@ -43,7 +43,7 @@ func TestActivityLifecycleAndCache(t *testing.T) {
 	activityEvent(&m, daemon.StreamEvent{Type: daemon.EventUser, EntryID: "user-1", Source: "chat", Text: "work"})
 	activityStart(&m, "a", "inspect inputs")
 	before := activityText(m)
-	if !strings.Contains(before, "running · python") {
+	if !strings.Contains(before, "inspect inputs") || strings.Contains(before, "python") || strings.Contains(before, "running ·") {
 		t.Fatal(before)
 	}
 	activityStart(&m, "a", "updated label")
@@ -55,11 +55,11 @@ func TestActivityLifecycleAndCache(t *testing.T) {
 		t.Fatalf("concurrent: %#v", rows)
 	}
 	activityFinish(&m, "b", "second call", `{"status":"ok","output":"exit_code=1; tests failed"}`)
-	if text := activityText(m); !strings.Contains(text, "finished · python") || strings.Contains(text, "error ·") {
+	if text := activityText(m); !strings.Contains(text, "second call") || strings.Contains(text, "finished ·") || strings.Contains(text, "python") {
 		t.Fatal(text)
 	}
 	activityFinish(&m, "a", "updated label", `{"status":"error","error":"failed"}`)
-	if rows := m.activityRows(); len(rows) < 2 || rows[1].Tone != ToneWarning || !strings.HasPrefix(rows[1].Text, "error ·") {
+	if rows := m.activityRows(); len(rows) < 2 || rows[1].Tone != ToneWarning || rows[1].Text != "updated label" {
 		t.Fatalf("error: %#v", rows)
 	}
 	activityEvent(&m, daemon.StreamEvent{Type: daemon.EventTurnCompleted})
@@ -68,12 +68,12 @@ func TestActivityLifecycleAndCache(t *testing.T) {
 			t.Fatalf("stale active: %#v", row)
 		}
 	}
-	if text := activityText(m); !strings.Contains(text, "finished") {
+	if text := activityText(m); !strings.Contains(text, "second call") {
 		t.Fatal(text)
 	}
 	activityEvent(&m, daemon.StreamEvent{Type: daemon.EventUser, EntryID: "user-2", Source: "chat", Text: "next"})
 	for _, row := range m.activityRows() {
-		if strings.Contains(row.Text, "python") {
+		if row.Text == "updated label" || row.Text == "second call" {
 			t.Fatalf("old turn: %#v", row)
 		}
 	}
@@ -193,5 +193,25 @@ func TestActivityRenderedExample(t *testing.T) {
 	activityFinish(&m, "a", "inspect inputs", `{"status":"ok"}`)
 	activityFinish(&m, "b", "check fixture", `{"status":"error"}`)
 	activityStart(&m, "c", "update tests")
-	t.Log("\n" + activityText(m))
+	want := "background jobs · 1\n● go test ./...\n\nactivity · 3\n● update tests\n! check fixture\n○ inspect inputs"
+	if got := activityText(m); got != want {
+		t.Fatalf("sidebar:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestActivityDescriptionOnly(t *testing.T) {
+	for _, status := range []string{"ok", "error", "interrupted", "cancelled", "backgrounded"} {
+		t.Run(status, func(t *testing.T) {
+			m := activityChat(t)
+			activityStart(&m, "a", "inspect inputs")
+			if rows := m.activityRows(); len(rows) != 1 || rows[0].Text != "inspect inputs" {
+				t.Fatalf("live: %#v", rows)
+			}
+			activityFinish(&m, "a", "inspect inputs", `{"status":"`+status+`"}`)
+			activityEvent(&m, daemon.StreamEvent{Type: daemon.EventTurnCompleted})
+			if rows := m.activityRows(); len(rows) != 1 || rows[0].Text != "inspect inputs" {
+				t.Fatalf("settled: %#v", rows)
+			}
+		})
+	}
 }

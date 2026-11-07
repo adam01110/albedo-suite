@@ -14,10 +14,7 @@ const activityLimit = 6
 // Activity labels deliberately exclude code, arguments and results. A cell title
 // describes the invocation, not an independently verified accomplishment.
 func activityLabel(name, title string) string {
-	label := cmp.Or(name, "tool")
-	if title != "" {
-		label += " · " + title
-	}
+	label := cmp.Or(title, name, "tool")
 	return ansi.Truncate(oneLine(ansi.Strip(label)), 160, "…")
 }
 
@@ -29,7 +26,7 @@ func (m ChatModel) activityRows() []PageRow {
 		shown := min(len(m.progressOrder), 3)
 		for i := len(m.progressOrder) - 1; i >= len(m.progressOrder)-shown; i-- {
 			p := m.progressByCallID[m.progressOrder[i]]
-			rows = append(rows, PageRow{Text: activityLabel(cmp.Or(p.Phase, "running"), activityLabel(p.Name, p.Title)), Tone: ToneActive})
+			rows = append(rows, PageRow{Text: activityLabel(p.Name, p.Title), Tone: ToneActive})
 		}
 		if extra := len(m.progressOrder) - shown; extra > 0 {
 			rows = append(rows, PageRow{Text: fmt.Sprintf("+%d active calls", extra), Tone: ToneActive})
@@ -71,8 +68,8 @@ func (m ChatModel) activityRows() []PageRow {
 		}
 		seenContent = true
 		if e.activity == nil {
-			state, tone := activityResult(*e)
-			e.activity = &PageRow{Text: state + " · " + activityLabel(e.ToolName, e.ToolTitle), Tone: tone}
+			_, tone := activityResult(*e)
+			e.activity = &PageRow{Text: activityLabel(e.ToolName, e.ToolTitle), Tone: tone}
 		}
 		rows = append(rows, *e.activity)
 	}

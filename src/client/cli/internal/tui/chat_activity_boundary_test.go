@@ -33,12 +33,12 @@ func TestActivityMailTurnBoundaries(t *testing.T) {
 func TestActivityGenericAndBackgrounded(t *testing.T) {
 	m := activityChat(t)
 	activityEvent(&m, daemon.StreamEvent{Type: daemon.EventTool, EntryID: "generic", ToolName: "custom.lookup", ToolArgs: map[string]any{"secret": "do-not-display"}, ToolResult: "do-not-display"})
-	if rows := m.activityRows(); len(rows) == 0 || rows[len(rows)-1].Text != "finished · custom.lookup" {
+	if rows := m.activityRows(); len(rows) == 0 || rows[len(rows)-1].Text != "custom.lookup" {
 		t.Fatalf("generic: %#v", rows)
 	}
 	activityFinish(&m, "bg", "long cell", `{"status":"backgrounded"}`)
 	rows := m.activityRows()
-	if !strings.HasPrefix(rows[len(rows)-2].Text, "backgrounded") || rows[len(rows)-2].Tone == ToneWarning {
+	if rows[len(rows)-2].Text != "long cell" || rows[len(rows)-2].Tone == ToneWarning {
 		t.Fatalf("backgrounded: %#v", rows)
 	}
 	activityEvent(&m, daemon.StreamEvent{Type: daemon.EventToolProgress, Progress: &daemon.ToolProgress{CallID: "bad", Name: "custom", Phase: "running\x1b]52;c;secret\a\n"}})

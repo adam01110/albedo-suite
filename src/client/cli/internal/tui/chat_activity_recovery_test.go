@@ -63,9 +63,9 @@ func TestActivityCanonicalReplacementInvalidatesProjection(t *testing.T) {
 	m := activityChat(t)
 	activityFinish(&m, "a", "cached row", `{"status":"ok"}`)
 	before := activityText(m)
-	activityEvent(&m, daemon.StreamEvent{Type: daemon.EventTool, EntryID: "tool-a", ToolName: "python", ToolResult: `{"status":"error"}`})
+	activityEvent(&m, daemon.StreamEvent{Type: daemon.EventTool, EntryID: "tool-a", ToolName: "python", ToolTitle: "cached row", ToolResult: `{"status":"error"}`})
 	after := activityText(m)
-	if before == after || !strings.Contains(after, "error ·") {
+	if before == after || !strings.Contains(after, "! cached row") {
 		t.Fatal("canonical replacement retained cached result state")
 	}
 }
