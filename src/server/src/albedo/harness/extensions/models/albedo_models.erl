@@ -149,7 +149,8 @@ from_index(Catalog, Revision) ->
     case file:read_file(index_path(Catalog)) of
         {ok, Bytes} ->
             try binary_to_term(Bytes, [safe]) of
-                {3, Revision, #{index := I, providers := P} = CatalogData} when is_map(I), is_map(P) ->
+                {4, Revision, #{index := I, providers := P, prices := Prices} = CatalogData}
+                  when is_map(I), is_map(P), is_map(Prices) ->
                     persistent_term:put({?MODULE, Catalog}, {Revision, CatalogData}),
                     ok;
                 _ -> parse(Catalog, Revision)
@@ -178,7 +179,7 @@ parse(Catalog, Revision) ->
 %% Best effort: without an index the next start parses the catalog again.
 save_index(Catalog, Revision, CatalogData) ->
     _ = albedo_credentials:write(index_path(Catalog),
-        term_to_binary({3, Revision, CatalogData}, [{compressed, 1}])),
+        term_to_binary({4, Revision, CatalogData}, [{compressed, 1}])),
     ok.
 
 %% A catalog cached before trimming existed is trimmed in place on first parse,

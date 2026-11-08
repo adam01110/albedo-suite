@@ -77,6 +77,9 @@
 
     checks.session-cost = runCommand "albedo-session-cost-tests" {nativeBuildInputs = [pkgs.beam29Packages.erlang];} ''
       cp ${../../src/server/src/albedo/daemon/albedo_session_cost.erl} albedo_session_cost.erl
+      cp ${../../src/server/src/albedo/harness/extensions/models/albedo_models.erl} albedo_models.erl
+      cp ${runtime.server.src}/src/albedo/harness/albedo_cached_fetch.erl albedo_cached_fetch.erl
+      cp ${runtime.server.src}/src/albedo/harness/albedo_credentials.erl albedo_credentials.erl
       cp ${../../test/session_cost_tests.erl} session_cost_tests.erl
       erlc -Werror -o . *.erl
       erl +S 2:2 -noshell -pa . -eval 'session_cost_tests:run(), halt().'

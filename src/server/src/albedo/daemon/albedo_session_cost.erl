@@ -41,27 +41,50 @@ charge(Cost, Key, Tokens) ->
     end.
 
 price(Prices, Provider, Model) ->
-    case maps:find({Provider, Model}, Prices) of
+    Normalized = string:lowercase(Model),
+    Canonical = case Normalized of
+        <<"claude-", _/binary>> -> <<"anthropic">>;
+        <<"gpt-", _/binary>> -> <<"openai">>;
+        <<"o1", _/binary>> -> <<"openai">>;
+        <<"o3", _/binary>> -> <<"openai">>;
+        <<"o4", _/binary>> -> <<"openai">>;
+        <<"gemini-", _/binary>> -> <<"google">>;
+        <<"glm-", _/binary>> -> <<"zai">>;
+        <<"kimi-", _/binary>> -> <<"moonshotai">>;
+        <<"minimax-", _/binary>> -> <<"minimax">>;
+        _ -> Provider
+    end,
+    %% Subscription catalog rates may be zero; estimate their public API value.
+    Preferred = case Provider of
+        <<"codex">> -> Canonical;
+        <<"opencode-go">> -> Canonical;
+        _ -> Provider
+    end,
+    case find_price(Prices, Preferred, Normalized) of
         {ok, Cost} -> Cost;
         error ->
-            %% Subscription and proxy transports use the model's public API rate.
-            Canonical = case Model of
-                <<"claude-", _/binary>> -> <<"anthropic">>;
-                <<"gpt-", _/binary>> -> <<"openai">>;
-                <<"o1", _/binary>> -> <<"openai">>;
-                <<"o3", _/binary>> -> <<"openai">>;
-                <<"o4", _/binary>> -> <<"openai">>;
-                <<"gemini-", _/binary>> -> <<"google">>;
-                _ -> Provider
-            end,
-            case maps:find({Canonical, Model}, Prices) of
+            case find_price(Prices, Canonical, Normalized) of
                 {ok, Cost} -> Cost;
-                error ->
-                    case lists:usort([C || {{_, M}, C} <- maps:to_list(Prices), M =:= Model]) of
-                        [Cost] -> Cost;
-                        _ -> throw(unknown)
-                    end
+                error -> unique_price([C || {{_, M}, C} <- maps:to_list(Prices),
+                                           string:lowercase(M) =:= Normalized])
             end
+    end.
+
+find_price(Prices, Provider, Model) ->
+    case maps:find({Provider, Model}, Prices) of
+        {ok, _} = Found -> Found;
+        error ->
+            case lists:usort([C || {{P, M}, C} <- maps:to_list(Prices),
+                                  P =:= Provider, string:lowercase(M) =:= Model]) of
+                [Cost] -> {ok, Cost};
+                _ -> error
+            end
+    end.
+
+unique_price(Costs) ->
+    case lists:usort(Costs) of
+        [Cost] -> Cost;
+        _ -> throw(unknown)
     end.
 
 tier(Cost, Input) ->

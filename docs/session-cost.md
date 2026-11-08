@@ -12,9 +12,17 @@ It excludes child sessions, which have their own totals.
 
 Prices come from the existing models.dev cache. Cached reads, cache writes and
 long-context tiers are priced separately. Subscription/proxy transports use a
-canonical public model price when available. Ambiguous prices, missing token
-usage or an unavailable catalog display `cost n/a`, never an invented zero.
-Older trimmed catalogs may need `/reload models` to acquire pricing fields.
+canonical public model price when available. Codex and OpenCode Go prefer that
+API rate over subscription catalog rates, including zero rates. OpenCode Go's
+GLM, Kimi and MiniMax models resolve to ZAI, Moonshot AI and MiniMax API prices;
+model ID case differences do not prevent a match. Other providers retain their
+own catalog rates.
+
+Ambiguous prices, missing token usage or an unavailable catalog display
+`cost n/a`, never an invented zero. Older trimmed catalogs need `/reload models`
+to acquire pricing fields. Parsed indexes from before pricing support are
+rebuilt automatically; reloading is still necessary if prices were already
+removed from the cached JSON.
 
 No provider billing endpoint is queried. The session status resource, full
 snapshot and live usage events carry the same nullable `session_cost_usd` field.
