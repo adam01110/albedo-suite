@@ -1,6 +1,6 @@
 {
   "harness.py": {
-    "sha256": "9f1626f07e9d889f653c00d60f5d8ba2e4f352817a6031a4c4d0de68d77d5fcd",
+    "sha256": "cf61865a170453a78952b5af77fb679f442854c7954c374d56177fa11c4ac4b3",
     "replacements": [
       [
         "def prompt_text(request):",
@@ -17,7 +17,7 @@
     ]
   },
   "kernel_detach_test.py": {
-    "sha256": "8214afd6edd4f805ed3a62edfe218e78841e15d1db5f85ade97024f942dcdaf5",
+    "sha256": "30e7e34ddfe1e3f6249be14dff3866cf9b6b43cc0700ef376611227d25c24727",
     "replacements": [
       [
         "item[\"content\"] for item in request[\"input\"] if item.get(\"role\") == \"user\"",
@@ -26,7 +26,7 @@
     ]
   },
   "repetition_test.py": {
-    "sha256": "c3ef4eb816a7607d0a1308d77dbd66b089d73a8046a472ab4ca8af6bfe1ff512",
+    "sha256": "941b41b6ebe110c95a4c7fe3c701e9feeefb0fa5dfbe96db370e0e6e85dbd550",
     "replacements": [
       [
         "import difflib",

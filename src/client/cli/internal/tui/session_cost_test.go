@@ -17,10 +17,10 @@ func TestVimFooterSessionCost(t *testing.T) {
 			m.Usage = &daemon.Usage{Model: "old-model", PromptTokens: &prompt, CachedPromptTokens: &cached, SessionCostUSD: &cost}
 			m.Model = "new-model"
 			footer := ansi.Strip(m.renderFooter())
-			if !strings.Contains(footer, "~$1.23") || ansi.StringWidth(footer) > m.chatWidth() {
+			if !strings.Contains(footer, "$1.23") || ansi.StringWidth(footer) > m.chatWidth() {
 				t.Fatalf("provider=%s width=%d footer=%q", provider, width, footer)
 			}
-			if strings.Index(footer, "~$") < strings.Index(footer, "—/—") {
+			if strings.Index(footer, "$") < strings.Index(footer, "—/—") {
 				t.Fatal(footer)
 			}
 		}
@@ -36,7 +36,7 @@ func TestVimFooterCostFormatting(t *testing.T) {
 		cost float64
 		want string
 	}{
-		{0, "~$0.00"}, {0.001, "~$<0.01"}, {0.01, "~$0.01"}, {1234.567, "~$1234.57"},
+		{0, "$0.00"}, {0.001, "$<0.01"}, {0.01, "$0.01"}, {1234.567, "$1234.57"},
 		{-1, "cost n/a"}, {math.NaN(), "cost n/a"}, {math.Inf(1), "cost n/a"},
 	} {
 		m.Usage = &daemon.Usage{SessionCostUSD: &tc.cost}

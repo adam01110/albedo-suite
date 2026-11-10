@@ -166,6 +166,7 @@ fn state(home: String, host: runtime.Runtime) -> session_state.State(Nil) {
     history: Some([]),
     results_settled: False,
     latest_usage: None,
+    spent: None,
     activity: turn.Resting,
     pending_switch: None,
     steering: [],

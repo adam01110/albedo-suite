@@ -19,6 +19,7 @@ import albedo/daemon/usage
 import albedo/harness/extension/selection
 import albedo/harness/loop
 import albedo/harness/runtime
+import albedo/openai_api/types
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/json
@@ -67,6 +68,11 @@ pub type State(message) {
     /// the transcript for calls a crash cut off.
     results_settled: Bool,
     latest_usage: Option(usage.Metadata),
+    /// The total cost of every call that the session made, as the request
+    /// ledger totalled it. It belongs to the session and not to a call: it
+    /// survives a reload that clears `latest_usage`, and a call that no turn
+    /// committed still adds to it. Read it when a run ends.
+    spent: Option(types.Cost),
     activity: turn.Activity,
     pending_switch: Option(PendingSwitch),
     steering: List(Submission),

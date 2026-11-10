@@ -84,9 +84,10 @@ func (m *ChatModel) handleInput(msg tea.Msg) (tea.Cmd, bool) {
 		consumed := m.CommandMenu.OnKey(
 			msg,
 			inputVal,
-			func(replacement string) {
+			m.composerCursor(),
+			func(replacement string, cursor int) {
 				defer m.trackComposerEdit()()
-				m.TextArea.SetValue(replacement)
+				m.replaceComposer(replacement, cursor)
 			},
 			func(commandName string) {
 				m.handleSubmittedCommand(commandName, &cmds)
@@ -522,6 +523,13 @@ func (m *ChatModel) handleSubmittedCommand(input string, cmds *[]tea.Cmd) {
 		}
 		if m.Usage != nil {
 			statusText += "\ntokens: " + formatUsage(m.Usage)
+			if m.Usage.Spent != nil {
+				statusText += "\nspent: " + daemon.FormatCharge(m.Usage.Spent.Usd)
+				if m.Usage.Spent.Basis != "" {
+					statusText += " (" + m.Usage.Spent.Basis + ")"
+				}
+				statusText += " this session"
+			}
 		}
 		m.appendSettledEntry(HistoryEntry{Kind: EntryNote, Text: statusText})
 		m.refreshViewportContent()

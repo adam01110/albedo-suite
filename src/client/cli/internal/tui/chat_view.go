@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -136,6 +137,9 @@ func (m ChatModel) statusLine() string {
 	if m.Stopping {
 		return "stopping…"
 	}
+	if m.Status.Running && m.Status.Phase != nil && *m.Status.Phase == daemon.PhaseCompacting {
+		return m.compactionStatusLine()
+	}
 	// an idle session says nothing unless verbose: the transcript already
 	// ends in the turn's signoff.
 	if m.Stopped {
@@ -199,6 +203,48 @@ func (m ChatModel) statusLine() string {
 // Phase is optional display metadata, not evidence of an unanswered status.
 func (m ChatModel) connecting() bool {
 	return m.Status.Phase == nil && !m.Status.Running && !m.Status.Idle
+}
+
+func (m ChatModel) compactionStatusLine() string {
+	progress := m.Status.Compaction
+	if progress == nil {
+		return "compacting context"
+	}
+	label := "compacting history"
+	shortStage := "history"
+	switch progress.Stage {
+	case "preparing":
+		label, shortStage = "preparing history", "preparing"
+	case "summarizing":
+		label, shortStage = "summarizing chunks", "summarizing"
+	case "merging":
+		label, shortStage = "combining summaries", "combining"
+	case "notes":
+		label, shortStage = "rewriting notes", "notes"
+	}
+	count := ""
+	if progress.Total != nil && (progress.Stage == "summarizing" || *progress.Total > 1) {
+		count = fmt.Sprintf("%d/%d", progress.Completed, *progress.Total)
+	} else if progress.Stage == "summarizing" && progress.Completed > 0 {
+		count = fmt.Sprintf("%d completed", progress.Completed)
+	}
+	if count != "" {
+		if m.Width > 0 && m.Width <= 80 {
+			label = shortStage
+		}
+		label += " " + count
+	}
+	if started, err := time.Parse(time.RFC3339, progress.StartedAt); err == nil {
+		elapsed := time.Since(started).Milliseconds()
+		if elapsed >= 0 {
+			label += " · " + formatElapsed(elapsed)
+		}
+	}
+	title := "compacting"
+	if progress.Strategy != "" {
+		title += " · " + progress.Strategy
+	}
+	return title + " · " + label
 }
 
 // phaseMood is the face class for the phase statusLine names.
@@ -369,7 +415,7 @@ func (m *ChatModel) View() string {
 		rows = append(rows, "", DefaultStyles.Bold.Render(ansi.Truncate("Reasoning effort", width, "")), m.effortSelectorView(), DefaultStyles.Faint.Render(ansi.Truncate("← → choose  ·  enter apply  ·  esc cancel", width, "")))
 	} else {
 		rows = append(rows, m.composer()...)
-		if menu := m.CommandMenu.View(m.TextArea.Value()); menu != "" {
+		if menu := m.CommandMenu.View(m.TextArea.Value(), m.composerCursor(), width); menu != "" {
 			rows = append(rows, strings.Split(strings.TrimSuffix(menu, "\n"), "\n")...)
 		}
 	}
@@ -395,17 +441,9 @@ func (m *ChatModel) View() string {
 // (header, status, chips, footer) is cheap enough to build every time, and
 // building it means it cannot go stale.
 type frameCache struct {
-	sidebar      sidebarBlock
-	sidebarKey   sidebarKey
-	sidebarReady bool
-
-	body      []string
-	bodyKey   bodyKey
-	bodyReady bool
-
-	composer      []string
-	composerKey   composerKey
-	composerReady bool
+	sidebar  sidebarBlock
+	body     []string
+	composer []string
 
 	// rows is the padded frame as last drawn and content the string handed to
 	// Bubble Tea, so a frame that changed nothing is not joined again.
@@ -413,6 +451,12 @@ type frameCache struct {
 	content string
 	// scratch is the row slice the next frame is assembled into.
 	scratch []string
+
+	sidebarKey  sidebarKey
+	bodyKey     bodyKey
+	composerKey composerKey
+
+	sidebarReady, bodyReady, composerReady bool
 }
 
 // sidebarBlock is the glance column: the rows it draws, the glances that did

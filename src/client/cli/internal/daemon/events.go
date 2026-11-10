@@ -3,6 +3,7 @@ package daemon
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"unicode/utf8"
 
 	"albedo/cli/internal/daemon/protocol"
@@ -192,6 +193,9 @@ type Usage struct {
 	// CacheDriftTokens is the same loss when albedo caused it: the call did not
 	// repeat the history the previous call sent.
 	CacheDriftTokens *int `json:"cacheDriftTokens,omitempty"`
+	// Spent is the total cost of every call the session made, added up per
+	// statement. The figure for one call stays in the request ledger.
+	Spent *Cost `json:"spent,omitempty"`
 	// CacheFade is how CachedPromptTokens fades once the session goes quiet,
 	// in time order.
 	CacheFade []CacheStep `json:"cacheFade,omitempty"`
@@ -306,8 +310,51 @@ func progressValue(wire protocol.ToolProgress) *ToolProgress {
 	}
 	return progress
 }
+
+// Cost is the amount a provider reported for one call: Usd, and the statement
+// that the amount belongs to. The daemon derives both values, so all clients
+// show the same amount for the same reason.
+type Cost struct {
+	Usd   float64 `json:"usd"`
+	Basis string  `json:"basis"`
+}
+
+// The statements an amount can belong to: money charged, a plan allowance
+// drawn down, or the list price of a call that cost nothing.
+const (
+	BasisCharged = "charged"
+	BasisCounted = "counted"
+	BasisListed  = "listed"
+)
+
+// FormatCharge writes an amount in the smallest form that keeps its meaning.
+// From one dollar up it shows two decimals, from one cent up three decimals,
+// and from a ten-thousandth of a dollar up four. An amount below that shows as
+// "<$0.0001", so a small amount never shows as $0.00.
+func FormatCharge(usd float64) string {
+	switch {
+	case usd >= 1:
+		return fmt.Sprintf("$%.2f", usd)
+	case usd >= 0.01:
+		return fmt.Sprintf("$%.3f", usd)
+	case usd >= 0.0001:
+		return fmt.Sprintf("$%.4f", usd)
+	case usd > 0:
+		return "<$0.0001"
+	default:
+		return "$0"
+	}
+}
+
+func costValue(wire *protocol.Cost) *Cost {
+	if wire == nil {
+		return nil
+	}
+	return &Cost{Usd: wire.Usd, Basis: wire.Basis}
+}
+
 func usageValue(wire protocol.Usage) *Usage {
-	usage := &Usage{SessionCostUSD: wire.SessionCostUsd, Model: value(wire.Model), PromptTokens: intPointer(wire.PromptTokens), CachedPromptTokens: intPointer(wire.CachedPromptTokens), CacheWriteTokens: intPointer(wire.CacheWriteTokens), CompletionTokens: intPointer(wire.CompletionTokens), TotalTokens: intPointer(wire.TotalTokens), ElapsedMs: wire.ElapsedMs, TokensPerSecond: wire.TokensPerSecond, CacheMissTokens: intPointer(wire.CacheMissTokens), CacheDriftTokens: intPointer(wire.CacheDriftTokens)}
+	usage := &Usage{SessionCostUSD: wire.SessionCostUsd, Model: value(wire.Model), PromptTokens: intPointer(wire.PromptTokens), CachedPromptTokens: intPointer(wire.CachedPromptTokens), CacheWriteTokens: intPointer(wire.CacheWriteTokens), CompletionTokens: intPointer(wire.CompletionTokens), TotalTokens: intPointer(wire.TotalTokens), ElapsedMs: wire.ElapsedMs, TokensPerSecond: wire.TokensPerSecond, CacheMissTokens: intPointer(wire.CacheMissTokens), CacheDriftTokens: intPointer(wire.CacheDriftTokens), Spent: costValue(wire.Spent)}
 	if wire.ObservedAt != nil {
 		usage.RecordedAt = timestampMilliseconds(*wire.ObservedAt)
 	}

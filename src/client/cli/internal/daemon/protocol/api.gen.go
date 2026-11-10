@@ -483,9 +483,9 @@ type Catalog struct {
 		Revision *ID               `json:"revision" nullable:"true"`
 	} `json:"loaded"`
 
-	// NativeCommands Static HTTP declarations for selected extensions when no composition has been loaded. Reading these declarations does not prepare extensions or start a kernel.
-	NativeCommands []HTTPCommand    `json:"native_commands,omitempty"`
-	Pages          []PageDescriptor `json:"pages,omitempty"`
+	// NativeCommands HTTP declarations and skill inputs selected by discovery when no composition has been loaded. Follow loaded.next for further pages. Reading these declarations does not prepare extensions or start a kernel.
+	NativeCommands []json.RawMessage `json:"native_commands,omitempty"`
+	Pages          []PageDescriptor  `json:"pages,omitempty"`
 }
 
 // CatalogCandidate defines model for CatalogCandidate.
@@ -681,6 +681,15 @@ type CompactionObservation struct {
 	Summary        string   `json:"summary"`
 }
 
+// CompactionProgress Live progress for the current compaction, not a durable transcript entry. Counts cover the current stage or batch, not the whole compaction.
+type CompactionProgress struct {
+	Completed int64  `json:"completed"`
+	Stage     string `json:"stage"`
+	StartedAt string `json:"started_at"`
+	Strategy  string `json:"strategy"`
+	Total     *int64 `json:"total" nullable:"true"`
+}
+
 // CompactionRequest defines model for CompactionRequest.
 type CompactionRequest struct {
 	// Strategy Opaque identity. Never infer a resource type or route from its contents.
@@ -805,6 +814,12 @@ type ContextWindow struct {
 type ContinueInputRequest struct {
 	ClientID *string `json:"client_id,omitempty"`
 	Kind     string  `json:"kind"`
+}
+
+// Cost The amount a provider reported for one call, and the statement that the amount belongs to.
+type Cost struct {
+	Basis string  `json:"basis"`
+	Usd   float64 `json:"usd"`
 }
 
 // Counter defines model for Counter.
@@ -1651,8 +1666,11 @@ type InputCommand struct {
 	Description string `json:"description"`
 
 	// ID Opaque identity. Never infer a resource type or route from its contents.
-	ID        ID     `json:"id"`
-	SlashName string `json:"slash_name"`
+	ID ID `json:"id"`
+
+	// SkillName Canonical skill name for inline dollar-prefixed mentions. Present only for skill inputs.
+	SkillName *string `json:"skill_name,omitempty"`
+	SlashName string  `json:"slash_name"`
 }
 
 // InputDecision defines model for InputDecision.
@@ -2975,6 +2993,9 @@ type Server struct {
 		Kind    string `json:"kind"`
 		Message string `json:"message"`
 	} `json:"notices"`
+
+	// Pid OS process id of the daemon VM. Clients check it against daemon.json when present. Absent from daemons that predate this field.
+	Pid          *int64             `json:"pid,omitempty"`
 	Protocol     int64              `json:"protocol"`
 	Quota        []QuotaObservation `json:"quota" nullable:"true"`
 	QuotaHistory *QuotaPage         `json:"quota_history,omitempty"`
@@ -3373,10 +3394,13 @@ type SessionShellCommandEvent struct {
 
 // SessionStatus defines model for SessionStatus.
 type SessionStatus struct {
-	BlockingReason     *SafeReason `json:"blocking_reason" nullable:"true"`
-	InterruptRequested bool        `json:"interrupt_requested"`
-	Phase              string      `json:"phase"`
-	RunID              *ID         `json:"run_id" nullable:"true"`
+	BlockingReason *SafeReason `json:"blocking_reason" nullable:"true"`
+
+	// Compaction Present while this run is preparing compacted history; absent or null otherwise.
+	Compaction         *CompactionProgress `json:"compaction,omitempty" nullable:"true"`
+	InterruptRequested bool                `json:"interrupt_requested"`
+	Phase              string              `json:"phase"`
+	RunID              *ID                 `json:"run_id" nullable:"true"`
 }
 
 // SessionStatusEvent defines model for SessionStatusEvent.
@@ -4068,6 +4092,7 @@ type Usage struct {
 
 	// SessionCostUsd Session-wide estimated USD at catalog rates; null when any request is unpriced or unmetered.
 	SessionCostUsd  *float64 `json:"session_cost_usd,omitempty" nullable:"true"`
+	Spent           *Cost    `json:"spent,omitempty" nullable:"true"`
 	TokensPerSecond *float64 `json:"tokens_per_second" nullable:"true"`
 	TotalTokens     *Counter `json:"total_tokens" nullable:"true"`
 }

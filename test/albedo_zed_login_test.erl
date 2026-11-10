@@ -414,7 +414,7 @@ confirmation_cases() ->
     Home = home(),
     try
         L = login(),
-        {ok, Snapshot} = albedo_oauth:auth_snapshot(Home,[L]),
+        {ok, Snapshot} = albedo_auth_accounts:auth_snapshot(Home,[L]),
         #{<<"providers">> := [#{<<"id">> := <<"zed">>, <<"flows">> := [<<"browser">>]}]} = json:decode(Snapshot),
         {Id, Initial} = start(Home),
         {error, {409,_,_}} = albedo_oauth:input_identified(Home,Id,albedo_http_api:etag(Initial),<<"confirm">>,[L]),
@@ -438,7 +438,7 @@ confirmation_cases() ->
         [#{<<"access_token">> := <<"editor-test-secret">>, <<"_albedo_account_id">> := PublicId}] = albedo_credentials:values(A,<<"zed">>),
         clean_home_inference(Home, PublicId),
         ok = albedo_credentials:write(filename:join(Home,<<"config.json">>),#{<<"providers">> => #{}}),
-        {ok,nil} = albedo_oauth:remove_account(Home,[L],PublicId), no_accounts(Home),
+        {ok,nil} = albedo_auth_accounts:remove_account(Home,[L],PublicId), no_accounts(Home),
         {Cancelled, CancelInitial} = start(Home),
         callback(CancelInitial, <<"43">>, CancelInitial, <<"localhost">>),
         _ = await_state(Home,Cancelled,<<"confirming">>),

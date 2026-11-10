@@ -13,10 +13,6 @@
 -define(CLOSE_MS, 2500).
 -define(DEFAULT_RETRY_MS, 30000).
 -define(RETRY_CEILING, 20).
-%% 2: a catalogue's second element is a summary map, rendered at preparation.
--define(CATALOGUE_VERSION, 2).
-%% One line of a server's own description in the context, in characters.
--define(DESCRIPTION_CHARS, 240).
 -define(SAFE_ENV, ["HOME", "PATH", "TMPDIR", "TEMP", "TMP", "SystemRoot", "WINDIR"]).
 
 %% `Lookup(Name, Fingerprint)` answers a server's last saved catalogue and
@@ -282,7 +278,7 @@ probe_overlay(ServersJson, Workspace) ->
         case join_overlay(Candidates, [], Cache) of
             {ok, Joined} ->
                 try
-                    {ok, [{Name, fingerprint(Config, Secrets), encode_catalogue(Catalogue)}
+                    {ok, [{Name, fingerprint(Config, Secrets), albedo_mcp_catalogue:encode_catalogue(Catalogue)}
                           || {Name, Config, Secrets, Catalogue, _} <- Joined]}
                 after close_joined(Joined) end;
             Error -> Error
@@ -336,13 +332,13 @@ join(_, _, _) -> {error, <<"MCP server configuration is invalid">>}.
 
 join_with_secrets(Name, Config, Secrets, {Lookup, Save}) ->
     Fingerprint = fingerprint(Config, Secrets),
-    case saved(Lookup(Name, Fingerprint)) of
+    case albedo_mcp_catalogue:saved(Lookup(Name, Fingerprint)) of
         {ok, Catalogue} ->
             {ok, {Name, Config, Secrets, Catalogue, {check, Catalogue, Fingerprint, Save}}};
         none ->
             case connect(Name, Config, Secrets) of
                 {ok, Server, Catalogue} ->
-                    Save(Name, Fingerprint, encode_catalogue(Catalogue)),
+                    Save(Name, Fingerprint, albedo_mcp_catalogue:encode_catalogue(Catalogue)),
                     {ok, {Name, Config, Secrets, Catalogue, {connected, Server, Fingerprint, Save}}};
                 Unavailable -> Unavailable
             end
@@ -358,7 +354,7 @@ finish(Joined, Offline1, Retry, Label) ->
     SignIn = [{Name, Reason} || {Name, _, {needs_sign_in, Reason}} <- Offline0],
     Catalogues = [{Name, Ops, Summary} || {Name, _, _, {Ops, Summary}, _} <- Joined],
     Operations = lists:append([Ops || {_, Ops, _} <- Catalogues]),
-    Context = catalogue_context(Label, Catalogues)
+    Context = albedo_mcp_catalogue:catalogue_context(Label, Catalogues)
         ++ [<<"MCP server '", Name/binary, "' needs the user to sign in (", Reason/binary,
               "); its tools join once they sign in from the MCP settings.">> || {Name, Reason} <- SignIn],
     Names = [maps:get(advertised, O) || O <- Operations],
@@ -410,7 +406,7 @@ open_server_with_secrets(Name, Config, Secrets) ->
 connect(Name, Config, Secrets) ->
     case open_server_with_secrets(Name, Config, Secrets) of
         {ok, Server} ->
-            case discover(Server) of
+            case albedo_mcp_catalogue:discover(Server) of
                 {ok, Ops, Summary} -> {ok, Server, {Ops, Summary}};
                 {error, _} -> close_servers([Server]), {unavailable, Name}
             end;
@@ -425,16 +421,6 @@ fingerprint(Config, Secrets) ->
     Stable = maps:remove(<<"oauth">>, Secrets),
     Server = maps:remove(<<"tools">>, Config),
     binary:encode_hex(crypto:hash(sha256, term_to_binary({Server, Stable}, [deterministic])), lowercase).
-
-encode_catalogue({Ops, Summary}) -> term_to_binary({?CATALOGUE_VERSION, Ops, Summary}).
-
-saved({some, Encoded}) when is_binary(Encoded) ->
-    try binary_to_term(Encoded, [safe]) of
-        {?CATALOGUE_VERSION, Ops, Summary} when is_list(Ops), is_map(Summary) -> {ok, {Ops, Summary}};
-        _ -> none
-    catch _:_ -> none
-    end;
-saved(_) -> none.
 
 %% The client's transport: an https server is reached through the provider
 %% transport, verified against albedo_trust's roots. An HTTP server without
@@ -556,215 +542,10 @@ executable(Command) ->
             end
     end.
 
-discover(#{name := Name, client := Client, call_timeout := Timeout, config := Config}) ->
-    Enabled = maps:get(<<"enabledTools">>, Config, null),
-    Disabled = maps:get(<<"disabledTools">>, Config, []),
-    try
-        {ok, Tools0} = ?CLIENT:list(Client, <<"tools/list">>, <<"tools">>, Timeout),
-        Http = maps:get(<<"type">>, Config, undefined) =:= <<"http">>,
-        Tools = [T || T <- Tools0, allowed(maps:get(<<"name">>, T, <<>>), Enabled, Disabled),
-                      not Http orelse mirrorable(Name, T)],
-        true = length(Tools) =< 256,
-        Caps = case ?CLIENT:capabilities(Client) of C when is_map(C) -> C; _ -> #{} end,
-        {Resources, ResourceTemplates} = resources(Client, Caps, Timeout),
-        Prompts = prompts(Client, Caps, Timeout),
-        ToolOps = [tool_operation(Name, T, Timeout) || T <- Tools],
-        ResourceOps = [resource_operation(Name, Timeout) || Resources =/= [] orelse ResourceTemplates =/= []],
-        PromptOps = [prompt_operation(Name, Timeout) || Prompts =/= []],
-        Summary = #{description => describe(?CLIENT:description(Client)),
-                    resources => [summary_item(R, <<"uri">>) || R <- Resources],
-                    resource_templates => [summary_item(R, <<"uriTemplate">>) || R <- ResourceTemplates],
-                    prompts => [summary_item(P, <<"name">>) || P <- Prompts]},
-        {ok, ToolOps ++ ResourceOps ++ PromptOps, Summary}
-    catch _:_ -> {error, discovery_failed}
-    end.
-
-resources(Client, Caps, Timeout) ->
-    case is_map_key(<<"resources">>, Caps) of
-        true ->
-            {ok, Items} = ?CLIENT:list(Client, <<"resources/list">>, <<"resources">>, Timeout),
-            {Items, optional_list(Client, <<"resources/templates/list">>, <<"resourceTemplates">>, Timeout)};
-        false -> {[], []}
-    end.
-
-prompts(Client, Caps, Timeout) ->
-    case is_map_key(<<"prompts">>, Caps) of
-        true -> optional_list(Client, <<"prompts/list">>, <<"prompts">>, Timeout);
-        false -> []
-    end.
-
-optional_list(Client, Method, Key, Timeout) ->
-    case ?CLIENT:list(Client, Method, Key, Timeout) of {ok, Items} -> Items; _ -> [] end.
-
-allowed(Name, null, Disabled) -> not lists:member(Name, Disabled);
-allowed(Name, Enabled, Disabled) when is_list(Enabled) ->
-    lists:member(Name, Enabled) andalso not lists:member(Name, Disabled);
-allowed(_, _, _) -> false.
-
-operation(Server, Kind, Raw, Timeout, Description, Schema) ->
-    #{advertised => advertised(Server, Raw, atom_to_binary(Kind)),
-      server => Server, kind => Kind, raw => Raw, timeout => Timeout,
-      description => Description, schema => Schema}.
-
-tool_operation(Server, Tool, Timeout) ->
-    Raw = maps:get(<<"name">>, Tool),
-    Schema = maps:get(<<"inputSchema">>, Tool, #{}),
-    Operation = operation(Server, tool, Raw, Timeout,
-                          tool_description(Server, Raw, maps:get(<<"description">>, Tool, <<>>)),
-                          safe_schema(Schema)),
-    case param_headers(Schema) of
-        {ok, []} -> Operation;
-        {ok, Headers} -> Operation#{headers => Headers};
-        invalid -> Operation
-    end.
-
-%% A tool over HTTP whose `x-mcp-header` annotations break the 2026-07-28
-%% streamable-http rules ("Schema Extension") is left out, with a warning.
-mirrorable(Server, Tool) ->
-    case param_headers(maps:get(<<"inputSchema">>, Tool, #{})) of
-        {ok, _} -> true;
-        invalid ->
-            logger:warning("MCP server ~ts: tool ~ts has an invalid x-mcp-header and is left out",
-                           [Server, maps:get(<<"name">>, Tool, <<>>)]),
-            false
-    end.
-
-%% The parameters a tool mirrors into headers, as {PropertyPath, Name}: each
-%% on a string, integer, or boolean property reached through `properties`
-%% alone, with token names unique regardless of case.
-param_headers(Schema) ->
-    Found = annotated(Schema, []),
-    Names = [string:lowercase(Name) || {_, Name, _} <- Found],
-    Valid = annotations(Schema) =:= length(Found)
-        andalso lists:all(fun valid_param/1, Found)
-        andalso length(Names) =:= length(lists:usort(Names)),
-    case Valid of
-        true -> {ok, [{Path, Name} || {Path, Name, _} <- Found]};
-        false -> invalid
-    end.
-
-annotated(#{<<"properties">> := Properties}, Path) when is_map(Properties) ->
-    lists:append([annotation(Property, Path ++ [Key]) ++ annotated(Property, Path ++ [Key])
-                  || {Key, Property} <- lists:sort(maps:to_list(Properties)), is_map(Property)]);
-annotated(_, _) -> [].
-
-annotation(#{<<"x-mcp-header">> := Name} = Property, Path) ->
-    [{Path, Name, maps:get(<<"type">>, Property, undefined)}];
-annotation(_, _) -> [].
-
-annotations(Value) when is_map(Value) ->
-    Own = case is_map_key(<<"x-mcp-header">>, Value) of true -> 1; false -> 0 end,
-    Own + annotations(maps:values(Value));
-annotations(Values) when is_list(Values) -> lists:sum([annotations(V) || V <- Values]);
-annotations(_) -> 0.
-
-valid_param({_, Name, Type}) ->
-    is_binary(Name) andalso valid_header(Name)
-        andalso lists:member(Type, [<<"string">>, <<"integer">>, <<"boolean">>]);
-valid_param(_) -> false.
-
-%% The headers one call's arguments fill: a missing or null value sends none.
-param_values(Headers, Arguments) ->
-    [{<<"Mcp-Param-", Name/binary>>, Text}
-     || {Path, Name} <- Headers, Text <- [param_text(at(Path, Arguments))], Text =/= none].
-
-at([], Value) -> Value;
-at([Key | Path], #{} = Map) -> at(Path, maps:get(Key, Map, null));
-at(_, _) -> null.
-
-param_text(Value) when is_binary(Value) -> Value;
-param_text(Value) when is_integer(Value) -> integer_to_binary(Value);
-param_text(true) -> <<"true">>;
-param_text(false) -> <<"false">>;
-param_text(_) -> none.
-
-resource_operation(Server, Timeout) ->
-    operation(Server, resource, <<"read_resource">>, Timeout,
-              <<"Read one MCP resource from server '", Server/binary, "' by exact URI.">>,
-              #{<<"type">> => <<"object">>, <<"additionalProperties">> => false,
-                <<"required">> => [<<"uri">>],
-                <<"properties">> => #{<<"uri">> => #{<<"type">> => <<"string">>}}}).
-
-prompt_operation(Server, Timeout) ->
-    operation(Server, prompt, <<"get_prompt">>, Timeout,
-              <<"Render one MCP prompt from server '", Server/binary, "' by exact name.">>,
-              #{<<"type">> => <<"object">>, <<"additionalProperties">> => false,
-                <<"required">> => [<<"name">>],
-                <<"properties">> => #{
-                    <<"name">> => #{<<"type">> => <<"string">>},
-                    <<"arguments">> => #{<<"type">> => <<"object">>}}}).
-
-advertised(Server, Raw, Kind) ->
-    Hash = binary:part(binary:encode_hex(crypto:hash(sha256, <<Server/binary, 0, Kind/binary, 0, Raw/binary>>), lowercase), 0, 10),
-    Prefix = bounded(<<"mcp_", (safe_fragment(Server))/binary, "_", (safe_fragment(Raw))/binary>>, 52),
-    <<Prefix/binary, "_", Hash/binary>>.
-
-safe_fragment(Value) ->
-    Chars = [case (C >= $a andalso C =< $z) orelse (C >= $0 andalso C =< $9) of true -> C; false -> $_ end ||
-             C <- string:lowercase(binary_to_list(Value))],
-    case string:trim(Chars, both, "_") of
-        [] -> <<"x">>;
-        Trimmed -> unicode:characters_to_binary(Trimmed)
-    end.
-
-%% One JSON line per server under `Label`, naming its operations; the Python
-%% binding finds and describes them on demand. Resources and prompts are
-%% listed too, since their tools take a URI or name these lines are the only
-%% place to learn.
-catalogue_context(_, []) -> [];
-catalogue_context(Label, Catalogues) ->
-    [<<Label/binary, ", one JSON line each:">>] ++ [server_line(Line) || Line <- Catalogues].
-
-server_line({Name, Ops, Summary}) ->
-    Optional = [{Key, Value} || {Key, Value} <- [
-        {<<"description">>, maps:get(description, Summary, <<>>)},
-        {<<"resources">>, maps:get(resources, Summary, [])},
-        {<<"resourceTemplates">>, maps:get(resource_templates, Summary, [])},
-        {<<"prompts">>, maps:get(prompts, Summary, [])}], Value =/= <<>>, Value =/= []],
-    iolist_to_binary(json:encode(maps:from_list([
-        {<<"server">>, Name},
-        {<<"operations">>, [maps:get(raw, O) || O <- Ops]} | Optional]))).
-
-%% A server's own words about itself, as one bounded line.
-describe(Text) ->
-    try
-        Flat = string:trim(re:replace(Text, <<"\\s+">>, <<" ">>, [global, unicode, {return, binary}])),
-        case string:length(Flat) > ?DESCRIPTION_CHARS of
-            true -> unicode:characters_to_binary([string:slice(Flat, 0, ?DESCRIPTION_CHARS - 1), <<"…"/utf8>>]);
-            false -> Flat
-        end
-    catch _:_ -> <<>>
-    end.
-
-tool_description(Server, Raw, Description) ->
-    Prefix = <<"Untrusted remote MCP tool '", Raw/binary, "' from server '", Server/binary, "'. ">>,
-    <<Prefix/binary, (bounded(Description, 4096))/binary>>.
-
-safe_schema(Schema) when is_map(Schema) ->
-    case iolist_size(json:encode(Schema)) =< 262144 of
-        true -> Schema;
-        false -> #{<<"type">> => <<"object">>}
-    end;
-safe_schema(_) -> #{<<"type">> => <<"object">>}.
-
-summary_item(Item, Key) ->
-    #{Key => bounded(maps:get(Key, Item, <<>>), 2048),
-      <<"description">> => bounded(maps:get(<<"description">>, Item, <<>>), 2048)}.
-
-bounded(Value, Limit) when is_binary(Value) -> binary:part(Value, 0, min(byte_size(Value), Limit));
-bounded(_, _) -> <<>>.
-
 definitions(#{lazy_manager := _} = Handle) ->
     case lazy_request(Handle, definitions) of {ok, JSON} -> JSON; _ -> <<"[]">> end;
 definitions(#{operations := Operations}) ->
-    iolist_to_binary(json:encode([#{
-        <<"name">> => maps:get(advertised, O),
-        <<"server">> => maps:get(server, O),
-        <<"kind">> => atom_to_binary(maps:get(kind, O), utf8),
-        <<"tool">> => maps:get(raw, O),
-        <<"description">> => maps:get(description, O),
-        <<"parameters">> => maps:get(schema, O)
-    } || O <- Operations])).
+    albedo_mcp_catalogue:definitions(Operations).
 
 discovery_context([]) -> <<>>;
 discovery_context(Eligible) ->
@@ -850,7 +631,7 @@ timed_dispatch(#{timeout := Timeout} = Operation, Server, Arguments, Owner) ->
 
 dispatch(#{kind := tool, raw := Raw, timeout := Timeout} = Operation, #{client := Client}, Arguments) ->
     Params = iolist_to_binary(json:encode(#{<<"name">> => Raw, <<"arguments">> => Arguments})),
-    Headers = param_values(maps:get(headers, Operation, []), Arguments),
+    Headers = albedo_mcp_catalogue:param_values(maps:get(headers, Operation, []), Arguments),
     ?CLIENT:request_with(Client, <<"tools/call">>, Params, Headers, Timeout);
 dispatch(#{kind := resource, timeout := Timeout}, Server, #{<<"uri">> := Uri}) when is_binary(Uri) ->
     request(Server, <<"resources/read">>, #{<<"uri">> => Uri}, Timeout);
@@ -922,10 +703,10 @@ refresh(#{refresh := idle, client := {Server, _}, known := {Expected, Fingerprin
           name := Name, watcher := Watcher} = State) ->
     Self = self(),
     spawn(fun() ->
-        Found = case discover(Server) of
+        Found = case albedo_mcp_catalogue:discover(Server) of
             {ok, Ops, Summary} when {Ops, Summary} =:= Expected -> none;
             {ok, Ops, Summary} ->
-                Save(Name, Fingerprint, encode_catalogue({Ops, Summary})),
+                Save(Name, Fingerprint, albedo_mcp_catalogue:encode_catalogue({Ops, Summary})),
                 Watcher ! {changed, Name},
                 {Ops, Summary};
             {error, _} -> none
@@ -950,7 +731,7 @@ dialled(Name, Config, Secrets, {check, Expected, Fingerprint, Save}, Watcher) ->
     case connect(Name, Config, Secrets) of
         {ok, Server, Expected} -> {ok, Server, Expected};
         {ok, Server, Catalogue} ->
-            Save(Name, Fingerprint, encode_catalogue(Catalogue)),
+            Save(Name, Fingerprint, albedo_mcp_catalogue:encode_catalogue(Catalogue)),
             Watcher ! {changed, Name},
             {ok, Server, Catalogue};
         _ -> unavailable

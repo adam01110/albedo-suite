@@ -99,9 +99,8 @@ pub type Loop {
     /// The input and output tokens the provider reported for this run's
     /// previous request; `None` before its first.
     reported: Option(Int),
-    /// Tells the session a compaction started ahead of a request; the
-    /// request's recorded context ends it.
-    report_compacting: fn() -> Nil,
+    /// Updates compaction progress until the prepared request clears it.
+    report_compacting: fn(compaction.ProgressUpdate) -> Nil,
     /// Whether this run already told the session its window is too small
     /// for compaction to make room.
     warned_small: Bool,
@@ -331,7 +330,7 @@ fn converse(
   // Sending the same request again buys another full reasoning pass that
   // likely ends the same way, so the one retry says what went wrong.
   use called <- result.try(
-    case !state.allow_empty_reply && speechless(answered.1) {
+    case !state.allow_empty_reply && speechless(answered.turn) {
       False -> Ok(Answered(answered))
       True -> {
         let nudge = types.User(speechless_nudge)
@@ -349,7 +348,7 @@ fn converse(
       }
     },
   )
-  use #(row, turn, sent, attempt) <- go_on(state, id, inputs, step, called)
+  use Called(attempt, row, turn, sent) <- go_on(state, id, inputs, step, called)
   let cache = fading(state, sent)
   let cache_loss = case row {
     Some(id) ->
@@ -470,7 +469,12 @@ fn converse(
       run(
         state,
         id,
-        unshift(inputs, [replay, results, added, steering]),
+        unshift(inputs, [
+          list.map(replay, projection.elide_degenerate),
+          results,
+          added,
+          steering,
+        ]),
         step + 1,
       )
     }
@@ -632,7 +636,7 @@ pub fn background(
   )
   |> result.try(whole)
   |> result.map(fn(attempt) {
-    let turn = attempt.1
+    let turn = attempt.turn
     compaction.Answer(
       turn.usage,
       compaction.reply_text(visible_text(turn), turn.finish),
@@ -1043,10 +1047,7 @@ fn call(
   reset_progress: fn(Int) -> Nil,
   salvage: fn(String) -> Result(List(types.Input), String),
   first: Int,
-) -> Result(
-  Attempt(#(Option(Int), types.Turn, extension.SentCall, Int)),
-  types.Error,
-) {
+) -> Result(Attempt(Called), types.Error) {
   let input_chain =
     requests.input_chain(
       option.unwrap(request.instructions, ""),
@@ -1055,7 +1056,11 @@ fn call(
     )
   retry_stream(
     fn(attempt) {
-      use _ <- result.try(case publish(view.ProviderStarted) {
+      let started_event = case kind {
+        requests.Summarizer -> view.Checkpoint
+        _ -> view.ProviderStarted
+      }
+      use _ <- result.try(case publish(started_event) {
         True -> Ok(Nil)
         False -> Error(types.Cancelled)
       })
@@ -1138,7 +1143,7 @@ fn call(
         _, _ -> Nil
       }
       case outcome {
-        Ok(turn) -> Ok(#(row, turn, sent, attempt))
+        Ok(turn) -> Ok(Called(attempt, row, turn, sent))
         Error(error) -> Error(error)
       }
     },
@@ -1148,6 +1153,17 @@ fn call(
     salvage,
     first,
     0,
+  )
+}
+
+/// One provider call that ended: the attempt that made it, the request row
+/// that it left, the turn that it settled, and the call as it went out.
+type Called {
+  Called(
+    attempt: Int,
+    row: Option(Int),
+    turn: types.Turn,
+    sent: extension.SentCall,
   )
 }
 
@@ -1651,7 +1667,7 @@ fn summarize(
   }
   let summary_request =
     types.Request(..summary_request, max_output_tokens: Some(max_output_tokens))
-  use #(_, turn, _, _) <- result.try(
+  use called <- result.try(
     call(
       call_context(state),
       requests.Summarizer,
@@ -1675,7 +1691,7 @@ fn summarize(
       <> describe(state.upstream, model, error)
     }),
   )
-  compaction.reply_text(visible_text(turn), turn.finish)
+  compaction.reply_text(visible_text(called.turn), called.turn.finish)
 }
 
 /// The request a turn would send now, under its own prompt, tools, tool

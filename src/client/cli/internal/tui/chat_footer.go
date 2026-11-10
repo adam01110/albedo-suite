@@ -218,7 +218,8 @@ func (m ChatModel) renderFooter() string {
 // contextStat is how much of the prompt was read from cache, fading as the
 // provider lets its cache go, and how full the context is: "392k/396k cached
 // (38%)", with a shorter form for narrow footers. The share turns yellow near
-// the window, where compaction starts.
+// the window, where compaction starts. The session's spend is shown separately
+// by costStat as one catalog-rate estimate for every provider.
 func (m ChatModel) contextStat() (full, short string) {
 	usage := m.Usage
 	if usage == nil || usage.Model != "" && m.Model != "" && usage.Model != m.Model {
@@ -295,7 +296,7 @@ func (m ChatModel) costStat() string {
 		return "cost n/a"
 	}
 	if cost > 0 && cost < 0.01 {
-		return "~$<0.01"
+		return "$<0.01"
 	}
-	return fmt.Sprintf("~$%.2f", cost)
+	return fmt.Sprintf("$%.2f", cost)
 }

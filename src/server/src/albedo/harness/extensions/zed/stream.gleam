@@ -3,6 +3,7 @@ import albedo/harness/extensions/opencode_go/wire as portable
 import albedo/harness/extensions/vertex/stream as gemini
 import albedo/openai_api
 import albedo/openai_api/chat
+import albedo/openai_api/cost
 import albedo/openai_api/sse
 import albedo/openai_api/stream
 import albedo/openai_api/stream_http
@@ -22,7 +23,7 @@ pub fn reducer(
     "open_ai" -> portable.responses_reducer()
     "google" -> gemini.reducer()
     _ ->
-      stream.wrap(chat.new(), chat.feed, fn(state) {
+      stream.wrap(chat.new(cost.none), chat.feed, fn(state) {
         use #(_, _, turn) <- result.try(chat.feed(state, "[DONE]"))
         option.to_result(turn, types.UnexpectedEnd)
       })

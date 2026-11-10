@@ -89,6 +89,7 @@
     checks.native-mcp = runCommand "albedo-native-mcp-tests" {nativeBuildInputs = [pkgs.beam29Packages.erlang];} ''
       export ERL_AFLAGS="-public_key cacerts_path '\"${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt\"'"
       cp ${../../src/server/src/albedo/harness/extensions/mcp/albedo_mcp.erl} albedo_mcp.erl
+      cp ${runtime.server.src}/src/albedo/harness/extensions/mcp/albedo_mcp_catalogue.erl albedo_mcp_catalogue.erl
       cp -r ${../../test/fixtures/native}/. .
       erlc -Werror -o . *.erl
       erl -noshell -pa . -eval 'lazy_mcp_native_tests:run(), halt().'

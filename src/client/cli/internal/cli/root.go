@@ -17,12 +17,22 @@ import (
 
 	"albedo/cli/internal/app"
 	"albedo/cli/internal/daemon"
+	"albedo/cli/internal/localdaemon"
 	"albedo/cli/internal/storage"
 	"albedo/cli/internal/terminal"
 	"github.com/spf13/cobra"
 )
 
+type DaemonLifecycle interface {
+	Install(context.Context) (string, error)
+	Uninstall(context.Context) (string, error)
+	Status(context.Context) (localdaemon.ServiceStatus, error)
+	Stop(context.Context, bool) error
+	Serve(context.Context) error
+}
+
 type Dependencies struct {
+	Lifecycle   DaemonLifecycle
 	Application *app.Service
 	Storage     *storage.Service
 	Terminal    *terminal.Service
@@ -330,10 +340,19 @@ func newStop(deps Dependencies) *cobra.Command {
 	}}
 }
 func newDaemon(deps Dependencies) *cobra.Command {
-	var stop, kernels bool
-	command := &cobra.Command{Use: "daemon", Short: "start Albedo in the background or stop it", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+	var stop, kernels, serve bool
+	command := &cobra.Command{Use: "daemon", Short: "start, stop, or manage the daemon user service", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+		if serve {
+			if stop || kernels || deps.Lifecycle == nil {
+				return errors.New("--serve requires the daemon service entry point without stop flags")
+			}
+			return deps.Lifecycle.Serve(cmd.Context())
+		}
 		if kernels && !stop {
 			return fmt.Errorf("--kernels goes with --stop")
+		}
+		if stop && deps.Lifecycle != nil {
+			return deps.Lifecycle.Stop(cmd.Context(), kernels)
 		}
 		if stop {
 			return deps.Application.StopDaemon(cmd.Context(), kernels)
@@ -347,8 +366,112 @@ func newDaemon(deps Dependencies) *cobra.Command {
 	}}
 	command.Flags().BoolVar(&stop, "stop", false, "stop the running daemon and wait for it to exit")
 	command.Flags().BoolVar(&kernels, "kernels", false, "with --stop, end every Python kernel too instead of leaving them for the next daemon: variables are saved and restored, running jobs end")
+	command.Flags().BoolVar(&serve, "serve", false, "run the daemon in this process")
+	_ = command.Flags().MarkHidden("serve")
+	command.AddCommand(newDaemonInstall(deps), newDaemonUninstall(deps), newDaemonStatus(deps))
 	return command
 }
+
+func newDaemonInstall(deps Dependencies) *cobra.Command {
+	return &cobra.Command{Use: "install", Short: "install or refresh the daemon user service", Long: "Install and start a systemd user service on Linux or a GUI LaunchAgent on macOS. Requires a packaged daemon selected by ALBEDO_DAEMON; checkout and AppImage launchers are unsupported. A refresh leaves the running daemon unchanged and a stopped service stopped.", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+		if deps.Lifecycle == nil {
+			return errors.New("daemon service controls are unavailable")
+		}
+		message, err := deps.Lifecycle.Install(cmd.Context())
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintln(cmd.OutOrStdout(), message)
+		return err
+	}}
+}
+
+func newDaemonUninstall(deps Dependencies) *cobra.Command {
+	return &cobra.Command{Use: "uninstall", Short: "remove the daemon user service", Long: "Remove the registered service. On macOS this authorizes one label-level bootout, which may interrupt a concurrent same-label replacement and its work. Detected foreign definitions are refused. Persistent disabled overrides are unchanged.", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+		if deps.Lifecycle == nil {
+			return errors.New("daemon service controls are unavailable")
+		}
+		message, err := deps.Lifecycle.Uninstall(cmd.Context())
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintln(cmd.OutOrStdout(), message)
+		return err
+	}}
+}
+
+func newDaemonStatus(deps Dependencies) *cobra.Command {
+	var jsonOutput bool
+	command := &cobra.Command{Use: "status", Short: "show the daemon and user service status", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+		if deps.Lifecycle == nil {
+			return errors.New("daemon service controls are unavailable")
+		}
+		status, err := deps.Lifecycle.Status(cmd.Context())
+		if err != nil {
+			return err
+		}
+		if jsonOutput {
+			return writeJSON(cmd.OutOrStdout(), status, false)
+		}
+		var output strings.Builder
+		if status.Pid > 0 {
+			fmt.Fprintf(&output, "daemon: running, pid %d\n", status.Pid)
+		} else {
+			output.WriteString("daemon: not running\n")
+		}
+		description := ""
+		switch status.Class {
+		case localdaemon.NoService:
+			description = "not installed"
+			if status.Unit == "" {
+				description = "not available on this platform"
+			}
+		case localdaemon.ManagedService:
+			description = "running under systemd"
+			if status.Manager == "launchd" {
+				description = "running under launchd"
+			}
+		case localdaemon.ServiceIdle:
+			description = "installed, stopped"
+			if status.State == "failed" {
+				description = "failed"
+			}
+		case localdaemon.StandaloneBeside:
+			description = "installed; daemon is running independently"
+		case localdaemon.ServiceRetrying:
+			description = "retrying; launchd may restart the daemon"
+		case localdaemon.ServiceTransition:
+			description = "starting or stopping"
+		case localdaemon.UnsafeService:
+			description = "configuration or daemon identity is unsupported"
+		case localdaemon.UnloadedService:
+			description = "installed, not loaded by systemd"
+			if status.Manager == "launchd" {
+				description = "installed, unloaded"
+			}
+		case localdaemon.UnknownService:
+			description = "systemd user manager is unavailable"
+			if status.Manager == "launchd" {
+				description = "launchd state is unsupported or unavailable"
+			}
+		}
+		fmt.Fprintln(&output, "service: "+description)
+		if status.Class != localdaemon.NoService && status.Unit != "" {
+			fmt.Fprintln(&output, "unit: "+status.Unit)
+		}
+		if status.Note != "" {
+			fmt.Fprintln(&output, status.Note)
+		}
+		if status.Problem != "" {
+			fmt.Fprintln(&output, status.Problem)
+		}
+		_, err = fmt.Fprint(cmd.OutOrStdout(), output.String())
+		return err
+	}}
+	command.Flags().BoolVar(&jsonOutput, "json", false, "print service status as JSON")
+	return command
+}
+
 func newLogin(deps Dependencies) *cobra.Command {
 	return &cobra.Command{Use: "login [name]", Short: "set up a model provider in a terminal", Args: cobra.MaximumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		if !deps.Terminal.Capable {

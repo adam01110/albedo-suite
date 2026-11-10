@@ -112,6 +112,10 @@ fn record(ledger: store.Store, session: String, load: catalog.Load) -> Nil {
 const instructions =
   "SkillsError reports skill read/activation failures. Skill API and selection guidance accompany available_skills."
 
+pub fn command_arguments() -> List(command.Argument) {
+  [command.Argument("arguments", "arguments for the skill", False, [])]
+}
+
 /// One cataloged skill as a session command: both callers resolve the same
 /// activation, and only the delivery differs.
 fn skill_command(
@@ -126,17 +130,20 @@ fn skill_command(
   command.Command(
     entry.command,
     entry.description,
-    [command.Argument("arguments", "arguments for the skill", False, [])],
+    command_arguments(),
     True,
     True,
     False,
-    Some(fn(arguments) { prepare(own, loaded, entry, arguments) }),
+    Some(fn(arguments) { activate(own, loaded, entry, arguments) }),
     fn(_context, caller, args) {
       let arguments = dict.get(args, "arguments") |> result.unwrap("")
       case caller {
         command.UserCall -> {
-          use prepared <- result.try(prepare(own, loaded, entry, arguments))
-          Ok(command.Turn(prepared.0, prepared.1))
+          use activation <- result.try(activate(own, loaded, entry, arguments))
+          Ok(command.Turn(
+            catalog.activation_display(activation),
+            catalog.activation_prompt(activation),
+          ))
         }
         command.ModelCall -> {
           use activation <- result.try(catalog.activate(
@@ -152,22 +159,18 @@ fn skill_command(
   )
 }
 
-/// The turn a user's invocation submits: its display line and prompt.
-fn prepare(
+/// A user's activation, from a slash command or a mention in a message.
+fn activate(
   own: catalog.Catalog,
   loaded: fn(catalog.Load) -> Nil,
   entry: catalog.Command,
   arguments: String,
-) -> Result(#(String, String), String) {
-  let arguments = string.trim(arguments)
-  use activation <- result.try(catalog.activate(own, entry.name, arguments))
+) -> Result(catalog.Activation, String) {
+  use activation <- result.try(catalog.activate(
+    own,
+    entry.name,
+    string.trim(arguments),
+  ))
   loaded(catalog.activation_loaded(activation))
-  Ok(#(display(entry.command, arguments), catalog.activation_prompt(activation)))
-}
-
-fn display(name: String, arguments: String) -> String {
-  case arguments {
-    "" -> name
-    value -> name <> " " <> value
-  }
+  Ok(activation)
 }

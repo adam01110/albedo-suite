@@ -138,7 +138,7 @@ pub fn status(
     #("cursor", http_wire.cursor(read.cursor)),
     #("status", events.status(read.status)),
     #("kernel", http_wire.kernel(read.kernel)),
-    #("usage", events.costed_usage(read.usage, read.cost_usd)),
+    #("usage", events.costed_usage(read.usage, read.spent, read.cost_usd)),
     #("glances", events.glances(glances)),
   ])
 }
@@ -304,6 +304,7 @@ pub fn encode(
           "usage",
           events.costed_usage(
             capture.usage,
+            capture.spent,
             session_cost.total(ledger, capture.info.id),
           ),
         ),

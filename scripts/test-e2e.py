@@ -139,6 +139,8 @@ def main():
         os.environ,
         PYTHONDONTWRITEBYTECODE="1",
         OPENCODE_API_KEY="",
+        # Upstream shell-command cases use POSIX syntax; the caller's login shell may not.
+        SHELL=shutil.which("bash") or "/bin/sh",
         ALBEDO_TEST_CLI=str(args.package / "bin/albedo"),
     )
 

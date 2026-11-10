@@ -16,6 +16,7 @@ import albedo/harness/compaction
 import albedo/harness/extension/selection
 import albedo/harness/extensions/python/kernel as python
 import albedo/harness/page
+import albedo/openai_api/cost
 import albedo/openai_api/types
 import gleam/dynamic/decode
 import gleam/int
@@ -72,8 +73,13 @@ pub type Event {
   )
   Note(entry_id: String, origin: String, text: String, mail: Option(json.Json))
   Retry(run_id: String, attempt: Int, reason: String, delay_ms: Int)
-  Usage(usage.Metadata)
-  CostedUsage(Option(usage.Metadata), Option(Float))
+  /// The usage of the session: the measurement of the last call, and the total
+  /// cost of every call that it made. Each value can be absent alone: a reload
+  /// clears the measurement, and a provider that names no price leaves the
+  /// total empty.
+  Usage(usage: Option(usage.Metadata), spent: Option(types.Cost))
+  /// `Usage` with the suite's catalog-rate session estimate.
+  CostedUsage(Option(usage.Metadata), Option(types.Cost), Option(Float))
   Committed(
     high_water: Int,
     replaces_live_ids: List(String),
@@ -127,7 +133,8 @@ pub fn stream_event(
     | types.Started(_)
     | types.Responded(_)
     | types.Metered(..)
-    | types.Served(..) -> None
+    | types.Served(..)
+    | types.Billed(_) -> None
   }
 }
 
@@ -192,8 +199,11 @@ pub fn encode(session: String, sequence: Int, event: Event) -> json.Json {
         #("delay_ms", json.int(delay_ms)),
       ]),
     )
-    Usage(metadata) -> #("usage", usage(Some(metadata)))
-    CostedUsage(metadata, cost) -> #("usage", costed_usage(metadata, cost))
+    Usage(metadata, spent) -> #("usage", usage(metadata, spent))
+    CostedUsage(metadata, spent, cost) -> #(
+      "usage",
+      costed_usage(metadata, spent, cost),
+    )
     Committed(high_water, replaces_live_ids, replaces_all_live) -> #(
       "committed",
       json.object([
@@ -470,6 +480,18 @@ pub fn status(value: session_activity.Status) -> json.Json {
       "blocking_reason",
       json.nullable(value.blocking_reason, http_api.reason("inputs_blocked", _)),
     ),
+    #(
+      "compaction",
+      json.nullable(value.compaction, fn(progress) {
+        json.object([
+          #("strategy", json.string(progress.strategy)),
+          #("stage", json.string(compaction.progress_stage(progress.stage))),
+          #("completed", json.int(progress.completed)),
+          #("total", json.nullable(progress.total, json.int)),
+          #("started_at", timestamp(progress.started_at)),
+        ])
+      }),
+    ),
   ])
 }
 
@@ -624,22 +646,41 @@ pub fn input(value: operations.InputOutcome) -> json.Json {
   ])
 }
 
-pub fn usage(metadata: Option(usage.Metadata)) -> json.Json {
-  json.object(usage_fields(metadata))
+/// The amount that a client shows for the spend of a session, and the statement
+/// that the amount belongs to. The daemon derives both, so the usage of the
+/// session and the request log give the same answer, and no client selects one.
+pub fn cost(spent: Option(types.Cost)) -> json.Json {
+  case option.then(spent, cost.amount) {
+    Some(#(basis, usd)) ->
+      json.object([
+        #("usd", json.float(usd)),
+        #("basis", json.string(cost.basis_name(basis))),
+      ])
+    None -> json.null()
+  }
+}
+
+pub fn usage(
+  metadata: Option(usage.Metadata),
+  spent: Option(types.Cost),
+) -> json.Json {
+  json.object(usage_fields(metadata, spent))
 }
 
 pub fn costed_usage(
   metadata: Option(usage.Metadata),
-  cost: Option(Float),
+  spent: Option(types.Cost),
+  estimate: Option(Float),
 ) -> json.Json {
   json.object([
-    #("session_cost_usd", json.nullable(cost, json.float)),
-    ..usage_fields(metadata)
+    #("session_cost_usd", json.nullable(estimate, json.float)),
+    ..usage_fields(metadata, spent)
   ])
 }
 
 fn usage_fields(
   metadata: Option(usage.Metadata),
+  spent: Option(types.Cost),
 ) -> List(#(String, json.Json)) {
   let tokens = option.then(metadata, fn(value) { value.tokens })
   let counter = fn(read) { json.nullable(option.map(tokens, read), json.int) }
@@ -693,6 +734,7 @@ fn usage_fields(
     ),
     #("cache_miss_tokens", json.nullable(missed, json.int)),
     #("cache_drift_tokens", json.nullable(drifted, json.int)),
+    #("spent", cost(spent)),
     #("context_window_tokens", json.null()),
     #("cache_ttl_seconds", json.null()),
     #("cache_fade", case option.then(metadata, fn(value) { value.cache }) {

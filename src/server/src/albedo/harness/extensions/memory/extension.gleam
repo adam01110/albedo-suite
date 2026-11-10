@@ -29,19 +29,20 @@ pub fn extension() -> extension.Extension {
           <> "Before project work, retrieve relevant facts with memory.search(query, limit=20) (SQLite FTS5) "
           <> "or memory.grep(term, limit=20); memory.read(max_chars=16000) reads current workspace memory with an explicit output bound. "
           <> "Search includes linked workspaces and journals; verify facts that may have changed. "
-          <> "memory.append(text)/save(text)/journal(text) write only this workspace; never store secrets. "
+          <> "memory.append(text)/save(text)/journal(text) write only this workspace (a worktree's own is its origin's); never store secrets. "
           <> "Required rules belong in AGENTS.md. Calls are synchronous and also awaitable.",
         [],
         ["memory"],
         [],
       ),
       extension.ManagedPlugin(fn(store, _, workspace) {
-        use context <- result.try(load(links.group(store, workspace)))
+        let own = links.origin(store, workspace)
+        use context <- result.try(load(links.group(store, own)))
         Ok(
           extension.Managed(..extension.empty(), context: context, routes: [
             #("memory", fn(context: host.Context, method, args) {
               let store = context.store
-              handle(workspace, links.group(store, workspace), method, args)
+              handle(own, links.group(store, own), method, args)
             }),
           ]),
         )

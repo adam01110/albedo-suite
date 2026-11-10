@@ -4,9 +4,8 @@
 %% tracks the flows; each flow owns its loopback callback listener and ends by
 %% storing the credential in creds.json's accounts under the provider's key.
 
--export([confirm/1, put_key/6, rename_account/4, accounts/2, callback_issuer/0,
-         parse_input/1, start_identified/5, get_identified/3, input_identified/5,
-         cancel_identified/3, auth_snapshot/2, account_overview/2, remove_account/3]).
+-export([confirm/1, callback_issuer/0, parse_input/1, start_identified/5, get_identified/3,
+         input_identified/5, cancel_identified/3]).
 
 -define(OWNER, albedo_oauth).
 -define(FLOW_TIMEOUT_MS, 300000).
@@ -402,15 +401,8 @@ callback_issuer() ->
         _ -> none
     end.
 
-%% ---- creds.json accounts ------------------------------------------------
-
 id(Account, Credential) -> element(2, Account(Credential)).
 
-accounts(Home, {login, _, _, _, _, Store, _, _, _, Account}) ->
-    case albedo_credentials:accounts(albedo_credentials:creds_path(Home)) of
-        {ok, Data} -> [Account(V) || V <- albedo_credentials:values(Data, Store)];
-        _ -> []
-    end.
 %% ---- helpers ------------------------------------------------------------
 
 token(Bytes) -> binary:encode_hex(crypto:strong_rand_bytes(Bytes), lowercase).
@@ -640,20 +632,11 @@ store_identified(Id, Home, Store, Credential0, Account, Flows) ->
     end),
     {{ok, hd(maps:get(<<"account_ids">>, Completed))}, Flows#{Id := Active#{record => Completed}}}.
 
-%% Creds with a signed-in credential in place, and the id it is known by. An
-%% MCP server's sign-in replaces that server's tokens; any other replaces the
-%% account with the same identity or joins the store's accounts.
+%% Creds with a signed-in credential in place, and the id it is known by.
 stored_credential(Creds, <<"mcp:", Server/binary>> = Store, Credential, _, _, _) ->
     {Store, albedo_mcp_oauth:signed_in(Creds, Server, Credential)};
-stored_credential(Creds, Store, Credential0, Account, RawId, Provider) ->
-    Accounts = albedo_settings_store:object(<<"accounts">>, Creds), Values = albedo_credentials:values(Accounts, Store),
-    Previous = [V || V <- Values, id(Account, V) =:= RawId],
-    PublicId = case Previous of [P | _] -> maps:get(<<"_albedo_account_id">>, P, token(16)); [] -> token(16) end,
-    {account, _, Label, Detail, _} = Account(Credential0),
-    Credential = Credential0#{<<"_albedo_account_id">> => PublicId,
-        <<"_albedo_account_meta">> => #{<<"provider">> => Provider, <<"label">> => bounded(Label, 256), <<"detail">> => bounded(Detail, 4096)}},
-    NewValues = case Previous of [] -> Values ++ [Credential]; _ -> [case id(Account, V) =:= RawId of true -> Credential; false -> V end || V <- Values] end,
-    {PublicId, Creds#{<<"accounts">> => albedo_credentials:put_values(Accounts, Store, NewValues)}}.
+stored_credential(Creds, Store, Credential, Account, RawId, Provider) ->
+    albedo_auth_accounts:signed_in(Creds, Store, Credential, Account, RawId, Provider).
 
 stopped(Flows, Pid) -> maps:map(fun
     (Id, #{pid := P, home := Home, record := Record} = F) when P =:= Pid ->
@@ -668,206 +651,7 @@ end, Flows).
 bounded(Text, Max) -> unicode:characters_to_binary(lists:sublist(unicode:characters_to_list(Text), Max)).
 
 encode_login(Home, Flow, Logins) ->
-    Accounts = locked(Home, fun() -> account_projection(Home, Logins) end),
+    Accounts = locked(Home, fun() -> albedo_auth_accounts:account_projection(Home, Logins) end),
     Value = maps:with([<<"id">>, <<"provider">>, <<"url">>, <<"state">>, <<"instructions">>, <<"progress">>, <<"failure">>, <<"confirmation_revision">>], Flow),
     iolist_to_binary(json:encode(Value#{<<"expires_at">> => albedo_http_api:timestamp(maps:get(<<"expires">>, Flow)),
         <<"accounts">> => [A || A <- Accounts, lists:member(maps:get(<<"id">>, A), maps:get(<<"account_ids">>, Flow))]})).
-
-rename_account(Home, Logins, Id, Label) ->
-    try locked(Home, fun() ->
-        Selected = [A || A <- account_projection(Home, Logins), maps:get(<<"id">>, A) =:= Id],
-        ensure(Selected =/= [], 404, <<"account_unknown">>, <<"Unknown provider account.">>),
-        ensure(lists:all(fun(A) -> maps:get(<<"source">>, A) =:= <<"saved">> end, Selected),
-            409, <<"account_external">>, <<"Environment accounts cannot be changed.">>),
-        ensure(byte_size(Label) > 0 andalso byte_size(Label) =< 256, 400, <<"invalid_request">>, <<"label is required.">>),
-        Creds = albedo_settings_store:read(Home, <<"creds.json">>),
-        Stored = albedo_settings_store:object(<<"accounts">>, Creds),
-        Updated = lists:foldl(fun(Store, Acc) ->
-            Values = [case maps:get(<<"_albedo_account_id">>, V, null) of
-                Id -> V#{<<"label">> => Label}; _ -> V end || V <- albedo_credentials:values(Acc, Store)],
-            albedo_credentials:put_values(Acc, Store, Values)
-        end, Stored, maps:keys(Stored)),
-        albedo_settings_store:commit_group(Home, #{<<"creds.json">> => Creds#{<<"accounts">> => Updated}}),
-        [Public | _] = [A || A <- account_projection(Home, Logins), maps:get(<<"id">>, A) =:= Id],
-        {ok, iolist_to_binary(json:encode(Public))}
-    end) catch throw:{http,S,C,D} -> {error,{S,C,D}}; _:_ -> {error,{503,<<"auth_unavailable">>,<<"Provider account storage is unavailable.">>}} end.
-
-put_key(Home, Provider, Id, Endpoint, Key, Label0) ->
-    try locked(Home, fun() ->
-        ensure(lists:member(Provider, albedo_key_accounts:providers()), 400, <<"provider_unknown">>, <<"Key accounts require a key provider.">>),
-        ensure(re:run(Id, <<"^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$">>, [{capture, none}]) =:= match,
-            400, <<"identity_invalid">>, <<"Account identity must be a UUIDv7.">>),
-        ensure(byte_size(Key) > 0 andalso byte_size(Key) =< 16384, 400, <<"invalid_request">>, <<"api_key is required.">>),
-        ensure(Endpoint =/= <<>>, 400, <<"invalid_request">>, <<"endpoint is required.">>),
-        ensure(byte_size(Endpoint) =< 4096 andalso 'albedo@daemon@configuration':valid_key_endpoint(Endpoint),
-            400, <<"invalid_request">>, <<"Invalid endpoint: use an http or https URL with a host, and no credentials, query or fragment.">>),
-        ensure('albedo@daemon@configuration':valid_api_key(Key),
-            400, <<"invalid_request">>, <<"Invalid API key: it must not contain spaces or control characters.">>),
-        Label = case Label0 of <<>> -> albedo_key_accounts:label(Key); _ -> Label0 end,
-        ensure(byte_size(Label) > 0 andalso byte_size(Label) =< 256, 400, <<"invalid_request">>, <<"label must contain 1 to 256 bytes.">>),
-        Creds = albedo_settings_store:read(Home, <<"creds.json">>), Accounts = albedo_settings_store:object(<<"accounts">>, Creds),
-        Value = #{<<"type">> => <<"key">>, <<"apiKey">> => Key, <<"endpoint">> => Endpoint,
-            <<"label">> => Label, <<"_albedo_account_id">> => Id},
-        Identified = [{Store, V} || Store <- maps:keys(Accounts), V <- albedo_credentials:values(Accounts, Store),
-            maps:get(<<"_albedo_account_id">>, V, null) =:= Id],
-        Created = case Identified of
-            [] ->
-                Existing = [V || V <- albedo_credentials:values(Accounts, Provider),
-                    maps:get(<<"type">>, V, null) =:= <<"key">>, maps:get(<<"apiKey">>, V, null) =:= Key,
-                    maps:get(<<"endpoint">>, V, null) =:= Endpoint],
-                case Existing of
-                    [] -> ok;
-                    [Previous | _] -> ensure(false, 409, <<"key_exists">>,
-                        <<"Key already exists as account ", (maps:get(<<"_albedo_account_id">>, Previous))/binary, ".">>)
-                end,
-                Next = albedo_credentials:put_values(Accounts, Provider, albedo_credentials:values(Accounts, Provider) ++ [Value]),
-                albedo_settings_store:commit_group(Home, #{<<"creds.json">> => Creds#{<<"accounts">> => Next}}),
-                true;
-            [{Provider, Previous}] ->
-                ensure(maps:with(maps:keys(Value), Previous) =:= Value, 409, <<"conflict">>, <<"Account identity has different content.">>), false;
-            _ -> ensure(false, 409, <<"conflict">>, <<"Account identity has different content.">>)
-        end,
-        Config = albedo_settings_store:read(Home, <<"config.json">>),
-        Profiles = maps:get(<<"providers">>, Config, #{}),
-        [Public] = [A || A <- key_projection(Provider, albedo_settings_store:object(<<"accounts">>, albedo_settings_store:read(Home, <<"creds.json">>)), Profiles), maps:get(<<"id">>, A) =:= Id],
-        {ok, {Created, iolist_to_binary(json:encode(Public))}}
-    end) catch throw:{http,S,C,D} -> {error,{S,C,D}}; _:_ -> {error,{503,<<"auth_unavailable">>,<<"Provider account storage is unavailable.">>}} end.
-
-auth_snapshot(Home, Logins) ->
-    try locked(Home, fun() ->
-        Providers = [#{<<"id">> => element(2, Login), <<"label">> => element(3, Login), <<"detail">> => element(4, Login),
-            <<"kind">> => atom_to_binary(element(5, Login), utf8),
-            <<"flows">> => case element(7, Login) of
-                {device, _} -> [<<"browser">>];
-                _ -> [<<"browser">>, <<"manual">>]
-            end, <<"fields">> => []} || Login <- Logins],
-        {ok, iolist_to_binary(json:encode(#{<<"providers">> => Providers, <<"accounts">> => account_projection(Home, Logins)}))}
-    end) catch throw:{http, S, C, D} -> {error, {S,C,D}}; _:_ -> {error, {503, <<"auth_unavailable">>, <<"Provider account storage is unavailable.">>}} end.
-
-%% The /auth descriptors plus each account's Google project and per-meter
-%% limits, for the model's /accounts; no secret value leaves this module.
-account_overview(Home, Logins) ->
-    try locked(Home, fun() ->
-        Accounts = account_projection(Home, Logins),
-        Stored = albedo_settings_store:object(<<"accounts">>, albedo_settings_store:read(Home, <<"creds.json">>)),
-        Credentials = maps:from_list([{Id, Credential} || Store <- maps:keys(Stored),
-            Credential <- albedo_credentials:values(Stored, Store),
-            #{<<"_albedo_account_id">> := Id} <- [Credential]]),
-        {ok, json:encode([overview(Account, maps:get(maps:get(<<"id">>, Account), Credentials, #{})) || Account <- Accounts])}
-    end) catch throw:{http, _, _, Detail} -> {error, Detail}; _:_ -> {error, <<"Provider account storage is unavailable.">>} end.
-
-overview(Account, Credential) ->
-    Meters = case maps:get(<<"limitedMeters">>, Credential, #{}) of Map when is_map(Map) -> Map; _ -> #{} end,
-    Account#{<<"project">> => case maps:get(<<"projectId">>, Credential, null) of
-            Project when is_binary(Project), Project =/= <<>> -> Project;
-            _ -> null
-        end,
-        <<"limited_meters">> => maps:from_list([{Meter, albedo_http_api:timestamp(Until)}
-            || {Meter, Until} <- maps:to_list(Meters), is_integer(Until), Until > 0])}.
-
-account_projection(Home, Logins) ->
-    Creds = albedo_settings_store:read(Home, <<"creds.json">>), Accounts = albedo_settings_store:object(<<"accounts">>, Creds),
-    Config = albedo_settings_store:read(Home, <<"config.json">>), Profiles = maps:get(<<"providers">>, Config, #{}),
-    Updated = lists:foldl(fun(Login, Acc) ->
-        Store = element(6, Login), Values = albedo_credentials:values(Acc, Store), Account = element(10, Login),
-        Next = [begin
-            case maps:get(<<"type">>, V, null) of
-                <<"key">> -> V;
-                _ ->
-                    {account, _, Label, Detail, _} = Account(V),
-                    V#{<<"_albedo_account_id">> => maps:get(<<"_albedo_account_id">>, V, token(16)),
-                       <<"_albedo_account_meta">> => #{<<"provider">> => element(2, Login),
-                           <<"label">> => bounded(Label,256), <<"detail">> => bounded(Detail,4096),
-                           <<"kind">> => atom_to_binary(element(5, Login), utf8)}}
-            end
-        end || V <- Values],
-        albedo_credentials:put_values(Acc, Store, Next)
-    end, Accounts, Logins),
-    case Updated =:= Accounts of true -> ok; false -> albedo_settings_store:commit_group(Home, #{<<"creds.json">> => Creds#{<<"accounts">> => Updated}}) end,
-    OAuth = lists:flatmap(fun(Store) ->
-        [Meta#{<<"id">> => Id, <<"label">> => maps:get(<<"label">>, Credential, maps:get(<<"label">>, Meta)),
-            <<"source">> => <<"saved">>, <<"endpoint">> => null, <<"limited_until">> => limited_until(Credential),
-            <<"selected_by_profiles">> => selected_profiles(Profiles, Id),
-            <<"rotated_by_profiles">> => rotated_profiles(Profiles, Id)}
-         || Credential <- albedo_credentials:values(Updated, Store),
-            maps:get(<<"type">>, Credential, null) =/= <<"key">>,
-            #{<<"_albedo_account_id">> := Id, <<"_albedo_account_meta">> := Meta} <- [Credential]]
-    end, lists:sort(maps:keys(Updated))),
-    Keys = lists:flatmap(fun(Store) -> key_projection(Store, Updated, Profiles) end,
-        albedo_key_accounts:providers()),
-    OAuth ++ Keys ++ env_key_projection(Home, Profiles).
-
-env_key_projection(Home, Profiles) ->
-    Endpoints = lists:usort([{maps:get(<<"extension">>, Profile, <<"openai">>),
-        maps:get(<<"baseUrl">>, Profile, <<>>)} || {_Name, Profile} <- maps:to_list(Profiles),
-        lists:member(maps:get(<<"extension">>, Profile, <<"openai">>), albedo_key_accounts:providers())]),
-    lists:usort(lists:flatmap(fun({Provider, Endpoint}) ->
-        [key_descriptor(Provider, Credential, Profiles) || Credential <- albedo_key_accounts:env(Home, Provider, Endpoint)]
-    end, Endpoints)).
-
-limited_until(Credential) ->
-    case maps:get(<<"limitedUntil">>, Credential, null) of
-        Until when is_integer(Until), Until > 0 -> albedo_http_api:timestamp(Until);
-        _ -> null
-    end.
-
-rotation_ids(Profile) ->
-    case maps:get(<<"accountIds">>, Profile, null) of Ids when is_list(Ids) -> Ids; _ -> [] end.
-
-selected_profiles(Profiles, Id) ->
-    lists:sort([Name || {Name, Profile} <- maps:to_list(Profiles),
-        maps:get(<<"accountId">>, Profile, null) =:= Id]).
-
-rotated_profiles(Profiles, Id) ->
-    lists:sort([Name || {Name, Profile} <- maps:to_list(Profiles),
-        lists:member(Id, rotation_ids(Profile))]).
-
-key_projection(Store, Accounts, Profiles) ->
-    [key_descriptor(Store, Credential, Profiles)
-     || Credential <- albedo_credentials:values(Accounts, Store),
-        maps:get(<<"type">>, Credential, null) =:= <<"key">>].
-
-key_descriptor(Store, Credential, Profiles) ->
-    Id = maps:get(<<"_albedo_account_id">>, Credential),
-    Key = maps:get(<<"apiKey">>, Credential),
-    Endpoint = maps:get(<<"endpoint">>, Credential, null),
-    #{<<"id">> => Id, <<"provider">> => Store,
-      <<"label">> => maps:get(<<"label">>, Credential, albedo_key_accounts:label(Key)),
-      <<"detail">> => case Endpoint of null -> <<>>; _ -> host(Endpoint) end,
-      <<"kind">> => <<"key">>, <<"source">> => maps:get(<<"source">>, Credential, <<"saved">>),
-      <<"endpoint">> => Endpoint, <<"limited_until">> => limited_until(Credential),
-      <<"selected_by_profiles">> => selected_profiles(Profiles, Id),
-      <<"rotated_by_profiles">> => rotated_profiles(Profiles, Id)}.
-
-host(Endpoint) ->
-    case uri_string:parse(Endpoint) of #{host := Host} -> Host; _ -> Endpoint end.
-
-remove_account(Home, Logins, Id) ->
-    try locked(Home, fun() ->
-        Accounts = account_projection(Home, Logins),
-        Selected = [A || A <- Accounts, maps:get(<<"id">>, A) =:= Id],
-        ensure(Selected =/= [], 404, <<"account_unknown">>, <<"Unknown provider account.">>),
-        ensure(lists:all(fun(A) -> maps:get(<<"source">>, A, <<"saved">>) =:= <<"saved">> end, Selected),
-            409, <<"account_external">>, <<"Environment accounts cannot be changed.">>),
-        ensure(lists:all(fun(A) -> maps:get(<<"selected_by_profiles">>, A) =:= [] end, Selected),
-            409, <<"account_in_use">>, <<"Provider account is referenced by a saved profile.">>),
-        Config = albedo_settings_store:read(Home, <<"config.json">>), Profiles = maps:get(<<"providers">>, Config, #{}),
-        Rotations = [{Name, Profile} || {Name, Profile} <- maps:to_list(Profiles),
-            lists:member(Id, rotation_ids(Profile))],
-        ensure(lists:all(fun({_Name, Profile}) -> length(maps:get(<<"accountIds">>, Profile, [])) > 1 end, Rotations),
-            409, <<"account_in_use">>, <<"Account is the last member of a rotation.">>),
-        Creds = albedo_settings_store:read(Home, <<"creds.json">>), Stored = albedo_settings_store:object(<<"accounts">>, Creds),
-        Updated = lists:foldl(fun(Store, Acc) ->
-            albedo_credentials:put_values(Acc, Store,
-                [V || V <- albedo_credentials:values(Acc, Store), maps:get(<<"_albedo_account_id">>, V, null) =/= Id])
-        end, Stored, maps:keys(Stored)),
-        NextProfiles = maps:map(fun(_Name, Profile) ->
-            case maps:get(<<"accountIds">>, Profile, null) of
-                Ids when is_list(Ids) -> Profile#{<<"accountIds">> => [Value || Value <- Ids, Value =/= Id]};
-                _ -> Profile
-            end
-        end, Profiles),
-        Changed = #{<<"creds.json">> => Creds#{<<"accounts">> => Updated},
-            <<"config.json">> => Config#{<<"accountsVersion">> => 2, <<"providers">> => NextProfiles}},
-        albedo_settings_store:commit_group(Home, Changed), {ok, nil}
-    end) catch throw:{http,S,C,D} -> {error,{S,C,D}}; _:_ -> {error,{503,<<"auth_unavailable">>,<<"Provider account storage is unavailable.">>}} end.

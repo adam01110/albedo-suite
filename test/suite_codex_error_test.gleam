@@ -1,4 +1,5 @@
 // Error envelope variants are wire-parser regressions, independent of daemon lifecycle.
+import albedo/openai_api/cost
 import albedo/openai_api/responses
 import albedo/openai_api/types
 import gleam/io
@@ -36,7 +37,7 @@ pub fn main() -> Nil {
       ),
     ],
     fn(entry) {
-      assert responses.feed(responses.new(), entry.0)
+      assert responses.feed(responses.new(cost.none), entry.0)
         == Error(types.ProviderError(entry.1))
     },
   )
@@ -47,7 +48,7 @@ pub fn main() -> Nil {
     ],
     fn(data) {
       let assert Error(types.ProviderError(message)) =
-        responses.feed(responses.new(), data)
+        responses.feed(responses.new(cost.none), data)
       assert string.starts_with(message, "malformed error:")
       assert !string.contains(message, data)
     },

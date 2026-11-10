@@ -117,6 +117,7 @@ pub type Capture {
     current_progress: List(tool_progress_state.Snapshot),
     history_high_water: Int,
     usage: Option(usage.Metadata),
+    spent: Option(types.Cost),
     kernel: session_namespace.KernelObservation,
     activity: session_activity.Projection,
     created_at: Option(Int),
@@ -141,6 +142,7 @@ pub type Summary {
     current_progress: List(tool_progress_state.Snapshot),
     activity: session_activity.Projection,
     usage: Option(usage.Metadata),
+    spent: Option(types.Cost),
   )
 }
 
@@ -154,6 +156,7 @@ pub type StatusRead {
     status: session_activity.Status,
     kernel: session_namespace.KernelObservation,
     usage: Option(usage.Metadata),
+    spent: Option(types.Cost),
     cost_usd: Option(Float),
     glances: Option(List(selection.Glance)),
   )
@@ -374,9 +377,8 @@ pub type Message {
   /// Fire-and-forget, like the pin report.
   ReportSent(String, extension.SentCall, Subject(Nil))
   ReportShellDelivery(String, List(String), Subject(Nil))
-  /// The worker started compacting ahead of a request; fire-and-forget. The
-  /// request's recorded context ends it.
-  ReportCompacting(String, Subject(Nil))
+  /// Live compaction progress; the prepared request clears it.
+  ReportCompacting(String, compaction.ProgressUpdate, Subject(Nil))
   /// An extension asks for a background call; see `extension.Session`.
   CallInBackground(
     types.Request,
@@ -533,6 +535,10 @@ pub fn start(
       runtime.ledger(host),
       info.id,
     ))
+    use spent <- result.try(conversation.load_spend(
+      runtime.ledger(host),
+      info.id,
+    ))
     use captured <- result.try(conversation.capture(
       runtime.ledger(host),
       info.id,
@@ -587,6 +593,7 @@ pub fn start(
         history: None,
         results_settled: False,
         latest_usage: latest_usage,
+        spent: spent,
         activity: activity,
         pending_switch: None,
         steering: steering,
@@ -1458,6 +1465,7 @@ fn summary_state(state: State) -> Summary {
     tool_progress_state.snapshots(state.tool_progress),
     state.live_activity,
     state.latest_usage,
+    state.spent,
   )
 }
 
@@ -1468,11 +1476,12 @@ fn status_state(state: State) -> fn() -> Result(StatusRead, String) {
   let ledger = runtime.ledger(state.host)
   let kernel = session_namespace.kernel_observer(state)
   // Bind the facts, not `state`, so the transcript stays in the actor.
-  let #(id, cursor, status, usage, glances) = #(
+  let #(id, cursor, status, usage, spent, glances) = #(
     state.info.id,
     Cursor(state.generation, state.sequence),
     session_state.current_status(state),
     state.latest_usage,
+    state.spent,
     state.announced_glances,
   )
   fn() {
@@ -1483,6 +1492,7 @@ fn status_state(state: State) -> fn() -> Result(StatusRead, String) {
       status,
       observed,
       usage,
+      spent,
       session_cost.total(ledger, id),
       glances,
     )
@@ -1577,6 +1587,7 @@ fn capture_in(
       summary.current_progress,
       durable.history_high_water,
       summary.usage,
+      summary.spent,
       kernel,
       summary.activity,
       durable.created_at,
@@ -1997,7 +2008,7 @@ fn handle(
               }
             })
           let state = session_state.State(..state, steering: steering)
-          let requested = case turn.running(state.activity), run_id {
+          let requested = case interruptible_run(state), run_id {
             Some(run), Some(id) if run.id == id -> {
               interrupt_kernel(state)
               let _ = clock.send_after(state.self, 2500, Abort(run.id))
@@ -2704,12 +2715,12 @@ fn handle(
       }
       actor.continue(state)
     }
-    ReportCompacting(id, reply) -> {
+    ReportCompacting(id, update, reply) -> {
       process.send(reply, Nil)
       actor.continue(
         session_state.State(
           ..state,
-          activity: turn.compacting(state.activity, id, True),
+          activity: turn.progress(state.activity, id, update, usage.now()),
         )
         |> session_state.announce,
       )
@@ -2719,6 +2730,8 @@ fn handle(
     BackgroundFinished(id, started, outcome) ->
       case turn.owner(state.activity, id) {
         Some(turn.Run(work: turn.Background(reply), ..) as run) -> {
+          // The call is a row now. Read what it added before the client is told.
+          let state = synced_spend(state)
           let state = case run.cancelled, outcome {
             False, Ok(_) -> rewarmed(state, started)
             _, _ -> state
@@ -2732,7 +2745,7 @@ fn handle(
         case turn.live(state.activity, id) {
           True -> {
             let was = turn.running(state.activity)
-            let activity = turn.compacting(state.activity, id, False)
+            let activity = turn.clear_compaction(state.activity, id)
             let state =
               session_state.State(..state, context: snapshot, activity:)
             let state = case was == turn.running(activity) {
@@ -4713,7 +4726,7 @@ fn start_turn(state: State, opening: Opening) -> State {
     kernel,
     client,
     session_run.ThroughOpening,
-    turn.Turn(None, False),
+    turn.Turn(None),
     run_id,
   )
   |> session_state.write_then(commit, fn(state, committed) {
@@ -4872,6 +4885,9 @@ fn finished_turn(
   outcome: Result(Nil, String),
   persisted: Result(Int, String),
 ) -> State {
+  // The calls of the run are rows now, so the store knows their cost. Read the
+  // total here, once per run, and tell a client when it changed.
+  let state = synced_spend(state)
   let state = session_state.State(..state, finishing: False)
   let state = clear_tool_progress(session_state.flush_output(state))
   let state =
@@ -4907,7 +4923,8 @@ fn finished_turn(
         view.Failure(Some(run.id), "turn_failed", error),
       )
     // Compaction makes no provider request, so the footer's last real
-    // usage is stale; the strategy's own estimate replaces it.
+    // usage is stale, and the estimate of the strategy replaces it. The total
+    // cost of the session is not a measurement of a call, so it stays.
     turn.Compaction(..), _, Ok(_), Ok(_) -> {
       case context_snapshot.estimate(state.context) {
         Some(tokens) -> {
@@ -4924,6 +4941,7 @@ fn finished_turn(
             session_state.State(..state, latest_usage: Some(metadata)),
             view.CostedUsage(
               Some(metadata),
+              state.spent,
               session_cost.total(runtime.ledger(state.host), state.info.id),
             ),
           )
@@ -4940,6 +4958,7 @@ fn finished_turn(
         state,
         view.CostedUsage(
           state.latest_usage,
+          state.spent,
           session_cost.total(runtime.ledger(state.host), state.info.id),
         ),
       )
@@ -5123,6 +5142,9 @@ fn summary_finish(
   outcome: Result(Nil, String),
 ) -> actor.Next(State, Message) {
   process.demonitor_process(run.monitor)
+  // The summary is a provider call, so it added to the total cost of the
+  // session.
+  let state = synced_spend(state)
   case outcome {
     Error(reason) ->
       process.send(
@@ -5204,7 +5226,8 @@ fn start_summary(
 
 /// A background call repeats the session's last turn call, so the provider's
 /// cache clock starts over from it, warm or cold: the cached count fades from
-/// there now, and clients hear the moved steps.
+/// there now, and clients receive the steps that changed. The caller synced the
+/// spend first, so the frame carries the cost of the call.
 fn rewarmed(state: State, started: Int) -> State {
   case state.latest_usage {
     Some(usage.Metadata(cache: Some(fade), ..) as metadata) -> {
@@ -5222,6 +5245,7 @@ fn rewarmed(state: State, started: Int) -> State {
             session_state.State(..state, latest_usage: Some(metadata)),
             view.CostedUsage(
               Some(metadata),
+              state.spent,
               session_cost.total(runtime.ledger(state.host), state.info.id),
             ),
           )
@@ -5229,6 +5253,25 @@ fn rewarmed(state: State, started: Int) -> State {
       }
     }
     _ -> state
+  }
+}
+
+/// A run ended, so its calls are rows and the store knows what the session has
+/// spent. Read the total once and tell a client when it changed. Usage that a
+/// call reports during the run cannot know the total.
+fn synced_spend(state: State) -> State {
+  case conversation.load_spend(runtime.ledger(state.host), state.info.id) {
+    Ok(spent) if spent == state.spent -> state
+    Ok(spent) ->
+      session_state.emit(
+        session_state.State(..state, spent: spent),
+        view.CostedUsage(
+          state.latest_usage,
+          spent,
+          session_cost.total(runtime.ledger(state.host), state.info.id),
+        ),
+      )
+    Error(_) -> state
   }
 }
 
@@ -5537,6 +5580,7 @@ fn remember_usage(
       )
       |> session_state.emit(view.CostedUsage(
         Some(metadata),
+        state.spent,
         session_cost.total(runtime.ledger(state.host), state.info.id),
       ))
   }
@@ -6015,7 +6059,7 @@ fn interrupt_waiting(
 /// what was queued behind it; the Bool says whether there was any.
 fn stop_waiting(state: State) -> #(State, Bool) {
   let waiting = state.steering != [] || waiting_turn(state)
-  case turn.running(state.activity), waiting {
+  case interruptible_run(state), waiting {
     None, True -> {
       let state =
         clear_tool_progress(state)
@@ -6024,7 +6068,11 @@ fn stop_waiting(state: State) -> #(State, Bool) {
         session_state.State(
           ..state,
           steering: [],
-          active_submissions: [],
+          // A finishing run still reports its inputs when its end lands.
+          active_submissions: case state.finishing {
+            True -> state.active_submissions
+            False -> []
+          },
           blocked_until: 0,
           kernel_blocked: False,
           workspace_probe: None,
@@ -6057,6 +6105,15 @@ fn stop_waiting(state: State) -> #(State, Bool) {
         True,
       )
     }
+  }
+}
+
+/// The run an interrupt can still stop. Once its end is being committed the
+/// outcome is fixed, so the run has already ended for an interrupt.
+fn interruptible_run(state: State) -> Option(turn.Run) {
+  case state.finishing {
+    True -> None
+    False -> turn.running(state.activity)
   }
 }
 
@@ -6217,7 +6274,7 @@ fn cancel_input_in(
         }
       }
     False ->
-      case turn.running(state.activity), state.active_submissions {
+      case interruptible_run(state), state.active_submissions {
         // The turn's opening commit is still on the writer: once it lands,
         // the input is the open turn's or back in the queue, so decide then.
         // A write queued now lands after it.

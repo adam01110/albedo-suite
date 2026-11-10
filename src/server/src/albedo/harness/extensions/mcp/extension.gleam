@@ -22,7 +22,10 @@ import gleam/result
 import gleam/string
 import sqlight
 
-type EnvRef {
+/// A stdio `env` or HTTP `headers` value: a literal string, or the name of a
+/// daemon environment variable that `albedo_mcp.erl` reads at connect time.
+type EnvValue {
+  Literal(value: String)
   EnvRef(name: String)
 }
 
@@ -31,11 +34,11 @@ type Transport {
     command: String,
     arguments: List(String),
     cwd: Option(String),
-    environment: Dict(String, EnvRef),
+    environment: Dict(String, EnvValue),
   )
   Http(
     url: String,
-    headers: Dict(String, EnvRef),
+    headers: Dict(String, EnvValue),
     bearer_token_env_var: Option(String),
   )
 }
@@ -159,7 +162,7 @@ fn stdio_decoder() -> decode.Decoder(Transport) {
   use environment <- decode.optional_field(
     "env",
     dict.new(),
-    decode.dict(decode.string, env_ref_decoder()),
+    decode.dict(decode.string, env_value_decoder()),
   )
   decode.success(Stdio(command, arguments, cwd, environment))
 }
@@ -169,7 +172,7 @@ fn http_decoder() -> decode.Decoder(Transport) {
   use headers <- decode.optional_field(
     "headers",
     dict.new(),
-    decode.dict(decode.string, env_ref_decoder()),
+    decode.dict(decode.string, env_value_decoder()),
   )
   use bearer <- decode.optional_field(
     "bearerTokenEnvVar",
@@ -179,8 +182,10 @@ fn http_decoder() -> decode.Decoder(Transport) {
   decode.success(Http(url, headers, bearer))
 }
 
-fn env_ref_decoder() -> decode.Decoder(EnvRef) {
-  decode.map(decode.field("env", decode.string, decode.success), EnvRef)
+fn env_value_decoder() -> decode.Decoder(EnvValue) {
+  decode.one_of(decode.map(decode.string, Literal), [
+    decode.map(decode.field("env", decode.string, decode.success), EnvRef),
+  ])
 }
 
 pub fn configured_extension() -> extension.Extension {
@@ -643,25 +648,28 @@ fn encode_server(server: Server) -> Json {
         #("command", json.string(command)),
         #("args", json.array(arguments, json.string)),
         #("cwd", json.nullable(cwd, json.string)),
-        #("env", encode_refs(environment)),
+        #("env", encode_env_values(environment)),
         ..common
       ])
     Http(url, headers, bearer) ->
       json.object([
         #("type", json.string("http")),
         #("url", json.string(url)),
-        #("headers", encode_refs(headers)),
+        #("headers", encode_env_values(headers)),
         #("bearerTokenEnvVar", json.nullable(bearer, json.string)),
         ..common
       ])
   }
 }
 
-fn encode_refs(values: Dict(String, EnvRef)) -> Json {
+fn encode_env_values(values: Dict(String, EnvValue)) -> Json {
   values
   |> dict.to_list
   |> list.map(fn(entry) {
-    #(entry.0, json.object([#("env", json.string(entry.1.name))]))
+    case entry.1 {
+      Literal(value) -> #(entry.0, json.string(value))
+      EnvRef(name) -> #(entry.0, json.object([#("env", json.string(name))]))
+    }
   })
   |> json.object
 }

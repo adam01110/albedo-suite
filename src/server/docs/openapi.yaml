@@ -7308,6 +7308,12 @@ components:
       properties:
         instance_id:
           $ref: '#/components/schemas/ID'
+        pid:
+          type: integer
+          minimum: 1
+          maximum: 2147483647
+          description: OS process id of the daemon VM. Clients check it against daemon.json when present.
+            Absent from daemons that predate this field.
         protocol:
           const: 3
         state:
@@ -8599,6 +8605,28 @@ components:
             recent_backup_bytes: 0
             recent_backup_count: 0
         measured_at: '2026-10-02T14:00:00Z'
+    CompactionProgress:
+      description: Live progress for the current compaction, not a durable transcript entry. Counts cover the current stage or batch, not the whole compaction.
+      type: object
+      properties:
+        strategy:
+          type: string
+        stage:
+          type: string
+          enum: [preparing, summarizing, merging, notes]
+        completed:
+          type: integer
+          minimum: 0
+        total:
+          anyOf:
+          - type: integer
+            minimum: 1
+          - type: 'null'
+        started_at:
+          type: string
+          format: date-time
+      required: [strategy, stage, completed, total, started_at]
+      additionalProperties: false
     SessionStatus:
       type: object
       properties:
@@ -8614,6 +8642,11 @@ components:
         blocking_reason:
           anyOf:
           - $ref: '#/components/schemas/SafeReason'
+          - type: 'null'
+        compaction:
+          description: Present while this run is preparing compacted history; absent or null otherwise.
+          anyOf:
+          - $ref: '#/components/schemas/CompactionProgress'
           - type: 'null'
       required: [phase, run_id, interrupt_requested, blocking_reason]
       additionalProperties: false
@@ -9700,6 +9733,18 @@ components:
           - type: 'null'
       required: [state, stage, build, stale, staleness_reasons, live_job_count, running_jobs, instance_id]
       additionalProperties: false
+    Cost:
+      type: object
+      description: The amount a provider reported for one call, and the statement that the amount belongs to.
+      properties:
+        usd:
+          type: number
+          minimum: 0
+        basis:
+          type: string
+          enum: [charged, counted, listed]
+      required: [usd, basis]
+      additionalProperties: false
     Usage:
       type: object
       properties:
@@ -9762,6 +9807,10 @@ components:
         cache_drift_tokens:
           anyOf:
           - $ref: '#/components/schemas/Counter'
+          - type: 'null'
+        spent:
+          anyOf:
+          - $ref: '#/components/schemas/Cost'
           - type: 'null'
         cache_fade:
           type: array
@@ -12068,6 +12117,10 @@ components:
           maxItems: 2
         delivery:
           const: input
+        skill_name:
+          type: string
+          maxLength: 64
+          description: Canonical skill name for inline dollar-prefixed mentions. Present only for skill inputs.
         command_id:
           $ref: '#/components/schemas/ID'
       required: [id, slash_name, description, arguments, caller_permissions, delivery, command_id]
@@ -12078,10 +12131,13 @@ components:
         native_commands:
           type: array
           items:
-            $ref: '#/components/schemas/HTTPCommand'
+            oneOf:
+            - $ref: '#/components/schemas/HTTPCommand'
+            - $ref: '#/components/schemas/InputCommand'
           maxItems: 200
-          description: Static HTTP declarations for selected extensions when no composition has
-            been loaded. Reading these declarations does not prepare extensions or start a kernel.
+          description: HTTP declarations and skill inputs selected by discovery when no composition has
+            been loaded. Follow loaded.next for further pages. Reading these declarations does not
+            prepare extensions or start a kernel.
         discovery:
           type: [object, 'null']
           properties:

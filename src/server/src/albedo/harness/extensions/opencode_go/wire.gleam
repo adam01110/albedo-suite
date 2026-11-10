@@ -9,10 +9,12 @@ import albedo/harness/extensions/vertex/wire as vertex_wire
 import albedo/harness/settings
 import albedo/openai_api
 import albedo/openai_api/bridge
+import albedo/openai_api/cost
 import albedo/openai_api/request as openai_request
 import albedo/openai_api/stream as reducer
 import albedo/openai_api/types.{type Client, type Error, type Request, Responses}
-import gleam/option.{None}
+import gleam/dynamic.{type Dynamic}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 
@@ -88,8 +90,19 @@ pub fn encode_responses(
   )
 }
 
+/// The lease OpenCode Go keeps on a marked prefix: its `/messages` route
+/// answered 200 to the hour-long beta on 2026-11-09 but still wrote
+/// five-minute entries, so that is what a request asks for.
+pub const cache_ttl_seconds = 300
+
+/// What `encode_messages` marks, as the request ledger records it.
+pub fn cache_marks(request: Request) -> List(types.CacheMark) {
+  bedrock_wire.cache_marks(request, cache_ttl_seconds)
+}
+
 /// Encodes a ChatCompletions-projected request into an Anthropic `/messages`
-/// exchange via `bedrock_wire.encode_body`.
+/// exchange via `bedrock_wire.encode_body`, marking the prefixes the gateway
+/// can serve from its cache.
 pub fn encode_messages(
   client: Client,
   request: Request,
@@ -102,7 +115,10 @@ pub fn encode_messages(
         options: types.Options(..request.options, effort: None),
       )
   }
-  use body <- result.map(bedrock_wire.encode_body(request))
+  use body <- result.map(bedrock_wire.encode_body_cached(
+    request,
+    cache_ttl_seconds,
+  ))
   let headers = [
     #("anthropic-version", "2023-06-01"),
     #("x-api-key", client.api_key),
@@ -145,5 +161,23 @@ pub fn encode_gemini(
 /// Reduces an OpenAI `/responses` SSE stream into a Turn whose replay item is a
 /// single portable `ChatCompletions` assistant message.
 pub fn responses_reducer() -> reducer.Reducer {
-  bridge.responses_reducer()
+  bridge.responses_reducer(cost)
+}
+
+/// The cost that OpenCode Go reports for a call. `cost` is money charged to a
+/// balance or a key. `opencode.allowance` is the amount that a Go plan counted
+/// against its limit. `opencode.list_cost` is the list price of the call when a
+/// plan included it. A call that a plan covers reports zero charged and still
+/// names the last two figures.
+pub fn cost(frame: Dynamic) -> Option(types.Cost) {
+  let figures =
+    types.Cost(
+      charged_usd: cost.in_usage(frame, ["cost"]),
+      counted_usd: cost.in_usage(frame, ["opencode", "allowance"]),
+      listed_usd: cost.in_usage(frame, ["opencode", "list_cost"]),
+    )
+  case cost.priced(figures) {
+    True -> Some(figures)
+    False -> None
+  }
 }

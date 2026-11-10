@@ -305,6 +305,9 @@ func (m *AppModel) Update(msg tea.Msg) (model tea.Model, resultCmd tea.Cmd) {
 		}
 		m.CommandCatalog = msg.Commands
 		m.Chat.CommandMenu.Catalog = msg.Commands
+		if m.ActiveSession != nil {
+			m.Chat.syncLayout()
+		}
 		return m, nil
 
 	case ChatQuitMsg:

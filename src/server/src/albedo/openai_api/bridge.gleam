@@ -6,6 +6,7 @@
 //// speaks Responses keeps one history shape across its routes, so switching
 //// models keeps the conversation. OpenCode Go and GitHub Copilot both need it.
 
+import albedo/openai_api/cost
 import albedo/openai_api/decoding
 import albedo/openai_api/replay
 import albedo/openai_api/stream as reducer
@@ -120,11 +121,14 @@ type TurnState {
 }
 
 /// Reduces an OpenAI `/responses` SSE stream into a Turn whose replay item is a
-/// single portable `ChatCompletions` assistant message.
-pub fn responses_reducer() -> reducer.Reducer {
-  reducer.wrap(TurnState(reducer.reducer(Responses), []), step, fn(_) {
-    Error(types.UnexpectedEnd)
-  })
+/// single portable `ChatCompletions` assistant message. `reader` reads the
+/// price of this route. A route that names no price gives `cost.none`.
+pub fn responses_reducer(reader: cost.Reader) -> reducer.Reducer {
+  reducer.wrap(
+    TurnState(reducer.reducer_with(Responses, reader), []),
+    step,
+    fn(_) { Error(types.UnexpectedEnd) },
+  )
 }
 
 fn step(

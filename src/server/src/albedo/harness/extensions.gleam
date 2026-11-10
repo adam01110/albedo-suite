@@ -13,9 +13,11 @@ import albedo/harness/extensions/discord/extension as discord
 import albedo/harness/extensions/exa/extension as exa
 import albedo/harness/extensions/files/extension as files
 import albedo/harness/extensions/formatter/extension as formatter
+import albedo/harness/extensions/git/extension as git
 import albedo/harness/extensions/github_copilot/extension as github_copilot
 import albedo/harness/extensions/hooks/extension as hooks
 import albedo/harness/extensions/instructions/extension as instructions
+import albedo/harness/extensions/jj/extension as jj
 import albedo/harness/extensions/lcm/extension as lcm
 import albedo/harness/extensions/lcm/memory as lcm_memory
 import albedo/harness/extensions/links/extension as links
@@ -46,6 +48,7 @@ import albedo/harness/extensions/warm/extension as warm
 import albedo/harness/extensions/web_search/extension as web_search
 import albedo/harness/extensions/webhooks/extension as webhooks
 import albedo/harness/extensions/work/extension as work
+import albedo/harness/extensions/worktrees/extension as worktrees
 import albedo/harness/extensions/zed/extension as zed
 
 pub type Config {
@@ -73,6 +76,9 @@ pub fn declared() -> Config {
       run.extension(),
       work.extension(),
       mail.extension(),
+      jj.extension(),
+      git.extension(),
+      worktrees.extension(),
       agents.extension(),
       schedule.extension(),
       paperclips.extension(),
@@ -133,12 +139,13 @@ pub fn declared() -> Config {
       web_search.extension(),
     ],
     [
-      "python", "run", "work", "mail", "agents", "schedule", "files", "memory",
-      "links", "instructions", "commands", "skills", "paperclips", "artifacts",
-      "models", "openai", "codex", "antigravity", "opencode-go", "opencode-zen",
-      "bedrock", "claude", "vertex", "rolling", "snapcompact-memory",
-      "lcm-memory", "notes", "remote", "browser", "warm", "exa", "perplexity",
-      "mistral", "github-copilot", "web-search", "editor-mcp", "zed",
+      "python", "run", "work", "mail", "jj", "git", "worktrees", "agents",
+      "schedule", "files", "memory", "links", "instructions", "commands",
+      "skills", "paperclips", "artifacts", "models", "openai", "codex",
+      "antigravity", "opencode-go", "opencode-zen", "bedrock", "claude",
+      "vertex", "rolling", "snapcompact-memory", "lcm-memory", "notes", "remote",
+      "browser", "warm", "exa", "perplexity", "mistral", "github-copilot",
+      "web-search", "editor-mcp", "zed",
     ],
   )
 }

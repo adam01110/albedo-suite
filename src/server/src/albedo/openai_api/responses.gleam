@@ -1,3 +1,4 @@
+import albedo/openai_api/cost
 import albedo/openai_api/fields
 import albedo/openai_api/replay
 import albedo/openai_api/types
@@ -24,6 +25,8 @@ pub opaque type State {
     item_indices: Dict(String, Int),
     /// The index an item added without an `output_index` takes.
     next_index: Int,
+    /// How the frames of this route name a price, when they name one.
+    cost: cost.Reader,
   )
 }
 
@@ -40,8 +43,8 @@ type Response {
   )
 }
 
-pub fn new() -> State {
-  State(None, dict.new(), False, dict.new(), dict.new(), 0)
+pub fn new(reader: cost.Reader) -> State {
+  State(None, dict.new(), False, dict.new(), dict.new(), 0, reader)
 }
 
 pub fn feed(
@@ -77,6 +80,17 @@ fn dispatch(
   envelope: Envelope,
 ) -> Result(#(State, List(types.Event), Option(types.Turn)), types.Error) {
   let Envelope(kind, value) = envelope
+  use #(state, events, turn) <- result.try(dispatch_kind(state, kind, value))
+  // A frame that carries usage can also carry a charge. Copilot names the
+  // charge in the terminal frame.
+  Ok(#(state, list.append(events, cost.event(state.cost, value)), turn))
+}
+
+fn dispatch_kind(
+  state: State,
+  kind: String,
+  value: dynamic.Dynamic,
+) -> Result(#(State, List(types.Event), Option(types.Turn)), types.Error) {
   case kind {
     "response.created" -> created(state, value)
     "response.output_text.delta" -> text_delta(state, value)

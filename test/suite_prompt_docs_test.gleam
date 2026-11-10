@@ -82,7 +82,7 @@ pub fn main() -> Nil {
     == "shared binding instructions"
 
   let assert Ok(ledger) = store.start(":memory:", "")
-  let context = host.Context(ledger, "test", [])
+  let context = host.Context(ledger, "test", [], [])
   let #(_, call) = prompt_docs.route(items)
   let assert Ok(args) =
     json.parse("\"invalid native arguments\"", decode.dynamic)
