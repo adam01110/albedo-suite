@@ -6,19 +6,25 @@ balance; subscription, promotional, negotiated and provider-specific billing may
 differ. Positive amounts below one cent display as `~$<0.01`.
 
 The estimate uses the durable request ledger, including tool-loop calls,
-compaction summaries, background warmups and metered failed attempts. It survives
+compaction summaries, background warmups and metered failed attempts. Failed
+attempts the provider rejected without reporting usage, such as 429 and 5xx
+responses, cost nothing and leave the total known. It survives
 resume and includes requests from earlier models and providers in the session.
 It excludes child sessions, which have their own totals.
 
 Prices come from the existing models.dev cache. Cached reads, cache writes and
-long-context tiers are priced separately. Subscription/proxy transports use a
-canonical public model price when available. Codex and OpenCode Go prefer that
-API rate over subscription catalog rates, including zero rates. OpenCode Go's
+long-context tiers are priced separately. Each request is priced by its profile
+name, then by the catalog provider serving its endpoint (Anthropic, OpenAI,
+OpenRouter, OpenCode Zen or OpenCode Go), then by the model vendor's public API,
+so renamed profiles and models many providers resell still resolve. Claude, Codex,
+Zed and OpenCode Go are subscription transports and prefer the public API rate
+over subscription catalog rates, including zero rates. OpenCode Go's
 GLM, Kimi and MiniMax models resolve to ZAI, Moonshot AI and MiniMax API prices;
 model ID case differences do not prevent a match. Other providers retain their
 own catalog rates.
 
-Ambiguous prices, missing token usage or an unavailable catalog display
+Ambiguous prices, a successful request without token usage or an unavailable
+catalog display
 `cost n/a`, never an invented zero. Older trimmed catalogs need `/reload models`
 to acquire pricing fields. Parsed indexes from before pricing support are
 rebuilt automatically; reloading is still necessary if prices were already

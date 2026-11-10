@@ -63,8 +63,9 @@ class SessionCostTests(unittest.TestCase):
             self.app.prompt(self.session, "failed attempt").close()
             self.app.idle(self.session)
             event = stream.pushed(lambda e: e["type"] == "usage")
-            self.assertIsNone(event["data"]["session_cost_usd"])
-            self.assertIsNone(self.cost())
+            # An unmetered rejection is not billed and keeps the known total.
+            self.assertAlmostEqual(event["data"]["session_cost_usd"], 0.00044)
+            self.assertAlmostEqual(self.cost(), 0.00044)
         finally:
             stream.close()
 
