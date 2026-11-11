@@ -1,5 +1,15 @@
 -module(albedo_session_cost).
--export([estimate/2, estimate_rows/2, estimate_sessions/2, estimate_grouped/2]).
+-export([estimate/2, estimate_rows/2, estimate_sessions/2, estimate_grouped/2, revision/1]).
+
+-include_lib("kernel/include/file.hrl").
+
+%% Identifies the catalog file's contents for cached estimates, as its parse does.
+revision(Catalog) ->
+    case file:read_file_info(Catalog, [{time, posix}]) of
+        {ok, #file_info{size = Size, mtime = Modified}} ->
+            iolist_to_binary(io_lib:format("~b:~b", [Size, Modified]));
+        _ -> <<"missing">>
+    end.
 
 estimate(Catalog, Rows) ->
     try estimate_rows(albedo_models:prices(Catalog), Rows)

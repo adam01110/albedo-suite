@@ -102,6 +102,20 @@ class SessionCostTests(unittest.TestCase):
         finally:
             stream.close()
 
+    def test_catalog_change_reprices_cached_estimate(self):
+        self.app.prompt(self.session, "one").close()
+        self.app.idle(self.session)
+        self.assertAlmostEqual(self.cost(), 0.00022)
+        self.assertAlmostEqual(self.listed_cost(), 0.00022)
+        (self.app.home / "models.json").write_text(json.dumps({
+            "openai": {"models": {"fixture-model": {
+                "id": "fixture-model", "limit": {"context": 1000000},
+                "cost": {"input": 4, "output": 20}
+            }}}
+        }))
+        self.assertAlmostEqual(self.cost(), 0.00044)
+        self.assertAlmostEqual(self.listed_cost(), 0.00044)
+
     def test_missing_usage_is_not_free(self):
         self.metered = False
         self.app.prompt(self.session, "one").close()

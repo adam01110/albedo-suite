@@ -40,9 +40,12 @@ No provider billing endpoint is queried. The session status resource, full
 snapshot and live usage events carry the same nullable `session_cost_usd` field
 inside `usage`. Session summaries in `GET /sessions` pages and the full session
 resource carry it at the top level; a list page prices all its sessions with one
-ledger read. The first page of every `GET /sessions` listing also carries
-`total_cost` (`usd` and `partial`), computed over the whole ledger regardless of
-the listing's filters.
+ledger read. Estimates are cached per session in the ledger's
+`suite_session_costs` table, keyed by the catalog revision, so a read prices only
+requests recorded since the cached estimate; a catalog refresh or a session
+that lost requests is priced again from its first request. The first page of
+every `GET /sessions` listing also carries `total_cost` (`usd` and `partial`),
+computed over the whole ledger regardless of the listing's filters.
 
 Upstream separately reports provider-named spend (`usage.spent`, such as
 gateway charges or plan allowances). Few providers report it, so the footer
