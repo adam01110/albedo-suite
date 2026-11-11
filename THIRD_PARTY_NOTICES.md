@@ -43,7 +43,8 @@ Vim-style CLI composer editing with a footer mode indicator, recoverable queued
 inputs on interruption,
 explicit Base16 terminal palettes, formatted CLI context inspection with a raw toggle,
 a passive bounded TUI activity sidebar derived from existing stream events,
-provider-independent session token cost estimates beside the cached-token footer,
+provider-independent session token cost estimates beside the cached-token footer
+and in the session list,
 zoxide suggestions and successful local move tracking in the folder picker,
 and optional default CLI diff visibility. `upstream/pin.json` inventories server
 replacements; the client

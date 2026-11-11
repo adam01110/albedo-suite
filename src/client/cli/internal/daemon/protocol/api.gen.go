@@ -3058,12 +3058,15 @@ type Session struct {
 	Role     string `json:"role"`
 
 	// RootID Opaque identity. Never infer a resource type or route from its contents.
-	RootID        ID               `json:"root_id"`
-	Selection     SessionSelection `json:"selection"`
-	ShellCommands []ShellCommand   `json:"shell_commands"`
-	StartedBy     *ID              `json:"started_by" nullable:"true"`
-	Status        SessionStatus    `json:"status"`
-	Usage         Usage            `json:"usage"`
+	RootID    ID               `json:"root_id"`
+	Selection SessionSelection `json:"selection"`
+
+	// SessionCostUsd Session-wide estimated USD at catalog rates, excluding child sessions; null when any request is unpriced or unmetered.
+	SessionCostUsd *float64       `json:"session_cost_usd,omitempty" nullable:"true"`
+	ShellCommands  []ShellCommand `json:"shell_commands"`
+	StartedBy      *ID            `json:"started_by" nullable:"true"`
+	Status         SessionStatus  `json:"status"`
+	Usage          Usage          `json:"usage"`
 
 	// Workspace Canonical daemon-host location, local or SSH. Clients do not resolve this path locally.
 	Workspace       Workspace        `json:"workspace"`
@@ -3459,9 +3462,12 @@ type SessionSummary struct {
 	Role            string             `json:"role"`
 
 	// RootID Opaque identity. Never infer a resource type or route from its contents.
-	RootID    ID            `json:"root_id"`
-	StartedBy *ID           `json:"started_by" nullable:"true"`
-	Status    SessionStatus `json:"status"`
+	RootID ID `json:"root_id"`
+
+	// SessionCostUsd Session-wide estimated USD at catalog rates, excluding child sessions; null when any request is unpriced or unmetered.
+	SessionCostUsd *float64      `json:"session_cost_usd,omitempty" nullable:"true"`
+	StartedBy      *ID           `json:"started_by" nullable:"true"`
+	Status         SessionStatus `json:"status"`
 
 	// Workspace Canonical daemon-host location, local or SSH. Clients do not resolve this path locally.
 	Workspace Workspace `json:"workspace"`

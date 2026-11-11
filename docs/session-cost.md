@@ -1,9 +1,12 @@
 # Session token cost
 
 The CLI footer shows estimated session-wide USD to the right of cached tokens,
-for every provider. `$1.23` is a catalog-rate estimate, not an invoice or account
-balance; subscription, promotional, negotiated and provider-specific billing may
-differ. Positive amounts below one cent display as `$<0.01`.
+for every provider. The session list shows the same estimate for each session,
+left of its last-activity age; `—` marks a session it cannot price, and lists
+narrower than 40 columns omit the column. `$1.23` is a catalog-rate estimate,
+not an invoice or account balance; subscription, promotional, negotiated and
+provider-specific billing may differ. Positive amounts below one cent display
+as `$<0.01`.
 
 The estimate uses the durable request ledger, including tool-loop calls,
 compaction summaries, background warmups and metered failed attempts. Failed
@@ -31,7 +34,10 @@ rebuilt automatically; reloading is still necessary if prices were already
 removed from the cached JSON.
 
 No provider billing endpoint is queried. The session status resource, full
-snapshot and live usage events carry the same nullable `session_cost_usd` field.
+snapshot and live usage events carry the same nullable `session_cost_usd` field
+inside `usage`. Session summaries in `GET /sessions` pages and the full session
+resource carry it at the top level; a list page prices all its sessions with one
+ledger read.
 
 Upstream separately reports provider-named spend (`usage.spent`, such as
 gateway charges or plan allowances). Few providers report it, so the footer

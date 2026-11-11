@@ -6,6 +6,7 @@ import (
 	"math"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestVimFooterSessionCost(t *testing.T) {
@@ -43,5 +44,45 @@ func TestVimFooterCostFormatting(t *testing.T) {
 		if got := m.costStat(); got != tc.want {
 			t.Fatalf("got %q want %q", got, tc.want)
 		}
+	}
+}
+
+func TestSessionListCostLeftOfAge(t *testing.T) {
+	now := time.Date(2026, 9, 23, 12, 0, 0, 0, time.Local)
+	recent := now.Add(-5 * time.Minute).Unix()
+	priced, small, large := 1.234, 0.001, 12345.6
+	m := viewerAt(now)
+	m.SetSize(160, 24)
+	m.SetSessions([]daemon.Session{
+		{ID: "priced", Title: "priced", Model: "gpt-5", Workspace: "/work/current", LastAssistantAt: &recent, SessionCostUSD: &priced},
+		{ID: "small", Title: "small", Model: "gpt-5", Workspace: "/work/current", LastAssistantAt: &recent, SessionCostUSD: &small},
+		{ID: "large", Title: "large", Model: "gpt-5", Workspace: "/work/current", LastAssistantAt: &recent, SessionCostUSD: &large},
+		{ID: "unknown", Title: "unknown", Model: "gpt-5", Workspace: "/work/current", LastAssistantAt: &recent},
+	}, nil)
+	m.Init()
+	view := ansi.Strip(strings.Join(m.column(80, 20, now), "\n"))
+	for title, want := range map[string]string{"priced": "$1.23", "small": "$<0.01", "large": "$12346", "unknown": "  —  "} {
+		found := false
+		for line := range strings.SplitSeq(view, "\n") {
+			if strings.Contains(line, " "+title+" ") {
+				at := strings.Index(line, want)
+				found = at >= 0 && at < strings.LastIndex(line, "5m")
+				if !found {
+					t.Fatalf("%s row %q lacks %q", title, line, want)
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("no %s row in\n%s", title, view)
+		}
+	}
+	for _, width := range []int{40, 60} {
+		cols := svLayout(width)
+		if cols.cost == 0 || cols.title < 1 {
+			t.Fatalf("width %d: %+v", width, cols)
+		}
+	}
+	if cols := svLayout(39); cols.cost != 0 {
+		t.Fatalf("narrow list keeps cost: %+v", cols)
 	}
 }

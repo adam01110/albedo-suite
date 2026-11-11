@@ -204,13 +204,14 @@ pub fn encode(
         boundary,
       )
   })
+  let cost = session_cost.total(ledger, capture.info.id)
   let summary =
     list.append(
       http_wire.summary_fields(capture),
-      list.append(
-        acp_field(ledger, capture.info.id),
-        moves.moved_field(ledger, capture.info.id),
-      ),
+      list.append(acp_field(ledger, capture.info.id), [
+        #("session_cost_usd", json.nullable(cost, json.float)),
+        ..moves.moved_field(ledger, capture.info.id)
+      ]),
     )
   Ok(
     json.object(
@@ -300,14 +301,7 @@ pub fn encode(
         ),
         #("pending_inputs", json.array(capture.pending_inputs, pending_input)),
         #("input_order", json.int(capture.input_order)),
-        #(
-          "usage",
-          events.costed_usage(
-            capture.usage,
-            capture.spent,
-            session_cost.total(ledger, capture.info.id),
-          ),
-        ),
+        #("usage", events.costed_usage(capture.usage, capture.spent, cost)),
         #("history", history),
         #("glances", events.glances(capture.composition.glances)),
       ]),

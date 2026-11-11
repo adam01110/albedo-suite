@@ -38,8 +38,14 @@ class SessionCostTests(unittest.TestCase):
         with self.app.api(f"/sessions/{self.session}?{query}") as response:
             return json.load(response)["usage"]["session_cost_usd"]
 
+    def listed_cost(self):
+        with self.app.api("/sessions?scope=all") as response:
+            items = json.load(response)["items"]
+        return next(item for item in items if item["id"] == self.session)["session_cost_usd"]
+
     def test_total_stream_status_and_restart(self):
         self.assertEqual(self.cost(), 0)
+        self.assertEqual(self.listed_cost(), 0)
         stream = Stream(self.app, self.session)
         try:
             self.app.prompt(self.session, "one").close()
@@ -51,12 +57,14 @@ class SessionCostTests(unittest.TestCase):
             stream.close()
         self.assertAlmostEqual(self.cost(), 0.00022)
         self.assertAlmostEqual(self.cost(status=True), 0.00022)
+        self.assertAlmostEqual(self.listed_cost(), 0.00022)
         self.app.prompt(self.session, "two").close()
         self.app.idle(self.session)
         self.assertAlmostEqual(self.cost(), 0.00044)
         self.app.restart()
         self.assertAlmostEqual(self.cost(), 0.00044)
         self.assertAlmostEqual(self.cost(status=True), 0.00044)
+        self.assertAlmostEqual(self.listed_cost(), 0.00044)
         self.failed = True
         stream = Stream(self.app, self.session)
         try:
@@ -76,3 +84,4 @@ class SessionCostTests(unittest.TestCase):
         self.assertEqual(len(self.provider.requests), 1, self.app.history(self.session))
         self.assertIsNone(self.cost())
         self.assertIsNone(self.cost(status=True))
+        self.assertIsNone(self.listed_cost())

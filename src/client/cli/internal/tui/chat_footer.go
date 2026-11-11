@@ -288,15 +288,11 @@ func shortCount(n int) string {
 }
 
 func (m ChatModel) costStat() string {
-	if m.Usage == nil || m.Usage.SessionCostUSD == nil {
+	if m.Usage == nil {
 		return "cost n/a"
 	}
-	cost := *m.Usage.SessionCostUSD
-	if cost < 0 || math.IsNaN(cost) || math.IsInf(cost, 0) {
-		return "cost n/a"
+	if cost, ok := estimatedCost(m.Usage.SessionCostUSD, false); ok {
+		return cost
 	}
-	if cost > 0 && cost < 0.01 {
-		return "$<0.01"
-	}
-	return fmt.Sprintf("$%.2f", cost)
+	return "cost n/a"
 }

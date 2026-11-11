@@ -1,9 +1,26 @@
 -module(albedo_session_cost).
--export([estimate/2, estimate_rows/2]).
+-export([estimate/2, estimate_rows/2, estimate_sessions/2, estimate_grouped/2]).
 
 estimate(Catalog, Rows) ->
     try estimate_rows(albedo_models:prices(Catalog), Rows)
     catch _:_ -> none end.
+
+%% Rows lead with their session; each session is priced on its own rows.
+estimate_sessions(Catalog, Rows) ->
+    try albedo_models:prices(Catalog) of
+        Prices -> {ok, estimate_grouped(Prices, Rows)}
+    catch _:_ -> {error, nil} end.
+
+estimate_grouped(Prices, Rows) ->
+    Grouped = lists:foldl(fun(Row, Acc) ->
+        [Session | Rest] = row_list(Row),
+        maps:update_with(Session, fun(Rs) -> [Rest | Rs] end, [Rest], Acc)
+    end, #{}, Rows),
+    [{Session, estimate_rows(Prices, SessionRows)} ||
+        {Session, SessionRows} <- maps:to_list(Grouped)].
+
+row_list(Row) when is_tuple(Row) -> tuple_to_list(Row);
+row_list(Row) when is_list(Row) -> Row.
 
 estimate_rows(Prices, Rows) ->
     try {some, lists:foldl(fun(Row, Total) -> Total + row(Prices, Row) end,

@@ -8942,6 +8942,13 @@ components:
           anyOf:
           - $ref: '#/components/schemas/SessionMovePending'
           - type: 'null'
+        session_cost_usd:
+          description: Session-wide estimated USD at catalog rates, excluding child sessions; null when any request is
+            unpriced or unmetered.
+          anyOf:
+          - type: number
+            minimum: 0
+          - type: 'null'
       description: Session live fields and cursor are captured together. ACP attachment metadata is read separately.
         Extra response fields may be ignored.
       required: [id, name, automatic_name, workspace, location, parent_id, root_id, address, depth, closed, created_at,

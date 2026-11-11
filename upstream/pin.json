@@ -23,6 +23,7 @@
     "src/albedo/daemon/child_models.gleam",
     "src/albedo/daemon/configuration.gleam",
     "src/albedo/daemon/events.gleam",
+    "src/albedo/daemon/http_session_collection.gleam",
     "src/albedo/daemon/http_session_resource.gleam",
     "src/albedo/daemon/quota.gleam",
     "src/albedo/daemon/session.gleam",
