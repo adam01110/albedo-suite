@@ -262,6 +262,25 @@ pub fn read(
               ),
             ))
           })
+        // The first page carries the cost of every stored session, so a
+        // client walking all pages reads the ledger total once.
+        let total = case cursor {
+          Some(_) -> []
+          None -> [
+            #(
+              "total_cost",
+              json.nullable(
+                session_cost.overall(runtime.ledger(host)),
+                fn(total) {
+                  json.object([
+                    #("usd", json.float(total.0)),
+                    #("partial", json.bool(total.1)),
+                  ])
+                },
+              ),
+            ),
+          ]
+        }
         let family = case page.family {
           None -> []
           Some(family) -> [
@@ -287,7 +306,7 @@ pub fn read(
           json.object([
             #("items", json.array(items, fn(value) { value })),
             #("next", next),
-            ..family
+            ..list.append(family, total)
           ]),
         ))
       }

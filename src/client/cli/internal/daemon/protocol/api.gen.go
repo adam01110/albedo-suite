@@ -3305,6 +3305,12 @@ type SessionPage struct {
 	} `json:"family,omitempty"`
 	Items []SessionSummary `json:"items"`
 	Next  *PageToken       `json:"next" nullable:"true"`
+
+	// TotalCost First page only. Estimated USD at catalog rates across every stored session, including archived and child sessions regardless of filters; partial is true when sessions with an unpriced or unmetered request are left out. Null when the ledger or price catalog cannot be read.
+	TotalCost *struct {
+		Partial bool    `json:"partial"`
+		Usd     float64 `json:"usd"`
+	} `json:"total_cost,omitempty" nullable:"true"`
 }
 
 // SessionPatch Skill and instruction changes require catalog_revision. All fields validate and commit together.

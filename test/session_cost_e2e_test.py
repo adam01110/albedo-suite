@@ -43,6 +43,22 @@ class SessionCostTests(unittest.TestCase):
             items = json.load(response)["items"]
         return next(item for item in items if item["id"] == self.session)["session_cost_usd"]
 
+    def archive(self, session):
+        route = f"/sessions/{session}?view=configuration"
+        with self.app.api(route) as response:
+            response.read()
+            etag = response.headers["ETag"]
+        self.app.api(
+            route,
+            {"preferences": {"archived": True}},
+            method="PATCH",
+            headers={"If-Match": etag, "Content-Type": "application/merge-patch+json"},
+        ).close()
+
+    def total_cost(self, query="scope=roots&archived=false"):
+        with self.app.api(f"/sessions?{query}") as response:
+            return json.load(response)["total_cost"]
+
     def test_total_stream_status_and_restart(self):
         self.assertEqual(self.cost(), 0)
         self.assertEqual(self.listed_cost(), 0)
@@ -65,6 +81,15 @@ class SessionCostTests(unittest.TestCase):
         self.assertAlmostEqual(self.cost(), 0.00044)
         self.assertAlmostEqual(self.cost(status=True), 0.00044)
         self.assertAlmostEqual(self.listed_cost(), 0.00044)
+        # The first page totals every stored session, archived ones included.
+        self.archive(self.session)
+        other = self.app.session()
+        self.app.prompt(other, "three").close()
+        self.app.idle(other)
+        for query in ("scope=roots&archived=false", "scope=all&archived=true", "search=no-such-session"):
+            total = self.total_cost(query)
+            self.assertAlmostEqual(total["usd"], 0.00066, msg=query)
+            self.assertFalse(total["partial"], query)
         self.failed = True
         stream = Stream(self.app, self.session)
         try:
@@ -85,3 +110,4 @@ class SessionCostTests(unittest.TestCase):
         self.assertIsNone(self.cost())
         self.assertIsNone(self.cost(status=True))
         self.assertIsNone(self.listed_cost())
+        self.assertEqual(self.total_cost(), {"usd": 0, "partial": True})

@@ -8975,6 +8975,21 @@ components:
               $ref: '#/components/schemas/ID'
           required: [root_id, revision]
           additionalProperties: false
+        total_cost:
+          description: First page only. Estimated USD at catalog rates across every stored session, including archived
+            and child sessions regardless of filters; partial is true when sessions with an unpriced or unmetered request
+            are left out. Null when the ledger or price catalog cannot be read.
+          anyOf:
+          - type: object
+            properties:
+              usd:
+                type: number
+                minimum: 0
+              partial:
+                type: boolean
+            required: [usd, partial]
+            additionalProperties: false
+          - type: 'null'
       required: [items, next]
       additionalProperties: false
       examples:

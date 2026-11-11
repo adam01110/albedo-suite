@@ -70,6 +70,37 @@ pub fn totals(
   }
 }
 
+/// Estimated USD across every stored session, archived and child sessions
+/// included, with whether any session had an unpriced request and so was left
+/// out. A failed read or an unreadable catalog prices nothing.
+pub fn overall(ledger: store.Store) -> Option(#(Float, Bool)) {
+  let rows =
+    store.snapshot(ledger, fn(db) {
+      store.rows(
+        db,
+        "SELECT session,"
+          <> columns
+          <> ",COUNT(*) FROM provider_requests GROUP BY session,"
+          <> columns,
+        [],
+        decode.dynamic,
+      )
+    })
+    |> result.replace_error(Nil)
+  case result.try(rows, estimate_sessions(catalog(), _)) {
+    Ok(priced) ->
+      Some(
+        list.fold(priced, #(0.0, False), fn(total, session) {
+          case session.1 {
+            Some(cost) -> #(total.0 +. cost, total.1)
+            None -> #(total.0, True)
+          }
+        }),
+      )
+    Error(_) -> None
+  }
+}
+
 fn catalog() -> String {
   settings.home() <> "/models.json"
 }

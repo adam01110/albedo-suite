@@ -47,6 +47,29 @@ func TestVimFooterCostFormatting(t *testing.T) {
 	}
 }
 
+func TestSessionViewerTotalCostTopRight(t *testing.T) {
+	m := viewerAt(time.Date(2026, 9, 23, 12, 0, 0, 0, time.Local))
+	m.SetSize(100, 24)
+	m.SetSessions(nil, nil)
+	if first := strings.Split(ansi.Strip(m.View()), "\n")[0]; strings.Contains(first, "total") {
+		t.Fatalf("unknown total shown: %q", first)
+	}
+	for _, tc := range []struct {
+		total daemon.TotalCost
+		want  string
+	}{{daemon.TotalCost{USD: 12.345}, "total $12.35"}, {daemon.TotalCost{USD: 3, Partial: true}, "total ≥$3.00"}} {
+		m.TotalCost = &tc.total
+		first := strings.TrimRight(strings.Split(ansi.Strip(m.View()), "\n")[0], " ")
+		if !strings.HasSuffix(first, tc.want) || ansi.StringWidth(first) > 100 {
+			t.Fatalf("title %q lacks %q at its right end", first, tc.want)
+		}
+	}
+	m.ArchiveView = true
+	if first := ansi.Strip(strings.Split(m.View(), "\n")[0]); !strings.Contains(first, "total ≥$3.00") {
+		t.Fatalf("archive title %q lacks the total", first)
+	}
+}
+
 func TestSessionListCostLeftOfAge(t *testing.T) {
 	now := time.Date(2026, 9, 23, 12, 0, 0, 0, time.Local)
 	recent := now.Add(-5 * time.Minute).Unix()

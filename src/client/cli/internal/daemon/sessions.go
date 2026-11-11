@@ -315,10 +315,25 @@ func DeleteSession(ctx context.Context, conn *Connection, id string, tree bool, 
 	return result, err
 }
 func ListSessions(ctx context.Context, conn *Connection) ([]Session, error) {
+	sessions, _, err := ListSessionsWithTotal(ctx, conn)
+	return sessions, err
+}
+
+// TotalCost is the estimated USD of every stored session, archived and child
+// sessions included. Partial means sessions with unpriced requests are left out.
+type TotalCost struct {
+	USD     float64
+	Partial bool
+}
+
+// ListSessionsWithTotal is ListSessions with the daemon's all-session cost
+// estimate; nil when the daemon could not price or does not report it.
+func ListSessionsWithTotal(ctx context.Context, conn *Connection) ([]Session, *TotalCost, error) {
 	return listSessions(ctx, conn, protocol.ListSessionsParams{Scope: new("roots")})
 }
-func listSessions(ctx context.Context, conn *Connection, query protocol.ListSessionsParams) ([]Session, error) {
+func listSessions(ctx context.Context, conn *Connection, query protocol.ListSessionsParams) ([]Session, *TotalCost, error) {
 	result := []Session{}
+	var total *TotalCost
 	query.Limit = new(int64(200))
 	err := walkPages(func(next *string) (protocol.SessionPage, *string, error) {
 		query.Next = next
@@ -331,6 +346,12 @@ func listSessions(ctx context.Context, conn *Connection, query protocol.ListSess
 		if page.Items == nil {
 			return fieldError("items")
 		}
+		if page.TotalCost != nil && total == nil {
+			if page.TotalCost.Usd < 0 {
+				return fieldError("total cost")
+			}
+			total = &TotalCost{USD: page.TotalCost.Usd, Partial: page.TotalCost.Partial}
+		}
 		for _, row := range page.Items {
 			if row.ID == "" || row.RootID == "" || row.Cursor != nil && (!validGeneration(row.Cursor.Generation) || row.Cursor.Sequence < 0) {
 				return fieldError("session ID")
@@ -341,9 +362,9 @@ func listSessions(ctx context.Context, conn *Connection, query protocol.ListSess
 		return nil
 	}, "repeated session page")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return result, nil
+	return result, total, nil
 }
 
 func GetSessionPreview(ctx context.Context, conn *Connection, id string, limit int) (SessionPreview, error) {
@@ -402,7 +423,8 @@ func summaryValue(row protocol.SessionSummary) Session {
 	return sessionValue(protocol.Session{ID: row.ID, Name: row.Name, AutomaticName: row.AutomaticName, Workspace: row.Workspace, Location: row.Location, ParentID: row.ParentID, RootID: row.RootID, Address: row.Address, Depth: row.Depth, Closed: row.Closed, CreatedAt: row.CreatedAt, ActivityAt: row.ActivityAt, ProviderProfile: row.ProviderProfile, Model: row.Model, CyberAccess: row.CyberAccess, Effort: row.Effort, Status: row.Status, Preview: row.Preview, Preferences: row.Preferences, CurrentProgress: row.CurrentProgress, Activity: row.Activity, Cursor: row.Cursor, Moved: row.Moved, MovePending: row.MovePending, SessionCostUsd: row.SessionCostUsd})
 }
 func ListAllSessions(ctx context.Context, conn *Connection) ([]Session, error) {
-	return listSessions(ctx, conn, protocol.ListSessionsParams{Scope: new("all")})
+	sessions, _, err := listSessions(ctx, conn, protocol.ListSessionsParams{Scope: new("all")})
+	return sessions, err
 }
 
 func capturedStatus(w protocol.Session) AgentStatus {

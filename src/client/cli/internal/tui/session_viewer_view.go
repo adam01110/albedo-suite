@@ -142,6 +142,7 @@ func (m *SessionViewer) View() string {
 	now := m.clock()
 	f := listFrame{
 		title:     located(m.brandName(), sessionText(m.workspacePlace())),
+		right:     m.totalCost(),
 		filter:    promptLead() + m.SearchInput.View(),
 		list:      func(w, h int) []string { return m.column(w, h, now) },
 		pane:      func(w, h int) []string { return m.preview(w, h, now) },
@@ -149,6 +150,22 @@ func (m *SessionViewer) View() string {
 		footer:    m.footer(width, now),
 	}
 	return f.view(m.Width, m.Height)
+}
+
+// totalCost is the title rule's right end: what every stored session cost,
+// marked as a lower bound when some sessions could not be priced.
+func (m SessionViewer) totalCost() string {
+	if m.TotalCost == nil {
+		return ""
+	}
+	cost, known := estimatedCost(&m.TotalCost.USD, false)
+	if !known {
+		return ""
+	}
+	if m.TotalCost.Partial {
+		cost = "≥" + cost
+	}
+	return DefaultStyles.Faint.Render("total ") + DefaultStyles.Muted.Render(cost)
 }
 
 // svFit pads or cuts a styled line to exactly w columns.
