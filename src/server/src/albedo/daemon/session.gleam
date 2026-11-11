@@ -2,6 +2,7 @@
 
 import albedo/actor_call
 import albedo/clock
+import albedo/text_scalars
 
 import albedo/daemon/acp
 import albedo/daemon/acp_attachments
@@ -36,11 +37,14 @@ import albedo/daemon/session_prompt
 import albedo/daemon/session_provider
 import albedo/daemon/session_run
 import albedo/daemon/session_salvage
+import albedo/daemon/session_side_question
 import albedo/daemon/session_state
 import albedo/daemon/session_submission
 import albedo/daemon/session_switch
+import albedo/daemon/session_title
 import albedo/daemon/session_workspace
 import albedo/daemon/shell_commands
+import albedo/daemon/side_question
 import albedo/daemon/store
 import albedo/daemon/tool_progress as tool_progress_state
 import albedo/daemon/transcript
@@ -63,6 +67,7 @@ import albedo/openai_api/types
 import gleam/bool
 import gleam/erlang/process.{type Subject}
 import gleam/int
+import gleam/io
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -83,6 +88,7 @@ const restart_note =
     "daemon",
     turn.Note("daemon restart"),
     [],
+    None,
     None,
     None,
   )
@@ -131,6 +137,7 @@ pub type Capture {
     workspace_change: Option(session_workspace.Pending),
     preview: conversation.Preview,
     active_output: List(active_output.Snapshot),
+    side_question: Option(side_question.Exchange),
     shell_commands: List(shell_commands.Command),
   )
 }
@@ -309,6 +316,27 @@ pub type Message {
   ReadCompactAt(Subject(Result(json.Json, String)))
   ChangeCompactAt(Option(Int), Subject(Result(json.Json, String)))
   ReadName(Subject(Result(json.Json, String)))
+  AskSideQuestion(
+    String,
+    String,
+    Subject(Result(side_question.Exchange, side_question.Refusal)),
+  )
+  SideQuestionFinished(
+    String,
+    session_run.Supervised(session_side_question.Answer),
+  )
+  CancelSideQuestion(
+    String,
+    Subject(Result(side_question.Exchange, side_question.Refusal)),
+  )
+  ClaimSideContinuation(
+    String,
+    String,
+    Subject(Result(side_question.Promotion, side_question.Refusal)),
+  )
+  SettleSideContinuation(String, String, Bool)
+  GenerateTitle(Subject(Result(json.Json, String)))
+  TitleFinished(Int, Result(String, String))
   /// The person's name for the session, or None to clear it.
   ChangeName(Option(String), Subject(Result(json.Json, String)))
   /// The model's name for the session.
@@ -578,7 +606,9 @@ pub fn start(
     let generation = new_generation()
     let state =
       session_state.State(
+        title_job: None,
         active_output: active_output.new(home, info.id, generation),
+        side_question: None,
         shell_commands: shells,
         shell_worker: None,
         info: info,
@@ -657,6 +687,7 @@ pub fn start(
           [],
           Some(mail.new_id()),
           None,
+          None,
         ),
       )
     })
@@ -714,6 +745,7 @@ pub fn submit_mail(
       [],
       None,
       None,
+      None,
     ),
   )
 }
@@ -726,7 +758,7 @@ pub fn submit(
 ) -> Result(Bool, SubmissionError) {
   call_submit(
     session,
-    Submission(text, text, client_id, turn.Chat, images, None, None),
+    Submission(text, text, client_id, turn.Chat, images, None, None, None),
   )
 }
 
@@ -1573,6 +1605,7 @@ fn capture_in(
       shell_commands.Command(..c, output: shell_commands.prefix(c.output, 4096))
     })
   use active_output <- result.try(active_output.capture(state.active_output))
+  let side = state.side_question
   let kernel = session_namespace.kernel_observer(state)
   let #(host, home, id) = #(state.host, state.home, state.info.id)
   Ok(fn() {
@@ -1601,6 +1634,7 @@ fn capture_in(
       durable.workspace_change,
       durable.preview,
       active_output,
+      side,
       shells,
     ))
   })
@@ -2000,6 +2034,15 @@ fn handle(
       {
         Error(error) -> answer(state, reply, Error(error))
         Ok(cancelled) -> {
+          case state.title_job {
+            Some(job) ->
+              case job.request {
+                session_state.InitialTitle(_, order) if order <= through_order ->
+                  cancel_title(state)
+                _ -> Nil
+              }
+            None -> Nil
+          }
           let steering =
             list.filter(state.steering, fn(input) {
               case input.operation_id {
@@ -2032,6 +2075,7 @@ fn handle(
       }
     }
     Interrupt(reply) -> {
+      cancel_title(state)
       case operations.cancel(runtime.ledger(state.host), state.info.id) {
         Error(error) ->
           answer(session_state.emit(state, view.error(error)), reply, False)
@@ -2164,6 +2208,52 @@ fn handle(
     }
 
     ReadName(reply) -> answer(state, reply, session_naming.read(state))
+    AskSideQuestion(id, question, reply) -> ask_side(state, id, question, reply)
+    SideQuestionFinished(id, outcome) -> finish_side(state, id, outcome)
+    CancelSideQuestion(id, reply) -> {
+      case state.side_question {
+        Some(exchange) if exchange.id == id -> {
+          let exchange = case exchange.progress {
+            side_question.Running(worker, stop) -> {
+              turn.cancel_call(worker, stop)
+              side_question.Exchange(
+                ..exchange,
+                progress: side_question.Cancelled,
+              )
+            }
+            _ -> exchange
+          }
+          answer(publish_side(state, exchange), reply, Ok(exchange))
+        }
+        _ -> answer(state, reply, Error(side_question.NotFound))
+      }
+    }
+    ClaimSideContinuation(id, target, reply) -> {
+      case side_question.claim(state.side_question, id, target) {
+        Error(reason) -> answer(state, reply, Error(reason))
+        Ok(#(exchange, promotion)) ->
+          answer(
+            session_state.State(..state, side_question: Some(exchange)),
+            reply,
+            Ok(promotion),
+          )
+      }
+    }
+    SettleSideContinuation(id, target, created) -> {
+      case state.side_question {
+        Some(exchange) if exchange.id == id ->
+          actor.continue(publish_side(
+            state,
+            side_question.settle(exchange, target, created),
+          ))
+        _ -> actor.continue(state)
+      }
+    }
+    GenerateTitle(reply) -> {
+      let #(state, result) = regenerate_title(state)
+      answer(state, reply, result)
+    }
+    TitleFinished(revision, outcome) -> finish_title(state, revision, outcome)
     ChangeName(name, reply) -> {
       let #(state, changed) =
         session_configure.change(state, session_configure.SelectName(name))
@@ -2193,6 +2283,10 @@ fn handle(
     }
     SuggestName(name, reply) -> {
       let #(state, suggested) = session_naming.suggest(state, name)
+      case suggested {
+        Ok(_) -> cancel_title(state)
+        Error(_) -> Nil
+      }
       answer(state, reply, suggested)
     }
 
@@ -2913,6 +3007,8 @@ fn handle(
       answer(state, reply, claimed)
     }
     CloseForDeletion(reply) -> {
+      cancel_title(state)
+      cancel_side_worker(state)
       stop_shell_worker(state)
       let state =
         session_state.State(
@@ -2953,6 +3049,8 @@ fn handle(
       }
     }
     Close(reply) -> {
+      cancel_title(state)
+      cancel_side_worker(state)
       stop_shell_worker(state)
       case turn.running(state.activity) {
         Some(run) -> {
@@ -3126,6 +3224,7 @@ fn queue_shell(state: State, command: shell_commands.Command) -> State {
                 "shell",
                 turn.Shell(command.id),
                 [],
+                None,
                 None,
                 None,
               ),
@@ -3433,12 +3532,12 @@ fn command_op(
     command.Submit(display, text, client) ->
       submitted_turn(
         session,
-        Submission(display, text, client, turn.Chat, [], None, None),
+        Submission(display, text, client, turn.Chat, [], None, None, None),
       )
     command.Note(origin, display, text) ->
       submitted(
         session,
-        Submission(display, text, "", turn.Note(origin), [], None, None),
+        Submission(display, text, "", turn.Note(origin), [], None, None, None),
         "queued",
       )
     command.KernelReport ->
@@ -4065,56 +4164,80 @@ fn kernel_opened(
       |> warn(runtime.warnings(kernel))
       |> run_parked(parked)
     }
-    Some(#(_, parked)), Error(error) -> {
-      let why =
-        "could not start the session python kernel: "
-        <> case error {
-          python.Unavailable(message) | python.Invalid(message) -> message
-          python.Lost -> "the kernel exited while starting"
-          python.Busy | python.Detached -> "the kernel is busy"
+    Some(#(attempts, parked)), Error(error) ->
+      case attempts < 2 && stale_composition(error) {
+        // Composition inputs moved while the kernel prepared, as when a
+        // generated title renames the session; preparing again sees the new
+        // inputs, while a real startup problem still pauses the inputs.
+        True -> {
+          request_kernel(state)
+          session_state.State(..state, booting: Some(#(attempts + 1, parked)))
         }
-      list.fold(
-        parked,
-        session_state.State(..state, booting: None),
-        fn(state, work) {
-          case work {
-            StartQueued ->
-              blocked_queued(
-                state,
-                why
-                  <> "; queued inputs are retained. Fix the startup problem and send another message, or use /cd to change workspace",
-                None,
-              )
-            Resume ->
-              session_state.State(..state, activity: turn.Resting)
-              |> session_state.emit(view.error(why))
-            Compact(_, reply) -> {
-              process.send(reply, Error(why))
-              state
-            }
-            AcquireKernel(_, reply) -> {
-              process.send(reply, Error(why))
-              state
-            }
-            UpgradeKernel(reply) -> {
-              process.send(reply, Error(why))
-              state
-            }
-            // Nothing booted, so the restart has only saved variables to drop.
-            RestartKernel(_, _) -> {
-              process.send(state.self, work)
-              state
-            }
-            StartSummary(_, _, _, ack) -> {
-              process.send(ack, Error(why))
-              state
-            }
-            _ -> state
-          }
-        },
-      )
-    }
+        False -> boot_failed(state, parked, error)
+      }
   }
+}
+
+fn stale_composition(error: python.Error) -> Bool {
+  case error {
+    python.Unavailable(message) | python.Invalid(message) ->
+      string.contains(message, "composition inputs changed during")
+    _ -> False
+  }
+}
+
+fn boot_failed(
+  state: State,
+  parked: List(Message),
+  error: python.Error,
+) -> State {
+  let why =
+    "could not start the session python kernel: "
+    <> case error {
+      python.Unavailable(message) | python.Invalid(message) -> message
+      python.Lost -> "the kernel exited while starting"
+      python.Busy | python.Detached -> "the kernel is busy"
+    }
+  list.fold(
+    parked,
+    session_state.State(..state, booting: None),
+    fn(state, work) {
+      case work {
+        StartQueued ->
+          blocked_queued(
+            state,
+            why
+              <> "; queued inputs are retained. Fix the startup problem and send another message, or use /cd to change workspace",
+            None,
+          )
+        Resume ->
+          session_state.State(..state, activity: turn.Resting)
+          |> session_state.emit(view.error(why))
+        Compact(_, reply) -> {
+          process.send(reply, Error(why))
+          state
+        }
+        AcquireKernel(_, reply) -> {
+          process.send(reply, Error(why))
+          state
+        }
+        UpgradeKernel(reply) -> {
+          process.send(reply, Error(why))
+          state
+        }
+        // Nothing booted, so the restart has only saved variables to drop.
+        RestartKernel(_, _) -> {
+          process.send(state.self, work)
+          state
+        }
+        StartSummary(_, _, _, ack) -> {
+          process.send(ack, Error(why))
+          state
+        }
+        _ -> state
+      }
+    },
+  )
 }
 
 /// Turns start here and now, so no status read can fall between the kernel
@@ -4879,8 +5002,9 @@ fn finished_turn(
   outcome: Result(Nil, String),
   persisted: Result(Int, String),
 ) -> State {
-  // The calls of the run are rows now, so the store knows their cost. Read the
-  // total here, once per run, and tell a client when it changed.
+  // The calls of the run are rows now, so the store knows their cost: read the
+  // total once more, so a call that no committed response followed still reaches
+  // a client.
   let state = synced_spend(state)
   let state = session_state.State(..state, finishing: False)
   let state = clear_tool_progress(session_state.flush_output(state))
@@ -5250,13 +5374,14 @@ fn rewarmed(state: State, started: Int) -> State {
   }
 }
 
-/// A run ended, so its calls are rows and the store knows what the session has
-/// spent. Read the total once and tell a client when it changed. Usage that a
-/// call reports during the run cannot know the total.
+/// A run ended. The actor read the total as each committed response landed, so
+/// this read is for the calls that committed nothing: a failed attempt, a
+/// background call, a summary. Read the total and tell a client when it changed.
 fn synced_spend(state: State) -> State {
-  case conversation.load_spend(runtime.ledger(state.host), state.info.id) {
-    Ok(spent) if spent == state.spent -> state
-    Ok(spent) ->
+  let spent = spend_of(state)
+  case spent == state.spent {
+    True -> state
+    False ->
       session_state.emit(
         session_state.State(..state, spent: spent),
         view.CostedUsage(
@@ -5265,7 +5390,22 @@ fn synced_spend(state: State) -> State {
           session_cost.total(runtime.ledger(state.host), state.info.id),
         ),
       )
-    Error(_) -> state
+  }
+}
+
+/// The total that the ledger holds for the session, per basis. The rows are the
+/// record, and the ledger adds each call's figures into the total as it writes
+/// them, so there is nothing else to read. A store that cannot be read says so,
+/// and leaves the total that the actor already knew.
+fn spend_of(state: State) -> Option(types.Cost) {
+  case conversation.load_spend(runtime.ledger(state.host), state.info.id) {
+    Ok(spent) -> spent
+    Error(error) -> {
+      io.println_error(
+        "spend read failed for session " <> state.info.id <> ": " <> error,
+      )
+      state.spent
+    }
   }
 }
 
@@ -5559,24 +5699,33 @@ fn start_worker(
   |> session_state.announce
 }
 
-/// Usage a committed model response carried becomes the session's latest.
+/// Usage a committed model response carried becomes the session's latest. The
+/// call's row is in the ledger by now, so the total is read here too: a turn can
+/// run for hours, and a client must see what it has spent while it runs, not
+/// only once it ends.
 fn remember_usage(
   state: session_state.State(Message),
   metadata: Option(usage.Metadata),
 ) -> session_state.State(Message) {
   case metadata {
     None -> state
-    Some(metadata) ->
-      session_state.State(
-        ..state,
-        latest_usage: Some(metadata),
-        context: context_snapshot.with_usage(state.context, metadata),
+    Some(metadata) -> {
+      let state =
+        session_state.State(
+          ..state,
+          latest_usage: Some(metadata),
+          context: context_snapshot.with_usage(state.context, metadata),
+          spent: spend_of(state),
+        )
+      session_state.emit(
+        state,
+        view.CostedUsage(
+          Some(metadata),
+          state.spent,
+          session_cost.total(runtime.ledger(state.host), state.info.id),
+        ),
       )
-      |> session_state.emit(view.CostedUsage(
-        Some(metadata),
-        state.spent,
-        session_cost.total(runtime.ledger(state.host), state.info.id),
-      ))
+    }
   }
 }
 
@@ -5776,10 +5925,15 @@ fn finish_workspace(
   }
 }
 
-/// Whether a message only observes session state and must not settle a move.
+/// Whether a message must bypass normal turn and workspace-move settlement.
 fn read_only(message: Message) -> Bool {
   case message {
-    CollectQuiet
+    AskSideQuestion(..)
+    | SideQuestionFinished(..)
+    | CancelSideQuestion(..)
+    | ClaimSideContinuation(..)
+    | SettleSideContinuation(..)
+    | CollectQuiet
     | ShellEnded(_, _, _, _, _)
     | ShellChanged(_, _)
     | StopShell(_, _)
@@ -5903,6 +6057,7 @@ pub fn continuation(client: String, operation_id: String) -> Submission {
     [],
     None,
     Some(operation_id),
+    None,
   )
 }
 
@@ -6006,6 +6161,7 @@ fn admission_committed(
         Ok(Some(outcome)), False
           if outcome.receipt.delivery == Some("pending")
         -> {
+          let state = maybe_title(state, submission, outcome.acceptance_order)
           process.send(state.self, StartQueued)
           session_state.State(
             ..state,
@@ -6302,6 +6458,298 @@ fn cancel_input_in(
         _, _ -> {
           process.send(reply, Ok(NotPending))
           state
+        }
+      }
+  }
+}
+
+fn maybe_title(
+  state: State,
+  submission: Submission,
+  acceptance_order: Int,
+) -> State {
+  case submission.source {
+    turn.Chat | turn.Acp -> {
+      case
+        session_naming.claim(state),
+        string.trim(session_title.human_text(submission)),
+        state.title_job
+      {
+        Ok(Some(revision)), text, None if text != "" ->
+          start_title(
+            state,
+            revision,
+            session_state.InitialTitle(
+              text_scalars.take(text, 2000),
+              acceptance_order,
+            ),
+          )
+        _, _, _ -> state
+      }
+    }
+    _ -> state
+  }
+}
+
+fn start_title(
+  state: State,
+  revision: Int,
+  request: session_state.TitleRequest,
+) -> State {
+  let #(worker, stop) =
+    session_title.start(
+      session_title.Selection(state.host, state.home, state.info),
+      request,
+      state.self,
+      TitleFinished(revision, _),
+    )
+  session_state.State(
+    ..state,
+    title_job: Some(session_state.TitleJob(revision, request, worker, stop)),
+  )
+}
+
+fn regenerate_title(state: State) -> #(State, Result(json.Json, String)) {
+  let outcome = {
+    use current <- result.try(
+      store.query(runtime.ledger(state.host), session_configuration.read_in(
+        _,
+        state.info.id,
+      )),
+    )
+    use _ <- result.try(
+      case current.family.member != None || current.family.started_by != None {
+        True -> Error("an agent is named by its parent")
+        False -> Ok(Nil)
+      },
+    )
+    use _ <- result.try(case state.closing || state.moved != None {
+      True -> Error("session is closing or moved")
+      False -> Ok(Nil)
+    })
+    use _ <- result.try(case state.title_job {
+      Some(_) -> Error("title_generation_in_progress")
+      None -> Ok(Nil)
+    })
+    use revision <- result.try(session_naming.revision(state))
+    Ok(revision)
+  }
+  case outcome {
+    Error(error) -> #(state, Error(error))
+    Ok(revision) -> #(
+      start_title(state, revision, session_state.RegenerateTitle),
+      Ok(json.object([#("message", json.string("Generating a session name."))])),
+    )
+  }
+}
+
+fn finish_title(
+  state: State,
+  revision: Int,
+  outcome: Result(String, String),
+) -> actor.Next(State, Message) {
+  case state.title_job {
+    Some(job) if job.revision == revision -> {
+      let state = session_state.State(..state, title_job: None)
+      let #(state, saved) = save_generated_title(state, job, outcome)
+      let state = synced_spend(state)
+      let state = case job.request, saved {
+        session_state.RegenerateTitle, Error(error) ->
+          session_state.emit(state, view.note("retitle", error))
+        _, _ -> state
+      }
+      actor.continue(session_state.invalidate(
+        state,
+        "session",
+        "/sessions/" <> state.info.id,
+      ))
+    }
+    _ -> actor.continue(state)
+  }
+}
+
+fn save_generated_title(
+  state: State,
+  job: session_state.TitleJob,
+  outcome: Result(String, String),
+) -> #(State, Result(json.Json, String)) {
+  let candidate = {
+    use name <- result.try(outcome)
+    use current <- result.try(session_naming.revision(state))
+    case current == job.revision && !state.closing && state.moved == None {
+      True -> Ok(name)
+      False -> Error("a newer naming action superseded this title")
+    }
+  }
+  case candidate {
+    Error(error) -> #(state, Error(error))
+    Ok(name) ->
+      case job.request {
+        session_state.InitialTitle(..) ->
+          session_naming.generated(state, name, job.revision)
+        session_state.RegenerateTitle -> {
+          let #(state, saved) =
+            session_configure.change(
+              state,
+              session_configure.SelectName(Some(name)),
+            )
+          #(state, result.map(saved, fn(_) { json.null() }))
+        }
+      }
+  }
+}
+
+pub fn generate_title(worker: Session) -> Result(json.Json, String) {
+  actor_call.try_call(worker, 5000, GenerateTitle)
+  |> result.replace_error("session unavailable")
+  |> result.flatten
+}
+
+fn cancel_title(state: State) -> Nil {
+  case state.title_job {
+    Some(job) -> turn.cancel_call(job.worker, job.stop)
+    None -> Nil
+  }
+}
+
+pub fn ask_side_question(
+  worker: Session,
+  id: String,
+  question: String,
+) -> Result(side_question.Exchange, side_question.Refusal) {
+  actor_call.try_call(worker, 5000, AskSideQuestion(id, question, _))
+  |> result.unwrap(Error(side_question.Unavailable))
+}
+
+pub fn cancel_side_question(
+  worker: Session,
+  id: String,
+) -> Result(side_question.Exchange, side_question.Refusal) {
+  actor_call.try_call(worker, 5000, CancelSideQuestion(id, _))
+  |> result.unwrap(Error(side_question.Unavailable))
+}
+
+pub fn claim_side_continuation(
+  worker: Session,
+  id: String,
+  target: String,
+) -> Result(side_question.Promotion, side_question.Refusal) {
+  actor_call.try_call(worker, 5000, ClaimSideContinuation(id, target, _))
+  |> result.unwrap(Error(side_question.Unavailable))
+}
+
+pub fn settle_side_continuation(
+  worker: Session,
+  id: String,
+  target: String,
+  created: Bool,
+) -> Nil {
+  process.send(worker, SettleSideContinuation(id, target, created))
+}
+
+fn publish_side(state: State, exchange: side_question.Exchange) -> State {
+  case state.side_question == Some(exchange) {
+    True -> state
+    False ->
+      session_state.emit(
+        session_state.State(..state, side_question: Some(exchange)),
+        view.SideQuestion(exchange),
+      )
+  }
+}
+
+fn cancel_side_worker(state: State) -> Nil {
+  case state.side_question {
+    Some(side_question.Exchange(
+      progress: side_question.Running(worker, stop),
+      ..,
+    )) -> turn.cancel_call(worker, stop)
+    _ -> Nil
+  }
+}
+
+fn finish_side(
+  state: State,
+  id: String,
+  outcome: session_run.Supervised(session_side_question.Answer),
+) -> actor.Next(State, Message) {
+  let state = synced_spend(state)
+  case state.side_question {
+    Some(exchange) if exchange.id == id ->
+      case exchange.progress {
+        side_question.Running(..) -> {
+          let progress = case outcome {
+            session_run.Done(Ok(answer)) ->
+              side_question.Answered(
+                answer.text,
+                answer.checkpoint,
+                side_question.NotContinued,
+              )
+            session_run.Done(Error(reason)) -> side_question.Failed(reason)
+            session_run.Stopped ->
+              side_question.Failed("side question cancelled or timed out")
+          }
+          actor.continue(publish_side(
+            state,
+            side_question.Exchange(..exchange, progress:),
+          ))
+        }
+        _ -> actor.continue(state)
+      }
+    _ -> actor.continue(state)
+  }
+}
+
+fn ask_side(
+  state: State,
+  id: String,
+  question: String,
+  reply: Subject(Result(side_question.Exchange, side_question.Refusal)),
+) -> actor.Next(State, Message) {
+  use <- bool.lazy_guard(state.closing || state.moved != None, fn() {
+    answer(
+      state,
+      reply,
+      Error(side_question.NoContext("send a message first in an open session")),
+    )
+  })
+  case side_question.admit(state.side_question, id, question) {
+    Error(reason) -> answer(state, reply, Error(reason))
+    Ok(side_question.Replayed(exchange)) -> answer(state, reply, Ok(exchange))
+    Ok(side_question.Admitted) ->
+      case session_state.composition(state) {
+        None ->
+          answer(
+            state,
+            reply,
+            Error(side_question.NoContext(
+              "send a message first to prepare conversation context",
+            )),
+          )
+        Some(prepared) -> {
+          let capture =
+            session_side_question.Capture(
+              state.host,
+              state.home,
+              state.info,
+              prepared,
+              state.pin,
+            )
+          let #(worker, stop) =
+            session_side_question.start(
+              capture,
+              question,
+              state.self,
+              SideQuestionFinished(id, _),
+            )
+          let exchange =
+            side_question.Exchange(
+              id,
+              question,
+              usage.now(),
+              side_question.Running(worker, stop),
+            )
+          answer(publish_side(state, exchange), reply, Ok(exchange))
         }
       }
   }

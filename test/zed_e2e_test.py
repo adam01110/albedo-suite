@@ -164,7 +164,9 @@ class ZedE2ETests(unittest.TestCase):
         )
         self.app.__enter__()
         self.addCleanup(self.app.__exit__, None, None, None)
-        return self.app.session()
+        # A named session asks for no generated title, which would consume a
+        # scripted reply.
+        return self.app.session(name="zed")
 
     def refusal(self, session, *needles):
         """Wait for the daemon to block the prompt with a refusal naming `needles`."""
@@ -274,7 +276,7 @@ class ZedE2ETests(unittest.TestCase):
         self.assertFalse(after["has_key"], after)
         self.assertNotIn("leftover-zed-jwt", (self.app.home / "creds.json").read_text())
         # The profile now runs on the stored browser account, with no refusal.
-        self.assertIn("zed-reply-é", self.turn(self.app.session()))
+        self.assertIn("zed-reply-é", self.turn(self.app.session(name="zed")))
         headers = {k.lower(): v for k, v in self.provider.headers[-1].items()}
         self.assertEqual(headers["authorization"], "Bearer " + ZED_JWT)
 

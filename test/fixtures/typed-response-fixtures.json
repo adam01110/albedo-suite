@@ -1,6 +1,6 @@
 {
   "harness.py": {
-    "sha256": "cf61865a170453a78952b5af77fb679f442854c7954c374d56177fa11c4ac4b3",
+    "sha256": "f824857ec5304f312b892e35458e514db08758f0797d94e86f3e3124633381a3",
     "replacements": [
       [
         "def prompt_text(request):",
@@ -17,7 +17,7 @@
     ]
   },
   "kernel_detach_test.py": {
-    "sha256": "30e7e34ddfe1e3f6249be14dff3866cf9b6b43cc0700ef376611227d25c24727",
+    "sha256": "fe4b96034ce033390015355629efc9b6d9153a931b1ebf5d82d92608f14267b5",
     "replacements": [
       [
         "item[\"content\"] for item in request[\"input\"] if item.get(\"role\") == \"user\"",
@@ -61,6 +61,19 @@
       [
         "                item.get(\"content\")\n",
         "                harness.message_text(item)\n"
+      ]
+    ]
+  },
+  "usage_test.py": {
+    "sha256": "2f4d55d82f86baf5ea0bf919b1a11d3845a724dc7abd0be81c86ac89a9f3320d",
+    "replacements": [
+      [
+        "from harness import Albedo, Provider, Reply, exclusive, text, wait_until",
+        "import harness\nfrom harness import Albedo, Provider, Reply, exclusive, text, wait_until"
+      ],
+      [
+        "            str(item.get(\"content\", \"\"))\n            for item in reversed(request[\"input\"])",
+        "            harness.message_text(item)\n            for item in reversed(request[\"input\"])"
       ]
     ]
   }

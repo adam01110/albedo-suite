@@ -10,7 +10,7 @@ start(Transport, _) ->
 
 close(Client) -> Client ! stop, ok.
 pid(Client) -> Client.
-capabilities(_) -> #{}.
+capabilities(_) -> #{<<"tools">> => #{}}.
 description(_) -> <<>>.
 on_change(_, _) -> nil.
 

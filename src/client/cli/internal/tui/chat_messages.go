@@ -43,6 +43,8 @@ type ChatOpenForkPickerMsg struct{}
 
 type ChatOpenQuotaMsg struct{}
 
+type ChatOpenUsageMsg struct{}
+
 type ChatOpenContextInspectorMsg struct{}
 
 type ChatOpenPageMsg struct {

@@ -1,7 +1,7 @@
 import albedo/openai_api/types.{
-  type Error, type Input, type Protocol, type ProviderPolicy, type Request,
-  type Tool, Assistant, ChatCompletions, Codex, InvalidRequest, OpenAI, Replay,
-  Responses, ToolOutput, User, UserImage,
+  type Error, type Input, type Protocol, type Request, type Tool, Assistant,
+  ChatCompletions, InvalidRequest, Replay, Responses, ToolOutput, User,
+  UserImage,
 }
 import gleam/dict.{type Dict}
 import gleam/dynamic.{type Dynamic}
@@ -14,43 +14,29 @@ import gleam/set
 import gleam/string
 import gleam/string_tree.{type StringTree}
 
-/// Encode to iodata; the request is never flattened. Each input's small
-/// fragments are coalesced as it is encoded (see `flatten`).
+/// Encode to iodata; each input's small fragments are coalesced as it is encoded.
 pub fn encode(
   protocol: Protocol,
   request: Request,
 ) -> Result(StringTree, Error) {
-  encode_with_policy(protocol, OpenAI, request)
+  use fields <- result.map(fields(protocol, request))
+  json.to_string_tree(json.object(fields))
 }
 
-pub fn encode_with_policy(
+/// Standard protocol fields, before an adapter applies its endpoint's rules.
+pub fn fields(
   protocol: Protocol,
-  policy: ProviderPolicy,
   request: Request,
-) -> Result(StringTree, Error) {
+) -> Result(List(#(String, Json)), Error) {
   use _ <- result.try(validate(request))
-  let #(instructions, developer) = layout(protocol, policy, request)
-  let reasoning = echoes_reasoning(protocol, request.input)
   let include_reasoning = includes_reasoning(protocol, request)
-  use input <- result.try(encode_inputs(protocol, reasoning, request.input, []))
-  let input = case developer {
-    Some(context) -> [message(Responses, "developer", context), ..input]
-    None -> input
-  }
+  use input <- result.try(inputs(protocol, request.input))
   let fields = [
     #("model", json.string(request.model)),
     #("stream", json.bool(True)),
   ]
   let fields = case protocol {
-    Responses -> {
-      let max_tokens = case policy {
-        OpenAI
-        | types.OpenCodeGo(_, _)
-        | types.OpenCodeZen(_, _, _)
-        | types.Mistral(_)
-        | types.GitHubCopilot(_) -> request.max_output_tokens
-        Codex(_, _) -> None
-      }
+    Responses ->
       [
         #("input", json.preprocessed_array(input)),
         #("store", json.bool(False)),
@@ -66,162 +52,74 @@ pub fn encode_with_policy(
         },
         json.array(_, json.string),
       )
-      |> optional("instructions", instructions, json.string)
-      |> optional("max_output_tokens", max_tokens, json.int)
-    }
+      |> optional("instructions", request.instructions, json.string)
+      |> optional("max_output_tokens", request.max_output_tokens, json.int)
     ChatCompletions -> {
-      let messages = case instructions {
+      let messages = case request.instructions {
         None -> input
         Some(text) -> [message(ChatCompletions, "system", text), ..input]
       }
-      let messages = #("messages", json.preprocessed_array(messages))
-      case policy {
-        // Mistral sends usage in its last chunk unasked.
-        types.Mistral(session_id) ->
-          [messages, #("n", json.int(1)), ..fields]
-          |> optional("max_tokens", request.max_output_tokens, json.int)
-          |> optional(
-            "prompt_cache_key",
-            when(request.options.cache, session_id),
-            json.string,
-          )
-        _ ->
-          [
-            messages,
-            #("n", json.int(1)),
-            #(
-              "stream_options",
-              json.object([#("include_usage", json.bool(True))]),
-            ),
-            ..fields
-          ]
-          |> optional(
-            "max_completion_tokens",
-            request.max_output_tokens,
-            json.int,
-          )
-      }
+      [
+        #("messages", json.preprocessed_array(messages)),
+        #("n", json.int(1)),
+        #("stream_options", json.object([#("include_usage", json.bool(True))])),
+        ..fields
+      ]
+      |> optional("max_completion_tokens", request.max_output_tokens, json.int)
     }
   }
   let fields = case request.tools {
     [] -> fields
-    tools -> [
-      #("tools", json.array(tools, encode_tool(protocol, policy, _))),
-      ..fields
-    ]
+    tools -> [#("tools", encode_tools(protocol, tools)), ..fields]
   }
   let options = request.options
-  let tools = request.tools != []
-  let fields = case policy, protocol {
-    // The ChatGPT reasoning backend fixes sampling; only what it accepts
-    // overrides its defaults.
-    Codex(_, session_id), Responses -> [
-      #(
-        "tool_choice",
-        option.map(options.tool_choice, tool_choice(protocol, _))
-          |> option.unwrap(json.string("auto")),
-      ),
-      #(
-        "parallel_tool_calls",
-        json.bool(option.unwrap(options.parallel_tool_calls, True)),
-      ),
-      #(
-        "text",
-        json.object(
-          [#("verbosity", json.string("low"))]
-          |> optional("format", options.format, response_format(protocol, _)),
-        ),
-      ),
-      #(
-        "reasoning",
-        json.object([
-          #("effort", json.string(option.unwrap(options.effort, "medium"))),
-          #("summary", json.string("auto")),
-        ]),
-      ),
-      #("prompt_cache_key", json.string(session_id)),
-      ..fields
-    ]
-    _, _ -> {
-      let fields =
-        fields
-        |> sampling(options)
-        |> optional("tool_choice", options.tool_choice, tool_choice(protocol, _))
-        |> optional(
-          "parallel_tool_calls",
-          when_tools(tools, options.parallel_tool_calls),
-          json.bool,
-        )
-      case protocol {
-        Responses ->
-          fields
-          |> optional("reasoning", reasoning_config(options.effort), fn(config) {
-            json.object(config)
-          })
-          |> optional("text", options.format, fn(format) {
-            json.object([#("format", response_format(protocol, format))])
-          })
-        ChatCompletions ->
-          fields
-          |> optional(
-            "stop",
-            case options.stop {
-              [] -> None
-              stop -> Some(stop)
-            },
-            json.array(_, json.string),
-          )
-          |> optional("reasoning_effort", options.effort, json.string)
-          |> optional("response_format", options.format, response_format(
-            protocol,
-            _,
-          ))
-      }
-    }
-  }
-  let fields = case policy {
-    OpenAI | Codex(_, _) ->
-      optional(fields, "service_tier", options.service_tier, json.string)
-    types.OpenCodeGo(_, _)
-    | types.OpenCodeZen(_, _, _)
-    | types.Mistral(_)
-    | types.GitHubCopilot(_) -> fields
-  }
-  let fields = case policy, protocol, options.cyber_access {
-    Codex(_, _), Responses, Some("daybreak_blue") -> [
-      #(
-        "access_programs",
-        json.object([#("cyber", json.string("daybreak_blue"))]),
-      ),
-      ..fields
-    ]
-    _, _, _ -> fields
-  }
-  Ok(json.to_string_tree(json.object(fields)))
-}
-
-/// The instructions a request sends, and the developer message that opens
-/// its input. Codex caches by prefix in the order instructions, tools, input,
-/// so there the workspace's context moves from the instructions to that
-/// message, as Codex CLI sends AGENTS.md: what every session shares (the base
-/// prompt, tool docs and tool schemas) then leads the prompt in one piece.
-/// Other servers get the instructions whole, since not every Responses server
-/// takes a developer message.
-fn layout(
-  protocol: Protocol,
-  policy: ProviderPolicy,
-  request: Request,
-) -> #(Option(String), Option(String)) {
-  case protocol, policy, types.split_instructions(request) {
-    Responses, Codex(_, _), Some(#(shared, context)) -> #(
-      Some(shared),
-      Some(string.trim_start(context)),
+  let fields =
+    fields
+    |> sampling(options)
+    |> optional("tool_choice", options.tool_choice, tool_choice(protocol, _))
+    |> optional(
+      "parallel_tool_calls",
+      when_tools(request.tools != [], options.parallel_tool_calls),
+      json.bool,
     )
-    _, _, _ -> #(request.instructions, None)
+  let fields = case protocol {
+    Responses ->
+      fields
+      |> optional("reasoning", reasoning_config(options.effort), fn(config) {
+        json.object(config)
+      })
+      |> optional("text", options.format, fn(format) {
+        json.object([#("format", response_format(protocol, format))])
+      })
+    ChatCompletions ->
+      fields
+      |> optional(
+        "stop",
+        case options.stop {
+          [] -> None
+          stop -> Some(stop)
+        },
+        json.array(_, json.string),
+      )
+      |> optional("reasoning_effort", options.effort, json.string)
+      |> optional("response_format", options.format, response_format(
+        protocol,
+        _,
+      ))
   }
+  Ok(optional(fields, "service_tier", options.service_tier, json.string))
 }
 
-fn validate(request: Request) -> Result(Nil, Error) {
+/// Encoded conversation items, shared with adapters that insert native roles.
+pub fn inputs(
+  protocol: Protocol,
+  inputs: List(Input),
+) -> Result(List(Json), Error) {
+  encode_inputs(protocol, echoes_reasoning(protocol, inputs), inputs, [])
+}
+
+/// Validate request limits and tool identities before an adapter rewrites fields.
+pub fn validate(request: Request) -> Result(Nil, Error) {
   case string.is_empty(string.trim(request.model)), request.max_output_tokens {
     True, _ -> Error(InvalidRequest("model must not be empty"))
     _, Some(n) if n <= 0 ->
@@ -505,30 +403,18 @@ fn image_part(protocol: Protocol, image: types.Image) -> Json {
   }
 }
 
-/// The exact provider-facing tool schema array used by `encode`.
+/// The standard protocol tool schema array used by `encode`.
 /// Context inspection can reuse this without rebuilding request policy.
 pub fn encode_tools(protocol: Protocol, tools: List(Tool)) -> Json {
-  json.array(tools, encode_tool(protocol, OpenAI, _))
+  json.array(tools, encode_tool(protocol, _))
 }
 
-fn encode_tool(protocol: Protocol, policy: ProviderPolicy, tool: Tool) -> Json {
+fn encode_tool(protocol: Protocol, tool: Tool) -> Json {
   let fields = [
     #("name", json.string(tool.name)),
     #("description", json.string(tool.description)),
     #("parameters", tool.parameters),
-    #("strict", case policy {
-      Codex(_, _) -> json.null()
-      // Copilot validates a strict schema literally, and albedo's tools declare
-      // optional properties (`python`'s `timeout_ms`), which strict mode forbids
-      // next to a `required` list. Ask for non-strict arguments until the tool
-      // schemas are strict-valid themselves.
-      types.GitHubCopilot(_) -> json.bool(False)
-      OpenAI
-      | types.OpenCodeGo(_, _)
-      | types.OpenCodeZen(_, _, _)
-      | types.Mistral(_) ->
-        json.bool(tool.strict && strict_schema(tool.parameters))
-    }),
+    #("strict", json.bool(tool.strict && strict_schema(tool.parameters))),
   ]
   json.object(case protocol {
     Responses -> [#("type", json.string("function")), ..fields]
@@ -648,13 +534,6 @@ fn declares(fields: Dict(String, Dynamic), kind: String) -> Bool {
   }
 }
 
-fn when(condition: Bool, value: a) -> Option(a) {
-  case condition {
-    True -> Some(value)
-    False -> None
-  }
-}
-
 /// OpenAI rejects `parallel_tool_calls` on a request without tools.
 fn when_tools(tools: Bool, value: Option(Bool)) -> Option(Bool) {
   case tools {
@@ -672,7 +551,7 @@ fn sampling(
   |> optional("top_p", options.top_p, json.float)
 }
 
-fn tool_choice(protocol: Protocol, choice: types.ToolChoice) -> Json {
+pub fn tool_choice(protocol: Protocol, choice: types.ToolChoice) -> Json {
   case choice, protocol {
     types.AutoTool, _ -> json.string("auto")
     types.NoTool, _ -> json.string("none")
@@ -692,7 +571,7 @@ fn tool_choice(protocol: Protocol, choice: types.ToolChoice) -> Json {
 
 /// Chat Completions nests a schema under `json_schema`; Responses flattens it
 /// into `text.format`.
-fn response_format(protocol: Protocol, format: types.Format) -> Json {
+pub fn response_format(protocol: Protocol, format: types.Format) -> Json {
   case format {
     types.JsonObject -> json.object([#("type", json.string("json_object"))])
     types.JsonSchema(name, schema, strict) -> {

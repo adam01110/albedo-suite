@@ -493,9 +493,6 @@ contains_newline(Value) ->
 ">>]) =/= nomatch.
 
 scoped_env(Raw, Secrets) when is_map(Raw), is_map(Secrets) ->
-    Removed = [{Name, false} || Entry <- os:env(),
-                                Name <- [env_name(Entry)],
-                                not lists:member(Name, ?SAFE_ENV)],
     Added = maps:fold(fun(Target, Ref, Acc) when is_binary(Target) ->
         [{binary_to_list(Target), binary_to_list(env_reference(Ref))} | Acc]
     end, [], Raw),
@@ -504,7 +501,16 @@ scoped_env(Raw, Secrets) when is_map(Raw), is_map(Secrets) ->
         true = valid_env_name(Target),
         [{binary_to_list(Target), binary_to_list(Value)} | Acc]
     end, [], Secrets),
-    Added ++ Saved ++ Removed;
+    %% A port applies its env list in order, and a later {Name, false} unsets a
+    %% name an earlier entry set. A server given the daemon's own variable name
+    %% is the normal case, and that name is in the removal list: removals go
+    %% first, and never name a variable this server was given.
+    Given = [Name || {Name, _} <- Added ++ Saved],
+    Removed = [{Name, false} || Entry <- os:env(),
+                                Name <- [env_name(Entry)],
+                                not lists:member(Name, ?SAFE_ENV),
+                                not lists:member(Name, Given)],
+    Removed ++ Added ++ Saved;
 scoped_env(_, _) -> erlang:error(invalid_env).
 
 valid_env_name(Name) ->

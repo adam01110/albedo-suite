@@ -1,7 +1,7 @@
 # Source attribution
 
 The files under `src/server/` and `src/client/` replace files from Albedo at
-revision `dfbdc36f90c39ca21bcfe6661182642ec4fa61c4`,
+revision `4630564211b957b0f943f5559731731f5093b620`,
 <https://tangled.org/okami.mom/albedo>. Albedo is copyright 2026 okami.mom,
 ptr.pet, aly.codes and the other contributors in its git history, licensed under
 the GNU Affero General Public License v3.0 only with the Classpath exception.
@@ -13,7 +13,7 @@ Suite-authored code, packaging, modules, helpers, tests and documentation are
 copyright 2026 Adam0 and licensed under the same AGPL-3.0-only with Classpath
 exception, except where third-party notices specify otherwise. The license update
 is dated 2026-11-02 and the suite modifications described below are dated
-2026-11-07. Earlier versions retain their original licenses.
+2026-11-11. Earlier versions retain their original licenses.
 
 The previous upstream pin was `154c6911d6a491aeeecacf26a06b6ae8c4bc70e1`,
 licensed under MPL 2.0. Original MPL-covered portions retained from that source

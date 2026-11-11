@@ -1,3 +1,4 @@
+import albedo/harness/extensions/codex/wire as codex_wire
 import albedo/harness/extensions/zed/stream as zed_stream
 import albedo/harness/extensions/zed/wire
 import albedo/openai_api
@@ -441,11 +442,7 @@ fn codex_policy() {
       ),
     )
   let assert Ok(tree) =
-    encoder.encode_with_policy(
-      types.Responses,
-      types.Codex("codex-account", "codex-session"),
-      request,
-    )
+    codex_wire.encode("codex-session", types.Responses, request)
   let body = string_tree.to_string(tree)
   contains(body, "\"strict\":null")
   codex_body(body, [Key("tool_choice")]) |> should.equal("auto")

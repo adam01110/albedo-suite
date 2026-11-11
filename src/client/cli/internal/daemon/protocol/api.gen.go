@@ -3064,6 +3064,7 @@ type Session struct {
 	// SessionCostUsd Session-wide estimated USD at catalog rates, excluding child sessions; null when any request is unpriced or unmetered.
 	SessionCostUsd *float64       `json:"session_cost_usd,omitempty" nullable:"true"`
 	ShellCommands  []ShellCommand `json:"shell_commands"`
+	SideQuestion   *SideQuestion  `json:"side_question,omitempty" nullable:"true"`
 	StartedBy      *ID            `json:"started_by" nullable:"true"`
 	Status         SessionStatus  `json:"status"`
 	Usage          Usage          `json:"usage"`
@@ -3401,6 +3402,13 @@ type SessionShellCommandEvent struct {
 	Type     string               `json:"type"`
 }
 
+// SessionSideQuestionEvent defines model for SessionSideQuestionEvent.
+type SessionSideQuestionEvent struct {
+	Data     SideQuestionEnvelope `json:"data"`
+	Sequence Counter              `json:"sequence"`
+	Type     string               `json:"type"`
+}
+
 // SessionStatus defines model for SessionStatus.
 type SessionStatus struct {
 	BlockingReason *SafeReason `json:"blocking_reason" nullable:"true"`
@@ -3659,6 +3667,41 @@ type ShutdownRequest struct {
 	// StopKernels End every Python kernel this daemon holds instead of leaving them running for the next daemon to attach to. Sessions save their variables first, as when they go idle; running jobs end.
 	StopKernels *bool  `json:"stop_kernels,omitempty"`
 	TimeoutMs   *int64 `json:"timeout_ms,omitempty"`
+}
+
+// SideQuestion defines model for SideQuestion.
+type SideQuestion struct {
+	Answer                *string `json:"answer" nullable:"true"`
+	AskedAt               int64   `json:"asked_at"`
+	ContinuationSessionID *string `json:"continuation_session_id" nullable:"true"`
+	Error                 *string `json:"error" nullable:"true"`
+
+	// ID Client-generated lowercase UUIDv7. Retained decisions are checked before timestamp expiry.
+	ID       UUIDv7 `json:"id"`
+	Question string `json:"question"`
+	Status   string `json:"status"`
+}
+
+// SideQuestionEnvelope defines model for SideQuestionEnvelope.
+type SideQuestionEnvelope struct {
+	SideQuestion SideQuestion `json:"side_question"`
+}
+
+// SideQuestionRequest defines model for SideQuestionRequest.
+type SideQuestionRequest struct {
+	Question string `json:"question"`
+}
+
+// SideQuestionSessionRequest defines model for SideQuestionSessionRequest.
+type SideQuestionSessionRequest struct {
+	Kind string  `json:"kind"`
+	Name *string `json:"name,omitempty" nullable:"true"`
+
+	// SideQuestionID Client-generated lowercase UUIDv7. Retained decisions are checked before timestamp expiry.
+	SideQuestionID UUIDv7 `json:"side_question_id"`
+
+	// SourceSessionID Opaque identity. Never infer a resource type or route from its contents.
+	SourceSessionID ID `json:"source_session_id"`
 }
 
 // SkillInputRequest defines model for SkillInputRequest.
@@ -4107,6 +4150,65 @@ type Usage struct {
 	Spent           *Cost    `json:"spent,omitempty" nullable:"true"`
 	TokensPerSecond *float64 `json:"tokens_per_second" nullable:"true"`
 	TotalTokens     *Counter `json:"total_tokens" nullable:"true"`
+}
+
+// UsageDay One day of the client's, with what the provider calls used in it.
+type UsageDay struct {
+	CacheCreationTokens Counter `json:"cache_creation_tokens"`
+	CachedInputTokens   Counter `json:"cached_input_tokens"`
+	Calls               Counter `json:"calls"`
+	Errors              Counter `json:"errors"`
+	InputTokens         Counter `json:"input_tokens"`
+	OutputTokens        Counter `json:"output_tokens"`
+	ReasoningTokens     Counter `json:"reasoning_tokens"`
+
+	// Start UTC RFC 3339.
+	Start Timestamp `json:"start"`
+}
+
+// UsageLine What one profile, account and model used over the whole window.
+type UsageLine struct {
+	// Account Null for a provider without an account pool.
+	Account             *string `json:"account" nullable:"true"`
+	CacheCreationTokens Counter `json:"cache_creation_tokens"`
+	CachedInputTokens   Counter `json:"cached_input_tokens"`
+	Calls               Counter `json:"calls"`
+	Errors              Counter `json:"errors"`
+	InputTokens         Counter `json:"input_tokens"`
+	Model               string  `json:"model"`
+	OutputTokens        Counter `json:"output_tokens"`
+	Profile             string  `json:"profile"`
+	Provider            string  `json:"provider"`
+	ReasoningTokens     Counter `json:"reasoning_tokens"`
+}
+
+// UsageScope One provider and account that used the window, named as `lines` names them.
+type UsageScope struct {
+	// Account Null for a provider without an account pool.
+	Account  *string `json:"account" nullable:"true"`
+	Provider string  `json:"provider"`
+}
+
+// UsageSummary defines model for UsageSummary.
+type UsageSummary struct {
+	// Days Oldest first, one for each day asked for, empty days included. A day counts only the rows the requested `provider` and `account` match.
+	Days []UsageDay `json:"days"`
+
+	// GeneratedAt UTC RFC 3339.
+	GeneratedAt Timestamp `json:"generated_at"`
+
+	// Lines Most used first, at most 100 of what the request matches; `lines_truncated` says more matched than are listed.
+	Lines []UsageLine `json:"lines"`
+
+	// LinesTruncated Whether more profile, account and model lines matched than `lines` lists.
+	LinesTruncated bool `json:"lines_truncated"`
+
+	// Scopes Every provider and account with use in the window, before `provider` and `account` narrow the totals, so a client can offer what it is not showing. At most 200, sorted by provider then account.
+	Scopes []UsageScope `json:"scopes"`
+
+	// ScopesTruncated Whether more provider and account scopes used the window than `scopes` lists.
+	ScopesTruncated  bool  `json:"scopes_truncated"`
+	UtcOffsetMinutes int64 `json:"utc_offset_minutes"`
 }
 
 // ValueSource For env, value is a daemon-host environment variable name.
@@ -4814,6 +4916,9 @@ type GetShellCommandOutputParams struct {
 	Limit  *int64 `form:"limit,omitempty" json:"limit,omitempty"`
 }
 
+// GenerateSessionTitleJSONBody defines parameters for GenerateSessionTitle.
+type GenerateSessionTitleJSONBody = map[string]interface{}
+
 // GetSettingsParams defines parameters for GetSettings.
 type GetSettingsParams struct {
 	Group *string `form:"group,omitempty" json:"group,omitempty"`
@@ -4895,6 +5000,21 @@ type RecordTransferFamilyJSONBody struct {
 // PutTransferSegmentParams defines parameters for PutTransferSegment.
 type PutTransferSegmentParams struct {
 	Offset *int64 `form:"offset,omitempty" json:"offset,omitempty"`
+}
+
+// GetUsageParams defines parameters for GetUsage.
+type GetUsageParams struct {
+	// Days How many days to cover, the current one included.
+	Days *int64 `form:"days,omitempty" json:"days,omitempty"`
+
+	// UtcOffsetMinutes How far ahead of UTC the client's clock runs, which decides where its days begin.
+	UtcOffsetMinutes *int64 `form:"utc_offset_minutes,omitempty" json:"utc_offset_minutes,omitempty"`
+
+	// Provider Count only this provider's rows, named as `lines` and `scopes` name it (`protocol:endpoint`). It narrows `days` and `lines`; `scopes` still lists every provider and account of the window. A value is matched exactly, percent-encoded in the query like any other (a `+` is a space and a literal plus is `%2B`).
+	Provider *string `form:"provider,omitempty" json:"provider,omitempty"`
+
+	// Account Count only this account's rows of `provider`, matched exactly. An empty value is a provider without an account pool. Without `provider` it is refused, because two providers can label accounts the same way.
+	Account *string `form:"account,omitempty" json:"account,omitempty"`
 }
 
 // GetWorkspacesParams defines parameters for GetWorkspaces.
@@ -5038,6 +5158,15 @@ type RewindSessionJSONRequestBody = RewindRequest
 
 // PutShellCommandJSONRequestBody defines body for PutShellCommand for application/json ContentType.
 type PutShellCommandJSONRequestBody = ShellCommandRequest
+
+// PutSideQuestionJSONRequestBody defines body for PutSideQuestion for application/json ContentType.
+type PutSideQuestionJSONRequestBody = SideQuestionRequest
+
+// CancelSideQuestionJSONRequestBody defines body for CancelSideQuestion for application/json ContentType.
+type CancelSideQuestionJSONRequestBody = EmptyRequest
+
+// GenerateSessionTitleJSONRequestBody defines body for GenerateSessionTitle for application/json ContentType.
+type GenerateSessionTitleJSONRequestBody = GenerateSessionTitleJSONBody
 
 // RecordVisitJSONRequestBody defines body for RecordVisit for application/json ContentType.
 type RecordVisitJSONRequestBody = EmptyRequest
@@ -6360,6 +6489,36 @@ type ClientInterface interface {
 	// Corresponds with POST /sessions/{session_id}/shell-commands/{command_id}/stop (the `StopShellCommand` operationId).
 	StopShellCommand(ctx context.Context, sessionID ID, commandID UUIDv7, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// PutSideQuestionWithBody performs a PUT /sessions/{session_id}/side-questions/{question_id} (the `PutSideQuestion` operationId) request,
+	// with any type of body and a specified content type.
+	PutSideQuestionWithBody(ctx context.Context, sessionID ID, questionID UUIDv7, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PutSideQuestion performs a PUT /sessions/{session_id}/side-questions/{question_id} (the `PutSideQuestion` operationId) request.
+	// Takes a body of the `application/json` content type.
+	PutSideQuestion(ctx context.Context, sessionID ID, questionID UUIDv7, body PutSideQuestionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// CancelSideQuestionWithBody performs a POST /sessions/{session_id}/side-questions/{question_id}/cancel (the `CancelSideQuestion` operationId) request,
+	// with any type of body and a specified content type.
+	CancelSideQuestionWithBody(ctx context.Context, sessionID ID, questionID UUIDv7, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// CancelSideQuestion performs a POST /sessions/{session_id}/side-questions/{question_id}/cancel (the `CancelSideQuestion` operationId) request.
+	// Takes a body of the `application/json` content type.
+	CancelSideQuestion(ctx context.Context, sessionID ID, questionID UUIDv7, body CancelSideQuestionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GenerateSessionTitleWithBody Generate a session name from the conversation
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /sessions/{session_id}/title-generation (the `GenerateSessionTitle` operationId).
+	GenerateSessionTitleWithBody(ctx context.Context, sessionID ID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GenerateSessionTitle Generate a session name from the conversation
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /sessions/{session_id}/title-generation (the `GenerateSessionTitle` operationId).
+	GenerateSessionTitle(ctx context.Context, sessionID ID, body GenerateSessionTitleJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// RecordVisitWithBody Count one deliberate opening
 	//
 	// Visit ID is UUIDv7. Same identity increments once; reads and refreshes never count.
@@ -6601,6 +6760,13 @@ type ClientInterface interface {
 	//
 	// Corresponds with PUT /transfers/{transfer_id}/import/segments/{index} (the `PutTransferSegment` operationId).
 	PutTransferSegmentWithBody(ctx context.Context, transferID string, index int64, params *PutTransferSegmentParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetUsage Read what the provider calls used
+	//
+	// Totals come from hourly counts kept beside the request records, so they cost the same however long the history is and keep the use of sessions since deleted. Hours are UTC; in a zone that is not a whole number of hours from UTC the hour that straddles midnight counts in the earlier day. Counts are as the providers reported them, and providers differ on whether `input_tokens` includes `cached_input_tokens`. `provider` and `account` narrow the days and lines to one scope, while `scopes` always lists every scope the window saw. Requires capability `usage_summary: 1`.
+	//
+	// Corresponds with GET /usage (the `GetUsage` operationId).
+	GetUsage(ctx context.Context, params *GetUsageParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetWorkspaces Browse recent locations or a directory
 	//
@@ -9343,6 +9509,96 @@ func (c *Client) StopShellCommand(ctx context.Context, sessionID ID, commandID U
 	return c.Client.Do(req)
 }
 
+// PutSideQuestionWithBody performs a PUT /sessions/{session_id}/side-questions/{question_id} (the `PutSideQuestion` operationId) request,
+// with any type of body and a specified content type.
+func (c *Client) PutSideQuestionWithBody(ctx context.Context, sessionID ID, questionID UUIDv7, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPutSideQuestionRequestWithBody(c.Server, sessionID, questionID, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PutSideQuestion performs a PUT /sessions/{session_id}/side-questions/{question_id} (the `PutSideQuestion` operationId) request.
+// Takes a body of the `application/json` content type.
+func (c *Client) PutSideQuestion(ctx context.Context, sessionID ID, questionID UUIDv7, body PutSideQuestionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPutSideQuestionRequest(c.Server, sessionID, questionID, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// CancelSideQuestionWithBody performs a POST /sessions/{session_id}/side-questions/{question_id}/cancel (the `CancelSideQuestion` operationId) request,
+// with any type of body and a specified content type.
+func (c *Client) CancelSideQuestionWithBody(ctx context.Context, sessionID ID, questionID UUIDv7, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCancelSideQuestionRequestWithBody(c.Server, sessionID, questionID, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// CancelSideQuestion performs a POST /sessions/{session_id}/side-questions/{question_id}/cancel (the `CancelSideQuestion` operationId) request.
+// Takes a body of the `application/json` content type.
+func (c *Client) CancelSideQuestion(ctx context.Context, sessionID ID, questionID UUIDv7, body CancelSideQuestionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCancelSideQuestionRequest(c.Server, sessionID, questionID, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GenerateSessionTitleWithBody Generate a session name from the conversation
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /sessions/{session_id}/title-generation (the `GenerateSessionTitle` operationId).
+func (c *Client) GenerateSessionTitleWithBody(ctx context.Context, sessionID ID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGenerateSessionTitleRequestWithBody(c.Server, sessionID, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GenerateSessionTitle Generate a session name from the conversation
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /sessions/{session_id}/title-generation (the `GenerateSessionTitle` operationId).
+func (c *Client) GenerateSessionTitle(ctx context.Context, sessionID ID, body GenerateSessionTitleJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGenerateSessionTitleRequest(c.Server, sessionID, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 // RecordVisitWithBody Count one deliberate opening
 //
 // Visit ID is UUIDv7. Same identity increments once; reads and refreshes never count.
@@ -9875,6 +10131,23 @@ func (c *Client) ReadyTransfer(ctx context.Context, transferID string, reqEditor
 // Corresponds with PUT /transfers/{transfer_id}/import/segments/{index} (the `PutTransferSegment` operationId).
 func (c *Client) PutTransferSegmentWithBody(ctx context.Context, transferID string, index int64, params *PutTransferSegmentParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewPutTransferSegmentRequestWithBody(c.Server, transferID, index, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetUsage Read what the provider calls used
+//
+// Totals come from hourly counts kept beside the request records, so they cost the same however long the history is and keep the use of sessions since deleted. Hours are UTC; in a zone that is not a whole number of hours from UTC the hour that straddles midnight counts in the earlier day. Counts are as the providers reported them, and providers differ on whether `input_tokens` includes `cached_input_tokens`. `provider` and `account` narrow the days and lines to one scope, while `scopes` always lists every scope the window saw. Requires capability `usage_summary: 1`.
+//
+// Corresponds with GET /usage (the `GetUsage` operationId).
+func (c *Client) GetUsage(ctx context.Context, params *GetUsageParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetUsageRequest(c.Server, params)
 	if err != nil {
 		return nil, err
 	}
@@ -16132,6 +16405,161 @@ func NewStopShellCommandRequest(server string, sessionID ID, commandID UUIDv7) (
 	return req, nil
 }
 
+// NewPutSideQuestionRequest calls the generic PutSideQuestion builder with application/json body
+func NewPutSideQuestionRequest(server string, sessionID ID, questionID UUIDv7, body PutSideQuestionJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPutSideQuestionRequestWithBody(server, sessionID, questionID, "application/json", bodyReader)
+}
+
+// NewPutSideQuestionRequestWithBody constructs an http.Request for the PutSideQuestion method, with any body, and a specified content type
+func NewPutSideQuestionRequestWithBody(server string, sessionID ID, questionID UUIDv7, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithOptions("simple", false, "question_id", questionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: "uuid"})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/sessions/%s/side-questions/%s", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPut, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewCancelSideQuestionRequest calls the generic CancelSideQuestion builder with application/json body
+func NewCancelSideQuestionRequest(server string, sessionID ID, questionID UUIDv7, body CancelSideQuestionJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewCancelSideQuestionRequestWithBody(server, sessionID, questionID, "application/json", bodyReader)
+}
+
+// NewCancelSideQuestionRequestWithBody constructs an http.Request for the CancelSideQuestion method, with any body, and a specified content type
+func NewCancelSideQuestionRequestWithBody(server string, sessionID ID, questionID UUIDv7, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithOptions("simple", false, "question_id", questionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: "uuid"})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/sessions/%s/side-questions/%s/cancel", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewGenerateSessionTitleRequest calls the generic GenerateSessionTitle builder with application/json body
+func NewGenerateSessionTitleRequest(server string, sessionID ID, body GenerateSessionTitleJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewGenerateSessionTitleRequestWithBody(server, sessionID, "application/json", bodyReader)
+}
+
+// NewGenerateSessionTitleRequestWithBody constructs an http.Request for the GenerateSessionTitle method, with any body, and a specified content type
+func NewGenerateSessionTitleRequestWithBody(server string, sessionID ID, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/sessions/%s/title-generation", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
 // NewRecordVisitRequest calls the generic RecordVisit builder with application/json body
 func NewRecordVisitRequest(server string, sessionID ID, visitID UUIDv7, body RecordVisitJSONRequestBody) (*http.Request, error) {
 	var bodyReader io.Reader
@@ -17270,6 +17698,96 @@ func NewPutTransferSegmentRequestWithBody(server string, transferID string, inde
 	}
 
 	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewGetUsageRequest constructs an http.Request for the GetUsage method
+func NewGetUsageRequest(server string, params *GetUsageParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/usage")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if params.Days != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "days", *params.Days, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.UtcOffsetMinutes != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "utc_offset_minutes", *params.UtcOffsetMinutes, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.Provider != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "provider", *params.Provider, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.Account != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "account", *params.Account, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
 
 	return req, nil
 }

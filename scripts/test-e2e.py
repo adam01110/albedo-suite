@@ -61,6 +61,9 @@ UPSTREAM_CASES = (
     "python_test.py:PythonToolsTests.test_wait_for_returns_the_line_and_leaves_the_job_running",
     "python_test.py:PythonToolsTests.test_chdir_moves_run_and_files",
     "stream_replay_test.py",
+    "provider_protocols_test.py",
+    "side_questions_test.py",
+    "usage_test.py",
 )
 
 

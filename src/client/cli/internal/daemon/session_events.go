@@ -144,6 +144,17 @@ func decodeChatEnvelope(envelope sessionEventEnvelope, wireBytes int, content *e
 			return nil, err
 		}
 		event.Type, event.ShellCommand = EventShellCommand, &data.ShellCommand
+	case "side_question":
+		var data struct {
+			SideQuestion SideQuestion `json:"side_question"`
+		}
+		if err := decodeRequired(envelope.Data, &data, "side_question"); err != nil {
+			return nil, err
+		}
+		if err := validSideQuestion(data.SideQuestion); err != nil {
+			return nil, err
+		}
+		event.Type, event.SideQuestion = EventSideQuestion, &data.SideQuestion
 	case "tool_progress":
 		if wireBytes > 8192 {
 			return nil, errors.New("tool_progress exceeds 8 KiB")

@@ -141,6 +141,12 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 		}
 		return
 	}
+	if evt.Type == daemon.EventSideQuestion {
+		if evt.SideQuestion != nil {
+			m.setSideQuestion(*evt.SideQuestion)
+		}
+		return
+	}
 	if evt.Replayed {
 		// Replayed events do not describe current activity; preserve live status.
 		defer func(live daemon.AgentStatus, stopped, stopping, failed bool, progress map[string]*daemon.ToolProgress, order []string, label, thought string) {
@@ -182,6 +188,7 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 			}
 		}
 		m.History.Clear()
+		m.resetSideQuestion(evt.SideQuestion)
 		for _, command := range evt.ShellCommands {
 			m.History.Append(shellEntry(command))
 		}

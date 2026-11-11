@@ -1142,6 +1142,117 @@ paths:
                       location: null
                       api_key: synthetic-example-key
         description: UTF-8 JSON; duplicate keys and unknown fields are rejected.
+  /usage:
+    get:
+      operationId: getUsage
+      summary: Read what the provider calls used
+      tags:
+      - usage
+      responses:
+        '200':
+          description: Successful result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsageSummary'
+              examples:
+                UsageSummary:
+                  value:
+                    generated_at: '2026-10-25T18:00:00Z'
+                    utc_offset_minutes: -360
+                    days:
+                    - start: '2026-10-24T06:00:00Z'
+                      calls: 0
+                      errors: 0
+                      input_tokens: 0
+                      cached_input_tokens: 0
+                      cache_creation_tokens: 0
+                      output_tokens: 0
+                      reasoning_tokens: 0
+                    - start: '2026-10-25T06:00:00Z'
+                      calls: 12
+                      errors: 1
+                      input_tokens: 48000
+                      cached_input_tokens: 36000
+                      cache_creation_tokens: 0
+                      output_tokens: 2100
+                      reasoning_tokens: 600
+                    lines:
+                    - profile: work
+                      provider: responses:https://api.example.com/v1
+                      account: null
+                      model: example-model
+                      calls: 12
+                      errors: 1
+                      input_tokens: 48000
+                      cached_input_tokens: 36000
+                      cache_creation_tokens: 0
+                      output_tokens: 2100
+                      reasoning_tokens: 600
+                    scopes:
+                    - provider: responses:https://api.example.com/v1
+                      account: null
+                    lines_truncated: false
+                    scopes_truncated: false
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '503':
+          $ref: '#/components/responses/Problem503'
+      description: 'Totals come from hourly counts kept beside the request records,
+        so they cost the same however long the history is and keep the use of sessions
+        since deleted. Hours are UTC; in a zone that is not a whole number of hours
+        from UTC the hour that straddles midnight counts in the earlier day. Counts
+        are as the providers reported them, and providers differ on whether
+        `input_tokens` includes `cached_input_tokens`. `provider` and `account`
+        narrow the days and lines to one scope, while `scopes` always lists every
+        scope the window saw. Requires capability `usage_summary: 1`.'
+      parameters:
+      - name: days
+        in: query
+        required: false
+        description: How many days to cover, the current one included.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 90
+          default: 7
+      - name: utc_offset_minutes
+        in: query
+        required: false
+        description: How far ahead of UTC the client's clock runs, which decides
+          where its days begin.
+        schema:
+          type: integer
+          minimum: -720
+          maximum: 840
+          default: 0
+      - name: provider
+        in: query
+        required: false
+        description: Count only this provider's rows, named as `lines` and `scopes`
+          name it (`protocol:endpoint`). It narrows `days` and `lines`; `scopes`
+          still lists every provider and account of the window. A value is matched
+          exactly, percent-encoded in the query like any other (a `+` is a space
+          and a literal plus is `%2B`).
+        schema:
+          type: string
+          minLength: 1
+      - name: account
+        in: query
+        required: false
+        description: Count only this account's rows of `provider`, matched exactly.
+          An empty value is a provider without an account pool. Without `provider`
+          it is refused, because two providers can label accounts the same way.
+        schema:
+          type: string
   /storage:
     get:
       operationId: getStorage
@@ -1351,6 +1462,41 @@ paths:
           default: activity
       - $ref: '#/components/parameters/Limit'
       - $ref: '#/components/parameters/Next'
+  /sessions/{session_id}/title-generation:
+    parameters:
+    - name: session_id
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/ID'
+    post:
+      operationId: generateSessionTitle
+      summary: Generate a session name from the conversation
+      tags: [sessions]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+      responses:
+        '200':
+          description: Name generation started. The existing name stays until completion.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [message]
+                properties:
+                  message:
+                    type: string
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '409':
+          $ref: '#/components/responses/Problem409'
   /sessions/{session_id}/fast-mode:
     parameters:
     - name: session_id
@@ -2010,6 +2156,98 @@ paths:
             schema:
               $ref: '#/components/schemas/EmptyRequest'
         description: UTF-8 JSON; duplicate keys and unknown fields are rejected.
+  /sessions/{session_id}/side-questions/{question_id}:
+    put:
+      operationId: putSideQuestion
+      tags: [sessions]
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ID'
+      - name: question_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/UUIDv7'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SideQuestionRequest'
+      responses:
+        '200':
+          description: Current side question.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SideQuestionEnvelope'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '409':
+          $ref: '#/components/responses/Problem409'
+        '410':
+          $ref: '#/components/responses/Problem410'
+        '503':
+          $ref: '#/components/responses/Problem503'
+  /sessions/{session_id}/side-questions/{question_id}/cancel:
+    post:
+      operationId: cancelSideQuestion
+      tags: [sessions]
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ID'
+      - name: question_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/UUIDv7'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmptyRequest'
+      responses:
+        '200':
+          description: Current side question.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SideQuestionEnvelope'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '409':
+          $ref: '#/components/responses/Problem409'
+        '410':
+          $ref: '#/components/responses/Problem410'
+        '503':
+          $ref: '#/components/responses/Problem503'
   /sessions/{session_id}/shell-commands/{command_id}:
     put:
       operationId: putShellCommand
@@ -8446,6 +8684,105 @@ components:
       - $ref: '#/components/schemas/CapabilitySettingsChange'
       - $ref: '#/components/schemas/ModelSettingsChange'
       - $ref: '#/components/schemas/UISettingsChange'
+    UsageDay:
+      type: object
+      description: One day of the client's, with what the provider calls used in it.
+      properties:
+        start:
+          $ref: '#/components/schemas/Timestamp'
+        calls:
+          $ref: '#/components/schemas/Counter'
+        errors:
+          $ref: '#/components/schemas/Counter'
+        input_tokens:
+          $ref: '#/components/schemas/Counter'
+        cached_input_tokens:
+          $ref: '#/components/schemas/Counter'
+        cache_creation_tokens:
+          $ref: '#/components/schemas/Counter'
+        output_tokens:
+          $ref: '#/components/schemas/Counter'
+        reasoning_tokens:
+          $ref: '#/components/schemas/Counter'
+      required: [start, calls, errors, input_tokens, cached_input_tokens, cache_creation_tokens, output_tokens, reasoning_tokens]
+      additionalProperties: false
+    UsageLine:
+      type: object
+      description: What one profile, account and model used over the whole window.
+      properties:
+        profile:
+          type: string
+        provider:
+          type: string
+        account:
+          type: [string, 'null']
+          description: Null for a provider without an account pool.
+        model:
+          type: string
+        calls:
+          $ref: '#/components/schemas/Counter'
+        errors:
+          $ref: '#/components/schemas/Counter'
+        input_tokens:
+          $ref: '#/components/schemas/Counter'
+        cached_input_tokens:
+          $ref: '#/components/schemas/Counter'
+        cache_creation_tokens:
+          $ref: '#/components/schemas/Counter'
+        output_tokens:
+          $ref: '#/components/schemas/Counter'
+        reasoning_tokens:
+          $ref: '#/components/schemas/Counter'
+      required: [profile, provider, account, model, calls, errors, input_tokens, cached_input_tokens, cache_creation_tokens, output_tokens, reasoning_tokens]
+      additionalProperties: false
+    UsageScope:
+      type: object
+      description: One provider and account that used the window, named as `lines`
+        names them.
+      properties:
+        provider:
+          type: string
+        account:
+          type: [string, 'null']
+          description: Null for a provider without an account pool.
+      required: [provider, account]
+      additionalProperties: false
+    UsageSummary:
+      type: object
+      properties:
+        generated_at:
+          $ref: '#/components/schemas/Timestamp'
+        utc_offset_minutes:
+          type: integer
+        days:
+          type: array
+          description: Oldest first, one for each day asked for, empty days included.
+            A day counts only the rows the requested `provider` and `account` match.
+          items:
+            $ref: '#/components/schemas/UsageDay'
+        lines:
+          type: array
+          description: Most used first, at most 100 of what the request matches;
+            `lines_truncated` says more matched than are listed.
+          items:
+            $ref: '#/components/schemas/UsageLine'
+        scopes:
+          type: array
+          description: Every provider and account with use in the window, before
+            `provider` and `account` narrow the totals, so a client can offer what
+            it is not showing. At most 200, sorted by provider then account.
+          items:
+            $ref: '#/components/schemas/UsageScope'
+        lines_truncated:
+          type: boolean
+          description: Whether more profile, account and model lines matched than
+            `lines` lists.
+        scopes_truncated:
+          type: boolean
+          description: Whether more provider and account scopes used the window than
+            `scopes` lists.
+      required: [generated_at, utc_offset_minutes, days, lines, scopes, lines_truncated, scopes_truncated]
+      additionalProperties: false
     StorageSession:
       type: object
       properties:
@@ -9491,6 +9828,7 @@ components:
       oneOf:
       - $ref: '#/components/schemas/NewSessionRequest'
       - $ref: '#/components/schemas/ForkSessionRequest'
+      - $ref: '#/components/schemas/SideQuestionSessionRequest'
       - $ref: '#/components/schemas/ChildSessionRequest'
       - $ref: '#/components/schemas/ACPSessionRequest'
     Creation:
@@ -9500,6 +9838,7 @@ components:
           oneOf:
           - $ref: '#/components/schemas/NewSessionIntent'
           - $ref: '#/components/schemas/ForkSessionIntent'
+          - $ref: '#/components/schemas/SideQuestionSessionRequest'
           - $ref: '#/components/schemas/ChildSessionIntent'
           - $ref: '#/components/schemas/ACPSessionIntent'
         resolved:
@@ -9919,6 +10258,10 @@ components:
             $ref: '#/components/schemas/Composition'
           kernel:
             $ref: '#/components/schemas/Kernel'
+          side_question:
+            anyOf:
+            - $ref: '#/components/schemas/SideQuestion'
+            - type: 'null'
           shell_commands:
             type: array
             items:
@@ -11505,7 +11848,7 @@ components:
           - type: 'null'
         kind:
           type: string
-          enum: [turn, summarizer, background]
+          enum: [turn, summarizer, background, title, side]
         provider_profile:
           $ref: '#/components/schemas/ID'
         account_id:
@@ -13359,6 +13702,67 @@ components:
           $ref: '#/components/schemas/SessionStatus'
       required: [type, sequence, data]
       additionalProperties: false
+    SideQuestionRequest:
+      type: object
+      properties:
+        question:
+          type: string
+          minLength: 1
+          maxLength: 16384
+          x-max-utf8-bytes: 16384
+      required: [question]
+      additionalProperties: false
+    SideQuestion:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/UUIDv7'
+        question:
+          type: string
+        status:
+          type: string
+          enum: [running, answered, failed, cancelled]
+        answer:
+          type: [string, 'null']
+        error:
+          type: [string, 'null']
+        asked_at:
+          type: integer
+        continuation_session_id:
+          type: [string, 'null']
+      required: [id, question, status, answer, error, asked_at, continuation_session_id]
+      additionalProperties: false
+    SideQuestionEnvelope:
+      type: object
+      properties:
+        side_question:
+          $ref: '#/components/schemas/SideQuestion'
+      required: [side_question]
+      additionalProperties: false
+    SessionSideQuestionEvent:
+      type: object
+      properties:
+        type:
+          const: side_question
+        sequence:
+          $ref: '#/components/schemas/Counter'
+        data:
+          $ref: '#/components/schemas/SideQuestionEnvelope'
+      required: [type, sequence, data]
+      additionalProperties: false
+    SideQuestionSessionRequest:
+      type: object
+      properties:
+        kind:
+          const: side_question
+        source_session_id:
+          $ref: '#/components/schemas/ID'
+        side_question_id:
+          $ref: '#/components/schemas/UUIDv7'
+        name:
+          type: [string, 'null']
+      required: [kind, source_session_id, side_question_id]
+      additionalProperties: false
     ShellCommandRequest:
       type: object
       properties:
@@ -13757,6 +14161,7 @@ components:
       - $ref: '#/components/schemas/SessionStatusEvent'
       - $ref: '#/components/schemas/SessionInputEvent'
       - $ref: '#/components/schemas/SessionShellCommandEvent'
+      - $ref: '#/components/schemas/SessionSideQuestionEvent'
       - $ref: '#/components/schemas/SessionTextEvent'
       - $ref: '#/components/schemas/SessionThinkingEvent'
       - $ref: '#/components/schemas/SessionMessageEvent'

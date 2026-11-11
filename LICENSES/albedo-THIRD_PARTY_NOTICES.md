@@ -107,6 +107,41 @@ Diffs from The Pierre Computer Company (`@pierre/diffs`, https://diffs.com),
 Apache License 2.0; Shiki, MIT; KaTeX, MIT; Pele (https://pele.run, by
 Obsidian), MIT; marked, MIT. The client's about pane lists them with links.
 
+## Lobe icons
+
+The usage screens draw the mark of a model's or an account's provider
+(`web/src/lib/usageIcons.ts`, `web/src/lib/UsageIcon.svelte`): @lobehub's static
+SVG icons (https://github.com/lobehub/lobe-icons, https://icons.lobehub.com),
+`@lobehub/icons-static-svg` 1.102.0, imported at build time so the bundle carries
+only the marks that are drawn. They are used unmodified and painted as masks in
+the theme's own colour. The client's about pane lists them with links.
+
+lobe-icons is distributed under the MIT License:
+
+```
+MIT License
+
+Copyright (c) 2023 LobeHub
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
 ## Lucide
 
 The canvas's key hints (`web/src/lib/Gesture.svelte`) draw four of Lucide's

@@ -112,6 +112,7 @@ type ChatModel struct {
 	shellIDsByCommand  map[string]string
 	shellOutputLoading map[string]bool
 	shellSubmitting    bool
+	btw                btwState
 	artifactConn       *daemon.Connection
 	openBrowser        func(string)
 	History            *BoundedHistory
@@ -310,6 +311,7 @@ func NewChatModel(session *daemon.Session, client *daemon.ChatClient) ChatModel 
 		Flags:        DisplayFlags{Diffs: true},
 		Follow:       true,
 		transcript:   newTranscriptState(),
+		btw:          btwState{exchange: session.SideQuestion},
 		streamCtx:    ctx,
 		streamCancel: cancel,
 		eventChan:    make(chan streamDelivery, 16),
@@ -366,6 +368,9 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 }
 
 func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
+	if cmd, handled := m.handleBtwResult(msg); handled {
+		return m, cmd
+	}
 	if cmd, handled := m.handleShellResult(msg); handled {
 		return m, cmd
 	}

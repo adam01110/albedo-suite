@@ -1,6 +1,7 @@
-//// Vertex Gemini SSE chunks reduced to albedo events and a chat-shaped replay
-//// message. The message keeps the model's own parts, with each thought
-//// signature it issued, so a replay sends the signature back unmodified.
+//// Gemini `streamGenerateContent` SSE chunks reduced to albedo events and a
+//// chat-shaped replay message. The message keeps the model's own parts, with
+//// each thought signature it issued, so a replay sends the signature back
+//// unmodified.
 
 import albedo/openai_api/decoding
 import albedo/openai_api/fields

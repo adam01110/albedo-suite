@@ -1,13 +1,8 @@
-//// Albedo requests into Amazon Bedrock's Anthropic-shaped Messages route.
-//// The body and headers are the same on bedrock-runtime and bedrock-mantle;
-//// only the host differs, so one encoder covers both. Replay keeps the signed
-//// thinking blocks Claude recorded, so a thinking-enabled turn continues with
-//// the blocks the provider issued.
+//// Portable Anthropic Messages bodies with text, images and tool calls. A
+//// replayed turn from the same model carries the signed thinking blocks Claude
+//// recorded. Routes own their URL, authentication and headers.
 
-import albedo/harness/extensions/bedrock/sigv4.{type Credentials}
-import albedo/harness/extensions/claude/schema
-import albedo/harness/extensions/claude/wire.{blocks_detail}
-import albedo/openai_api
+import albedo/anthropic_api/schema
 import albedo/openai_api/replay
 import albedo/openai_api/types.{
   type Error, type Input, type Request, Assistant, InvalidRequest, Replay,
@@ -19,61 +14,15 @@ import gleam/json.{type Json}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
-import gleam/string
 import gleam/string_tree.{type StringTree}
-import gleam/uri
-
-pub type Auth {
-  Bearer(key: String)
-  SigV4(credentials: Credentials)
-}
 
 type Message {
   Message(role: String, blocks: List(Json))
 }
 
-pub fn encode(
-  auth: Auth,
-  base_url: String,
-  now: Int,
-  request: Request,
-) -> Result(openai_api.Exchange, Error) {
-  use <- bool.guard(
-    !string.contains(string.lowercase(request.model), "claude"),
-    Error(InvalidRequest(
-      "this Bedrock profile serves Claude models through the Anthropic Messages route; configure an anthropic.claude* model id",
-    )),
-  )
-  use #(host, region, service) <- result.try(target(base_url))
-  use body_tree <- result.try(encode_body(request))
-  let body = string_tree.to_string(body_tree)
-  let auth_headers = case auth {
-    Bearer(key) -> [#("x-api-key", key)]
-    SigV4(credentials) ->
-      sigv4.headers(credentials, region, service, host, now, body)
-  }
-  Ok(openai_api.Exchange(
-    "https://" <> host <> "/anthropic/v1/messages",
-    list.flatten([
-      auth_headers,
-      [
-        #("anthropic-version", "2023-06-01"),
-        #("accept", "text/event-stream"),
-      ],
-    ]),
-    body_tree,
-    120_000,
-    None,
-    8 * 1024 * 1024,
-    True,
-  ))
-}
-
 /// Encodes `request` into a portable Anthropic Messages JSON body. A replayed
 /// turn from the same model carries the signed thinking blocks the reducer
-/// recorded; any other turn carries text and tool calls. Shared by Bedrock,
-/// OpenCode Go and Copilot, whose `/messages` routes differ only in
-/// authentication.
+/// recorded; any other turn carries text, images and tool calls.
 pub fn encode_body(request: Request) -> Result(StringTree, Error) {
   encode_with_marks(request, None)
 }
@@ -131,7 +80,7 @@ fn encode_with_marks(
 ) -> Result(StringTree, Error) {
   use <- bool.guard(
     request.model == "",
-    Error(InvalidRequest("invalid Bedrock model")),
+    Error(InvalidRequest("invalid Anthropic Messages model")),
   )
   use max_tokens <- result.try(types.required_output_limit(
     request,
@@ -210,52 +159,6 @@ fn encode_with_marks(
   Ok(json.to_string_tree(json.object(fields)))
 }
 
-/// `(host, region, service)` from a configured `baseUrl`. The SigV4
-/// service name follows each endpoint's own IAM action namespace
-/// (`bedrock:*` vs `bedrock-mantle:*`); mantle's has not been verified.
-pub fn target(base_url: String) -> Result(#(String, String, String), Error) {
-  let invalid =
-    InvalidRequest(
-      "baseUrl must be an HTTPS bedrock-runtime or bedrock-mantle AWS host with no credentials, port, query, fragment or path",
-    )
-  use parsed <- result.try(uri.parse(base_url) |> result.replace_error(invalid))
-  use <- bool.guard(
-    parsed.scheme != Some("https")
-      || parsed.userinfo != None
-      || parsed.port != None
-      || parsed.query != None
-      || parsed.fragment != None
-      || { parsed.path != "" && parsed.path != "/" },
-    Error(invalid),
-  )
-  use host <- result.try(option.to_result(parsed.host, invalid))
-  use #(service, region, suffix) <- result.try(case string.split(host, ".") {
-    ["bedrock-runtime", region, ..suffix] ->
-      Ok(#("bedrock", region, string.join(suffix, ".")))
-    ["bedrock-mantle", region, ..suffix] ->
-      Ok(#("bedrock-mantle", region, string.join(suffix, ".")))
-    _ -> Error(invalid)
-  })
-  let valid_region =
-    region != ""
-    && list.all(string.to_graphemes(region), fn(c) {
-      string.contains("abcdefghijklmnopqrstuvwxyz0123456789-", c)
-    })
-  let valid_suffix = case suffix {
-    "amazonaws.com"
-    | "api.aws"
-    | "amazonaws.com.cn"
-    | "api.amazonwebservices.com.cn"
-    | "c2s.ic.gov"
-    | "sc2s.sgov.gov"
-    | "cloud.adc-e.uk"
-    | "csp.hci.ic.gov" -> True
-    _ -> False
-  }
-  use <- bool.guard(!valid_region || !valid_suffix, Error(invalid))
-  Ok(#(host, region, service))
-}
-
 fn add(
   model: String,
   acc: List(Message),
@@ -303,6 +206,10 @@ fn add(
     }
   }
 }
+
+/// The detail type `anthropic_api/stream` records Claude's blocks under; the
+/// stream module imports this one, so the name is repeated here.
+const blocks_detail = "claude.blocks"
 
 type Recorded {
   Recorded(model: String, blocks: List(Json))
@@ -417,7 +324,8 @@ fn image_block(image: types.Image, mark: Option(Int)) -> Json {
   ])
 }
 
-fn tool_use_block(id: String, name: String, arguments: String) -> Json {
+/// Builds a native tool call with the supplied wire name unchanged.
+pub fn tool_use_block(id: String, name: String, arguments: String) -> Json {
   let input =
     json.parse(arguments, decode.dynamic)
     |> result.map(types.encode_value)

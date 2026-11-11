@@ -174,6 +174,7 @@ const (
 	// EventCommitted says transcript rows up to Seq now cover what was shown.
 	EventCommitted    EventType = "committed"
 	EventShellCommand EventType = "shell_command"
+	EventSideQuestion EventType = "side_question"
 )
 
 type Usage struct {
@@ -227,6 +228,7 @@ type StreamEvent struct {
 	Snapshot      *Session
 	ShellCommand  *ShellCommand
 	ShellCommands []ShellCommand
+	SideQuestion  *SideQuestion
 	Receipt       *InputReceipt
 	OperationID   string
 	Images        []ImageMetadata

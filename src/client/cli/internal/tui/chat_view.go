@@ -426,11 +426,13 @@ func (m *ChatModel) View() string {
 	}
 
 	m.frame.scratch = rows
-	if m.frame.content != "" && sameStrings(rows, m.frame.rows) {
-		return m.frame.content
+	if m.frame.content == "" || !sameStrings(rows, m.frame.rows) {
+		m.frame.rows = append(m.frame.rows[:0], rows...)
+		m.frame.content = stripPrivateMarks(strings.Join(rows, "\n"))
 	}
-	m.frame.rows = append(m.frame.rows[:0], rows...)
-	m.frame.content = stripPrivateMarks(strings.Join(rows, "\n"))
+	if m.btw.open {
+		return overlay(m.frame.content, m.btwPanelView(m.Width, m.Height), m.Width, m.Height)
+	}
 	return m.frame.content
 }
 

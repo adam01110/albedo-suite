@@ -18,6 +18,12 @@ func (m *ChatModel) handleInput(msg tea.Msg) (tea.Cmd, bool) {
 	var cmds []tea.Cmd
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
+		// The side question panel owns keys while open, before the turn
+		// interrupt or composer input.
+		if m.btw.open {
+			cmd, _ := m.btwKey(msg)
+			return cmd, true
+		}
 		// The selector owns keys while open, before chat navigation or composer input.
 		if len(m.effortOptions) > 0 {
 			switch msg.String() {
@@ -202,6 +208,17 @@ func (m *ChatModel) handleInput(msg tea.Msg) (tea.Cmd, bool) {
 		cmd := m.dragScrolled(msg)
 		return cmd, true
 	case tea.MouseMsg:
+		if m.btw.open {
+			if wheel, ok := msg.(tea.MouseWheelMsg); ok {
+				switch wheel.Button {
+				case tea.MouseWheelUp:
+					m.btw.scroll = max(0, m.btw.scroll-3)
+				case tea.MouseWheelDown:
+					m.btw.scroll = min(m.btw.maxScroll, m.btw.scroll+3)
+				}
+			}
+			return nil, true
+		}
 		firstRow := 2 + m.Notices.ChromeRows()
 		mouse := msg.Mouse()
 		point := func() Point {
@@ -373,7 +390,7 @@ func (m *ChatModel) isRecognizedCommand(input string) bool {
 	token, typed := fields[0], len(fields) > 1
 	switch token {
 	case "/a", "/agents", "/sessions", "/q", "/quit", "/exit", "/new", "/model", "/extensions",
-		"/plugins", "/tree", "/fork", "/quota", "/context", "/t", "/thinking", "/v", "/verbose",
+		"/plugins", "/tree", "/fork", "/btw", "/quota", "/usage", "/context", "/t", "/thinking", "/v", "/verbose",
 		"/status", "/login", "/mouse", "/skills", "/instructions", "/mcp", "/cd", "/effort", "/compact", "/kernel", "/reload",
 		"/work", "/paperclips", "/webhooks", "/discord", "/config", "/settings":
 		return true
@@ -386,6 +403,12 @@ func (m *ChatModel) isRecognizedCommand(input string) bool {
 }
 
 func (m *ChatModel) submitInput(input string, cmds *[]tea.Cmd) {
+	// /btw is intercepted here, before any catalog or prompt path, so it is
+	// handled even when the daemon has no side question capability.
+	if question, ok := parseBtwInput(input); ok {
+		m.startSideQuestion(question, input, cmds)
+		return
+	}
 	if strings.HasPrefix(input, "!") {
 		m.startShellCommand(input, cmds)
 		return
@@ -447,6 +470,11 @@ func (m *ChatModel) handleSubmittedCommand(input string, cmds *[]tea.Cmd) {
 	trimmed := strings.TrimSpace(input)
 	emit := func(msg tea.Msg) { *cmds = append(*cmds, func() tea.Msg { return msg }) }
 
+	if question, ok := parseBtwInput(trimmed); ok {
+		m.startSideQuestion(question, trimmed, cmds)
+		return
+	}
+
 	name, args, _ := strings.Cut(trimmed, " ")
 	commandIndex := slices.IndexFunc(m.CommandMenu.Catalog, func(command daemon.SessionCommand) bool {
 		return command.Name == name && command.Delivery == "input"
@@ -496,6 +524,8 @@ func (m *ChatModel) handleSubmittedCommand(input string, cmds *[]tea.Cmd) {
 		emit(ChatOpenForkPickerMsg{})
 	case "/quota":
 		emit(ChatOpenQuotaMsg{})
+	case "/usage":
+		emit(ChatOpenUsageMsg{})
 	case "/context":
 		emit(ChatOpenContextInspectorMsg{})
 	case "/ttl", "/requests":

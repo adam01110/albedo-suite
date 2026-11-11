@@ -171,7 +171,9 @@ update(Flows, Id, {State, _} = Status) ->
         #{Id := #{home := Home, record := Record} = Flow} ->
             NextRecord = case State of
                 done -> Record; %% Completion and credential publish share one commit.
-                failed -> failed_record(Record, <<"Provider authorization failed.">>);
+                failed ->
+                    log_failure(Record, element(2, Status)),
+                    failed_record(Record, <<"Provider authorization failed.">>);
                 _ -> Record#{<<"state">> => atom_to_binary(State), <<"progress">> => bounded(element(2, Status), 4096)}
             end,
             case terminal(Record) of
@@ -650,8 +652,18 @@ end, Flows).
 
 bounded(Text, Max) -> unicode:characters_to_binary(lists:sublist(unicode:characters_to_list(Text), Max)).
 
+%% Kept out of the API, which only says the sign-in failed.
+log_failure(Record, Reason) ->
+    logger:warning("provider sign-in ~ts (~ts) failed: ~tp",
+        [maps:get(<<"id">>, Record, <<>>), maps:get(<<"provider">>, Record, <<>>), Reason]).
+
+failure_reason(#{<<"failure">> := Detail, <<"state">> := State}) when is_binary(Detail) ->
+    #{<<"code">> => <<"sign_in_", State/binary>>, <<"detail">> => Detail};
+failure_reason(_) -> null.
+
 encode_login(Home, Flow, Logins) ->
     Accounts = locked(Home, fun() -> albedo_auth_accounts:account_projection(Home, Logins) end),
-    Value = maps:with([<<"id">>, <<"provider">>, <<"url">>, <<"state">>, <<"instructions">>, <<"progress">>, <<"failure">>, <<"confirmation_revision">>], Flow),
-    iolist_to_binary(json:encode(Value#{<<"expires_at">> => albedo_http_api:timestamp(maps:get(<<"expires">>, Flow)),
+    Value = maps:with([<<"id">>, <<"provider">>, <<"url">>, <<"state">>, <<"instructions">>, <<"progress">>, <<"confirmation_revision">>], Flow),
+    iolist_to_binary(json:encode(Value#{<<"failure">> => failure_reason(Flow),
+        <<"expires_at">> => albedo_http_api:timestamp(maps:get(<<"expires">>, Flow)),
         <<"accounts">> => [A || A <- Accounts, lists:member(maps:get(<<"id">>, A), maps:get(<<"account_ids">>, Flow))]})).

@@ -9,6 +9,7 @@ import albedo/daemon/mail
 import albedo/daemon/operations
 import albedo/daemon/session_activity
 import albedo/daemon/shell_commands
+import albedo/daemon/side_question
 import albedo/daemon/tool_progress as progress
 import albedo/daemon/transcript
 import albedo/daemon/usage
@@ -52,6 +53,7 @@ pub type Event {
   /// `replaces` names the live segments whose streamed text this durable
   /// entry represents, as an exact ordered prefix.
   Message(entry: http_history.Entry, replaces: List(String))
+  SideQuestion(side_question.Exchange)
   ShellCommand(shell_commands.Command)
   ToolProgress(Option(progress.Snapshot))
   Tool(
@@ -157,6 +159,10 @@ pub fn encode(session: String, sequence: Int, event: Event) -> json.Json {
     Thinking(run_id, message_id, text, elapsed) -> #(
       "thinking",
       delta(run_id, message_id, text, elapsed),
+    )
+    SideQuestion(exchange) -> #(
+      "side_question",
+      json.object([#("side_question", side_question.encode(exchange))]),
     )
     ShellCommand(command) -> #(
       "shell_command",

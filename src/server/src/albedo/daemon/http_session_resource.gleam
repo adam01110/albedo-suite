@@ -14,6 +14,7 @@ import albedo/daemon/session
 import albedo/daemon/session_cost
 import albedo/daemon/session_submission
 import albedo/daemon/shell_commands
+import albedo/daemon/side_question
 import albedo/daemon/store
 import albedo/harness/extension/selection
 import albedo/harness/runtime
@@ -295,6 +296,10 @@ pub fn encode(
         ),
         #("composition", composition_value(capture.composition)),
         #("kernel", http_wire.kernel(capture.kernel)),
+        #(
+          "side_question",
+          json.nullable(capture.side_question, side_question.encode),
+        ),
         #(
           "shell_commands",
           json.array(capture.shell_commands, shell_commands.encode),

@@ -41,7 +41,18 @@ class KernelWorkspaceTests(unittest.TestCase):
             10,
             "missing workspace did not expose a blocked input",
         )
-        snapshot = self.snapshot()
+        # Blocking publishes a trailing activity observation; take the baseline
+        # once the session has gone quiet, so only a later retry moves it.
+        settled = [self.snapshot()]
+
+        def quiet():
+            time.sleep(0.5)
+            current = self.snapshot()
+            previous, settled[0] = settled[0], current
+            return current["cursor"] == previous["cursor"]
+
+        wait_until(quiet, 10, "blocked session kept publishing events")
+        snapshot = settled[0]
         self.assertEqual(snapshot["status"]["phase"], "idle")
         self.assertEqual(snapshot["kernel"]["state"], "none")
         detail = snapshot["status"]["blocking_reason"]["detail"]

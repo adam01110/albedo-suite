@@ -61,6 +61,12 @@ func (m *AppModel) handleChatLifecycle(msg tea.Msg) (tea.Cmd, bool) {
 		sid, forward = sm.SessionID, true
 	case ChatOperationPollMsg:
 		sid, forward = sm.SessionID, true
+	case ChatSideQuestionAskedMsg:
+		sid, forward = sm.SessionID, true
+	case ChatSideQuestionCancelMsg:
+		sid, forward = sm.SessionID, true
+	case ChatSideQuestionContinuedMsg:
+		sid, forward = sm.SessionID, true
 	case ChatOperationResolvedMsg:
 		sid, forward = sm.SessionID, true
 	case ChatTurnSentMsg:

@@ -621,12 +621,58 @@ pub fn background(
   request: types.Request,
   prefix: requests.Prefix,
 ) -> Result(compaction.Answer, String) {
+  auxiliary(state, request, prefix, requests.Background)
+}
+
+/// A title is metered like other auxiliary calls, with no transport retry.
+pub fn title(
+  state: CallContext,
+  request: types.Request,
+  prefix: requests.Prefix,
+) -> Result(compaction.Answer, String) {
+  auxiliary(state, request, prefix, requests.Title)
+}
+
+pub type SideReply {
+  SideReply(text: String, finish: types.Finish)
+}
+
+pub fn side(
+  state: CallContext,
+  request: types.Request,
+  prefix: requests.Prefix,
+) -> Result(SideReply, String) {
+  auxiliary_turn(state, request, prefix, requests.Side)
+  |> result.map(fn(turn) { SideReply(visible_text(turn), turn.finish) })
+}
+
+fn auxiliary(
+  state: CallContext,
+  request: types.Request,
+  prefix: requests.Prefix,
+  kind: requests.Kind,
+) -> Result(compaction.Answer, String) {
+  auxiliary_turn(state, request, prefix, kind)
+  |> result.map(fn(turn) {
+    compaction.Answer(
+      turn.usage,
+      compaction.reply_text(visible_text(turn), turn.finish),
+    )
+  })
+}
+
+fn auxiliary_turn(
+  state: CallContext,
+  request: types.Request,
+  prefix: requests.Prefix,
+  kind: requests.Kind,
+) -> Result(types.Turn, String) {
   call(
     state,
-    requests.Background,
+    kind,
     request,
     prefix,
-    // A retry is silent: a background call never shows on the stream.
+    // Auxiliary calls do not publish stream events.
     fn(_event) { True },
     fn(_event) { types.Continue },
     fn(_attempt, _event) { types.Continue },
@@ -635,13 +681,7 @@ pub fn background(
     1,
   )
   |> result.try(whole)
-  |> result.map(fn(attempt) {
-    let turn = attempt.turn
-    compaction.Answer(
-      turn.usage,
-      compaction.reply_text(visible_text(turn), turn.finish),
-    )
-  })
+  |> result.map(fn(attempt) { attempt.turn })
   |> result.map_error(describe(state.upstream, request.model, _))
 }
 
@@ -1153,6 +1193,10 @@ fn call(
     salvage,
     first,
     0,
+    case kind {
+      requests.Title | requests.Side -> 1
+      _ -> attempts
+    },
   )
 }
 
@@ -1274,6 +1318,7 @@ fn retry_stream(
   salvage: fn(String) -> Result(List(types.Input), String),
   attempt: Int,
   accepted_timeouts: Int,
+  maximum: Int,
 ) -> Result(Attempt(a), types.Error) {
   case run(attempt) {
     Error(error) -> {
@@ -1283,7 +1328,7 @@ fn retry_stream(
         False -> accepted_timeouts
       }
       case
-        attempt < attempts
+        attempt < maximum
         && retryable(error)
         && accepted_timeouts <= accepted_timeout_retries
       {
@@ -1322,6 +1367,7 @@ fn retry_stream(
                     salvage,
                     attempt + 1,
                     accepted_timeouts,
+                    maximum,
                   )
                 kept -> Ok(Resumed(kept, attempt + 1))
               }

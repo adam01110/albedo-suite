@@ -151,7 +151,9 @@ fn state(home: String, host: runtime.Runtime) -> session_state.State(Nil) {
   let assert Ok(_) =
     conversation.create(ledger, conversation.Info(..info, id: "parent"))
   session_state.State(
+    title_job: None,
     shell_commands: [],
+    side_question: None,
     shell_worker: None,
     active_output: active_output.new(home, info.id, "fixture"),
     info: info,

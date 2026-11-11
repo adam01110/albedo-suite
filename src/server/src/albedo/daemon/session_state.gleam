@@ -11,6 +11,7 @@ import albedo/daemon/mail
 import albedo/daemon/operations
 import albedo/daemon/session_activity
 import albedo/daemon/shell_commands
+import albedo/daemon/side_question
 import albedo/daemon/store
 import albedo/daemon/tool_progress
 import albedo/daemon/transcript
@@ -42,9 +43,25 @@ pub type PendingSwitch {
   PendingSwitch(caller: String, provider: String, model: String)
 }
 
+pub type TitleRequest {
+  InitialTitle(text: String, acceptance_order: Int)
+  RegenerateTitle
+}
+
+pub type TitleJob {
+  TitleJob(
+    revision: Int,
+    request: TitleRequest,
+    worker: process.Pid,
+    stop: turn.Latch,
+  )
+}
+
 pub type State(message) {
   State(
+    title_job: Option(TitleJob),
     active_output: active_output.Projection,
+    side_question: Option(side_question.Exchange),
     shell_commands: List(shell_commands.Command),
     shell_worker: Option(#(String, process.Pid)),
     info: conversation.Info,

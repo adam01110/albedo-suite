@@ -1,6 +1,6 @@
-import albedo/harness/extensions/claude/stream as messages
+import albedo/anthropic_api/stream as messages
+import albedo/gemini_api/stream as gemini
 import albedo/harness/extensions/opencode_go/wire as portable
-import albedo/harness/extensions/vertex/stream as gemini
 import albedo/openai_api
 import albedo/openai_api/chat
 import albedo/openai_api/cost
@@ -19,7 +19,7 @@ pub fn reducer(
   tools: List(types.Tool),
 ) -> stream.Reducer {
   let reducer = case provider {
-    "anthropic" -> messages.reducer(model, tools)
+    "anthropic" -> messages.reducer(model, tools, cost.none)
     "open_ai" -> portable.responses_reducer()
     "google" -> gemini.reducer()
     _ ->

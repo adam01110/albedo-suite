@@ -1,6 +1,6 @@
-import albedo/harness/extensions/bedrock/wire as messages
+import albedo/anthropic_api/request as messages
+import albedo/gemini_api/request as gemini
 import albedo/harness/extensions/opencode_go/wire as portable
-import albedo/harness/extensions/vertex/wire as gemini
 import albedo/openai_api
 import albedo/openai_api/request as chat
 import albedo/openai_api/types
@@ -20,11 +20,10 @@ pub fn encode(
   use body <- result.try(case provider {
     "anthropic" -> messages.encode_body(request)
     "open_ai" ->
-      portable.encode_responses(client, request)
+      portable.encode_responses(client, [], request)
       |> result.map(fn(exchange) { exchange.body })
     "google" -> gemini.encode_body(request)
-    "x_ai" ->
-      chat.encode_with_policy(types.ChatCompletions, types.OpenAI, request)
+    "x_ai" -> chat.encode(types.ChatCompletions, request)
     _ -> Error(types.InvalidRequest("unsupported Zed model family"))
   })
   use body <- result.try(

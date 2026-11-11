@@ -32,6 +32,7 @@ type SessionPreview struct {
 }
 type CreateSessionRequest struct {
 	Kind, Workspace, Provider, Model, Effort, Name, SourceSessionID, CheckpointID, ParentID, Address, Task, CyberAccess string
+	SideQuestionID                                                                                                      string
 
 	// ContextWindow is the tokens a new session compacts against; zero keeps the model's window.
 	ContextWindow int64
@@ -71,7 +72,9 @@ type Session struct {
 	MovePending *SessionMovePending `json:"-"`
 	// SessionCostUSD is the daemon's estimate; nil when it cannot price the session.
 	SessionCostUSD *float64 `json:"-"`
-	wire           protocol.Session
+	// SideQuestion is the session's latest side question exchange, if any.
+	SideQuestion *SideQuestion `json:"-"`
+	wire         protocol.Session
 }
 type Location struct {
 	Host  *string `json:"host"`
@@ -98,6 +101,10 @@ func sessionValue(wire protocol.Session) Session {
 	session.Moved = movedValue(wire.Moved)
 	session.MovePending = movePendingValue(wire.MovePending)
 	session.SessionCostUSD = wire.SessionCostUsd
+	if wire.SideQuestion != nil {
+		question := *wire.SideQuestion
+		session.SideQuestion = &question
+	}
 	return session
 }
 
@@ -127,6 +134,11 @@ func validateSession(wire protocol.Session) error {
 	}
 	if err := validateActiveOutput(wire.ID, wire.ActiveOutput); err != nil {
 		return err
+	}
+	if wire.SideQuestion != nil {
+		if err := validSideQuestion(*wire.SideQuestion); err != nil {
+			return err
+		}
 	}
 	return validateSessionStatus(wire.Status)
 }

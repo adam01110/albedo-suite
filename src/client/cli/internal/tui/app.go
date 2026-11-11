@@ -33,6 +33,7 @@ const (
 	AppStateAgents
 	AppStateFolderPicker
 	AppStateQuota
+	AppStateUsage
 )
 
 type pendingSessionIntents struct {
@@ -71,6 +72,7 @@ type AppModel struct {
 	FolderPicker     FolderPicker
 	Agents           AgentsViewModel
 	Quota            QuotaModel
+	Usage            UsageModel
 
 	Chat        ChatModel
 	SettingsGen int
@@ -267,6 +269,7 @@ func (m *AppModel) Update(msg tea.Msg) (model tea.Model, resultCmd tea.Cmd) {
 		m.FolderPicker.SetSize(msg.Width, msg.Height)
 		m.Login.SetSize(msg.Width, msg.Height)
 		m.Quota.SetSize(msg.Width, msg.Height)
+		m.Usage.SetSize(msg.Width, msg.Height)
 		return m, nil
 
 	case tea.FocusMsg:
@@ -421,7 +424,7 @@ func (m *AppModel) Update(msg tea.Msg) (model tea.Model, resultCmd tea.Cmd) {
 
 	case WebhooksPageDoneMsg, DiscordPageDoneMsg, ExtensionPickerDoneMsg,
 		TreeCancelMsg, ContextDoneMsg, CapabilityPageDoneMsg, PageCancelMsg,
-		QuotaCancelMsg, ConfigPageDoneMsg:
+		QuotaCancelMsg, UsageCancelMsg, ConfigPageDoneMsg:
 		m.State = AppStateChat
 		return m, nil
 
@@ -441,6 +444,9 @@ func (m *AppModel) Update(msg tea.Msg) (model tea.Model, resultCmd tea.Cmd) {
 
 	case ChatOpenQuotaMsg:
 		return m, m.openQuota()
+
+	case ChatOpenUsageMsg:
+		return m, m.openUsage()
 
 	case TreeRewindSuccessMsg:
 		if m.State != AppStateTreePicker || msg.Generation != m.TreePicker.Generation || m.ActiveSession == nil {
@@ -479,6 +485,12 @@ func (m *AppModel) Update(msg tea.Msg) (model tea.Model, resultCmd tea.Cmd) {
 			return m, nil
 		}
 		return m, m.setChatSession(msg.Session, true)
+
+	case ChatSideQuestionOpenMsg:
+		if m.ActiveSession == nil || msg.SessionID != m.ActiveSession.ID || msg.Generation != m.Chat.Generation {
+			return m, nil
+		}
+		return m, m.openSession(msg.Session)
 
 	case ChatOpenContextInspectorMsg:
 		return m, m.openContextInspector()
@@ -617,6 +629,8 @@ func (m *AppModel) Update(msg tea.Msg) (model tea.Model, resultCmd tea.Cmd) {
 		m.Login, cmd = m.Login.Update(msg)
 	case AppStateQuota:
 		m.Quota, cmd = m.Quota.Update(msg)
+	case AppStateUsage:
+		m.Usage, cmd = m.Usage.Update(msg)
 	}
 
 	return m, cmd

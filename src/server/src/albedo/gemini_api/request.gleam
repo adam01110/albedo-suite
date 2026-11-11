@@ -1,11 +1,8 @@
-//// Albedo requests into Vertex AI's `generateContent` wire shape — the
-//// same request and response body Google documents for the public Gemini
-//// API; only the host, path, and OAuth token are Vertex's own. Replay sends
-//// the model's own parts back with the thought signatures it issued, and no
-//// signature where it issued none.
+//// Portable Gemini `generateContent` bodies with text, images and tool calls.
+//// Replay sends the model's own parts back with the thought signatures it
+//// issued, and no signature where it issued none. Routes own their URL,
+//// authentication and headers.
 
-import albedo/harness/extensions/vertex/fast as vertex_fast
-import albedo/openai_api
 import albedo/openai_api/replay
 import albedo/openai_api/types.{
   type Error, type Input, type Request, Assistant, InvalidRequest, Replay,
@@ -40,68 +37,7 @@ type History {
   History(contents: List(Content), calls: Dict(String, String))
 }
 
-pub fn encode(
-  token: String,
-  project: String,
-  location: String,
-  request: Request,
-) -> Result(openai_api.Exchange, Error) {
-  encode_for_mode(token, project, location, request, False)
-}
-
-/// Priority-only mode bypasses provisioned throughput, as Google documents.
-pub fn encode_for_mode(
-  token: String,
-  project: String,
-  location: String,
-  request: Request,
-  fast: Bool,
-) -> Result(openai_api.Exchange, Error) {
-  use <- bool.guard(
-    !string.contains(string.lowercase(request.model), "gemini"),
-    Error(InvalidRequest(
-      "this Vertex profile serves Gemini models; configure a gemini* model id",
-    )),
-  )
-  use <- bool.guard(
-    fast && !vertex_fast.supports(request.model, location),
-    Error(InvalidRequest(
-      "Google Vertex Priority PayGo is not documented for this model and endpoint",
-    )),
-  )
-  use body <- result.try(encode_body(request))
-  let path =
-    "/v1/projects/"
-    <> project
-    <> "/locations/"
-    <> location
-    <> "/publishers/google/models/"
-    <> request.model
-    <> ":streamGenerateContent?alt=sse"
-  Ok(openai_api.Exchange(
-    endpoint(location) <> path,
-    [
-      #("authorization", "Bearer " <> token),
-      #("content-type", "application/json"),
-      #("accept", "text/event-stream"),
-      ..case fast {
-        True -> [
-          #("X-Vertex-AI-LLM-Shared-Request-Type", "priority"),
-          #("X-Vertex-AI-LLM-Request-Type", "shared"),
-        ]
-        False -> []
-      }
-    ],
-    body,
-    120_000,
-    None,
-    8 * 1024 * 1024,
-    True,
-  ))
-}
-
 /// Encodes `request` into a portable Gemini `generateContent` JSON body.
-/// Shared by Vertex AI and OpenCode Go's Gemini route.
 pub fn encode_body(request: Request) -> Result(StringTree, Error) {
   use history <- result.try(
     list.try_fold(request.input, History([], dict.new()), fn(h, i) {
@@ -162,16 +98,6 @@ pub fn encode_body(request: Request) -> Result(StringTree, Error) {
   Ok(json.to_string_tree(json.object(fields)))
 }
 
-/// Global and US/EU multi-region endpoints are not region-prefixed hosts.
-pub fn endpoint(location: String) -> String {
-  case location {
-    "global" -> "https://aiplatform.googleapis.com"
-    "us" -> "https://aiplatform.us.rep.googleapis.com"
-    "eu" -> "https://aiplatform.eu.rep.googleapis.com"
-    _ -> "https://" <> location <> "-aiplatform.googleapis.com"
-  }
-}
-
 fn generation_config(request: Request) -> Result(Json, Error) {
   use thinking <- result.try(thinking_config(
     request.model,
@@ -217,8 +143,9 @@ type Thinking {
   Levels(efforts: List(String))
 }
 
-/// Vertex's documented controls, kept local rather than importing another
-/// provider's catalog. Only known families and their version suffixes match.
+/// Google's documented thinking controls for each Gemini family, kept here
+/// rather than importing a provider's catalog. Only known families and their
+/// version suffixes match.
 fn thinking_config(
   model: String,
   effort: Option(String),

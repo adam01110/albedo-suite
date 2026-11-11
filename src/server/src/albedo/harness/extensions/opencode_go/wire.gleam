@@ -2,21 +2,64 @@
 //// OpenAI Responses (`/responses`), Anthropic Messages (`/messages`), and
 //// Google Gemini (`:streamGenerateContent?alt=sse`). Every route converts from
 //// and reduces back to portable ChatCompletions replay items, reusing the
-//// shared OpenAI, Bedrock/Claude, and Vertex wire/stream encoders and reducers.
+//// shared OpenAI, Anthropic Messages, and Gemini encoders and reducers.
 
-import albedo/harness/extensions/bedrock/wire as bedrock_wire
-import albedo/harness/extensions/vertex/wire as vertex_wire
+import albedo/anthropic_api/request as messages_request
+import albedo/anthropic_api/stream as messages_stream
+import albedo/gemini_api/request as gemini_request
+import albedo/gemini_api/stream as gemini_stream
 import albedo/harness/settings
 import albedo/openai_api
 import albedo/openai_api/bridge
 import albedo/openai_api/cost
 import albedo/openai_api/request as openai_request
 import albedo/openai_api/stream as reducer
-import albedo/openai_api/types.{type Client, type Error, type Request, Responses}
+import albedo/openai_api/types.{type Error, type Request, Responses}
 import gleam/dynamic.{type Dynamic}
+import gleam/json
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import gleam/string_tree.{type StringTree}
+
+pub type Client {
+  Client(connection: types.Client, session_id: String, org_id: String)
+}
+
+pub fn client(
+  base_url: String,
+  key: String,
+  session: String,
+  org: String,
+) -> Client {
+  Client(openai_api.client(types.ChatCompletions, base_url, key), session, org)
+}
+
+pub fn validate(client: Client) -> Result(Nil, Error) {
+  use _ <- result.try(openai_api.validate_client(client.connection))
+  case
+    string.trim(client.session_id) == ""
+    || openai_api.unsafe_header(client.session_id)
+    || openai_api.unsafe_header(client.org_id)
+  {
+    True -> Error(types.InvalidRequest("invalid OpenCode Go session identity"))
+    False -> Ok(Nil)
+  }
+}
+
+pub fn headers(client: Client) -> List(#(String, String)) {
+  let extra = [
+    #("user-agent", "albedo/1.0"),
+    #("x-opencode-client", "albedo"),
+    #("x-opencode-session", client.session_id),
+  ]
+  let extra = case client.org_id {
+    "" -> extra
+    org -> [#("x-opencode-org-id", org), ..extra]
+  }
+  openai_api.headers(client.connection, extra)
+}
 
 pub type Route {
   ChatRoute
@@ -55,6 +98,46 @@ fn documented_route(model: String) -> Route {
   }
 }
 
+/// Send a request using the route and reducer selected for its model.
+pub fn stream(
+  client: Client,
+  request: types.Request,
+  on_event: fn(types.Event) -> types.Control,
+) -> Result(types.Turn, types.Error) {
+  use _ <- result.try(validate(client))
+  case route(request.model) {
+    ChatRoute -> stream_chat(client, request, on_event)
+    ResponsesRoute -> {
+      use exchange <- result.try(encode_responses(
+        client.connection,
+        headers(client),
+        request,
+      ))
+      openai_api.exchange(exchange, responses_reducer(), on_event)
+    }
+    MessagesRoute -> {
+      use exchange <- result.try(encode_messages(
+        client.connection,
+        headers(client),
+        request,
+      ))
+      openai_api.exchange(
+        exchange,
+        messages_stream.reducer(request.model, request.tools, cost),
+        on_event,
+      )
+    }
+    GeminiRoute -> {
+      use exchange <- result.try(encode_gemini(
+        client.connection,
+        headers(client),
+        request,
+      ))
+      openai_api.exchange(exchange, gemini_stream.reducer(), on_event)
+    }
+  }
+}
+
 /// Canonical inference base URL; `/zen/go/v1` is rewritten to `/inference/go/v1`
 /// so Gemini's `/models/{id}:streamGenerateContent` route resolves on the
 /// direct inference gateway.
@@ -69,19 +152,16 @@ pub fn base_url(url: String) -> String {
 /// Encodes a ChatCompletions-projected request into an OpenAI `/responses`
 /// exchange for OpenCode Go models backed by Responses (GPT, Grok, Muse Spark).
 pub fn encode_responses(
-  client: Client,
+  client: types.Client,
+  headers: List(#(String, String)),
   request: Request,
 ) -> Result(openai_api.Exchange, Error) {
   use inputs <- result.try(bridge.responses_inputs(request.input))
   let rewritten = types.Request(..request, input: inputs)
-  use body <- result.map(openai_request.encode_with_policy(
-    Responses,
-    client.policy,
-    rewritten,
-  ))
+  use body <- result.map(encode_openai(Responses, rewritten))
   openai_api.Exchange(
     base_url(client.base_url) <> "/responses",
-    openai_api.request_headers(client, request),
+    headers,
     body,
     client.timeout_ms,
     None,
@@ -95,16 +175,20 @@ pub fn encode_responses(
 /// five-minute entries, so that is what a request asks for.
 pub const cache_ttl_seconds = 300
 
-/// What `encode_messages` marks, as the request ledger records it.
+/// Explicit breakpoints sent by the selected route, as recorded in the ledger.
 pub fn cache_marks(request: Request) -> List(types.CacheMark) {
-  bedrock_wire.cache_marks(request, cache_ttl_seconds)
+  case route(request.model) {
+    MessagesRoute -> messages_request.cache_marks(request, cache_ttl_seconds)
+    _ -> []
+  }
 }
 
 /// Encodes a ChatCompletions-projected request into an Anthropic `/messages`
-/// exchange via `bedrock_wire.encode_body`, marking the prefixes the gateway
+/// exchange via `messages_request.encode_body_cached`, marking the prefixes the gateway
 /// can serve from its cache.
 pub fn encode_messages(
-  client: Client,
+  client: types.Client,
+  headers: List(#(String, String)),
   request: Request,
 ) -> Result(openai_api.Exchange, Error) {
   let request = case string.starts_with(request.model, "claude-") {
@@ -115,14 +199,14 @@ pub fn encode_messages(
         options: types.Options(..request.options, effort: None),
       )
   }
-  use body <- result.map(bedrock_wire.encode_body_cached(
+  use body <- result.map(messages_request.encode_body_cached(
     request,
     cache_ttl_seconds,
   ))
   let headers = [
     #("anthropic-version", "2023-06-01"),
     #("x-api-key", client.api_key),
-    ..openai_api.headers(client, request.model)
+    ..headers
   ]
   openai_api.Exchange(
     base_url(client.base_url) <> "/messages",
@@ -136,12 +220,13 @@ pub fn encode_messages(
 }
 
 /// Encodes a ChatCompletions-projected request into a Gemini
-/// `:streamGenerateContent?alt=sse` exchange via `vertex_wire.encode_body`.
+/// `:streamGenerateContent?alt=sse` exchange via `gemini_request.encode_body`.
 pub fn encode_gemini(
-  client: Client,
+  client: types.Client,
+  headers: List(#(String, String)),
   request: Request,
 ) -> Result(openai_api.Exchange, Error) {
-  use body <- result.map(vertex_wire.encode_body(request))
+  use body <- result.map(gemini_request.encode_body(request))
   let url =
     base_url(client.base_url)
     <> "/models/"
@@ -149,7 +234,7 @@ pub fn encode_gemini(
     <> ":streamGenerateContent?alt=sse"
   openai_api.Exchange(
     url,
-    openai_api.headers(client, request.model),
+    headers,
     body,
     120_000,
     None,
@@ -180,4 +265,33 @@ pub fn cost(frame: Dynamic) -> Option(types.Cost) {
     True -> Some(figures)
     False -> None
   }
+}
+
+/// The gateway does not accept OpenAI service tiers on either OpenAI route.
+pub fn encode_openai(
+  protocol: types.Protocol,
+  request: Request,
+) -> Result(StringTree, Error) {
+  use fields <- result.map(openai_request.fields(protocol, request))
+  json.to_string_tree(
+    json.object(list.filter(fields, fn(field) { field.0 != "service_tier" })),
+  )
+}
+
+pub fn stream_chat(
+  client: Client,
+  request: Request,
+  on_event: fn(types.Event) -> types.Control,
+) -> Result(types.Turn, Error) {
+  use _ <- result.try(validate(client))
+  use prepared <- result.try(openai_api.encode_request(
+    client.connection,
+    request,
+    encode_openai,
+  ))
+  openai_api.exchange(
+    openai_api.Exchange(..prepared, headers: headers(client)),
+    reducer.reducer_with(client.connection.protocol, cost),
+    on_event,
+  )
 }
