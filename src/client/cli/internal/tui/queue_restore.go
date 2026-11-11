@@ -3,6 +3,7 @@ package tui
 import (
 	"slices"
 	"strconv"
+	"strings"
 )
 
 // importDraftAttachments renumbers recovered markers without replacing live attachments.
@@ -28,7 +29,10 @@ func (m *ChatModel) restoreCancelledInputs(cancelled []PendingUserTurn) {
 		return
 	}
 	defer m.trackComposerEdit()()
-	text := m.TextArea.Value()
+	text := strings.TrimRight(m.TextArea.Value(), " \t\n")
+	if strings.TrimSpace(text) == "" {
+		text = ""
+	}
 	for _, turn := range cancelled {
 		recovered := importDraftAttachments(&m.Images, turn.Text, unseen(turn.Images))
 		recovered = importDraftAttachments(&m.Pastes, recovered, turn.Pastes)

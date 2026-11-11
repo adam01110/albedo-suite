@@ -47,7 +47,6 @@
     "src/albedo/harness/extensions/opencode_go/catalog.gleam",
     "src/albedo/harness/extensions/opencode_go/wire.gleam",
     "src/albedo/harness/extensions/run/extension.gleam",
-    "src/albedo/harness/extensions/skills/extension.gleam",
     "src/albedo/harness/extensions/vertex/stream.gleam",
     "src/albedo/harness/extensions/vertex/wire.gleam",
     "src/albedo/harness/extensions/zed/albedo_zed.erl",

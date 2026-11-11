@@ -100,6 +100,7 @@ class PromptContextTests(unittest.TestCase):
         self.assertNotIn("RETRIEVABLE_OLD_CONSTRAINT", opening)
         self.assertIn("memory.search", prompt)
         self.assertIn("api_docs.read", prompt)
+        self.assertIn("await skills.read(name", prompt)
         self.assertNotIn("A dropped connection stays dropped", prompt)
         self.assertLess(len(prompt.encode()), 43000)
 

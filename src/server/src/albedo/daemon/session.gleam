@@ -2433,13 +2433,7 @@ fn handle(
     }
     Commit(id, inputs, stage, thought_ms, tool, follow, answer, ack) -> {
       process.send(ack, Nil)
-      let cancelled_final =
-        stage == conversation.Idle && !turn.live(state.activity, id)
       case turn.owner(state.activity, id) {
-        Some(_) if cancelled_final -> {
-          process.send(answer, Error("cancelled final reply"))
-          actor.continue(state)
-        }
         Some(_) -> {
           // Completed tool results are saved even when cancellation was requested.
           let #(ledger, session, provider) = #(

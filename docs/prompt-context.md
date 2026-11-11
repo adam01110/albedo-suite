@@ -30,7 +30,9 @@ that capability or advertising an unavailable retrieval API.
 
 ## Skills and memory
 
-Skill descriptions appear once in the skills catalog. Upstream now groups skill
+Skill descriptions appear once in the skills catalog. The suite keeps upstream's
+skills instruction, which tells agents to load skills with `skills.read` or
+`commands.<method>()`; those calls record the load for the TUI skills sidebar. Upstream now groups skill
 commands in one short command-catalog row; the suite no longer replaces that
 renderer. Full catalog metadata,
 activation, arguments and resource paging are unchanged. Printed skill pages
