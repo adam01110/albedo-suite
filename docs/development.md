@@ -50,6 +50,16 @@ treefmt run.
 [Composer editing](vim.md) defines input-only NORMAL/INSERT modes. Lists,
 forms, agents and transcript navigation use the upstream keyboard controls.
 
+The inline renderer overlays `cli/third_party/bubbletea/cursed_renderer.go`
+with a port of [bubbletea#1868](https://github.com/charmbracelet/bubbletea/pull/1868).
+Before a resize to a narrower width redraws the frame, it moves up past the rows
+the terminal rewrapped. Without it, Ghostty's reflow of a full-width row, for
+example when Hyprland narrows an unfocused window by one column, leaves one
+stale header above the frame per narrowing. Go builds the replaced module from
+`vendor/`, so `packages.nix` installs the overlay there after configure.
+`go test ./internal/terminal -run '^TestSuiteInline'` covers it. Drop the
+overlay when upstream's vendored Bubble Tea contains an equivalent fix.
+
 ## Daemon tests
 
 ```console

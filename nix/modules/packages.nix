@@ -138,6 +138,13 @@
             ${pkgs.lib.optionalString (!showDiffs) ''substituteInPlace cli/internal/tui/chat.go --replace-fail "DisplayFlags{Diffs: true}" "DisplayFlags{}"''}
           ''
           + (old.postPatch or "");
+        # Go builds the replaced Bubble Tea module from vendor/, not third_party/.
+        postConfigure =
+          (old.postConfigure or "")
+          + ''
+            chmod u+w vendor/charm.land/bubbletea/v2
+            install -m644 ${clientSources}/cli/third_party/bubbletea/cursed_renderer.go vendor/charm.land/bubbletea/v2/cursed_renderer.go
+          '';
         postCheck =
           (old.postCheck or "")
           + ''
@@ -157,6 +164,7 @@
             go test ./internal/tui -run '^TestActivity' -count=1 -v
             go test ./internal/tui -run '^TestZoxide' -count=1 -v
             go test ./internal/tui -run '^TestQuestions' -count=1 -v
+            go test ./internal/terminal -run '^TestSuiteInline' -count=1 -v
             ${pkgs.lib.optionalString showDiffs "go test ./internal/tui -run '^TestDefaultDiffVisibility$' -count=1 -v"}
           '';
       }));

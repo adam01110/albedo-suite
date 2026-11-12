@@ -53,6 +53,10 @@ replacements live under `src/client/cli/`.
 `test/e2e/model_catalogs_test.py` from the current pinned revision for
 endpoint-scoped cache
 fixtures; its provider catalog assertions are retained.
+`src/client/cli/third_party/bubbletea/cursed_renderer.go` modifies upstream's
+vendored copy of Charmbracelet's Bubble Tea, which remains under its MIT license
+(preserved in upstream's `cli/third_party/bubbletea/LICENSE`); the change ports
+charmbracelet/bubbletea pull request 1868.
 `scripts/test-e2e.py` adds a kernel-reattachment readiness barrier to upstream
 `test/e2e/kernel_upgrade_test.py` from the current pinned revision; its
 forced-swap assertions are retained. Guarded text adapters for native
