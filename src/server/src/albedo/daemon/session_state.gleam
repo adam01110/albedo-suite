@@ -20,6 +20,7 @@ import albedo/daemon/usage
 import albedo/harness/extension/selection
 import albedo/harness/loop
 import albedo/harness/runtime
+import albedo/harness/runtime/admission
 import albedo/openai_api/types
 import gleam/erlang/process.{type Subject}
 import gleam/int
@@ -43,15 +44,10 @@ pub type PendingSwitch {
   PendingSwitch(caller: String, provider: String, model: String)
 }
 
-pub type TitleRequest {
-  InitialTitle(text: String, acceptance_order: Int)
-  RegenerateTitle
-}
-
 pub type TitleJob {
   TitleJob(
     revision: Int,
-    request: TitleRequest,
+    initial_order: Option(Int),
     worker: process.Pid,
     stop: turn.Latch,
   )
@@ -60,6 +56,7 @@ pub type TitleJob {
 pub type State(message) {
   State(
     title_job: Option(TitleJob),
+    title_revision: Int,
     active_output: active_output.Projection,
     side_question: Option(side_question.Exchange),
     shell_commands: List(shell_commands.Command),
@@ -113,6 +110,8 @@ pub type State(message) {
     /// While the kernel boots: boot attempts so far, and the work waiting for
     /// it, re-sent to the actor once the kernel is ready.
     booting: Option(#(Int, List(message))),
+    boot_ticket: Option(admission.Ticket),
+    boot_token: Int,
     /// Work parked until the previous workspace's kernel is confirmed stopped.
     workspace_reset: Option(List(message)),
     /// A remote workspace readiness probe running outside the actor.

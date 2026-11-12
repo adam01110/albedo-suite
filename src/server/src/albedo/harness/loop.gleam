@@ -25,6 +25,7 @@ import albedo/harness/repetition
 import albedo/harness/runtime
 import albedo/openai_api/types
 import albedo/text_scalars
+import gleam/bool
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/int
@@ -96,9 +97,8 @@ pub type Loop {
     /// The saved profile those calls went through.
     profile: String,
     run_id: String,
-    /// The input and output tokens the provider reported for this run's
-    /// previous request; `None` before its first.
-    reported: Option(Int),
+    /// A measured baseline and how much history its count already covers.
+    reported: Option(ReportedUsage),
     /// Updates compaction progress until the prepared request clears it.
     report_compacting: fn(compaction.ProgressUpdate) -> Nil,
     /// Whether this run already told the session its window is too small
@@ -121,6 +121,10 @@ pub type Loop {
     /// the same code.
     repeats: repetition.Watch,
   )
+}
+
+pub type ReportedUsage {
+  ReportedUsage(tokens: Int, history_items: Int)
 }
 
 /// Dependencies shared by turn, summarizer, and background provider calls.
@@ -252,8 +256,86 @@ pub fn run(
   use prompted <- result.try(prompted(state, inputs, step))
   case prompted {
     None -> Ok(Nil)
-    Some(inputs) -> converse(state, id, inputs, step)
+    Some(inputs) -> {
+      let state = case step {
+        0 -> Loop(..state, reported: restored_usage(state, inputs))
+        _ -> state
+      }
+      converse(state, id, inputs, step)
+    }
   }
+}
+
+/// Reuse a completed request only while its head, history prefix and saved
+/// compaction projection still match. This also works after a daemon restart.
+fn restored_usage(
+  state: Loop,
+  inputs: List(types.Input),
+) -> Option(ReportedUsage) {
+  let restored = {
+    use last <- result.try(
+      requests.last_turn(runtime.ledger(state.host), state.session)
+      |> result.replace_error(Nil),
+    )
+    use #(previous, _) <- result.try(option.to_result(last, Nil))
+    use usage <- result.try(option.to_result(requests.row_usage(previous), Nil))
+    use <- bool.guard(
+      previous.model != state.model
+        || previous.profile != state.profile
+        || previous.effort != state.effort
+        || previous.provider
+        != types.protocol_name(state.upstream.protocol)
+        <> ":"
+        <> state.upstream.endpoint,
+      Error(Nil),
+    )
+    use #(request, prefix, _) <- result.try(
+      rebuild_observed(
+        state.host,
+        state.prepared,
+        state.model,
+        state.effort,
+        state.pin,
+        state.upstream,
+        list.reverse(inputs),
+      )
+      |> result.replace_error(Nil),
+    )
+    let before = requests.row_prefix(previous)
+    use <- bool.guard(
+      prefix.head_hash != before.head_hash
+        || prefix.replaced != before.replaced
+        || prefix.projection_hash != before.projection_hash
+        || prefix.strategy != before.strategy
+        || prefix.inputs < before.inputs,
+      Error(Nil),
+    )
+    let chain =
+      requests.input_chain(
+        option.unwrap(request.instructions, ""),
+        request.tools,
+        list.take(request.input, before.inputs),
+      )
+    use <- bool.guard(previous.input_chain != Some(chain), Error(Nil))
+    let appended = list.drop(request.input, before.inputs)
+    let after_response =
+      list.drop_while(appended, fn(input) {
+        case input {
+          types.Replay(_) -> True
+          _ -> False
+        }
+      })
+    // The completed response is already priced by its output usage. Without
+    // its replay here, this is no longer a continuation of that request.
+    use <- bool.guard(appended == after_response, Error(Nil))
+    Ok(ReportedUsage(
+      usage.input_tokens
+        + usage.output_tokens
+        + compaction.estimate_inputs(after_response),
+      list.length(inputs),
+    ))
+  }
+  option.from_result(restored)
 }
 
 fn converse(
@@ -398,7 +480,10 @@ fn converse(
       ..state,
       spent: 0,
       reported: option.map(turn.usage, fn(usage) {
-        usage.input_tokens + usage.output_tokens
+        ReportedUsage(
+          tokens: usage.input_tokens + usage.output_tokens,
+          history_items: list.length(inputs) + list.length(replay),
+        )
       }),
     )
   case turn.tool_calls {
@@ -616,23 +701,6 @@ pub fn summarize_branch(
 /// through `prepare`, which could compact or call the summarizer — and
 /// recorded under `prefix`. It commits nothing and publishes nothing; it
 /// answers the call's usage and its reply's text.
-pub fn background(
-  state: CallContext,
-  request: types.Request,
-  prefix: requests.Prefix,
-) -> Result(compaction.Answer, String) {
-  auxiliary(state, request, prefix, requests.Background)
-}
-
-/// A title is metered like other auxiliary calls, with no transport retry.
-pub fn title(
-  state: CallContext,
-  request: types.Request,
-  prefix: requests.Prefix,
-) -> Result(compaction.Answer, String) {
-  auxiliary(state, request, prefix, requests.Title)
-}
-
 pub type SideReply {
   SideReply(text: String, finish: types.Finish)
 }
@@ -646,7 +714,7 @@ pub fn side(
   |> result.map(fn(turn) { SideReply(visible_text(turn), turn.finish) })
 }
 
-fn auxiliary(
+pub fn auxiliary(
   state: CallContext,
   request: types.Request,
   prefix: requests.Prefix,
@@ -678,7 +746,10 @@ fn auxiliary_turn(
     fn(_attempt, _event) { types.Continue },
     fn(_attempt) { Nil },
     keep_nothing,
-    1,
+    case kind {
+      requests.Title | requests.Side -> attempts
+      _ -> 1
+    },
   )
   |> result.try(whole)
   |> result.map(fn(attempt) { attempt.turn })
@@ -1016,7 +1087,7 @@ fn prepare(
     original,
     force,
     state.upstream.images,
-    state.reported,
+    reported_tokens(state.reported, original),
     state.report_compacting,
     fn(rows) {
       rows
@@ -1030,6 +1101,18 @@ fn prepare(
     },
     fn() { cached(state) },
   )
+}
+
+/// Estimate only inputs appended after the measured response. Its replay,
+/// including opaque reasoning, is already covered by the provider's count.
+fn reported_tokens(
+  reported: Option(ReportedUsage),
+  history: List(types.Input),
+) -> Option(Int) {
+  option.map(reported, fn(usage) {
+    usage.tokens
+    + compaction.estimate_inputs(list.drop(history, usage.history_items))
+  })
 }
 
 /// Newest-first `inputs` with each newest-first batch unshifted ahead of it,
@@ -1193,10 +1276,6 @@ fn call(
     salvage,
     first,
     0,
-    case kind {
-      requests.Title | requests.Side -> 1
-      _ -> attempts
-    },
   )
 }
 
@@ -1318,7 +1397,6 @@ fn retry_stream(
   salvage: fn(String) -> Result(List(types.Input), String),
   attempt: Int,
   accepted_timeouts: Int,
-  maximum: Int,
 ) -> Result(Attempt(a), types.Error) {
   case run(attempt) {
     Error(error) -> {
@@ -1328,7 +1406,7 @@ fn retry_stream(
         False -> accepted_timeouts
       }
       case
-        attempt < maximum
+        attempt < attempts
         && retryable(error)
         && accepted_timeouts <= accepted_timeout_retries
       {
@@ -1367,7 +1445,6 @@ fn retry_stream(
                     salvage,
                     attempt + 1,
                     accepted_timeouts,
-                    maximum,
                   )
                 kept -> Ok(Resumed(kept, attempt + 1))
               }

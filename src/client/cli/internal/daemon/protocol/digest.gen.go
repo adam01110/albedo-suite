@@ -5,4 +5,4 @@ package protocol
 // APIDigest identifies the wire contract these types were generated from.
 // The daemon reports its own in GET /server; a different value means this
 // client's decoders may reject what the daemon sends.
-const APIDigest = "874a342a82c907330247fdf198be5f2cf9d66d58ef5be5aa8ee558de42fd586f"
+const APIDigest = "fd180324cd05f6002c7315a59d1b3fe2d9e6a999a085f240c114d0546711c472"

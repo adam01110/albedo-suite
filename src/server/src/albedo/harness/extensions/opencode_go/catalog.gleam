@@ -3,9 +3,12 @@
 
 import albedo/harness/extension
 import albedo/harness/extensions/models/extension as models
+import albedo/harness/extensions/opencode_go/accounts
 import albedo/harness/model_lists
 import albedo/harness/settings
+import albedo/openai_api/catalog as model_catalog
 import gleam/bool
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -82,5 +85,32 @@ fn list_key(endpoint: Option(String)) -> String {
   string.remove_suffix(option.unwrap(endpoint, default_base_url), "/")
 }
 
-@external(erlang, "albedo_opencode_go", "models")
-fn models(home: String, endpoint: String) -> Result(List(String), String)
+fn models(home: String, endpoint: String) -> Result(List(String), String) {
+  use #(url, key) <- result.try(accounts.discovery(home, endpoint))
+  // Lists are cached per endpoint, so fetch the requested one, keyless when
+  // discovery only found another endpoint's key.
+  let #(url, key) = case
+    endpoint == "" || model_catalog.root(url) == model_catalog.root(endpoint)
+  {
+    True -> #(url, key)
+    False -> #(endpoint, "")
+  }
+  use #(status, body) <- result.try(model_catalog.fetch(
+    url,
+    key,
+    "albedo/1.0",
+    10_000,
+  ))
+  case status {
+    200 -> model_catalog.ids(body, is_chat_model)
+    _ -> Error("endpoint returned HTTP " <> int.to_string(status))
+  }
+}
+
+// Exclude image generation, TTS, audio, realtime, and speech routes.
+fn is_chat_model(id: String) -> Bool {
+  id != "auto"
+  && !list.any(["audio", "tts", "realtime", "image", "asr"], fn(marker) {
+    string.contains(id, marker)
+  })
+}

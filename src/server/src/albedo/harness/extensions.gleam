@@ -16,6 +16,7 @@ import albedo/harness/extensions/formatter/extension as formatter
 import albedo/harness/extensions/git/extension as git
 import albedo/harness/extensions/github_copilot/extension as github_copilot
 import albedo/harness/extensions/hooks/extension as hooks
+import albedo/harness/extensions/imagegen/extension as imagegen
 import albedo/harness/extensions/instructions/extension as instructions
 import albedo/harness/extensions/jj/extension as jj
 import albedo/harness/extensions/lcm/extension as lcm
@@ -137,6 +138,7 @@ pub fn declared() -> Config {
       warm.extension(),
       exa.extension(),
       web_search.extension(),
+      imagegen.extension(),
     ],
     [
       "python", "run", "work", "mail", "jj", "git", "worktrees", "agents",

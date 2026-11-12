@@ -1,10 +1,13 @@
 -module('albedo@harness@extensions@mcp@client').
--export([start/2, pid/1, close/1, capabilities/1, description/1, list/4, request/4, request_with/5, on_change/2]).
+-export([start/3, pid/1, close/1, capabilities/1, description/1, list/4, request/4, request_with/5, on_change/2]).
 
-start(Transport, _) ->
+start(Transport, _, Owner) ->
     ets:insert(lazy_mcp_test, {last_transport, Transport}),
     ets:update_counter(lazy_mcp_test, starts, 1),
-    Client = spawn(fun() -> receive stop -> ok end end),
+    Client = spawn(fun() ->
+        M = monitor(process, Owner),
+        receive stop -> ok; {'DOWN', M, process, _, _} -> ok end
+    end),
     ets:insert(lazy_mcp_test, {last_client, Client}),
     {ok, Client}.
 

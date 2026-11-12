@@ -1256,6 +1256,14 @@ type FastMode struct {
 	} `json:"support"`
 }
 
+// FileAttachment An attached file's name and decoded size; never its saved path.
+type FileAttachment struct {
+	Name string `json:"name"`
+
+	// Size Decoded bytes.
+	Size int64 `json:"size"`
+}
+
 // FileDiff defines model for FileDiff.
 type FileDiff struct {
 	Added Counter `json:"added"`
@@ -1276,6 +1284,14 @@ type FileUnavailable struct {
 	Kind   string `json:"kind"`
 	Path   string `json:"path"`
 	Reason string `json:"reason"`
+}
+
+// FileUpload A file for a local workspace, saved under the daemon home and exposed to the model by path. At most 20 MiB of decoded files per input. Remote workspaces refuse file uploads.
+type FileUpload struct {
+	Data string `json:"data"`
+
+	// Name Plain filename, without path separators, NUL, CR or LF; not dot or dot-dot.
+	Name string `json:"name"`
 }
 
 // ForkSessionIntent defines model for ForkSessionIntent.
@@ -1416,6 +1432,9 @@ type HistoryEntry struct {
 	Content         []json.RawMessage `json:"content"`
 	ContentComplete bool              `json:"content_complete"`
 	CreatedAt       *Timestamp        `json:"created_at" nullable:"true"`
+
+	// Files Files attached to a user entry, in upload order, as recorded when the input was admitted. Absent when the entry has none, including entries recorded before file uploads. Text that resembles a file label is prose, not attachment metadata. Attached bytes may be pruned while this metadata remains.
+	Files []FileAttachment `json:"files,omitempty"`
 
 	// ID Opaque identity. Never infer a resource type or route from its contents.
 	ID      ID           `json:"id"`
@@ -2058,6 +2077,9 @@ type MailMetadata struct {
 // MessageInputRequest Examples: {"client_id":"draft-1","kind":"message","text":"Fix the parser."}
 type MessageInputRequest struct {
 	ClientID *string `json:"client_id,omitempty"`
+
+	// Files Local-workspace files, appended as quoted filename and saved-path pairs to the model's text only. The text stays as sent; history reports each file's name and size in HistoryEntry.files. At most 20 MiB decoded in total.
+	Files []FileUpload `json:"files,omitempty"`
 
 	// Images Attached in order; the text's numbered image markers say where each was attached.
 	Images []ImageUpload `json:"images,omitempty"`
@@ -3087,7 +3109,6 @@ type SessionChange struct {
 		Truncated     bool     `json:"truncated"`
 		Warnings      Warnings `json:"warnings"`
 	} `json:"move" nullable:"true"`
-	Resource SessionConfigurationResource `json:"resource"`
 
 	// Session Examples: {"active_output":[],"activity":{"latest_answer":null,"latest_input":null,"lines":[],"observed_at":"2026-10-02T14:00:00Z","output_scalars":0,"output_utf8_bytes":0},"activity_at":"2026-10-02T14:00:00Z","address":null,"automatic_name":"New session","closed":false,"composition":{"availability":{},"dependencies":{},"desired_revision":"composition-1","loaded_revision":null,"needs_reload":true,"quarantine":[]},"configuration_resource":{"etag":"\"session-config-1\"","url":"/sessions/01a0fcea-2b00-7000-8000-000000000001?view=configuration","value":{"effort":null,"id":"01a0fcea-2b00-7000-8000-000000000001","model":"example-model","name":"New session","preferences":{"archived":false,"pin_order":null,"pinned":false},"provider_profile":"personal","revision":"config-1","selection":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"workspace":"/workspace/project"}},"created_at":"2026-10-02T14:00:00Z","creation":{"resolved":{"effort":null,"model":"example-model","provider_profile":"personal","workspace":"/workspace/project"},"submitted":{"effort":null,"kind":"new","model":null,"name":null,"provider_profile":null,"workspace":"/workspace/project"}},"current_progress":[],"cursor":{"generation":"J6kYj6IGcXyP3eMIp-WL3A","sequence":0},"depth":0,"effort":null,"family_revision":"family-1","glances":[],"history":{"high_water":0,"items":[],"newer":null,"older":null},"id":"01a0fcea-2b00-7000-8000-000000000001","input_order":0,"kernel":{"build":null,"instance_id":null,"live_job_count":0,"running_jobs":[],"stage":null,"stale":false,"staleness_reasons":[],"state":"none"},"location":{"host":null,"label":null,"path":"/workspace/project","user":null},"model":"example-model","name":"New session","parent_id":null,"pending_inputs":[],"preferences":{"archived":false,"opens":0,"pin_order":null,"pinned":false},"preview":{"text":"","transcript_count":0,"truncated":false},"provider_profile":"personal","revision":"config-1","root_id":"01a0fcea-2b00-7000-8000-000000000001","selection":{"effective":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"overrides":{"extensions":{},"instructions":{},"mcp":{},"skills":{}}},"shell_commands":[],"status":{"blocking_reason":null,"interrupt_requested":false,"phase":"idle","run_id":null},"usage":{"cache_fade":[],"cache_ttl_seconds":null,"cache_write_tokens":null,"cached_prompt_tokens":null,"completion_tokens":null,"context_window_tokens":null,"elapsed_ms":null,"model":null,"observed_at":null,"prompt_tokens":null,"tokens_per_second":null,"total_tokens":null},"workspace":"/workspace/project","workspace_change":null}
 	Session Session `json:"session"`
@@ -3921,7 +3942,7 @@ type TransferManifest struct {
 		Bytes   int64    `json:"bytes"`
 		Columns []string `json:"columns"`
 
-		// Digest SHA-256
+		// Digest SHA-256, lowercase hex.
 		Digest  string `json:"digest"`
 		Kind    string `json:"kind"`
 		Name    string `json:"name"`
@@ -3978,7 +3999,7 @@ type TransferRunsThere struct {
 	Alternatives []string `json:"alternatives"`
 	Model        string   `json:"model"`
 
-	// Name The session's family name
+	// Name The session's family name, else its name or title.
 	Name string `json:"name"`
 
 	// Ok The target has this profile and it offers this model.
@@ -4029,7 +4050,7 @@ type TransferStatus struct {
 		Total int64 `json:"total"`
 	} `json:"rows"`
 
-	// SessionID The root session
+	// SessionID The root session, the same id as on the source.
 	SessionID string `json:"session_id"`
 
 	// State importing and installing are still inert; active is live.

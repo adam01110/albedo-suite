@@ -209,6 +209,16 @@ class ModelCatalogReloadTests(unittest.TestCase):
             ids(self.listed("claude")), ["claude-fixture-6", "claude-fixture-small"]
         )
 
+    def test_opencode_go_lists_the_requested_endpoint(self):
+        # The suite fetches the requested endpoint rather than another
+        # profile's, so each endpoint-keyed list holds that endpoint's models.
+        other = Provider(lambda _request: text("ok"), catalog=GATEWAY_MODELS)
+        self.addCleanup(other.close)
+        self.assertEqual(
+            [item["id"] for item in self.listed("opencode-go", other.url)],
+            ["local-a", "local-b"],
+        )
+
     def test_generic_openai_endpoint_lists_its_own_models(self):
         gateway = Provider(lambda _request: text("ok"), catalog=GATEWAY_MODELS)
         self.addCleanup(gateway.close)

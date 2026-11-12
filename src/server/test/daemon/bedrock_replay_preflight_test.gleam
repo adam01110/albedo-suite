@@ -152,6 +152,7 @@ fn state(home: String, host: runtime.Runtime) -> session_state.State(Nil) {
     conversation.create(ledger, conversation.Info(..info, id: "parent"))
   session_state.State(
     title_job: None,
+    title_revision: 0,
     shell_commands: [],
     side_question: None,
     shell_worker: None,
@@ -184,6 +185,8 @@ fn state(home: String, host: runtime.Runtime) -> session_state.State(Nil) {
     prepared_head: None,
     last_touch: 0,
     booting: None,
+    boot_ticket: None,
+    boot_token: 0,
     workspace_reset: None,
     workspace_probe: None,
     releasing: None,

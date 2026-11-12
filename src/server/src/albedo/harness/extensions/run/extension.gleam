@@ -4,6 +4,7 @@ import albedo/daemon/store
 import albedo/harness/client_api
 import albedo/harness/command.{Data}
 import albedo/harness/extension as harness_extension
+import albedo/harness/extension/service as http_service
 import albedo/harness/extensions/python/kernel
 import albedo/harness/extensions/run/service
 import albedo/harness/host
@@ -25,12 +26,7 @@ pub fn extension() -> harness_extension.Extension {
       harness_extension.ClientPlugin([
         client_api.Command("/jobs", client_api.Read, [], service.operation()),
       ]),
-      harness_extension.ServicePlugin(harness_extension.Service(
-        fn(_, _) {
-          harness_extension.Admission(harness_extension.DaemonToken, 1024)
-        },
-        service.handle,
-      )),
+      harness_extension.ServicePlugin(http_service.json(1024, service.dispatch)),
       harness_extension.ToolPlugin(instructions, [], ["run"], [
         #("jobs", fn(context: host.Context, method, args) {
           route(context.store, context.session, method, args)

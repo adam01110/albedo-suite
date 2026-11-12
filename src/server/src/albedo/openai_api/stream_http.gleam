@@ -336,6 +336,7 @@ fn transport_error(
 ) -> types.Error {
   case error {
     transport.InvalidUrl -> types.InvalidRequest("invalid HTTP endpoint")
+    transport.InvalidHeaders -> types.InvalidRequest("invalid HTTP headers")
     transport.RequestRefused(message) -> types.InvalidRequest(message)
     transport.TransportError(message) -> types.ConnectionError(message)
     transport.TimedOut -> types.Timeout(phase, waited_ms)

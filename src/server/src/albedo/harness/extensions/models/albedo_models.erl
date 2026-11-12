@@ -13,8 +13,15 @@
 -define(WHAT, <<"models catalog">>).
 
 refresh(Catalog, Url, MaxAgeMs) ->
-    albedo_cached_fetch:refresh(Catalog, Url, MaxAgeMs, ?REFRESH_PROCESS,
-                                ?WHAT, fun accept/1, fun after_write/1).
+    albedo_cached_fetch:refresh(
+        Catalog,
+        Url,
+        MaxAgeMs,
+        ?REFRESH_PROCESS,
+        ?WHAT,
+        fun accept/1,
+        fun after_write/1
+    ).
 
 reload(Catalog, Url) ->
     albedo_cached_fetch:reload(Catalog, Url, ?WHAT, fun accept/1, fun after_write/1).
@@ -34,13 +41,19 @@ accept(_) ->
 compact(Body) ->
     try json:decode(Body) of
         Providers when is_map(Providers), map_size(Providers) > 0 ->
-            case lists:any(fun({_, Provider}) ->
-                     is_map(Provider) andalso is_map(maps:get(<<"models">>, Provider, undefined))
-                 end, maps:to_list(Providers)) of
+            case
+                lists:any(
+                    fun({_, Provider}) ->
+                        is_map(Provider) andalso is_map(maps:get(<<"models">>, Provider, undefined))
+                    end,
+                    maps:to_list(Providers)
+                )
+            of
                 true -> {ok, trim(Providers)};
                 false -> error
             end;
-        _ -> error
+        _ ->
+            error
     catch
         _:_ -> error
     end.
@@ -49,15 +62,19 @@ trim(Providers) -> iolist_to_binary(json:encode(maps:filtermap(fun trim_provider
 
 %% models.dev names every provider; a trimmed catalog never does.
 trimmed(Providers) ->
-    not lists:any(fun(P) -> is_map(P) andalso is_map_key(<<"name">>, P) end, maps:values(Providers)).
+    not lists:any(
+        fun(P) -> is_map(P) andalso is_map_key(<<"name">>, P) end, maps:values(Providers)
+    ).
 
 trim_provider(_, Provider) when is_map(Provider) ->
-    Models = case maps:get(<<"models">>, Provider, #{}) of
-        M when is_map(M) -> maps:filtermap(fun trim_model/2, M);
-        _ -> #{}
-    end,
+    Models =
+        case maps:get(<<"models">>, Provider, #{}) of
+            M when is_map(M) -> maps:filtermap(fun trim_model/2, M);
+            _ -> #{}
+        end,
     {true, (maps:with([<<"api">>, <<"env">>, <<"npm">>], Provider))#{<<"models">> => Models}};
-trim_provider(_, _) -> false.
+trim_provider(_, _) ->
+    false.
 
 trim_model(_, Model) when is_map(Model) ->
     Limit = maps:with([<<"context">>, <<"output">>], field(<<"limit">>, Model)),
@@ -65,7 +82,8 @@ trim_model(_, Model) when is_map(Model) ->
     Reasoning = maps:with([<<"reasoning_options">>], Model),
     Trimmed = maps:merge(maps:with([<<"id">>, <<"provider">>, <<"cost">>], Model), Reasoning),
     {true, nonempty(<<"modalities">>, Inputs, nonempty(<<"limit">>, Limit, Trimmed))};
-trim_model(_, _) -> false.
+trim_model(_, _) ->
+    false.
 
 nonempty(_, Value, Map) when map_size(Value) =:= 0 -> Map;
 nonempty(Key, Value, Map) -> Map#{Key => Value}.
@@ -86,8 +104,10 @@ lookup(Catalog0, Model0, Endpoint0) ->
         case catalog(Catalog) of
             {ok, #{index := Index, providers := Providers}} ->
                 'albedo@harness@extensions@models@catalog':select(
-                    maps:get(Model, Index, []), Providers, host(Endpoint));
-            {error, Reason} -> {error, {unavailable, Reason}}
+                    maps:get(Model, Index, []), Providers, host(Endpoint)
+                );
+            {error, Reason} ->
+                {error, {unavailable, Reason}}
         end
     catch
         _:_ -> {error, {unavailable, <<"models catalog lookup failed">>}}
@@ -103,8 +123,10 @@ lookup_provider(Catalog0, Provider0, Model0) ->
         case catalog(Catalog) of
             {ok, #{index := Index, providers := Providers}} ->
                 'albedo@harness@extensions@models@catalog':select_provider(
-                    maps:get(Model, Index, []), Providers, Provider);
-            {error, Reason} -> {error, {unavailable, Reason}}
+                    maps:get(Model, Index, []), Providers, Provider
+                );
+            {error, Reason} ->
+                {error, {unavailable, Reason}}
         end
     catch
         _:_ -> {error, {unavailable, <<"models catalog lookup failed">>}}
@@ -119,8 +141,10 @@ catalog(Catalog) ->
                 {Revision, Index} -> {ok, Index};
                 _ -> load(Catalog, Revision)
             end;
-        {ok, _} -> {error, <<"models catalog is too large">>};
-        _ -> {error, <<"no models catalog is cached">>}
+        {ok, _} ->
+            {error, <<"models catalog is too large">>};
+        _ ->
+            {error, <<"no models catalog is cached">>}
     end.
 
 %% persistent_term pins the cached value for the VM lifetime and each replacement
@@ -131,16 +155,25 @@ catalog(Catalog) ->
 %% Sessions start turns together, so a missing revision is parsed by one caller
 %% while the rest wait on the lock and then read its result.
 load(Catalog, Revision) ->
-    global:trans({{?MODULE, Catalog}, self()}, fun() ->
-        case persistent_term:get({?MODULE, Catalog}, undefined) of
-            {Revision, Index} -> {ok, Index};
-            _ ->
-                case albedo_cached_fetch:isolated(?WHAT, fun() -> from_index(Catalog, Revision) end) of
-                    ok -> {ok, element(2, persistent_term:get({?MODULE, Catalog}))};
-                    Error -> Error
-                end
-        end
-    end, [node()]).
+    global:trans(
+        {{?MODULE, Catalog}, self()},
+        fun() ->
+            case persistent_term:get({?MODULE, Catalog}, undefined) of
+                {Revision, Index} ->
+                    {ok, Index};
+                _ ->
+                    case
+                        albedo_cached_fetch:isolated(?WHAT, fun() ->
+                            from_index(Catalog, Revision)
+                        end)
+                    of
+                        ok -> {ok, element(2, persistent_term:get({?MODULE, Catalog}))};
+                        Error -> Error
+                    end
+            end
+        end,
+        [node()]
+    ).
 
 %% The reduced index of the current revision, saved beside the catalog, loads
 %% straight into its final shape; decoding the JSON takes several times more
@@ -149,15 +182,18 @@ from_index(Catalog, Revision) ->
     case file:read_file(index_path(Catalog)) of
         {ok, Bytes} ->
             try binary_to_term(Bytes, [safe]) of
-                {4, Revision, #{index := I, providers := P, prices := Prices} = CatalogData}
-                  when is_map(I), is_map(P), is_map(Prices) ->
+                {4, Revision, #{index := I, providers := P, prices := Prices} = CatalogData} when
+                    is_map(I), is_map(P), is_map(Prices)
+                ->
                     persistent_term:put({?MODULE, Catalog}, {Revision, CatalogData}),
                     ok;
-                _ -> parse(Catalog, Revision)
+                _ ->
+                    parse(Catalog, Revision)
             catch
                 _:_ -> parse(Catalog, Revision)
             end;
-        _ -> parse(Catalog, Revision)
+        _ ->
+            parse(Catalog, Revision)
     end.
 
 index_path(Catalog) -> Catalog ++ ".index".
@@ -171,15 +207,20 @@ parse(Catalog, Revision) ->
             save_index(Catalog, Current, CatalogData),
             persistent_term:put({?MODULE, Catalog}, {Current, CatalogData}),
             ok;
-        {ok, _} -> {error, <<"models catalog is not a provider object">>};
-        {error, invalid} -> {error, <<"models catalog is not valid JSON">>};
-        _ -> {error, <<"models catalog could not be read">>}
+        {ok, _} ->
+            {error, <<"models catalog is not a provider object">>};
+        {error, invalid} ->
+            {error, <<"models catalog is not valid JSON">>};
+        _ ->
+            {error, <<"models catalog could not be read">>}
     end.
 
 %% Best effort: without an index the next start parses the catalog again.
 save_index(Catalog, Revision, CatalogData) ->
-    _ = albedo_credentials:write(index_path(Catalog),
-        term_to_binary({4, Revision, CatalogData}, [{compressed, 1}])),
+    _ = albedo_credentials:write(
+        index_path(Catalog),
+        term_to_binary({4, Revision, CatalogData}, [{compressed, 1}])
+    ),
     ok.
 
 %% A catalog cached before trimming existed is trimmed in place on first parse,
@@ -188,7 +229,8 @@ save_index(Catalog, Revision, CatalogData) ->
 %% file is already trimmed or cannot be replaced.
 retrim(Catalog, Decoded, {_, Modified} = Revision) ->
     case trimmed(Decoded) of
-        true -> Revision;
+        true ->
+            Revision;
         false ->
             case albedo_cached_fetch:commit(Catalog, trim(Decoded), ?WHAT, fun after_write/1) of
                 {ok, nil} ->
@@ -197,24 +239,36 @@ retrim(Catalog, Decoded, {_, Modified} = Revision) ->
                         {ok, #file_info{size = Size, mtime = Mtime}} -> {Size, Mtime};
                         _ -> Revision
                     end;
-                _ -> Revision
+                _ ->
+                    Revision
             end
     end.
 
 %% Provider: {Host, Api, Env, SortedModelIds}. Model: {Id, Context, Output, Inputs, Efforts}.
 provider(Name, Provider, {Providers, Index}) when is_binary(Name), is_map(Provider) ->
-    Models = case maps:get(<<"models">>, Provider, #{}) of
-        M when is_map(M) -> maps:to_list(M);
-        _ -> []
-    end,
+    Models =
+        case maps:get(<<"models">>, Provider, #{}) of
+            M when is_map(M) -> maps:to_list(M);
+            _ -> []
+        end,
     Api = maps:get(<<"api">>, Provider, null),
     Ids = lists:usort([Id || {Key, Model} <- Models, Id <- [model_id(Key, Model)], Id =/= <<>>]),
-    Updated = lists:foldl(fun({Key, Model}, Acc) when is_binary(Key) ->
-                              add(Acc, Key, {Name, model(Model)});
-                             (_, Acc) -> Acc
-                          end, Index, Models),
-    {Providers#{Name => {host(Api), Api, strings(maps:get(<<"env">>, Provider, [])), Ids}}, Updated};
-provider(_, _, Acc) -> Acc.
+    Updated = lists:foldl(
+        fun
+            ({Key, Model}, Acc) when is_binary(Key) ->
+                add(Acc, Key, {Name, model(Model)});
+            (_, Acc) ->
+                Acc
+        end,
+        Index,
+        Models
+    ),
+    {
+        Providers#{Name => {host(Api), Api, strings(maps:get(<<"env">>, Provider, [])), Ids}},
+        Updated
+    };
+provider(_, _, Acc) ->
+    Acc.
 
 model_id(_, #{<<"id">> := Id}) when is_binary(Id), Id =/= <<>> -> Id;
 model_id(Key, _) when is_binary(Key) -> Key;
@@ -222,14 +276,24 @@ model_id(_, _) -> <<>>.
 
 model(Model) when is_map(Model) ->
     Limit = field(<<"limit">>, Model),
-    Id = case maps:get(<<"id">>, Model, <<>>) of I when is_binary(I) -> I; _ -> <<>> end,
-    Efforts = hd([[V || V <- Vals, is_binary(V)]
-                  || #{<<"type">> := <<"effort">>, <<"values">> := Vals} <- maps:get(<<"reasoning_options">>, Model, []),
-                     is_list(Vals)] ++ [[]]),
+    Id =
+        case maps:get(<<"id">>, Model, <<>>) of
+            I when is_binary(I) -> I;
+            _ -> <<>>
+        end,
+    Efforts = hd(
+        [
+            [V || V <- Vals, is_binary(V)]
+         || #{<<"type">> := <<"effort">>, <<"values">> := Vals} <- maps:get(
+                <<"reasoning_options">>, Model, []
+            ),
+            is_list(Vals)
+        ] ++ [[]]
+    ),
     {Id, maps:get(<<"context">>, Limit, null), maps:get(<<"output">>, Limit, null),
-     strings(maps:get(<<"input">>, field(<<"modalities">>, Model), [])),
-     Efforts};
-model(_) -> {<<>>, null, null, [], []}.
+        strings(maps:get(<<"input">>, field(<<"modalities">>, Model), [])), Efforts};
+model(_) ->
+    {<<>>, null, null, [], []}.
 
 field(Key, Map) ->
     case maps:get(Key, Map, #{}) of
@@ -239,12 +303,18 @@ field(Key, Map) ->
 
 %% A catalog key may be qualified ("vendor/model"), so both spellings resolve.
 add(Index, Key, Entry) ->
-    Keys = [Key | case binary:split(Key, <<"/">>, [global]) of
-        [_] -> [];
-        Parts -> [lists:last(Parts)]
-    end],
-    lists:foldl(fun(K, Acc) -> maps:update_with(K, fun(V) -> [Entry | V] end, [Entry], Acc) end,
-                Index, Keys).
+    Keys = [
+        Key
+        | case binary:split(Key, <<"/">>, [global]) of
+            [_] -> [];
+            Parts -> [lists:last(Parts)]
+        end
+    ],
+    lists:foldl(
+        fun(K, Acc) -> maps:update_with(K, fun(V) -> [Entry | V] end, [Entry], Acc) end,
+        Index,
+        Keys
+    ).
 
 strings(Values) when is_list(Values) -> [V || V <- Values, is_binary(V)];
 strings(_) -> [].
@@ -254,16 +324,24 @@ host(Url) when is_binary(Url), Url =/= <<>> ->
         #{host := Host} -> string:lowercase(Host);
         _ -> <<>>
     end;
-host(_) -> <<>>.
-
+host(_) ->
+    <<>>.
 
 env_names(Catalog0, Endpoint0) ->
-    Catalog = text(Catalog0), Endpoint = unicode:characters_to_binary(Endpoint0),
+    Catalog = text(Catalog0),
+    Endpoint = unicode:characters_to_binary(Endpoint0),
     case catalog(Catalog) of
         {ok, #{providers := Providers}} ->
             Host = host(Endpoint),
-            lists:usort(lists:append([Env || {_Name, {ProviderHost, _Api, Env, _Ids}} <- maps:to_list(Providers), ProviderHost =:= Host]));
-        _ -> []
+            lists:usort(
+                lists:append([
+                    Env
+                 || {_Name, {ProviderHost, _Api, Env, _Ids}} <- maps:to_list(Providers),
+                    ProviderHost =:= Host
+                ])
+            );
+        _ ->
+            []
     end.
 
 list(Catalog0, Provider0, Endpoint0) ->
@@ -274,8 +352,10 @@ list(Catalog0, Provider0, Endpoint0) ->
         case catalog(Catalog) of
             {ok, CatalogData} ->
                 'albedo@harness@extensions@models@catalog':list_provider(
-                    maps:get(providers, CatalogData), Provider, host(Endpoint));
-            Error -> Error
+                    maps:get(providers, CatalogData), Provider, host(Endpoint)
+                );
+            Error ->
+                Error
         end
     catch
         _:_ -> {error, <<"models catalog listing failed">>}
@@ -291,11 +371,19 @@ prices(Catalog) ->
     end.
 
 price_index(Providers) ->
-    maps:fold(fun(Provider, Data, Acc) ->
-        maps:fold(fun(Id, Model, A) ->
-            case maps:get(<<"cost">>, Model, undefined) of
-                Cost when is_map(Cost) -> A#{{Provider, Id} => Cost};
-                _ -> A
-            end
-        end, Acc, field(<<"models">>, Data))
-    end, #{}, Providers).
+    maps:fold(
+        fun(Provider, Data, Acc) ->
+            maps:fold(
+                fun(Id, Model, A) ->
+                    case maps:get(<<"cost">>, Model, undefined) of
+                        Cost when is_map(Cost) -> A#{{Provider, Id} => Cost};
+                        _ -> A
+                    end
+                end,
+                Acc,
+                field(<<"models">>, Data)
+            )
+        end,
+        #{},
+        Providers
+    ).

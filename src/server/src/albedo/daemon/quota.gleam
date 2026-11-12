@@ -17,12 +17,19 @@
 //// derives what it needs from these rows.
 
 import albedo/clock
+import albedo/harness/extensions/antigravity/accounts as antigravity_accounts
+import albedo/harness/extensions/claude/accounts as claude_accounts
+import albedo/harness/extensions/codex/accounts as codex_accounts
+import albedo/harness/extensions/opencode_go/accounts as go_accounts
 import albedo/harness/protect
+import albedo/openai_api/types
 import gleam/erlang/atom
 
 import albedo/daemon/configuration
 import albedo/daemon/store
+import albedo/harness/extensions/openai/extension as openai
 import albedo/harness/extensions/zed/quota as zed_quota
+import albedo/harness/key_accounts
 import albedo/harness/settings
 import albedo/harness/usage_feed.{type Limit, type Report}
 import gleam/dict.{type Dict}
@@ -87,96 +94,46 @@ fn clamped(settings: Settings) -> Settings {
 /// requests refresh them.
 fn enumerate(home: String) -> List(Target) {
   list.flatten([
-    oauth_targets("anthropic", claude_accounts(home)),
-    oauth_targets("openai-codex", codex_accounts(home)),
-    oauth_targets("google-antigravity", antigravity_accounts(home)),
+    oauth_targets("anthropic", claude_accounts.quota(home)),
+    oauth_targets("openai-codex", codex_accounts.quota(home)),
+    oauth_targets("google-antigravity", antigravity_accounts.quota(home)),
     oauth_targets("zed", zed_accounts(home)),
-    opencode_go_targets(opencode_go_accounts(home)),
+    oauth_targets("opencode-go", go_accounts.quota(home)),
     profile_targets(home),
   ])
 }
 
-@external(erlang, "albedo_claude_auth", "accounts")
-fn claude_accounts(home: String) -> List(Dynamic)
-
-@external(erlang, "albedo_openai_auth", "accounts")
-fn codex_accounts(home: String) -> List(Dynamic)
-
-@external(erlang, "albedo_antigravity", "accounts")
-fn antigravity_accounts(home: String) -> List(Dynamic)
-
-@external(erlang, "albedo_opencode_go", "accounts")
-fn opencode_go_accounts(home: String) -> List(Dynamic)
+fn oauth_targets(
+  provider: String,
+  values: List(#(String, json.Json)),
+) -> List(Target) {
+  list.map(values, fn(value) { Target(provider, value.0, value.1) })
+}
 
 @external(erlang, "albedo_zed_auth", "accounts")
-fn zed_accounts(home: String) -> List(Dynamic)
+fn zed_stored(home: String) -> List(Dynamic)
 
-/// A stored OAuth account: the label the provider's own identity logic gives
-/// it, plus the provide-usage credential fields.
-type Stored {
-  Stored(
-    label: String,
-    access: String,
-    account_id: String,
-    email: String,
-    project_id: String,
-  )
-}
-
-fn stored_decoder() -> decode.Decoder(Stored) {
-  use label <- decode.field("label", decode.string)
-  use access <- decode.optional_field("access", "", decode.string)
-  use account_id <- decode.optional_field("accountId", "", decode.string)
-  use email <- decode.optional_field("email", "", decode.string)
-  use project_id <- decode.optional_field("projectId", "", decode.string)
-  decode.success(Stored(label, access, account_id, email, project_id))
-}
-
-fn oauth_targets(provider: String, stored: List(Dynamic)) -> List(Target) {
-  stored
-  |> list.filter_map(fn(value) {
-    decode.run(value, stored_decoder()) |> result.replace_error(Nil)
-  })
-  |> list.filter_map(fn(account) {
-    case account.access, account.label {
-      "", _ | _, "" -> Error(Nil)
-      _, _ -> Ok(Target(provider, account.label, oauth_credential(account)))
-    }
-  })
-}
-
-/// Only the access token crosses into the core: albedo refreshes it, and the
-/// core never reads a refresh token.
-fn oauth_credential(account: Stored) -> json.Json {
-  let fields = [
-    #("kind", json.string("oauth")),
-    #("access", json.string(account.access)),
-    ..text_fields([
-      #("accountId", account.account_id),
-      #("email", account.email),
-    ])
-  ]
-  // Antigravity's quota is per Cloud Code Assist project.
-  case account.project_id {
-    "" -> json.object(fields)
-    project_id ->
-      json.object(
-        list.append(fields, [
-          #("extra", json.object([#("projectId", json.string(project_id))])),
-        ]),
-      )
+/// Zed accounts as its feed reads them: the label /login shows, the legacy
+/// user id and the stored access token, which polling never renews.
+fn zed_accounts(home: String) -> List(#(String, json.Json)) {
+  let decoder = {
+    use label <- decode.field("label", decode.string)
+    use id <- decode.optional_field("accountId", "", decode.string)
+    use access <- decode.optional_field("access", "", decode.string)
+    decode.success(#(label, id, access))
   }
-}
-
-fn opencode_go_targets(stored: List(Dynamic)) -> List(Target) {
-  stored
-  |> list.filter_map(fn(value) {
-    decode.run(value, stored_decoder()) |> result.replace_error(Nil)
-  })
-  |> list.filter_map(fn(account) {
-    case account.label {
-      "" -> Error(Nil)
-      label -> api_key_target("opencode-go", label, account.access)
+  list.filter_map(zed_stored(home), fn(value) {
+    case decode.run(value, decoder) {
+      Ok(#(label, id, access)) if label != "" && access != "" ->
+        Ok(#(
+          label,
+          json.object([
+            #("kind", json.string("oauth")),
+            #("access", json.string(access)),
+            #("accountId", json.string(id)),
+          ]),
+        ))
+      _ -> Error(Nil)
     }
   })
 }
@@ -200,26 +157,12 @@ fn provider_key_target(
   provider: String,
 ) -> Result(Target, Nil) {
   use keys <- result.try(
-    profile_keys(home, provider, name) |> result.replace_error(Nil),
+    key_accounts.resolve(key_accounts.Profile(home, provider, name))
+    |> result.replace_error(Nil),
   )
-  use key <- result.try(list.first(keys))
-  use #(_, api_key) <- result.try(
-    decode.run(key, key_decoder()) |> result.replace_error(Nil),
-  )
+  use account <- result.try(list.first(keys))
+  let api_key = key_accounts.key(account)
   api_key_target(provider, name, api_key)
-}
-
-@external(erlang, "albedo_key_accounts", "resolve")
-fn profile_keys(
-  home: String,
-  provider: String,
-  profile: String,
-) -> Result(List(Dynamic), String)
-
-fn key_decoder() -> decode.Decoder(#(String, String)) {
-  use endpoint <- decode.field("endpoint", decode.string)
-  use key <- decode.field("apiKey", decode.string)
-  decode.success(#(endpoint, key))
 }
 
 fn key_target(home: String, name: String) -> Result(Target, Nil) {
@@ -236,20 +179,12 @@ fn key_target(home: String, name: String) -> Result(Target, Nil) {
         json.object([#("kind", json.string("cli"))]),
       ))
     _ -> {
-      use #(_, key) <- result.try(
-        key_access(home, name, "quota") |> result.replace_error(Nil),
-      )
-      api_key_target(provider, name, key)
+      let pool = openai.pool(home, name, "quota", types.Responses)
+      use connection <- result.try(pool.current() |> result.replace_error(Nil))
+      api_key_target(provider, name, key_accounts.key(connection.account))
     }
   }
 }
-
-@external(erlang, "albedo_openai", "access")
-fn key_access(
-  home: String,
-  profile: String,
-  session: String,
-) -> Result(#(String, String), String)
 
 fn api_key_target(
   provider: String,
@@ -289,15 +224,6 @@ fn feed_provider(base_url: String) -> Result(String, Nil) {
     | "coding-intl.dashscope.aliyuncs.com" -> Ok("alibaba")
     _ -> Error(Nil)
   }
-}
-
-fn text_fields(fields: List(#(String, String))) -> List(#(String, json.Json)) {
-  list.filter_map(fields, fn(field) {
-    case field.1 {
-      "" -> Error(Nil)
-      value -> Ok(#(field.0, json.string(value)))
-    }
-  })
 }
 
 // ---- the poller ---------------------------------------------------------

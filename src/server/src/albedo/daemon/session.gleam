@@ -2,7 +2,6 @@
 
 import albedo/actor_call
 import albedo/clock
-import albedo/text_scalars
 
 import albedo/daemon/acp
 import albedo/daemon/acp_attachments
@@ -41,7 +40,6 @@ import albedo/daemon/session_side_question
 import albedo/daemon/session_state
 import albedo/daemon/session_submission
 import albedo/daemon/session_switch
-import albedo/daemon/session_title
 import albedo/daemon/session_workspace
 import albedo/daemon/shell_commands
 import albedo/daemon/side_question
@@ -91,6 +89,7 @@ const restart_note =
     None,
     None,
     None,
+    [],
   )
 
 const continue_prompt =
@@ -335,7 +334,7 @@ pub type Message {
     Subject(Result(side_question.Promotion, side_question.Refusal)),
   )
   SettleSideContinuation(String, String, Bool)
-  GenerateTitle(Subject(Result(json.Json, String)))
+  GenerateTitle(Subject(Result(Nil, String)))
   TitleFinished(Int, Result(String, String))
   /// The person's name for the session, or None to clear it.
   ChangeName(Option(String), Subject(Result(json.Json, String)))
@@ -479,9 +478,9 @@ pub type Message {
     Subject(Result(family.DeletionClaim, String)),
   )
   /// The runtime answered this session's kernel request.
-  KernelOpened(Result(runtime.Session, python.Error))
+  KernelOpened(Int, Result(runtime.Session, python.Error))
   /// The runtime answered this session's request for a kernel-free composition.
-  PreparedOpened(Result(runtime.Prepared, python.Error))
+  PreparedOpened(Int, Result(runtime.Prepared, python.Error))
   /// The model wait a rest timer measured has passed; see `arm_rest`.
   RestKernel(String, Int)
   /// The kernel went unused for `idle_release_ms` since the timer `token`
@@ -607,6 +606,7 @@ pub fn start(
     let state =
       session_state.State(
         title_job: None,
+        title_revision: 0,
         active_output: active_output.new(home, info.id, generation),
         side_question: None,
         shell_commands: shells,
@@ -642,6 +642,8 @@ pub fn start(
         prepared_head: prepared_head,
         last_touch: clock.monotonic_ms(),
         booting: None,
+        boot_ticket: None,
+        boot_token: 0,
         workspace_reset: None,
         workspace_probe: None,
         releasing: None,
@@ -688,6 +690,7 @@ pub fn start(
           Some(mail.new_id()),
           None,
           None,
+          [],
         ),
       )
     })
@@ -746,6 +749,7 @@ pub fn submit_mail(
       None,
       None,
       None,
+      [],
     ),
   )
 }
@@ -758,7 +762,7 @@ pub fn submit(
 ) -> Result(Bool, SubmissionError) {
   call_submit(
     session,
-    Submission(text, text, client_id, turn.Chat, images, None, None, None),
+    Submission(text, text, client_id, turn.Chat, images, None, None, None, []),
   )
 }
 
@@ -1679,6 +1683,7 @@ fn handle(
     | ReadCapture(..)
     | ReadStatus(..)
     | ChangeConfiguration(..)
+    | GenerateTitle(..)
     | InterruptCaptured(..)
     | ReadCommands(..)
     | Interrupt(..)
@@ -1817,7 +1822,9 @@ fn handle(
         }
       }
     MovedAway(detail) ->
-      actor.continue(session_state.State(..state, moved: Some(detail)))
+      actor.continue(
+        session_state.State(..session_naming.cancel(state), moved: Some(detail)),
+      )
     SwitchModel(caller, provider, model, reply) -> {
       let #(state, changed) =
         session_switch.queue(state, caller, provider, model)
@@ -1873,8 +1880,24 @@ fn handle(
         }
       }
     }
-    KernelOpened(result) -> actor.continue(kernel_opened(state, result))
-    PreparedOpened(result) -> actor.continue(prepared_opened(state, result))
+    KernelOpened(token, result) ->
+      case token == state.boot_token {
+        True ->
+          actor.continue(kernel_opened(
+            session_state.State(..state, boot_ticket: None),
+            result,
+          ))
+        False -> actor.continue(state)
+      }
+    PreparedOpened(token, result) ->
+      case token == state.boot_token {
+        True ->
+          actor.continue(prepared_opened(
+            session_state.State(..state, boot_ticket: None),
+            result,
+          ))
+        False -> actor.continue(state)
+      }
     AcquireKernel(id, reply) -> acquire_kernel(state, id, reply)
     RestKernel(id, token) ->
       case token == state.rest_token && turn.live(state.activity, id) {
@@ -2006,9 +2029,7 @@ fn handle(
       let host = state.host
       let id = state.info.id
       let cwd = state.info.cwd
-      process.spawn_unlinked(fn() {
-        process.send(reply, runtime.peek_commands(host, id, cwd))
-      })
+      runtime.peek_commands_async(host, id, cwd, process.send(reply, _))
       actor.continue(state)
     }
     ReadSelection(reply) -> answer(state, reply, model_selection(state.info))
@@ -2034,15 +2055,7 @@ fn handle(
       {
         Error(error) -> answer(state, reply, Error(error))
         Ok(cancelled) -> {
-          case state.title_job {
-            Some(job) ->
-              case job.request {
-                session_state.InitialTitle(_, order) if order <= through_order ->
-                  cancel_title(state)
-                _ -> Nil
-              }
-            None -> Nil
-          }
+          let state = session_naming.cancel_through(state, through_order)
           let steering =
             list.filter(state.steering, fn(input) {
               case input.operation_id {
@@ -2075,7 +2088,7 @@ fn handle(
       }
     }
     Interrupt(reply) -> {
-      cancel_title(state)
+      let state = session_naming.cancel(state)
       case operations.cancel(runtime.ledger(state.host), state.info.id) {
         Error(error) ->
           answer(session_state.emit(state, view.error(error)), reply, False)
@@ -2250,43 +2263,22 @@ fn handle(
       }
     }
     GenerateTitle(reply) -> {
-      let #(state, result) = regenerate_title(state)
-      answer(state, reply, result)
+      let #(state, started) = session_naming.regenerate(state, TitleFinished)
+      answer(state, reply, started)
     }
-    TitleFinished(revision, outcome) -> finish_title(state, revision, outcome)
-    ChangeName(name, reply) -> {
-      let #(state, changed) =
-        session_configure.change(state, session_configure.SelectName(name))
-      answer(
+    TitleFinished(revision, outcome) ->
+      actor.continue(session_naming.finish(
         state,
-        reply,
-        result.map(changed, fn(saved) {
-          json.object([
-            #("name", json.string(session_configuration.display_name(saved))),
-            #(
-              "source",
-              json.string(case saved.name {
-                Some(_) -> "user"
-                None -> "automatic"
-              }),
-            ),
-            #(
-              "message",
-              json.string(case saved.name {
-                Some(name) -> "session named \"" <> name <> "\""
-                None -> "the session's own name is cleared"
-              }),
-            ),
-          ])
-        }),
-      )
+        revision,
+        outcome,
+        synced_spend,
+      ))
+    ChangeName(name, reply) -> {
+      let #(state, changed) = session_naming.select(state, name)
+      answer(state, reply, changed)
     }
     SuggestName(name, reply) -> {
       let #(state, suggested) = session_naming.suggest(state, name)
-      case suggested {
-        Ok(_) -> cancel_title(state)
-        Error(_) -> Nil
-      }
       answer(state, reply, suggested)
     }
 
@@ -3007,7 +2999,8 @@ fn handle(
       answer(state, reply, claimed)
     }
     CloseForDeletion(reply) -> {
-      cancel_title(state)
+      let state = withdraw_boot(state)
+      let state = session_naming.cancel(state)
       cancel_side_worker(state)
       stop_shell_worker(state)
       let state =
@@ -3049,7 +3042,7 @@ fn handle(
       }
     }
     Close(reply) -> {
-      cancel_title(state)
+      let state = session_naming.cancel(state)
       cancel_side_worker(state)
       stop_shell_worker(state)
       case turn.running(state.activity) {
@@ -3227,6 +3220,7 @@ fn queue_shell(state: State, command: shell_commands.Command) -> State {
                 None,
                 None,
                 None,
+                [],
               ),
             ]),
           )
@@ -3532,12 +3526,22 @@ fn command_op(
     command.Submit(display, text, client) ->
       submitted_turn(
         session,
-        Submission(display, text, client, turn.Chat, [], None, None, None),
+        Submission(display, text, client, turn.Chat, [], None, None, None, []),
       )
     command.Note(origin, display, text) ->
       submitted(
         session,
-        Submission(display, text, "", turn.Note(origin), [], None, None, None),
+        Submission(
+          display,
+          text,
+          "",
+          turn.Note(origin),
+          [],
+          None,
+          None,
+          None,
+          [],
+        ),
         "queued",
       )
     command.KernelReport ->
@@ -3822,13 +3826,20 @@ fn turn_or_park(state: State, work: Message) -> Result(State, State) {
 /// `work` in `booting` until it arrives.
 fn request_composition(state: State, work: Message) -> State {
   let self = state.self
-  runtime.prepare_session_async(
-    state.host,
-    state.info.id,
-    state.info.cwd,
-    fn(result) { process.send(self, PreparedOpened(result)) },
+  let token = state.boot_token + 1
+  let ticket =
+    runtime.prepare_session_request(
+      state.host,
+      state.info.id,
+      state.info.cwd,
+      fn(result) { process.send(self, PreparedOpened(token, result)) },
+    )
+  session_state.State(
+    ..state,
+    booting: Some(#(1, [work])),
+    boot_ticket: option.from_result(ticket),
+    boot_token: token,
   )
-  session_state.State(..state, booting: Some(#(1, [work])))
   |> session_state.announce
 }
 
@@ -3957,6 +3968,7 @@ fn refuse_acquires(state: State) -> State {
     booting: option.map(state.booting, fn(boot) { #(boot.0, refuse(boot.1)) }),
     releasing: option.map(state.releasing, refuse),
   )
+  |> withdraw_unused_boot
 }
 
 /// The state when a live kernel is here; otherwise `work` is parked until one
@@ -4063,25 +4075,32 @@ fn park_kernel(state: State, work: Message) -> State {
           )
       }
     None -> {
-      request_kernel(state)
+      let state = request_kernel(state)
       session_state.State(..state, booting: Some(#(1, [work])))
     }
   }
   |> session_state.announce
 }
 
-fn request_kernel(state: State) -> Nil {
+fn request_kernel(state: State) -> State {
   let self = state.self
   // A released session waking is what spares are kept for.
   case state.released {
     Some(_) -> runtime.want_spares(state.host)
     None -> Nil
   }
-  runtime.open_session_async(
-    state.host,
-    state.info.id,
-    state.info.cwd,
-    fn(result) { process.send(self, KernelOpened(result)) },
+  let token = state.boot_token + 1
+  let ticket =
+    runtime.open_session_request(
+      state.host,
+      state.info.id,
+      state.info.cwd,
+      fn(result) { process.send(self, KernelOpened(token, result)) },
+    )
+  session_state.State(
+    ..state,
+    boot_ticket: option.from_result(ticket),
+    boot_token: token,
   )
 }
 
@@ -4156,7 +4175,7 @@ fn kernel_opened(
     None, Error(_) -> state
     Some(#(attempts, parked)), Error(python.Lost) if attempts < 2 -> {
       runtime.reset_session_async(state.host, state.info.id)
-      request_kernel(state)
+      let state = request_kernel(state)
       session_state.State(..state, booting: Some(#(attempts + 1, parked)))
     }
     Some(#(_, parked)), Ok(kernel) -> {
@@ -4170,7 +4189,7 @@ fn kernel_opened(
         // generated title renames the session; preparing again sees the new
         // inputs, while a real startup problem still pauses the inputs.
         True -> {
-          request_kernel(state)
+          let state = request_kernel(state)
           session_state.State(..state, booting: Some(#(attempts + 1, parked)))
         }
         False -> boot_failed(state, parked, error)
@@ -4656,16 +4675,8 @@ fn recompose(state: State) -> State {
   case session_state.composition(state) {
     Some(_) -> state
     None -> {
-      let ready = process.new_subject()
-      runtime.prepare_session_async(
-        state.host,
-        state.info.id,
-        state.info.cwd,
-        process.send(ready, _),
-      )
-      case process.receive(ready, 60_000) {
-        Ok(Ok(prepared)) ->
-          session_state.State(..state, prepared: Some(prepared))
+      case runtime.prepare_session(state.host, state.info.id, state.info.cwd) {
+        Ok(prepared) -> session_state.State(..state, prepared: Some(prepared))
         _ -> state
       }
     }
@@ -6058,6 +6069,7 @@ pub fn continuation(client: String, operation_id: String) -> Submission {
     None,
     Some(operation_id),
     None,
+    [],
   )
 }
 
@@ -6075,13 +6087,28 @@ fn admit_operation(
     Ok(None) -> {
       let #(state, image_error) = refused_image(state, submission)
       let queued = list.length(state.steering) + state.admitting
+      // Preparation saved the files for a local workspace; the actor orders
+      // this check after any workspace change that won the race.
+      let remote_files =
+        submission.files != []
+        && case location.parse(state.info.cwd) {
+          Ok(location.Remote(..)) -> True
+          _ -> False
+        }
       let refusal = case
+        remote_files,
         image_error,
         turn.admit(state.activity, submission, queued)
       {
-        Some(reason), _ ->
+        True, _, _ ->
+          Some(operations.Rejection(
+            400,
+            "attachment_workspace_unsupported",
+            "file attachments require a local workspace",
+          ))
+        _, Some(reason), _ ->
           Some(operations.Rejection(409, "image_rejected", reason))
-        _, turn.Reject(turn.Busy) -> {
+        _, _, turn.Reject(turn.Busy) -> {
           case turn.admit(turn.Resting, submission, queued) {
             turn.Reject(turn.Busy) ->
               Some(operations.Rejection(
@@ -6097,13 +6124,13 @@ fn admit_operation(
               ))
           }
         }
-        _, turn.Reject(turn.Oversized) ->
+        _, _, turn.Reject(turn.Oversized) ->
           Some(operations.Rejection(
             413,
             "input_too_large",
             "prompt or activation exceeds its bounded size",
           ))
-        _, _ -> None
+        _, _, _ -> None
       }
       case refusal {
         Some(reason) -> {
@@ -6161,7 +6188,13 @@ fn admission_committed(
         Ok(Some(outcome)), False
           if outcome.receipt.delivery == Some("pending")
         -> {
-          let state = maybe_title(state, submission, outcome.acceptance_order)
+          let state =
+            session_naming.maybe_start(
+              state,
+              submission,
+              outcome.acceptance_order,
+              TitleFinished,
+            )
           process.send(state.self, StartQueued)
           session_state.State(
             ..state,
@@ -6235,6 +6268,7 @@ fn stop_waiting(state: State) -> #(State, Bool) {
             )
           }),
         )
+          |> withdraw_unused_boot
           |> session_state.announce,
         True,
       )
@@ -6256,6 +6290,46 @@ fn stop_waiting(state: State) -> #(State, Bool) {
       )
     }
   }
+}
+
+/// A cancelled turn may share preparation with commands still parked here.
+fn withdraw_unused_boot(state: State) -> State {
+  case state.booting, state.boot_ticket {
+    Some(#(_, [])), Some(_) -> withdraw_boot(state)
+    _, _ -> state
+  }
+}
+
+fn withdraw_empty_queue_boot(state: State) -> State {
+  case state.steering, turn.running(state.activity) {
+    [], None ->
+      session_state.State(
+        ..state,
+        booting: option.map(state.booting, fn(boot) {
+          #(
+            boot.0,
+            list.filter(boot.1, fn(work) {
+              work != StartQueued && work != Resume
+            }),
+          )
+        }),
+      )
+      |> withdraw_unused_boot
+    _, _ -> state
+  }
+}
+
+fn withdraw_boot(state: State) -> State {
+  case state.boot_ticket {
+    Some(ticket) -> runtime.cancel_request_ticket(ticket)
+    None -> Nil
+  }
+  session_state.State(
+    ..state,
+    booting: None,
+    boot_ticket: None,
+    boot_token: state.boot_token + 1,
+  )
 }
 
 /// The run an interrupt can still stop. Once its end is being committed the
@@ -6420,6 +6494,7 @@ fn cancel_input_in(
           process.send(reply, Ok(Cancelled))
           session_state.State(..state, steering: remaining)
           |> session_submission.refresh_ids([id])
+          |> withdraw_empty_queue_boot
           |> session_state.announce
         }
       }
@@ -6463,153 +6538,10 @@ fn cancel_input_in(
   }
 }
 
-fn maybe_title(
-  state: State,
-  submission: Submission,
-  acceptance_order: Int,
-) -> State {
-  case submission.source {
-    turn.Chat | turn.Acp -> {
-      case
-        session_naming.claim(state),
-        string.trim(session_title.human_text(submission)),
-        state.title_job
-      {
-        Ok(Some(revision)), text, None if text != "" ->
-          start_title(
-            state,
-            revision,
-            session_state.InitialTitle(
-              text_scalars.take(text, 2000),
-              acceptance_order,
-            ),
-          )
-        _, _, _ -> state
-      }
-    }
-    _ -> state
-  }
-}
-
-fn start_title(
-  state: State,
-  revision: Int,
-  request: session_state.TitleRequest,
-) -> State {
-  let #(worker, stop) =
-    session_title.start(
-      session_title.Selection(state.host, state.home, state.info),
-      request,
-      state.self,
-      TitleFinished(revision, _),
-    )
-  session_state.State(
-    ..state,
-    title_job: Some(session_state.TitleJob(revision, request, worker, stop)),
-  )
-}
-
-fn regenerate_title(state: State) -> #(State, Result(json.Json, String)) {
-  let outcome = {
-    use current <- result.try(
-      store.query(runtime.ledger(state.host), session_configuration.read_in(
-        _,
-        state.info.id,
-      )),
-    )
-    use _ <- result.try(
-      case current.family.member != None || current.family.started_by != None {
-        True -> Error("an agent is named by its parent")
-        False -> Ok(Nil)
-      },
-    )
-    use _ <- result.try(case state.closing || state.moved != None {
-      True -> Error("session is closing or moved")
-      False -> Ok(Nil)
-    })
-    use _ <- result.try(case state.title_job {
-      Some(_) -> Error("title_generation_in_progress")
-      None -> Ok(Nil)
-    })
-    use revision <- result.try(session_naming.revision(state))
-    Ok(revision)
-  }
-  case outcome {
-    Error(error) -> #(state, Error(error))
-    Ok(revision) -> #(
-      start_title(state, revision, session_state.RegenerateTitle),
-      Ok(json.object([#("message", json.string("Generating a session name."))])),
-    )
-  }
-}
-
-fn finish_title(
-  state: State,
-  revision: Int,
-  outcome: Result(String, String),
-) -> actor.Next(State, Message) {
-  case state.title_job {
-    Some(job) if job.revision == revision -> {
-      let state = session_state.State(..state, title_job: None)
-      let #(state, saved) = save_generated_title(state, job, outcome)
-      let state = synced_spend(state)
-      let state = case job.request, saved {
-        session_state.RegenerateTitle, Error(error) ->
-          session_state.emit(state, view.note("retitle", error))
-        _, _ -> state
-      }
-      actor.continue(session_state.invalidate(
-        state,
-        "session",
-        "/sessions/" <> state.info.id,
-      ))
-    }
-    _ -> actor.continue(state)
-  }
-}
-
-fn save_generated_title(
-  state: State,
-  job: session_state.TitleJob,
-  outcome: Result(String, String),
-) -> #(State, Result(json.Json, String)) {
-  let candidate = {
-    use name <- result.try(outcome)
-    use current <- result.try(session_naming.revision(state))
-    case current == job.revision && !state.closing && state.moved == None {
-      True -> Ok(name)
-      False -> Error("a newer naming action superseded this title")
-    }
-  }
-  case candidate {
-    Error(error) -> #(state, Error(error))
-    Ok(name) ->
-      case job.request {
-        session_state.InitialTitle(..) ->
-          session_naming.generated(state, name, job.revision)
-        session_state.RegenerateTitle -> {
-          let #(state, saved) =
-            session_configure.change(
-              state,
-              session_configure.SelectName(Some(name)),
-            )
-          #(state, result.map(saved, fn(_) { json.null() }))
-        }
-      }
-  }
-}
-
-pub fn generate_title(worker: Session) -> Result(json.Json, String) {
-  actor_call.try_call(worker, 5000, GenerateTitle)
+pub fn generate_title(session: Session) -> Result(Nil, String) {
+  actor_call.try_call(session, 5000, GenerateTitle)
   |> result.replace_error("session unavailable")
   |> result.flatten
-}
-
-fn cancel_title(state: State) -> Nil {
-  case state.title_job {
-    Some(job) -> turn.cancel_call(job.worker, job.stop)
-    None -> Nil
-  }
 }
 
 pub fn ask_side_question(

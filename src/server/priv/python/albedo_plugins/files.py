@@ -6,6 +6,7 @@ Production searches use the daemon-owned FFF worker shared by host sessions.
 from __future__ import annotations
 
 import asyncio
+import base64
 import codecs
 import fnmatch
 import hashlib
@@ -18,9 +19,9 @@ from dataclasses import dataclass
 from io import BufferedReader
 from pathlib import Path
 from collections.abc import Awaitable, Callable, Generator
-from typing import Generic, Iterable, Sequence, TypeVar
+from typing import Generic, Iterable, Sequence, TypeVar, cast
 
-from albedo_api import PythonApi, ReadyList, Text
+from albedo_api import Host, PythonApi, ReadyList, Text
 import albedo_trace
 from albedo_plugins import hook
 
@@ -35,6 +36,8 @@ def _record_edit(path: Path) -> None:
     if plugin is not None:
         plugin.record(path)
 
+
+host: Host
 
 READ_LIMIT = 16_000
 READ_CHUNK_BYTES = 64 * 1024
@@ -393,6 +396,38 @@ def _check_image(path: Path):
 
 class Files:
     """Workspace file access with the diagnostics an exact edit needs."""
+
+    async def image(self, index: int = 0, *, entry: int | None = None) -> bytes:
+        """Original bytes of this session's uploaded image, ready for an image library.
+
+        Index is zero-based. Without entry, use the latest user message with
+        images, looking past later text-only messages. Otherwise entry is that
+        message's transcript position. Unavailable uploads raise FilesError with
+        code image_unavailable; invalid arguments raise ValueError.
+
+        Assign the bytes before opening them, for example:
+        data = await files.image()
+        picture = Image.open(io.BytesIO(data))
+
+        The host reads the upload, including for remote kernels. Do not search
+        the daemon database or infer a path in the daemon's home.
+        """
+        if type(index) is not int or index < 0:
+            raise ValueError("index must be a nonnegative integer")
+        if entry is not None and (type(entry) is not int or entry < 1):
+            raise ValueError("entry must be a positive transcript position")
+        before = 0
+        while True:
+            result = cast(
+                dict[str, str | int],
+                await host(
+                    "files.image", {"entry": entry, "index": index, "before": before}
+                ),
+            )
+            data = result.get("data")
+            if isinstance(data, str):
+                return base64.b64decode(data, validate=True)
+            before = cast(int, result["before"])
 
     async def check(self, paths=None) -> dict:
         """Check current pending files, or enroll/select explicit local paths.
@@ -1247,7 +1282,8 @@ def _missing(target: Path, original: str) -> str:
 
 
 def setup(api: PythonApi) -> dict[str, object]:
-    global _fff
+    global host, _fff
+    host = api.host
     _fff = _FFF(api.host)
     api.on_shutdown(_fff.close)
-    return {"files": Files()}
+    return {"files": Files(), "FilesError": api.HostError}

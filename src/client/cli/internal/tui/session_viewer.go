@@ -362,7 +362,7 @@ func byWarm(now time.Time) func(a, b *daemon.Session) int {
 	}
 }
 
-const untitled = ""
+const untitled = "Untitled session"
 
 const sessionDeletePrompt = "This permanently deletes the session, its child sessions, and their history. Delete?"
 

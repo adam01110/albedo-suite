@@ -214,7 +214,7 @@ func patchSessionWithHeaders(ctx context.Context, conn *Connection, id string, h
 		if err := decodeRequired(data, &change); err != nil {
 			return err
 		}
-		if change.Resource.ETag == "" || change.Session.ID != id || change.Resource.Value.ID != id || change.Resource.ETag != change.Session.ConfigurationResource.ETag {
+		if change.Session.ConfigurationResource.ETag == "" || change.Session.ID != id || change.Session.ConfigurationResource.Value.ID != id {
 			return fieldError("session change")
 		}
 		if err := validateSession(change.Session); err != nil {

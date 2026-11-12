@@ -39,6 +39,7 @@ pub opaque type Composition {
 /// composes without it.
 pub fn compose(
   selected: List(extension.Extension),
+  owner: extension.PreparationOwner,
   ledger: store.Store,
   session: String,
   workspace: String,
@@ -48,7 +49,7 @@ pub fn compose(
     list.fold(selected, empty, fn(composed, candidate) {
       let #(static, load_failures) = split(loaded(candidate, workspace))
       let #(managed, prepare_failures) = case load_failures {
-        [] -> split(prepare([candidate], ledger, session, workspace))
+        [] -> split(prepare([candidate], owner, ledger, session, workspace))
         _ -> #([], [])
       }
       let failures = list.append(load_failures, prepare_failures)
@@ -58,13 +59,20 @@ pub fn compose(
         [] ->
           case
             extension.module_clash(claimed),
-            extension.duplicate_capabilities(list.map(claimed, value))
+            extension.duplicate_capabilities(list.map(claimed, value)),
+            unbound_client_command(candidate, list.append(static, managed))
           {
-            option.Some(reason), _ -> [broken(candidate.name, reason)]
-            option.None, True -> [
+            option.Some(reason), _, _ -> [broken(candidate.name, reason)]
+            option.None, True, _ -> [
               broken(candidate.name, "it duplicates tools, commands, or routes"),
             ]
-            option.None, False -> []
+            option.None, False, option.Some(name) -> [
+              broken(
+                candidate.name,
+                "client binding " <> name <> " has no command in this extension",
+              ),
+            ]
+            option.None, False, option.None -> []
           }
         _ -> failures
       }
@@ -120,6 +128,28 @@ pub fn compose(
     managed: managed,
     failures: list.append(composed.failures, failures),
   )
+}
+
+/// Only this extension's completed contributions can satisfy its bindings.
+fn unbound_client_command(
+  candidate: extension.Extension,
+  prepared: List(extension.Prepared),
+) -> option.Option(String) {
+  let names =
+    list.flat_map(prepared, fn(item) {
+      list.map(item.value.commands, fn(command) { command.name })
+    })
+  let bindings =
+    list.flat_map(candidate.plugins, fn(plugin) {
+      case plugin {
+        extension.ClientPlugin(bindings) -> bindings
+        _ -> []
+      }
+    })
+  bindings
+  |> list.find(fn(binding) { !list.contains(names, binding.slash_name) })
+  |> result.map(fn(binding) { binding.slash_name })
+  |> option.from_result
 }
 
 /// Remove dependents until every remaining requirement is active.
@@ -201,6 +231,25 @@ pub fn value(prepared: extension.Prepared) -> extension.Managed {
 /// Release every managed resource, newest first.
 pub fn close(composition: Composition) -> Nil {
   close_prepared(composition.managed)
+}
+
+/// Hand each managed contribution to the runtime in preparation order.
+/// On the first refusal, close the entire composition newest first.
+pub fn adopt(composition: Composition) -> Result(Nil, String) {
+  let adopted =
+    list.try_each(composition.managed, fn(item) {
+      protect.guarded(item.value.adopt)
+      |> result.map_error(fn(reason) {
+        "extension " <> item.extension <> " refused adoption: " <> reason
+      })
+    })
+  case adopted {
+    Ok(Nil) -> Ok(Nil)
+    Error(reason) -> {
+      close_prepared(composition.managed)
+      Error(reason)
+    }
+  }
 }
 
 /// Every contribution's observer, in registry order, each guarded: these run
@@ -334,11 +383,13 @@ pub fn client_commands(
       case plugin {
         extension.ClientPlugin(bindings) ->
           bindings
-          |> list.filter_map(fn(binding) {
-            list.find(commands, fn(entry) {
-              entry.0 == item.name && entry.1.name == binding.slash_name
-            })
-            |> result.map(fn(entry) { #(item.name, binding, entry.1) })
+          |> list.map(fn(binding) {
+            // Composition validates this owner/name relationship before publication.
+            let assert Ok(entry) =
+              list.find(commands, fn(entry) {
+                entry.0 == item.name && entry.1.name == binding.slash_name
+              })
+            #(item.name, binding, entry.1)
           })
         _ -> []
       }
@@ -361,21 +412,35 @@ pub fn routes(composition: Composition) -> List(extension.Route) {
 /// resources it started itself.
 pub fn prepare(
   installed: List(extension.Extension),
+  owner: extension.PreparationOwner,
   ledger: store.Store,
   session: String,
   workspace: String,
 ) -> List(Result(extension.Prepared, extension.Prepared)) {
   extension.plugin_values(installed, fn(name, plugin) {
     case plugin {
-      extension.ManagedPlugin(run) -> Ok(#(name, run))
+      extension.ManagedPlugin(run) ->
+        Ok(
+          #(name, fn() {
+            run(ledger, session, workspace) |> result.map(option.Some)
+          }),
+        )
+      extension.OwnedManagedPlugin(run) ->
+        Ok(
+          #(name, fn() {
+            use owned <- result.map(run(owner, ledger, session, workspace))
+            option.map(owned, extension.owned_value)
+          }),
+        )
       _ -> Error(Nil)
     }
   })
-  |> list.map(fn(item) {
+  |> list.flat_map(fn(item) {
     let #(name, run) = item
-    case protect.guarded(fn() { run(ledger, session, workspace) }) {
-      Ok(value) -> Ok(extension.Prepared(name, value))
-      Error(error) -> Error(broken(name, "it failed to prepare: " <> error))
+    case protect.guarded(run) {
+      Ok(option.Some(value)) -> [Ok(extension.Prepared(name, value))]
+      Ok(option.None) -> []
+      Error(error) -> [Error(broken(name, "it failed to prepare: " <> error))]
     }
   })
 }

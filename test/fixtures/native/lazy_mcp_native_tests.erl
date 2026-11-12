@@ -18,25 +18,24 @@ run() ->
     C = #{<<"servers">> => #{<<"a">> => Described, <<"b">> => Config,
           <<"c">> => Config, <<"missing">> => Missing,
           <<"disabled">> => Config#{<<"enabled">> => false}, <<"blocked">> => Config}},
-    Cache = fun(_, _) -> error(cache_must_not_be_read) end,
-    Save = fun(_, _, _) -> error(cache_must_not_be_written) end,
-    {ok, Manager} = albedo_mcp:prepare_lazy(enc(C), nil, nil, Cache, Save),
+    {ok, Manager} = albedo_mcp:prepare_lazy(enc(C), nil, nil, self(), self()),
     assert_startup_has_no_effects(Manager),
-    assert_description_validation(Config, Cache, Save),
+    assert_description_validation(Config),
+    assert_adoption(Config),
     Tool = assert_concurrent_load_starts_once(Manager),
     assert_calls_are_not_replayed(Manager, Tool),
     assert_unload_and_reload(Manager, Tool),
     assert_operation_cap(Manager),
     assert_close_stops_loading(Manager),
-    assert_manager_death_closes_client(Config, Cache, Save),
+    assert_manager_death_closes_client(Config),
     assert_eager_compatibility(),
-    assert_idle_cleanup(Config, Cache, Save),
-    assert_dead_client_and_catalogue_drift(Config, Cache, Save),
-    assert_abandoned_queue(Config, Cache, Save),
-    assert_abandoned_reconnect(Config, Cache, Save),
-    assert_dispatched_caller_death(Config, Cache, Save),
-    assert_dispatched_manager_death(Config, Cache, Save),
-    io:format("lazy native tests passed (14 lifecycle groups)~n"),
+    assert_idle_cleanup(Config),
+    assert_dead_client_and_catalogue_drift(Config),
+    assert_abandoned_queue(Config),
+    assert_abandoned_reconnect(Config),
+    assert_dispatched_caller_death(Config),
+    assert_dispatched_manager_death(Config),
+    io:format("lazy native tests passed (15 lifecycle groups)~n"),
     ok.
 
 assert_startup_has_no_effects(Manager) ->
@@ -58,15 +57,30 @@ assert_startup_has_no_effects(Manager) ->
     {error, _} = albedo_mcp:load(Manager, <<"blocked">>),
     0 = count(credentials).
 
-assert_description_validation(Config, Cache, Save) ->
+assert_description_validation(Config) ->
     lists:foreach(fun(Invalid) ->
         Bad = Config#{<<"description">> => Invalid},
         {error, _} = albedo_mcp:validate_settings(<<"a">>, {some, Bad}, #{}),
-        {error, _} = albedo_mcp:prepare_lazy(enc(#{<<"servers">> => #{<<"a">> => Bad}}), nil, nil, Cache, Save)
+        {error, _} = albedo_mcp:prepare_lazy(enc(#{<<"servers">> => #{<<"a">> => Bad}}), nil, nil, self(), self())
     end, [null, 42, binary:copy(<<"x">>, 1025)]),
-    {ok, Empty} = albedo_mcp:prepare_lazy(enc(#{<<"servers">> => #{}}), nil, nil, Cache, Save),
+    {ok, Empty} = albedo_mcp:prepare_lazy(enc(#{<<"servers">> => #{}}), nil, nil, self(), self()),
     <<>> = albedo_mcp:context(Empty),
     nil = albedo_mcp:close(Empty).
+
+assert_adoption(Config) ->
+    C = enc(#{<<"servers">> => #{<<"a">> => Config}}),
+    {ok, Handle} = albedo_mcp:prepare_lazy(C, nil, nil, self(), self()),
+    Parent = self(),
+    spawn(fun() -> Parent ! {adopted, albedo_mcp:adopt(Handle)} end),
+    receive {adopted, {error, _}} -> ok after 5000 -> error(foreign_adopt_accepted) end,
+    {ok, nil} = albedo_mcp:adopt(Handle),
+    nil = albedo_mcp:close(Handle),
+    %% A preparer that dies before adoption ends the manager.
+    Preparer = spawn(fun() -> receive stop -> ok end end),
+    {ok, Orphan} = albedo_mcp:prepare_lazy(C, nil, nil, Preparer, self()),
+    M = monitor(process, maps:get(lazy_manager, Orphan)),
+    kill_and_wait(Preparer),
+    receive {'DOWN', M, process, _, _} -> ok after 5000 -> error(orphan_manager_leaked) end.
 
 assert_concurrent_load_starts_once(Manager) ->
     Parent = self(),
@@ -116,15 +130,15 @@ assert_close_stops_loading(Manager) ->
     nil = albedo_mcp:close(Manager),
     {error, _} = albedo_mcp:load(Manager, <<"a">>).
 
-assert_manager_death_closes_client(Config, Cache, Save) ->
-    %% Independent guards close even when the manager is killed.
-    {ok, KilledManager} = albedo_mcp:prepare_lazy(enc(#{<<"servers">> => #{<<"a">> => Config}}), nil, nil, Cache, Save),
+assert_manager_death_closes_client(Config) ->
+    %% Clients close with their owning manager even when it is killed.
+    {ok, KilledManager} = albedo_mcp:prepare_lazy(enc(#{<<"servers">> => #{<<"a">> => Config}}), nil, nil, self(), self()),
     {ok, _} = albedo_mcp:load(KilledManager, <<"a">>),
     [{last_client, Client}] = ets:lookup(lazy_mcp_test, last_client),
     Monitor = monitor(process, Client),
     exit(maps:get(lazy_manager, KilledManager), kill),
     receive {'DOWN', Monitor, process, Client, _} -> ok after 5000 -> error(client_leaked) end,
-    {error, _} = albedo_mcp:prepare_lazy(enc(#{<<"servers">> => #{<<"bad name">> => Config}}), nil, nil, Cache, Save).
+    {error, _} = albedo_mcp:prepare_lazy(enc(#{<<"servers">> => #{<<"bad name">> => Config}}), nil, nil, self(), self()).
 
 assert_eager_compatibility() ->
     %% Existing eager snapshots stay compatible without transport work.
@@ -133,10 +147,10 @@ assert_eager_compatibility() ->
     {ok, <<"[]">>} = albedo_mcp:load(Eager, <<"eager">>),
     {error, _} = albedo_mcp:unload(Eager, <<"eager">>).
 
-assert_idle_cleanup(Config, Cache, Save) ->
+assert_idle_cleanup(Config) ->
     ets:insert(lazy_mcp_test, {tools, 1}),
     C = #{<<"idleTimeoutMs">> => 40, <<"servers">> => #{<<"idle">> => Config}},
-    {ok, Manager} = albedo_mcp:prepare_lazy(enc(C), nil, nil, Cache, Save),
+    {ok, Manager} = albedo_mcp:prepare_lazy(enc(C), nil, nil, self(), self()),
     {ok, Definitions} = albedo_mcp:load(Manager, <<"idle">>),
     [#{<<"name">> := Tool}] = json:decode(Definitions),
     [{last_client, Client}] = ets:lookup(lazy_mcp_test, last_client),
@@ -152,13 +166,13 @@ assert_idle_cleanup(Config, Cache, Save) ->
     AfterCalls = BeforeCalls + 1, AfterCalls = count(calls),
     assert_idle_does_not_interrupt_call(Manager, Tool),
     nil = albedo_mcp:close(Manager),
-    {error, _} = albedo_mcp:prepare_lazy(enc(C#{<<"idleTimeoutMs">> => -1}), nil, nil, Cache, Save),
-    {error, _} = albedo_mcp:prepare_lazy(enc(C#{<<"idleTimeoutMs">> => 1.5}), nil, nil, Cache, Save).
+    {error, _} = albedo_mcp:prepare_lazy(enc(C#{<<"idleTimeoutMs">> => -1}), nil, nil, self(), self()),
+    {error, _} = albedo_mcp:prepare_lazy(enc(C#{<<"idleTimeoutMs">> => 1.5}), nil, nil, self(), self()).
 
-assert_dead_client_and_catalogue_drift(Config, Cache, Save) ->
+assert_dead_client_and_catalogue_drift(Config) ->
     ets:insert(lazy_mcp_test, {tools, 1}),
     C = #{<<"idleTimeoutMs">> => 40, <<"servers">> => #{<<"drift">> => Config}},
-    {ok, Manager} = albedo_mcp:prepare_lazy(enc(C), nil, nil, Cache, Save),
+    {ok, Manager} = albedo_mcp:prepare_lazy(enc(C), nil, nil, self(), self()),
     {ok, Definitions} = albedo_mcp:load(Manager, <<"drift">>),
     [#{<<"name">> := Tool}] = json:decode(Definitions),
     [{last_client, Client}] = ets:lookup(lazy_mcp_test, last_client),
@@ -172,7 +186,7 @@ assert_dead_client_and_catalogue_drift(Config, Cache, Save) ->
     [_, _] = json:decode(albedo_mcp:definitions(Manager)),
     nil = albedo_mcp:close(Manager),
     ets:insert(lazy_mcp_test, {tools, 1}),
-    {ok, Dead} = albedo_mcp:prepare_lazy(enc(C#{<<"idleTimeoutMs">> => 0}), nil, nil, Cache, Save),
+    {ok, Dead} = albedo_mcp:prepare_lazy(enc(C#{<<"idleTimeoutMs">> => 0}), nil, nil, self(), self()),
     {ok, D} = albedo_mcp:load(Dead, <<"drift">>),
     [#{<<"name">> := DeadTool}] = json:decode(D),
     [{last_client, DeadClient}] = ets:lookup(lazy_mcp_test, last_client),
@@ -203,8 +217,8 @@ assert_idle_does_not_interrupt_call(Manager, Tool) ->
     after 5000 -> error(call_not_started) end,
     ets:delete(lazy_mcp_test, call_pause).
 
-assert_abandoned_queue(Config, Cache, Save) ->
-    {ok, Handle} = albedo_mcp:prepare_lazy(enc(#{<<"servers">> => #{<<"a">> => Config}}), nil, nil, Cache, Save),
+assert_abandoned_queue(Config) ->
+    {ok, Handle} = albedo_mcp:prepare_lazy(enc(#{<<"servers">> => #{<<"a">> => Config}}), nil, nil, self(), self()),
     Manager = maps:get(lazy_manager, Handle),
     Starts = count(starts),
     Credentials = count(credentials),
@@ -235,9 +249,9 @@ assert_abandoned_queue(Config, Cache, Save) ->
     receive {'DOWN', M, process, Manager, normal} -> ok
     after 5000 -> error(abandoned_close_leaked) end.
 
-assert_abandoned_reconnect(Config, Cache, Save) ->
+assert_abandoned_reconnect(Config) ->
     C = #{<<"idleTimeoutMs">> => 40, <<"servers">> => #{<<"a">> => Config}},
-    {ok, Handle} = albedo_mcp:prepare_lazy(enc(C), nil, nil, Cache, Save),
+    {ok, Handle} = albedo_mcp:prepare_lazy(enc(C), nil, nil, self(), self()),
     {ok, Definitions} = albedo_mcp:load(Handle, <<"a">>),
     [#{<<"name">> := Tool}] = json:decode(Definitions),
     [{last_client, Client}] = ets:lookup(lazy_mcp_test, last_client),
@@ -255,8 +269,8 @@ assert_abandoned_reconnect(Config, Cache, Save) ->
     ets:delete(lazy_mcp_test, discovery_pause),
     nil = albedo_mcp:close(Handle).
 
-assert_dispatched_caller_death(Config, Cache, Save) ->
-    {ok, Handle} = albedo_mcp:prepare_lazy(enc(#{<<"servers">> => #{<<"a">> => Config}}), nil, nil, Cache, Save),
+assert_dispatched_caller_death(Config) ->
+    {ok, Handle} = albedo_mcp:prepare_lazy(enc(#{<<"servers">> => #{<<"a">> => Config}}), nil, nil, self(), self()),
     {ok, Definitions} = albedo_mcp:load(Handle, <<"a">>),
     [#{<<"name">> := Tool}] = json:decode(Definitions),
     Calls = count(calls),
@@ -273,8 +287,8 @@ assert_dispatched_caller_death(Config, Cache, Save) ->
     ets:delete(lazy_mcp_test, call_pause),
     nil = albedo_mcp:close(Handle).
 
-assert_dispatched_manager_death(Config, Cache, Save) ->
-    {ok, Handle} = albedo_mcp:prepare_lazy(enc(#{<<"servers">> => #{<<"a">> => Config}}), nil, nil, Cache, Save),
+assert_dispatched_manager_death(Config) ->
+    {ok, Handle} = albedo_mcp:prepare_lazy(enc(#{<<"servers">> => #{<<"a">> => Config}}), nil, nil, self(), self()),
     {ok, Definitions} = albedo_mcp:load(Handle, <<"a">>),
     [#{<<"name">> := Tool}] = json:decode(Definitions),
     ets:insert(lazy_mcp_test, {call_pause, self()}),
