@@ -131,6 +131,35 @@ func TestVimYanksWriteSystemClipboard(t *testing.T) {
 	}
 }
 
+func TestVimDeletesWriteSystemClipboard(t *testing.T) {
+	for _, tc := range []struct{ name, text, keys, want, left string }{
+		{"line", "one\ntwo", "dd", "one\n", "two"},
+		{"counted lines", "one\ntwo\nthree", "2dd", "one\ntwo\n", "three"},
+		{"word", "one two", "dw", "one ", "two"},
+		{"change word", "one two", "cw", "one", " two"},
+		{"change line", "one two", "cc", "one two\n", ""},
+		{"character", "one", "x", "o", "ne"},
+		{"to end", "one two", "D", "one two", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newTestChatModel(t, &daemon.Session{ID: "s"})
+			m.SetSize(80, 24)
+			m.TextArea.SetValue(tc.text)
+			m.vimPosition(0)
+			var cmd tea.Cmd
+			for _, r := range tc.keys {
+				m, cmd = m.Update(navigationKey(r))
+			}
+			if got := yankClipboardMessage(t, cmd); !reflect.DeepEqual(got, tea.SetClipboard(tc.want)()) {
+				t.Fatalf("clipboard %q, want %q", got, tc.want)
+			}
+			if m.TextArea.Value() != tc.left {
+				t.Fatalf("draft %q, want %q", m.TextArea.Value(), tc.left)
+			}
+		})
+	}
+}
+
 func TestVimRepeatedFindYankWritesClipboard(t *testing.T) {
 	m := newTestChatModel(t, &daemon.Session{ID: "s"})
 	m.SetSize(80, 24)

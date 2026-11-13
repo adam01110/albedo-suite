@@ -62,21 +62,21 @@ func vimDeleteCharacter(m *ChatModel, input vimInput, before vimSnapshot, msg te
 	if input.key == "X" {
 		a, b = max(start, before.pos-input.count), before.pos
 	}
-	m.vimDelete(a, b)
+	cmd := m.vimDelete(a, b)
 	m.vimRemember(before)
-	return nil
+	return cmd
 }
 func vimDeleteToEnd(m *ChatModel, input vimInput, before vimSnapshot, msg tea.KeyPressMsg) tea.Cmd {
 	text := []rune(before.text)
 	target, _ := vimMotion(text, before.pos, "$", input.count)
 	_, end := vimBounds(text, target)
-	m.vimDelete(before.pos, end)
+	cmd := m.vimDelete(before.pos, end)
 	if input.key == "C" {
 		m.vimBeginInsert(before)
 	} else {
 		m.vimRemember(before)
 	}
-	return nil
+	return cmd
 }
 func vimPaste(m *ChatModel, input vimInput, before vimSnapshot, msg tea.KeyPressMsg) tea.Cmd {
 	if m.vim.register == "" && !m.vim.linewise {
@@ -152,9 +152,10 @@ func (m *ChatModel) vimHistory(count int, redo bool) {
 }
 
 // Expand edits that intersect attachment markers so their payload stays atomic.
-func (m *ChatModel) vimDelete(start, end int) {
+// Deleted text fills the register and, like a yank, the system clipboard.
+func (m *ChatModel) vimDelete(start, end int) tea.Cmd {
 	if start == end {
-		return
+		return nil
 	}
 	text := []rune(m.TextArea.Value())
 	offset := 0
@@ -174,25 +175,32 @@ func (m *ChatModel) vimDelete(start, end int) {
 	m.TextArea.SetValue(string(text[:start]) + string(text[end:]))
 	m.vimPosition(start)
 	m.syncLayout()
+	return m.vimCopyRegister()
+}
+
+// Linewise registers end in a newline outside Albedo, matching Vim's "+ register.
+func (m *ChatModel) vimCopyRegister() tea.Cmd {
+	text := m.vim.register
+	if m.vim.linewise {
+		text += "\n"
+	}
+	return m.copied(text)
 }
 
 func (m *ChatModel) vimApplyOperator(operator string, span vimRange, before vimSnapshot) tea.Cmd {
 	if operator == "y" {
 		m.vim.register, m.vim.linewise = span.register, span.linewise
-		text := span.register
-		if span.linewise {
-			text += "\n"
-		}
-		return m.copied(text)
+		return m.vimCopyRegister()
 	}
-	m.vimDelete(span.start, span.end)
+	cmd := m.vimDelete(span.start, span.end)
 	if span.linewise {
 		m.vim.register, m.vim.linewise = span.register, true
+		cmd = m.vimCopyRegister()
 	}
 	if operator == "c" {
 		m.vimBeginInsert(before)
 	} else {
 		m.vimRemember(before)
 	}
-	return nil
+	return cmd
 }
