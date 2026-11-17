@@ -410,7 +410,7 @@ func (m LoginModel) selectAccountCmd(account daemon.Account) tea.Cmd {
 // straight to naming the new one.
 func (m *LoginModel) chooseAccount(account daemon.Account) tea.Cmd {
 	if account.Kind == "service" {
-		m.Status = fmt.Sprintf("%s is ready for use with tools; ctrl+d removes it", account.Label)
+		m.Status = fmt.Sprintf("%s is ready for use with tools; ctrl+x removes it", account.Label)
 		return nil
 	}
 	m.SelectedAccount = &account
@@ -454,7 +454,7 @@ func (m *LoginModel) chooseAccount(account daemon.Account) tea.Cmd {
 }
 
 func providerProtocol(provider string) string {
-	if provider == "claude" || provider == "antigravity" || provider == "opencode-go" || provider == "opencode-zen" || provider == "mistral" {
+	if provider == "anthropic-api" || provider == "claude" || provider == "antigravity" || provider == "opencode-go" || provider == "opencode-zen" || provider == "mistral" {
 		return "chat_completions"
 	}
 	return "responses"
@@ -491,8 +491,32 @@ func flowNote(flow string) string {
 
 // startSignIn hands the provider to the daemon, which owns the PKCE pair, the
 // callback listener, and the token exchange. The account it brings back goes
-// to the profile Name, drafted in Draft.
+// to the profile Name, drafted in Draft. A provider whose terms forbid this
+// sign-in outside its own apps says so first.
 func (m *LoginModel) startSignIn(login daemon.SignIn) tea.Cmd {
+	if login.Terms != nil {
+		m.terms, m.termsLogin = signInTerms(*login.Terms), login
+		return nil
+	}
+	return m.beginSignIn(login)
+}
+
+// termsKey answers the terms box: enter starts the sign-in it held, esc
+// leaves the screen as it was.
+func (m *LoginModel) termsKey(msg tea.KeyPressMsg) tea.Cmd {
+	proceed, closed := m.terms.key(msg)
+	if !closed {
+		return nil
+	}
+	login := m.termsLogin
+	m.terms, m.termsLogin = nil, daemon.SignIn{}
+	if proceed {
+		return m.beginSignIn(login)
+	}
+	return nil
+}
+
+func (m *LoginModel) beginSignIn(login daemon.SignIn) tea.Cmd {
 	m.Provider = login.Provider
 	m.Draft = signedInDraft(m.Draft, cmp.Or(m.Draft.Extension, login.Provider))
 	m.Generation = nextPageGeneration()

@@ -580,8 +580,10 @@ type CheckpointPage struct {
 
 // ChildSessionIntent defines model for ChildSessionIntent.
 type ChildSessionIntent struct {
-	Address string  `json:"address"`
-	Effort  *string `json:"effort" nullable:"true"`
+	Address string `json:"address"`
+
+	// Effort Initial reasoning choice. inherit follows the profile override or model default; default bypasses the profile override. Other strings select an explicit supported level. Null or omission uses inherit.
+	Effort *string `json:"effort" nullable:"true"`
 
 	// InitialInputID Client-generated lowercase UUIDv7. Retained decisions are checked before timestamp expiry.
 	InitialInputID UUIDv7 `json:"initial_input_id"`
@@ -596,8 +598,10 @@ type ChildSessionIntent struct {
 
 // ChildSessionRequest defines model for ChildSessionRequest.
 type ChildSessionRequest struct {
-	Address string  `json:"address"`
-	Effort  *string `json:"effort,omitempty" nullable:"true"`
+	Address string `json:"address"`
+
+	// Effort Initial reasoning choice. inherit follows the profile override or model default; default bypasses the profile override. Other strings select an explicit supported level. Null or omission uses inherit.
+	Effort *string `json:"effort,omitempty" nullable:"true"`
 
 	// InitialInputID Client-generated lowercase UUIDv7. Retained decisions are checked before timestamp expiry.
 	InitialInputID UUIDv7 `json:"initial_input_id"`
@@ -683,6 +687,7 @@ type CompactionObservation struct {
 
 // CompactionProgress Live progress for the current compaction, not a durable transcript entry. Counts cover the current stage or batch, not the whole compaction.
 type CompactionProgress struct {
+	Active    *int64 `json:"active,omitempty"`
 	Completed int64  `json:"completed"`
 	Stage     string `json:"stage"`
 	StartedAt string `json:"started_at"`
@@ -739,15 +744,18 @@ type ContentReference struct {
 type ContextCompaction struct {
 	AfterItems                *Counter `json:"after_items" nullable:"true"`
 	BeforeItems               *Counter `json:"before_items" nullable:"true"`
-	EstimateMethod            *string  `json:"estimate_method" nullable:"true"`
-	EstimatedInputTokens      *Counter `json:"estimated_input_tokens" nullable:"true"`
 	InputLimitTokens          *Counter `json:"input_limit_tokens" nullable:"true"`
 	ProviderCachedInputTokens *Counter `json:"provider_cached_input_tokens" nullable:"true"`
 	ProviderInputTokens       *Counter `json:"provider_input_tokens" nullable:"true"`
-	Source                    *string  `json:"source" nullable:"true"`
-	Status                    string   `json:"status"`
-	Strategy                  *ID      `json:"strategy" nullable:"true"`
-	TriggerFreePercent        *float64 `json:"trigger_free_percent" nullable:"true"`
+
+	// Size How big the prepared request is, as its strategy measured it; null while the strategy has no size for it.
+	Size     *Size   `json:"size" nullable:"true"`
+	Source   *string `json:"source" nullable:"true"`
+	Status   string  `json:"status"`
+	Strategy *ID     `json:"strategy" nullable:"true"`
+
+	// TriggerTokens The size.tokens at which the active strategy compacts, as its own trigger decides it; null while it has no threshold.
+	TriggerTokens *Counter `json:"trigger_tokens" nullable:"true"`
 }
 
 // ContextRead defines model for ContextRead.
@@ -867,18 +875,35 @@ type DeclaredSetting struct {
 	// Key The key in the section of extensions.json.
 	Key string `json:"key"`
 
-	// Kind integer takes a whole number from minimum to maximum; text takes a non-empty string of at most 4096 bytes; limit takes a whole number from minimum to maximum, or -1 for no limit.
+	// Kind integer takes a whole number from minimum to maximum; text takes a non-empty string of at most 4096 bytes; limit takes a whole number from minimum to maximum, or -1 for no limit; map takes an object of at most 64 names to text, each name 1 to 64 bytes without whitespace or =, each value text, and unset reads as empty; choices takes an object like map whose values are each one of options or a name in the section's options_from map, a row left out being unset.
 	Kind  string `json:"kind"`
 	Label string `json:"label"`
 
-	// Maximum The largest integer accepted; null for text.
+	// Maximum The largest integer accepted; null for text and map.
 	Maximum *int64 `json:"maximum" nullable:"true"`
 
-	// Minimum The smallest integer accepted; null for text.
+	// Minimum The smallest integer accepted; null for text and map.
 	Minimum *int64 `json:"minimum" nullable:"true"`
+
+	// Options The fixed choices of a choices setting.
+	Options []string `json:"options" nullable:"true"`
+
+	// OptionsFrom The map field in this section whose names are options too.
+	OptionsFrom *string `json:"options_from" nullable:"true"`
+
+	// Rows The rows a choices setting offers; null for other kinds.
+	Rows []DeclaredSettingRow `json:"rows" nullable:"true"`
 
 	// Value The saved value, or null when nothing is saved and the default applies. A saved value of the wrong kind reads as null, and the section's problem names it.
 	Value json.RawMessage `json:"value" nullable:"true"`
+}
+
+// DeclaredSettingRow defines model for DeclaredSettingRow.
+type DeclaredSettingRow struct {
+	Name string `json:"name"`
+
+	// Unset What leaving the row unset means.
+	Unset string `json:"unset"`
 }
 
 // DeclaredSettings defines model for DeclaredSettings.
@@ -1465,7 +1490,12 @@ type HistoryEntry struct {
 
 // HistoryMail defines model for HistoryMail.
 type HistoryMail struct {
-	Kind string `json:"kind"`
+	// Answer The letter is a child's answer to its parent.
+	Answer bool `json:"answer"`
+
+	// External The letter came from outside the agents, as a webhook or an extension's channel.
+	External bool   `json:"external"`
+	Kind     string `json:"kind"`
 
 	// MailID Opaque identity. Never infer a resource type or route from its contents.
 	MailID          ID     `json:"mail_id"`
@@ -1699,6 +1729,18 @@ type InputDecision struct {
 	Kind  string `json:"kind"`
 }
 
+// InputEdit defines model for InputEdit.
+type InputEdit struct {
+	// Input Examples: {"acceptance_order":1,"accepted_at":"2026-10-02T14:00:00Z","admission":"accepted","blocking_reason":null,"client_id":"draft-1","delivery":"pending","http_status":202,"id":"01a0fcea-2b00-7000-8000-000000000002","kind":"message","problem":null,"session_id":"01a0fcea-2b00-7000-8000-000000000001","transcript_position":null,"turn":null}
+	Input Input `json:"input"`
+}
+
+// InputHold defines model for InputHold.
+type InputHold struct {
+	// LeaseMs How long the hold lasts unless the message is held again.
+	LeaseMs int64 `json:"lease_ms"`
+}
+
 // InputRequest defines model for InputRequest.
 type InputRequest = json.RawMessage
 
@@ -1773,7 +1815,9 @@ type JobRecord struct {
 	ExitCode *int64   `json:"exit_code" nullable:"true"`
 
 	// ID Opaque identity. Never infer a resource type or route from its contents.
-	ID ID `json:"id"`
+	ID       ID     `json:"id"`
+	Kind     string `json:"kind"`
+	ParentID *ID    `json:"parent_id" nullable:"true"`
 
 	// Service Started to keep running, so nothing waits on its end.
 	Service bool `json:"service"`
@@ -1816,8 +1860,10 @@ type KernelJob struct {
 	Command string `json:"command"`
 
 	// ID Opaque identity. Never infer a resource type or route from its contents.
-	ID  ID       `json:"id"`
-	Pid *Counter `json:"pid" nullable:"true"`
+	ID       ID       `json:"id"`
+	Kind     string   `json:"kind"`
+	ParentID *ID      `json:"parent_id" nullable:"true"`
+	Pid      *Counter `json:"pid" nullable:"true"`
 
 	// StartedAt Wall-clock milliseconds since the epoch when the owner recorded the job. Zero when unknown, which clients treat as settled work.
 	StartedAt Counter `json:"started_at"`
@@ -1949,6 +1995,9 @@ type LoginProvider struct {
 	ID    ID     `json:"id"`
 	Kind  string `json:"kind"`
 	Label string `json:"label"`
+
+	// Terms The provider's warning that using this sign-in outside its own apps breaks its terms. Clients show it before starting the sign-in, and once before the first message on a profile that uses the sign-in rather than an API key. Dismissing that once adds `id` to the ui group's `dismissed_notices`.
+	Terms *LoginTerms `json:"terms" nullable:"true"`
 }
 
 // LoginRequest Flow defaults to the provider preferred flow. Form names, types and required values are checked against that provider declaration. Values are write-only.
@@ -1958,6 +2007,16 @@ type LoginRequest struct {
 	// Provider Opaque identity. Never infer a resource type or route from its contents.
 	Provider ID                         `json:"provider"`
 	Values   map[string]json.RawMessage `json:"values"`
+}
+
+// LoginTerms defines model for LoginTerms.
+type LoginTerms struct {
+	About    string `json:"about"`
+	Headline string `json:"headline"`
+
+	// ID Opaque identity. Never infer a resource type or route from its contents.
+	ID         ID       `json:"id"`
+	Paragraphs []string `json:"paragraphs"`
 }
 
 // MCPAuth A server's OAuth sign-in. none until the server asks for one; needs_sign_in when it asked and albedo has no usable token, signed_in, or signed_out after the user signed out. Start a sign-in with PUT /auth/logins/{login_id} and provider mcp:<server>. Tokens and client secrets never appear.
@@ -2062,11 +2121,19 @@ type MCPSettingsResource struct {
 
 // MailMetadata defines model for MailMetadata.
 type MailMetadata struct {
-	Bytes Counter `json:"bytes"`
-	Kind  string  `json:"kind"`
+	// Answer The letter is a child's answer to its parent.
+	Answer bool    `json:"answer"`
+	Bytes  Counter `json:"bytes"`
+
+	// External The letter came from outside the agents, as a webhook or an extension's channel.
+	External bool   `json:"external"`
+	Kind     string `json:"kind"`
 
 	// MailID Opaque identity. Never infer a resource type or route from its contents.
 	MailID ID `json:"mail_id"`
+
+	// Notifies The letter is what an agent says or answers, worth telling someone who looked away; a brief or a request is not.
+	Notifies bool `json:"notifies"`
 
 	// ReceiverSessionID Opaque identity. Never infer a resource type or route from its contents.
 	ReceiverSessionID ID      `json:"receiver_session_id"`
@@ -2106,7 +2173,11 @@ type Model struct {
 		Detail *string `json:"detail,omitempty"`
 		Status string  `json:"status"`
 	} `json:"cyber_access,omitempty"`
-	DefaultContextTokens   *Counter `json:"default_context_tokens" nullable:"true"`
+	DefaultContextTokens *Counter `json:"default_context_tokens" nullable:"true"`
+
+	// DefaultEffort Known reasoning default or adapter fallback, null when unknown.
+	DefaultEffort          *string  `json:"default_effort,omitempty" nullable:"true"`
+	DefaultEffortSource    *string  `json:"default_effort_source,omitempty"`
 	EffectiveContextTokens *Counter `json:"effective_context_tokens" nullable:"true"`
 	Efforts                []struct {
 		ID    string `json:"id"`
@@ -2114,9 +2185,11 @@ type Model struct {
 	} `json:"efforts"`
 
 	// ID Opaque identity. Never infer a resource type or route from its contents.
-	ID               ID         `json:"id"`
-	ImageEdge        *int64     `json:"image_edge" nullable:"true"`
-	InputModalities  []string   `json:"input_modalities"`
+	ID              ID       `json:"id"`
+	ImageEdge       *int64   `json:"image_edge" nullable:"true"`
+	InputModalities []string `json:"input_modalities"`
+
+	// Label Human-facing catalog name, or the model ID when unavailable.
 	Label            string     `json:"label"`
 	MaxContextTokens *Counter   `json:"max_context_tokens" nullable:"true"`
 	MaxOutputTokens  *Counter   `json:"max_output_tokens" nullable:"true"`
@@ -2221,6 +2294,7 @@ type MoveBinding struct {
 
 // MoveError defines model for MoveError.
 type MoveError struct {
+	// Code Why the move failed. `transfer_target_older` is a target too old to take a table version or column this daemon sends; moves go only from an older daemon to a newer one. `transfer_unsupported` is a target without an extension or table this daemon sends, because it is older or the extension failed to load there. `transfer_extension_unavailable` is a target whose extension failed to load. The detail is the target's own refusal, naming the first thing it lacks.
 	Code   string `json:"code"`
 	Detail string `json:"detail"`
 }
@@ -2237,7 +2311,9 @@ type NewSessionIntent struct {
 	ContextWindow *int64 `json:"context_window,omitempty" nullable:"true"`
 
 	// CyberAccess Explicit Blue at creation; null or omission selects standard.
-	CyberAccess     *string `json:"cyber_access,omitempty" nullable:"true"`
+	CyberAccess *string `json:"cyber_access,omitempty" nullable:"true"`
+
+	// Effort Initial reasoning choice. inherit follows the profile override or model default; default bypasses the profile override. Other strings select an explicit supported level. Null or omission uses inherit.
 	Effort          *string `json:"effort" nullable:"true"`
 	Kind            string  `json:"kind"`
 	Model           *ID     `json:"model" nullable:"true"`
@@ -2254,7 +2330,9 @@ type NewSessionRequest struct {
 	ContextWindow *int64 `json:"context_window,omitempty" nullable:"true"`
 
 	// CyberAccess Explicit Blue at creation; null or omission selects standard.
-	CyberAccess     *string `json:"cyber_access,omitempty" nullable:"true"`
+	CyberAccess *string `json:"cyber_access,omitempty" nullable:"true"`
+
+	// Effort Initial reasoning choice. inherit follows the profile override or model default; default bypasses the profile override. Other strings select an explicit supported level. Null or omission uses inherit.
 	Effort          *string `json:"effort,omitempty" nullable:"true"`
 	Kind            string  `json:"kind"`
 	Model           *ID     `json:"model,omitempty" nullable:"true"`
@@ -2417,7 +2495,7 @@ type Preview struct {
 	Truncated       bool    `json:"truncated"`
 }
 
-// Problem Examples: {"code":"queue_full","decision":{"input":{"acceptance_order":null,"accepted_at":null,"admission":"rejected","blocking_reason":null,"client_id":"draft-1","delivery":null,"http_status":429,"id":"01a0fcea-2b00-7000-8000-000000000002","kind":"message","problem":{"code":"queue_full","detail":"This session already has 32 waiting inputs.","status":429,"title":"Queue full","type":"about:blank"},"session_id":"01a0fcea-2b00-7000-8000-000000000001","transcript_position":null,"turn":null},"kind":"input"},"detail":"This session already has 32 waiting inputs.","status":429,"title":"Queue full","type":"about:blank"}
+// Problem Examples: {"code":"queue_full","decision":{"input":{"acceptance_order":null,"accepted_at":null,"admission":"rejected","blocking_reason":null,"client_id":"draft-1","delivery":null,"http_status":429,"id":"01a0fcea-2b00-7000-8000-000000000002","kind":"message","problem":{"code":"queue_full","detail":"the session's inbox is full","status":429,"title":"Queue full","type":"about:blank"},"session_id":"01a0fcea-2b00-7000-8000-000000000001","transcript_position":null,"turn":null},"kind":"input"},"detail":"the session's inbox is full","status":429,"title":"Queue full","type":"about:blank"}
 type Problem struct {
 	Code     string          `json:"code"`
 	Decision json.RawMessage `json:"decision,omitempty"`
@@ -2445,7 +2523,9 @@ type ProviderProfile struct {
 	AccountIDs []ID `json:"account_ids" nullable:"true"`
 
 	// API Bedrock API mode. Null or omission means messages; replay protocol is unchanged.
-	API    *string `json:"api,omitempty" nullable:"true"`
+	API *string `json:"api,omitempty" nullable:"true"`
+
+	// Effort Profile reasoning override. A supported level overrides the model default for inheriting sessions. Null, inherit, or default leaves the model default in control.
 	Effort *string `json:"effort" nullable:"true"`
 
 	// Enabled Whether this saved profile participates in model discovery and selection.
@@ -2474,6 +2554,8 @@ type ProviderProfilePatch struct {
 	// API Bedrock API mode. Omission preserves an existing value; new and legacy profiles without a value use messages; converse selects streaming Converse.
 	API    *string `json:"api,omitempty"`
 	APIKey *string `json:"api_key,omitempty" nullable:"true"`
+
+	// Effort Profile reasoning override. A supported level overrides the model default for inheriting sessions. Null, inherit, or default leaves the model default in control.
 	Effort *string `json:"effort,omitempty" nullable:"true"`
 
 	// Enabled Temporarily disable or restore a saved profile without deleting credentials.
@@ -2504,15 +2586,17 @@ type ProviderRequestRecord struct {
 	CacheWrite5MTokens TokenObservation `json:"cache_write_5m_tokens"`
 	CachedTokens       TokenObservation `json:"cached_tokens"`
 	CompletionTokens   TokenObservation `json:"completion_tokens"`
-	Effort             *string          `json:"effort" nullable:"true"`
-	EndedAt            *Timestamp       `json:"ended_at" nullable:"true"`
-	Failure            *SafeReason      `json:"failure" nullable:"true"`
-	FirstByteMs        *Counter         `json:"first_byte_ms" nullable:"true"`
-	HeadHash           string           `json:"head_hash"`
-	HTTPStatus         *int64           `json:"http_status" nullable:"true"`
-	InputChain         *string          `json:"input_chain" nullable:"true"`
-	InputCount         Counter          `json:"input_count"`
-	Kind               string           `json:"kind"`
+
+	// Effort Resolved reasoning level sent with this provider attempt. Null means no explicit level was supplied. Saved choices such as inherit and default are resolved before recording.
+	Effort      *string     `json:"effort" nullable:"true"`
+	EndedAt     *Timestamp  `json:"ended_at" nullable:"true"`
+	Failure     *SafeReason `json:"failure" nullable:"true"`
+	FirstByteMs *Counter    `json:"first_byte_ms" nullable:"true"`
+	HeadHash    string      `json:"head_hash"`
+	HTTPStatus  *int64      `json:"http_status" nullable:"true"`
+	InputChain  *string     `json:"input_chain" nullable:"true"`
+	InputCount  Counter     `json:"input_count"`
+	Kind        string      `json:"kind"`
 
 	// Model Opaque identity. Never infer a resource type or route from its contents.
 	Model          ID               `json:"model"`
@@ -2674,14 +2758,20 @@ type ProxyMessage struct {
 	ToolCalls        []ProxyToolCall `json:"tool_calls,omitempty"`
 }
 
+// ProxyModel defines model for ProxyModel.
+type ProxyModel struct {
+	Created Counter `json:"created"`
+
+	// Efforts Nonstandard. Reasoning efforts the model takes; empty when it takes none.
+	Efforts []string `json:"efforts"`
+	ID      string   `json:"id"`
+	Object  string   `json:"object"`
+	OwnedBy string   `json:"owned_by"`
+}
+
 // ProxyModels defines model for ProxyModels.
 type ProxyModels struct {
-	Data []struct {
-		Created Counter `json:"created"`
-		ID      string  `json:"id"`
-		Object  string  `json:"object"`
-		OwnedBy string  `json:"owned_by"`
-	} `json:"data"`
+	Data   []ProxyModel `json:"data"`
 	Errors []struct {
 		Message string `json:"message"`
 
@@ -2754,6 +2844,62 @@ type QuarantineDiagnostic struct {
 	// ID Opaque identity. Never infer a resource type or route from its contents.
 	ID     ID         `json:"id"`
 	Reason SafeReason `json:"reason"`
+}
+
+// QueueCollection Examples: {"items":[],"limit":1000,"page":{"actions":[],"empty_state":"nothing is waiting","glance":null,"rows":[],"summary":"0 inputs waiting","title":"queue"},"total":0}
+type QueueCollection struct {
+	Items []QueueItem    `json:"items"`
+	Limit Counter        `json:"limit"`
+	Page  PageDescriptor `json:"page"`
+	Total Counter        `json:"total"`
+}
+
+// QueueFile defines model for QueueFile.
+type QueueFile struct {
+	Bytes Counter `json:"bytes"`
+	Name  string  `json:"name"`
+}
+
+// QueueImage defines model for QueueImage.
+type QueueImage struct {
+	Bytes    Counter `json:"bytes"`
+	Height   Counter `json:"height"`
+	MimeType string  `json:"mime_type"`
+	Width    Counter `json:"width"`
+}
+
+// QueueItem One input waiting in a session's inbox.
+type QueueItem struct {
+	Attempts Counter `json:"attempts"`
+
+	// CreatedAt UTC RFC 3339.
+	CreatedAt Timestamp `json:"created_at"`
+
+	// Delivery `steer` joins a running turn at its next step, `wait` waits for the turn to end, `alone` takes a turn of its own, `next_turn` joins a running turn at its next step or rides with the next turn without starting one, and `attach` joins a running turn at its next step or is written into a resting session's transcript without a turn.
+	Delivery string `json:"delivery"`
+
+	// Editable A person's typed message whose text is all of it, with no images, files, pasted text or skills, so an edit from the queue loses nothing.
+	Editable bool        `json:"editable"`
+	Files    []QueueFile `json:"files"`
+	From     string      `json:"from"`
+
+	// ID Opaque identity. Never infer a resource type or route from its contents.
+	ID              ID           `json:"id"`
+	Images          []QueueImage `json:"images"`
+	Kind            string       `json:"kind"`
+	LastError       *string      `json:"last_error" nullable:"true"`
+	Position        Counter      `json:"position"`
+	SenderSessionID *ID          `json:"sender_session_id" nullable:"true"`
+
+	// Source Who submitted it, as the transcript names the source.
+	Source        string `json:"source"`
+	Text          string `json:"text"`
+	TextTruncated bool   `json:"text_truncated"`
+}
+
+// QueueOrder defines model for QueueOrder.
+type QueueOrder struct {
+	Ids []ID `json:"ids"`
 }
 
 // QuotaObservation defines model for QuotaObservation.
@@ -3044,7 +3190,9 @@ type Session struct {
 	Cursor          *Cursor        `json:"cursor" nullable:"true"`
 	CyberAccess     *string        `json:"cyber_access,omitempty" nullable:"true"`
 	Depth           int64          `json:"depth"`
-	Effort          *string        `json:"effort" nullable:"true"`
+
+	// Effort Saved reasoning choice. inherit follows the profile override or model default; default bypasses the profile override. Other strings select an explicit supported level. Null retains legacy unset behavior.
+	Effort *string `json:"effort" nullable:"true"`
 
 	// FamilyRevision Opaque identity. Never infer a resource type or route from its contents.
 	FamilyRevision ID       `json:"family_revision"`
@@ -3144,7 +3292,9 @@ type SessionConfiguration struct {
 
 	// CyberAccess Explicit session-scoped Codex Blue intent; null sends ordinary requests.
 	CyberAccess *string `json:"cyber_access,omitempty" nullable:"true"`
-	Effort      *string `json:"effort" nullable:"true"`
+
+	// Effort Saved reasoning choice. inherit follows the profile override or model default; default bypasses the profile override. Other strings select an explicit supported level. Null retains legacy unset behavior.
+	Effort *string `json:"effort" nullable:"true"`
 
 	// Fast Provider fast-mode setting; defaults off and may affect billing.
 	Fast bool `json:"fast"`
@@ -3347,7 +3497,9 @@ type SessionPatch struct {
 
 	// CyberAccess Select Blue for this session; null explicitly clears it.
 	CyberAccess *string `json:"cyber_access,omitempty" nullable:"true"`
-	Effort      *string `json:"effort,omitempty" nullable:"true"`
+
+	// Effort Saved reasoning choice. inherit follows the profile override or model default; default bypasses the profile override. Other strings select an explicit supported level. Null restores legacy unset behavior. Omission preserves the current choice.
+	Effort *string `json:"effort,omitempty" nullable:"true"`
 
 	// Fast Enable provider fast mode; enabling requires a supported capability and may affect billing.
 	Fast *bool `json:"fast,omitempty"`
@@ -3474,8 +3626,10 @@ type SessionSummary struct {
 	Cursor          *Cursor        `json:"cursor" nullable:"true"`
 	CyberAccess     *string        `json:"cyber_access,omitempty" nullable:"true"`
 	Depth           int64          `json:"depth"`
-	Effort          *string        `json:"effort" nullable:"true"`
-	Fast            bool           `json:"fast"`
+
+	// Effort Saved reasoning choice. inherit follows the profile override or model default; default bypasses the profile override. Other strings select an explicit supported level. Null retains legacy unset behavior.
+	Effort *string `json:"effort" nullable:"true"`
+	Fast   bool    `json:"fast"`
 
 	// ID Opaque identity. Never infer a resource type or route from its contents.
 	ID ID `json:"id"`
@@ -3650,11 +3804,14 @@ type ShellCommand struct {
 	HistorySeq *int64  `json:"history_seq" nullable:"true"`
 
 	// ID Client-generated lowercase UUIDv7. Retained decisions are checked before timestamp expiry.
-	ID          UUIDv7 `json:"id"`
-	Output      string `json:"output"`
-	OutputBytes int64  `json:"output_bytes"`
-	Status      string `json:"status"`
-	Truncated   bool   `json:"truncated"`
+	ID UUIDv7 `json:"id"`
+
+	// ModelTextBytes UTF-8 bytes in the exact model-facing receipt, before timestamping.
+	ModelTextBytes int64  `json:"model_text_bytes"`
+	Output         string `json:"output"`
+	OutputBytes    int64  `json:"output_bytes"`
+	Status         string `json:"status"`
+	Truncated      bool   `json:"truncated"`
 }
 
 // ShellCommandOutput defines model for ShellCommandOutput.
@@ -3695,6 +3852,7 @@ type SideQuestion struct {
 	Answer                *string `json:"answer" nullable:"true"`
 	AskedAt               int64   `json:"asked_at"`
 	ContinuationSessionID *string `json:"continuation_session_id" nullable:"true"`
+	Dismissed             bool    `json:"dismissed"`
 	Error                 *string `json:"error" nullable:"true"`
 
 	// ID Client-generated lowercase UUIDv7. Retained decisions are checked before timestamp expiry.
@@ -3706,6 +3864,11 @@ type SideQuestion struct {
 // SideQuestionEnvelope defines model for SideQuestionEnvelope.
 type SideQuestionEnvelope struct {
 	SideQuestion SideQuestion `json:"side_question"`
+}
+
+// SideQuestionPatchRequest defines model for SideQuestionPatchRequest.
+type SideQuestionPatchRequest struct {
+	Dismissed bool `json:"dismissed"`
 }
 
 // SideQuestionRequest defines model for SideQuestionRequest.
@@ -3723,6 +3886,32 @@ type SideQuestionSessionRequest struct {
 
 	// SourceSessionID Opaque identity. Never infer a resource type or route from its contents.
 	SourceSessionID ID `json:"source_session_id"`
+}
+
+// Size How many tokens something takes, as two parts kept apart: what a provider measured, and what was estimated for what no provider number covers. tokens is their sum.
+type Size struct {
+	Estimated *SizeEstimated `json:"estimated" nullable:"true"`
+	Measured  *SizeMeasured  `json:"measured" nullable:"true"`
+	Tokens    Counter        `json:"tokens"`
+}
+
+// SizeCorrection Provider tokens per thousand estimated ones on one route and model. provisional is the largest ratio seen after reports reports, or the prior before any; calibrated is a moving average over the route's reports, whose number is then null.
+type SizeCorrection struct {
+	PerMille Counter  `json:"per_mille"`
+	Reports  *Counter `json:"reports" nullable:"true"`
+	State    string   `json:"state"`
+}
+
+// SizeEstimated The part of a size albedo estimated from lengths, with the correction it learned from the route's reported usage; null when it had none.
+type SizeEstimated struct {
+	Correction *SizeCorrection `json:"correction" nullable:"true"`
+	Tokens     Counter         `json:"tokens"`
+}
+
+// SizeMeasured The part of a size a provider gave: counted by its count endpoint for this very request, or taken from the usage it reported for earlier calls.
+type SizeMeasured struct {
+	Source string  `json:"source"`
+	Tokens Counter `json:"tokens"`
 }
 
 // SkillInputRequest defines model for SkillInputRequest.
@@ -3881,6 +4070,9 @@ type ToolActivity struct {
 		Version int64      `json:"version"`
 	} `json:"artifact,omitempty"`
 
+	// Description The optional display() description.
+	Description *string `json:"description,omitempty"`
+
 	// Detail What the person watching sees of the result, as markdown; a web search's answer and sources, or displayed content.
 	Detail *string `json:"detail,omitempty"`
 	Kind   string  `json:"kind"`
@@ -3900,6 +4092,9 @@ type ToolActivity struct {
 		Source string `json:"source"`
 	} `json:"skill,omitempty"`
 	Target string `json:"target"`
+
+	// Title The optional display() title.
+	Title *string `json:"title,omitempty"`
 }
 
 // ToolProgress Examples: {"call_id":"progress-1","intent":"unknown","name":"python","phase":"generating","preview":{"offset_scalars":0,"text":"print(\"hello\")"},"title":"find which go files label python cells","tool_call_id":null}
@@ -3982,6 +4177,9 @@ type TransferPreflight struct {
 	// Bytes The move's size, when known before export.
 	Bytes *int64 `json:"bytes" nullable:"true"`
 
+	// Code The stable code of the refusal that makes the move unavailable, null when it is available or the target was out of reach. It is the code a move would fail with, such as `transfer_target_older` (a missing extension, table, version or column), `transfer_extension_unavailable` (an extension that failed to load there), `transfer_protocol`, `session_busy`, `session_moved` or `profile_unavailable`. Daemons before this field omit it.
+	Code *string `json:"code,omitempty" nullable:"true"`
+
 	// Reason Why the move is unavailable, in words for a person.
 	Reason *string `json:"reason" nullable:"true"`
 
@@ -4027,6 +4225,18 @@ type TransferSessionProfile struct {
 
 	// SessionID Opaque identity. Never infer a resource type or route from its contents.
 	SessionID ID `json:"session_id"`
+}
+
+// TransferShape What a source's export would list, without the data. Each table is a rows segment. An owner that carries files and no tables, but has files to send, is one file segment, whose owner is checked as staging checks a file's owner.
+type TransferShape struct {
+	Protocol int64 `json:"protocol"`
+	Segments []struct {
+		Columns []string `json:"columns"`
+		Kind    string   `json:"kind"`
+		Name    string   `json:"name"`
+		Owner   string   `json:"owner"`
+		Version int64    `json:"version"`
+	} `json:"segments"`
 }
 
 // TransferStatus defines model for TransferStatus.
@@ -4167,7 +4377,10 @@ type Usage struct {
 	PromptTokens        *Counter   `json:"prompt_tokens" nullable:"true"`
 
 	// SessionCostUsd Session-wide estimated USD at catalog rates; null when any request is unpriced or unmetered.
-	SessionCostUsd  *float64 `json:"session_cost_usd,omitempty" nullable:"true"`
+	SessionCostUsd *float64 `json:"session_cost_usd,omitempty" nullable:"true"`
+
+	// Size Set when the token counts are a strategy's size for a request no call has measured yet, such as after a compaction, rather than one call's own report; its parts say how much was measured and how much estimated.
+	Size            *Size    `json:"size,omitempty" nullable:"true"`
 	Spent           *Cost    `json:"spent,omitempty" nullable:"true"`
 	TokensPerSecond *float64 `json:"tokens_per_second" nullable:"true"`
 	TotalTokens     *Counter `json:"total_tokens" nullable:"true"`
@@ -4447,52 +4660,52 @@ type Limit = int64
 // Next Opaque continuation, tied to the query and representation; never authority.
 type Next = PageToken
 
-// Problem400 Examples: {"code":"queue_full","decision":{"input":{"acceptance_order":null,"accepted_at":null,"admission":"rejected","blocking_reason":null,"client_id":"draft-1","delivery":null,"http_status":429,"id":"01a0fcea-2b00-7000-8000-000000000002","kind":"message","problem":{"code":"queue_full","detail":"This session already has 32 waiting inputs.","status":429,"title":"Queue full","type":"about:blank"},"session_id":"01a0fcea-2b00-7000-8000-000000000001","transcript_position":null,"turn":null},"kind":"input"},"detail":"This session already has 32 waiting inputs.","status":429,"title":"Queue full","type":"about:blank"}
+// Problem400 Examples: {"code":"queue_full","decision":{"input":{"acceptance_order":null,"accepted_at":null,"admission":"rejected","blocking_reason":null,"client_id":"draft-1","delivery":null,"http_status":429,"id":"01a0fcea-2b00-7000-8000-000000000002","kind":"message","problem":{"code":"queue_full","detail":"the session's inbox is full","status":429,"title":"Queue full","type":"about:blank"},"session_id":"01a0fcea-2b00-7000-8000-000000000001","transcript_position":null,"turn":null},"kind":"input"},"detail":"the session's inbox is full","status":429,"title":"Queue full","type":"about:blank"}
 type Problem400 = Problem
 
-// Problem401 Examples: {"code":"queue_full","decision":{"input":{"acceptance_order":null,"accepted_at":null,"admission":"rejected","blocking_reason":null,"client_id":"draft-1","delivery":null,"http_status":429,"id":"01a0fcea-2b00-7000-8000-000000000002","kind":"message","problem":{"code":"queue_full","detail":"This session already has 32 waiting inputs.","status":429,"title":"Queue full","type":"about:blank"},"session_id":"01a0fcea-2b00-7000-8000-000000000001","transcript_position":null,"turn":null},"kind":"input"},"detail":"This session already has 32 waiting inputs.","status":429,"title":"Queue full","type":"about:blank"}
+// Problem401 Examples: {"code":"queue_full","decision":{"input":{"acceptance_order":null,"accepted_at":null,"admission":"rejected","blocking_reason":null,"client_id":"draft-1","delivery":null,"http_status":429,"id":"01a0fcea-2b00-7000-8000-000000000002","kind":"message","problem":{"code":"queue_full","detail":"the session's inbox is full","status":429,"title":"Queue full","type":"about:blank"},"session_id":"01a0fcea-2b00-7000-8000-000000000001","transcript_position":null,"turn":null},"kind":"input"},"detail":"the session's inbox is full","status":429,"title":"Queue full","type":"about:blank"}
 type Problem401 = Problem
 
-// Problem403 Examples: {"code":"queue_full","decision":{"input":{"acceptance_order":null,"accepted_at":null,"admission":"rejected","blocking_reason":null,"client_id":"draft-1","delivery":null,"http_status":429,"id":"01a0fcea-2b00-7000-8000-000000000002","kind":"message","problem":{"code":"queue_full","detail":"This session already has 32 waiting inputs.","status":429,"title":"Queue full","type":"about:blank"},"session_id":"01a0fcea-2b00-7000-8000-000000000001","transcript_position":null,"turn":null},"kind":"input"},"detail":"This session already has 32 waiting inputs.","status":429,"title":"Queue full","type":"about:blank"}
+// Problem403 Examples: {"code":"queue_full","decision":{"input":{"acceptance_order":null,"accepted_at":null,"admission":"rejected","blocking_reason":null,"client_id":"draft-1","delivery":null,"http_status":429,"id":"01a0fcea-2b00-7000-8000-000000000002","kind":"message","problem":{"code":"queue_full","detail":"the session's inbox is full","status":429,"title":"Queue full","type":"about:blank"},"session_id":"01a0fcea-2b00-7000-8000-000000000001","transcript_position":null,"turn":null},"kind":"input"},"detail":"the session's inbox is full","status":429,"title":"Queue full","type":"about:blank"}
 type Problem403 = Problem
 
-// Problem404 Examples: {"code":"queue_full","decision":{"input":{"acceptance_order":null,"accepted_at":null,"admission":"rejected","blocking_reason":null,"client_id":"draft-1","delivery":null,"http_status":429,"id":"01a0fcea-2b00-7000-8000-000000000002","kind":"message","problem":{"code":"queue_full","detail":"This session already has 32 waiting inputs.","status":429,"title":"Queue full","type":"about:blank"},"session_id":"01a0fcea-2b00-7000-8000-000000000001","transcript_position":null,"turn":null},"kind":"input"},"detail":"This session already has 32 waiting inputs.","status":429,"title":"Queue full","type":"about:blank"}
+// Problem404 Examples: {"code":"queue_full","decision":{"input":{"acceptance_order":null,"accepted_at":null,"admission":"rejected","blocking_reason":null,"client_id":"draft-1","delivery":null,"http_status":429,"id":"01a0fcea-2b00-7000-8000-000000000002","kind":"message","problem":{"code":"queue_full","detail":"the session's inbox is full","status":429,"title":"Queue full","type":"about:blank"},"session_id":"01a0fcea-2b00-7000-8000-000000000001","transcript_position":null,"turn":null},"kind":"input"},"detail":"the session's inbox is full","status":429,"title":"Queue full","type":"about:blank"}
 type Problem404 = Problem
 
-// Problem405 Examples: {"code":"queue_full","decision":{"input":{"acceptance_order":null,"accepted_at":null,"admission":"rejected","blocking_reason":null,"client_id":"draft-1","delivery":null,"http_status":429,"id":"01a0fcea-2b00-7000-8000-000000000002","kind":"message","problem":{"code":"queue_full","detail":"This session already has 32 waiting inputs.","status":429,"title":"Queue full","type":"about:blank"},"session_id":"01a0fcea-2b00-7000-8000-000000000001","transcript_position":null,"turn":null},"kind":"input"},"detail":"This session already has 32 waiting inputs.","status":429,"title":"Queue full","type":"about:blank"}
+// Problem405 Examples: {"code":"queue_full","decision":{"input":{"acceptance_order":null,"accepted_at":null,"admission":"rejected","blocking_reason":null,"client_id":"draft-1","delivery":null,"http_status":429,"id":"01a0fcea-2b00-7000-8000-000000000002","kind":"message","problem":{"code":"queue_full","detail":"the session's inbox is full","status":429,"title":"Queue full","type":"about:blank"},"session_id":"01a0fcea-2b00-7000-8000-000000000001","transcript_position":null,"turn":null},"kind":"input"},"detail":"the session's inbox is full","status":429,"title":"Queue full","type":"about:blank"}
 type Problem405 = Problem
 
-// Problem406 Examples: {"code":"queue_full","decision":{"input":{"acceptance_order":null,"accepted_at":null,"admission":"rejected","blocking_reason":null,"client_id":"draft-1","delivery":null,"http_status":429,"id":"01a0fcea-2b00-7000-8000-000000000002","kind":"message","problem":{"code":"queue_full","detail":"This session already has 32 waiting inputs.","status":429,"title":"Queue full","type":"about:blank"},"session_id":"01a0fcea-2b00-7000-8000-000000000001","transcript_position":null,"turn":null},"kind":"input"},"detail":"This session already has 32 waiting inputs.","status":429,"title":"Queue full","type":"about:blank"}
+// Problem406 Examples: {"code":"queue_full","decision":{"input":{"acceptance_order":null,"accepted_at":null,"admission":"rejected","blocking_reason":null,"client_id":"draft-1","delivery":null,"http_status":429,"id":"01a0fcea-2b00-7000-8000-000000000002","kind":"message","problem":{"code":"queue_full","detail":"the session's inbox is full","status":429,"title":"Queue full","type":"about:blank"},"session_id":"01a0fcea-2b00-7000-8000-000000000001","transcript_position":null,"turn":null},"kind":"input"},"detail":"the session's inbox is full","status":429,"title":"Queue full","type":"about:blank"}
 type Problem406 = Problem
 
-// Problem409 Examples: {"code":"queue_full","decision":{"input":{"acceptance_order":null,"accepted_at":null,"admission":"rejected","blocking_reason":null,"client_id":"draft-1","delivery":null,"http_status":429,"id":"01a0fcea-2b00-7000-8000-000000000002","kind":"message","problem":{"code":"queue_full","detail":"This session already has 32 waiting inputs.","status":429,"title":"Queue full","type":"about:blank"},"session_id":"01a0fcea-2b00-7000-8000-000000000001","transcript_position":null,"turn":null},"kind":"input"},"detail":"This session already has 32 waiting inputs.","status":429,"title":"Queue full","type":"about:blank"}
+// Problem409 Examples: {"code":"queue_full","decision":{"input":{"acceptance_order":null,"accepted_at":null,"admission":"rejected","blocking_reason":null,"client_id":"draft-1","delivery":null,"http_status":429,"id":"01a0fcea-2b00-7000-8000-000000000002","kind":"message","problem":{"code":"queue_full","detail":"the session's inbox is full","status":429,"title":"Queue full","type":"about:blank"},"session_id":"01a0fcea-2b00-7000-8000-000000000001","transcript_position":null,"turn":null},"kind":"input"},"detail":"the session's inbox is full","status":429,"title":"Queue full","type":"about:blank"}
 type Problem409 = Problem
 
-// Problem410 Examples: {"code":"queue_full","decision":{"input":{"acceptance_order":null,"accepted_at":null,"admission":"rejected","blocking_reason":null,"client_id":"draft-1","delivery":null,"http_status":429,"id":"01a0fcea-2b00-7000-8000-000000000002","kind":"message","problem":{"code":"queue_full","detail":"This session already has 32 waiting inputs.","status":429,"title":"Queue full","type":"about:blank"},"session_id":"01a0fcea-2b00-7000-8000-000000000001","transcript_position":null,"turn":null},"kind":"input"},"detail":"This session already has 32 waiting inputs.","status":429,"title":"Queue full","type":"about:blank"}
+// Problem410 Examples: {"code":"queue_full","decision":{"input":{"acceptance_order":null,"accepted_at":null,"admission":"rejected","blocking_reason":null,"client_id":"draft-1","delivery":null,"http_status":429,"id":"01a0fcea-2b00-7000-8000-000000000002","kind":"message","problem":{"code":"queue_full","detail":"the session's inbox is full","status":429,"title":"Queue full","type":"about:blank"},"session_id":"01a0fcea-2b00-7000-8000-000000000001","transcript_position":null,"turn":null},"kind":"input"},"detail":"the session's inbox is full","status":429,"title":"Queue full","type":"about:blank"}
 type Problem410 = Problem
 
-// Problem412 Examples: {"code":"queue_full","decision":{"input":{"acceptance_order":null,"accepted_at":null,"admission":"rejected","blocking_reason":null,"client_id":"draft-1","delivery":null,"http_status":429,"id":"01a0fcea-2b00-7000-8000-000000000002","kind":"message","problem":{"code":"queue_full","detail":"This session already has 32 waiting inputs.","status":429,"title":"Queue full","type":"about:blank"},"session_id":"01a0fcea-2b00-7000-8000-000000000001","transcript_position":null,"turn":null},"kind":"input"},"detail":"This session already has 32 waiting inputs.","status":429,"title":"Queue full","type":"about:blank"}
+// Problem412 Examples: {"code":"queue_full","decision":{"input":{"acceptance_order":null,"accepted_at":null,"admission":"rejected","blocking_reason":null,"client_id":"draft-1","delivery":null,"http_status":429,"id":"01a0fcea-2b00-7000-8000-000000000002","kind":"message","problem":{"code":"queue_full","detail":"the session's inbox is full","status":429,"title":"Queue full","type":"about:blank"},"session_id":"01a0fcea-2b00-7000-8000-000000000001","transcript_position":null,"turn":null},"kind":"input"},"detail":"the session's inbox is full","status":429,"title":"Queue full","type":"about:blank"}
 type Problem412 = Problem
 
-// Problem413 Examples: {"code":"queue_full","decision":{"input":{"acceptance_order":null,"accepted_at":null,"admission":"rejected","blocking_reason":null,"client_id":"draft-1","delivery":null,"http_status":429,"id":"01a0fcea-2b00-7000-8000-000000000002","kind":"message","problem":{"code":"queue_full","detail":"This session already has 32 waiting inputs.","status":429,"title":"Queue full","type":"about:blank"},"session_id":"01a0fcea-2b00-7000-8000-000000000001","transcript_position":null,"turn":null},"kind":"input"},"detail":"This session already has 32 waiting inputs.","status":429,"title":"Queue full","type":"about:blank"}
+// Problem413 Examples: {"code":"queue_full","decision":{"input":{"acceptance_order":null,"accepted_at":null,"admission":"rejected","blocking_reason":null,"client_id":"draft-1","delivery":null,"http_status":429,"id":"01a0fcea-2b00-7000-8000-000000000002","kind":"message","problem":{"code":"queue_full","detail":"the session's inbox is full","status":429,"title":"Queue full","type":"about:blank"},"session_id":"01a0fcea-2b00-7000-8000-000000000001","transcript_position":null,"turn":null},"kind":"input"},"detail":"the session's inbox is full","status":429,"title":"Queue full","type":"about:blank"}
 type Problem413 = Problem
 
-// Problem415 Examples: {"code":"queue_full","decision":{"input":{"acceptance_order":null,"accepted_at":null,"admission":"rejected","blocking_reason":null,"client_id":"draft-1","delivery":null,"http_status":429,"id":"01a0fcea-2b00-7000-8000-000000000002","kind":"message","problem":{"code":"queue_full","detail":"This session already has 32 waiting inputs.","status":429,"title":"Queue full","type":"about:blank"},"session_id":"01a0fcea-2b00-7000-8000-000000000001","transcript_position":null,"turn":null},"kind":"input"},"detail":"This session already has 32 waiting inputs.","status":429,"title":"Queue full","type":"about:blank"}
+// Problem415 Examples: {"code":"queue_full","decision":{"input":{"acceptance_order":null,"accepted_at":null,"admission":"rejected","blocking_reason":null,"client_id":"draft-1","delivery":null,"http_status":429,"id":"01a0fcea-2b00-7000-8000-000000000002","kind":"message","problem":{"code":"queue_full","detail":"the session's inbox is full","status":429,"title":"Queue full","type":"about:blank"},"session_id":"01a0fcea-2b00-7000-8000-000000000001","transcript_position":null,"turn":null},"kind":"input"},"detail":"the session's inbox is full","status":429,"title":"Queue full","type":"about:blank"}
 type Problem415 = Problem
 
-// Problem422 Examples: {"code":"queue_full","decision":{"input":{"acceptance_order":null,"accepted_at":null,"admission":"rejected","blocking_reason":null,"client_id":"draft-1","delivery":null,"http_status":429,"id":"01a0fcea-2b00-7000-8000-000000000002","kind":"message","problem":{"code":"queue_full","detail":"This session already has 32 waiting inputs.","status":429,"title":"Queue full","type":"about:blank"},"session_id":"01a0fcea-2b00-7000-8000-000000000001","transcript_position":null,"turn":null},"kind":"input"},"detail":"This session already has 32 waiting inputs.","status":429,"title":"Queue full","type":"about:blank"}
+// Problem422 Examples: {"code":"queue_full","decision":{"input":{"acceptance_order":null,"accepted_at":null,"admission":"rejected","blocking_reason":null,"client_id":"draft-1","delivery":null,"http_status":429,"id":"01a0fcea-2b00-7000-8000-000000000002","kind":"message","problem":{"code":"queue_full","detail":"the session's inbox is full","status":429,"title":"Queue full","type":"about:blank"},"session_id":"01a0fcea-2b00-7000-8000-000000000001","transcript_position":null,"turn":null},"kind":"input"},"detail":"the session's inbox is full","status":429,"title":"Queue full","type":"about:blank"}
 type Problem422 = Problem
 
-// Problem428 Examples: {"code":"queue_full","decision":{"input":{"acceptance_order":null,"accepted_at":null,"admission":"rejected","blocking_reason":null,"client_id":"draft-1","delivery":null,"http_status":429,"id":"01a0fcea-2b00-7000-8000-000000000002","kind":"message","problem":{"code":"queue_full","detail":"This session already has 32 waiting inputs.","status":429,"title":"Queue full","type":"about:blank"},"session_id":"01a0fcea-2b00-7000-8000-000000000001","transcript_position":null,"turn":null},"kind":"input"},"detail":"This session already has 32 waiting inputs.","status":429,"title":"Queue full","type":"about:blank"}
+// Problem428 Examples: {"code":"queue_full","decision":{"input":{"acceptance_order":null,"accepted_at":null,"admission":"rejected","blocking_reason":null,"client_id":"draft-1","delivery":null,"http_status":429,"id":"01a0fcea-2b00-7000-8000-000000000002","kind":"message","problem":{"code":"queue_full","detail":"the session's inbox is full","status":429,"title":"Queue full","type":"about:blank"},"session_id":"01a0fcea-2b00-7000-8000-000000000001","transcript_position":null,"turn":null},"kind":"input"},"detail":"the session's inbox is full","status":429,"title":"Queue full","type":"about:blank"}
 type Problem428 = Problem
 
-// Problem429 Examples: {"code":"queue_full","decision":{"input":{"acceptance_order":null,"accepted_at":null,"admission":"rejected","blocking_reason":null,"client_id":"draft-1","delivery":null,"http_status":429,"id":"01a0fcea-2b00-7000-8000-000000000002","kind":"message","problem":{"code":"queue_full","detail":"This session already has 32 waiting inputs.","status":429,"title":"Queue full","type":"about:blank"},"session_id":"01a0fcea-2b00-7000-8000-000000000001","transcript_position":null,"turn":null},"kind":"input"},"detail":"This session already has 32 waiting inputs.","status":429,"title":"Queue full","type":"about:blank"}
+// Problem429 Examples: {"code":"queue_full","decision":{"input":{"acceptance_order":null,"accepted_at":null,"admission":"rejected","blocking_reason":null,"client_id":"draft-1","delivery":null,"http_status":429,"id":"01a0fcea-2b00-7000-8000-000000000002","kind":"message","problem":{"code":"queue_full","detail":"the session's inbox is full","status":429,"title":"Queue full","type":"about:blank"},"session_id":"01a0fcea-2b00-7000-8000-000000000001","transcript_position":null,"turn":null},"kind":"input"},"detail":"the session's inbox is full","status":429,"title":"Queue full","type":"about:blank"}
 type Problem429 = Problem
 
-// Problem503 Examples: {"code":"queue_full","decision":{"input":{"acceptance_order":null,"accepted_at":null,"admission":"rejected","blocking_reason":null,"client_id":"draft-1","delivery":null,"http_status":429,"id":"01a0fcea-2b00-7000-8000-000000000002","kind":"message","problem":{"code":"queue_full","detail":"This session already has 32 waiting inputs.","status":429,"title":"Queue full","type":"about:blank"},"session_id":"01a0fcea-2b00-7000-8000-000000000001","transcript_position":null,"turn":null},"kind":"input"},"detail":"This session already has 32 waiting inputs.","status":429,"title":"Queue full","type":"about:blank"}
+// Problem503 Examples: {"code":"queue_full","decision":{"input":{"acceptance_order":null,"accepted_at":null,"admission":"rejected","blocking_reason":null,"client_id":"draft-1","delivery":null,"http_status":429,"id":"01a0fcea-2b00-7000-8000-000000000002","kind":"message","problem":{"code":"queue_full","detail":"the session's inbox is full","status":429,"title":"Queue full","type":"about:blank"},"session_id":"01a0fcea-2b00-7000-8000-000000000001","transcript_position":null,"turn":null},"kind":"input"},"detail":"the session's inbox is full","status":429,"title":"Queue full","type":"about:blank"}
 type Problem503 = Problem
 
-// Problem507 Examples: {"code":"queue_full","decision":{"input":{"acceptance_order":null,"accepted_at":null,"admission":"rejected","blocking_reason":null,"client_id":"draft-1","delivery":null,"http_status":429,"id":"01a0fcea-2b00-7000-8000-000000000002","kind":"message","problem":{"code":"queue_full","detail":"This session already has 32 waiting inputs.","status":429,"title":"Queue full","type":"about:blank"},"session_id":"01a0fcea-2b00-7000-8000-000000000001","transcript_position":null,"turn":null},"kind":"input"},"detail":"This session already has 32 waiting inputs.","status":429,"title":"Queue full","type":"about:blank"}
+// Problem507 Examples: {"code":"queue_full","decision":{"input":{"acceptance_order":null,"accepted_at":null,"admission":"rejected","blocking_reason":null,"client_id":"draft-1","delivery":null,"http_status":429,"id":"01a0fcea-2b00-7000-8000-000000000002","kind":"message","problem":{"code":"queue_full","detail":"the session's inbox is full","status":429,"title":"Queue full","type":"about:blank"},"session_id":"01a0fcea-2b00-7000-8000-000000000001","transcript_position":null,"turn":null},"kind":"input"},"detail":"the session's inbox is full","status":429,"title":"Queue full","type":"about:blank"}
 type Problem507 = Problem
 
 // AnswerLoginParams defines parameters for AnswerLogin.
@@ -4550,6 +4763,15 @@ type MergeLinkGroupsParams struct {
 	// IfMatch Observed canonical representation validator. Wildcards and weak validators are not accepted.
 	IfMatch IfMatch `json:"If-Match"`
 }
+
+// ClearQueueJSONBody defines parameters for ClearQueue.
+type ClearQueueJSONBody = map[string]interface{}
+
+// DropQueuedJSONBody defines parameters for DropQueued.
+type DropQueuedJSONBody = map[string]interface{}
+
+// MoveQueuedFirstJSONBody defines parameters for MoveQueuedFirst.
+type MoveQueuedFirstJSONBody = map[string]interface{}
 
 // ListPaperclipsParams defines parameters for ListPaperclips.
 type ListPaperclipsParams struct {
@@ -4733,7 +4955,7 @@ type ListModelsParams struct {
 	Model           *ID     `form:"model,omitempty" json:"model,omitempty"`
 	ProviderProfile *ID     `form:"provider_profile,omitempty" json:"provider_profile,omitempty"`
 
-	// Session Existing session whose selected account scopes Daybreak Blue support; with initial=true, a preallocated new session ID selects its exact future account.
+	// Session Existing session whose selected account scopes Daybreak Blue support; with initial=true, a preallocated new session ID selects its exact future account. Without initial, an unknown or deleted session returns 404 session_not_found.
 	Session *ID `form:"session,omitempty" json:"session,omitempty"`
 
 	// Initial true permits preview with a new future session ID; requires provider_profile and session. Existing session IDs are rejected.
@@ -5084,6 +5306,18 @@ type PutDiscordDMJSONRequestBody = DiscordAllow
 // MergeLinkGroupsJSONRequestBody defines body for MergeLinkGroups for application/json ContentType.
 type MergeLinkGroupsJSONRequestBody = LinkMerge
 
+// ClearQueueJSONRequestBody defines body for ClearQueue for application/json ContentType.
+type ClearQueueJSONRequestBody = ClearQueueJSONBody
+
+// ArrangeQueueJSONRequestBody defines body for ArrangeQueue for application/json ContentType.
+type ArrangeQueueJSONRequestBody = QueueOrder
+
+// DropQueuedJSONRequestBody defines body for DropQueued for application/json ContentType.
+type DropQueuedJSONRequestBody = DropQueuedJSONBody
+
+// MoveQueuedFirstJSONRequestBody defines body for MoveQueuedFirst for application/json ContentType.
+type MoveQueuedFirstJSONRequestBody = MoveQueuedFirstJSONBody
+
 // CreatePaperclipsJSONRequestBody defines body for CreatePaperclips for application/json ContentType.
 type CreatePaperclipsJSONRequestBody = PaperclipCreate
 
@@ -5159,6 +5393,12 @@ type PutInputJSONRequestBody = InputRequest
 // CancelInputJSONRequestBody defines body for CancelInput for application/json ContentType.
 type CancelInputJSONRequestBody = EmptyRequest
 
+// EditInputJSONRequestBody defines body for EditInput for application/json ContentType.
+type EditInputJSONRequestBody = MessageInputRequest
+
+// HoldInputJSONRequestBody defines body for HoldInput for application/json ContentType.
+type HoldInputJSONRequestBody = EmptyRequest
+
 // InterruptSessionJSONRequestBody defines body for InterruptSession for application/json ContentType.
 type InterruptSessionJSONRequestBody = InterruptRequest
 
@@ -5180,6 +5420,9 @@ type RewindSessionJSONRequestBody = RewindRequest
 // PutShellCommandJSONRequestBody defines body for PutShellCommand for application/json ContentType.
 type PutShellCommandJSONRequestBody = ShellCommandRequest
 
+// PatchSideQuestionApplicationMergePatchPlusJSONRequestBody defines body for PatchSideQuestion for application/merge-patch+json ContentType.
+type PatchSideQuestionApplicationMergePatchPlusJSONRequestBody = SideQuestionPatchRequest
+
 // PutSideQuestionJSONRequestBody defines body for PutSideQuestion for application/json ContentType.
 type PutSideQuestionJSONRequestBody = SideQuestionRequest
 
@@ -5194,6 +5437,9 @@ type RecordVisitJSONRequestBody = EmptyRequest
 
 // PatchSettingsApplicationMergePatchPlusJSONRequestBody defines body for PatchSettings for application/merge-patch+json ContentType.
 type PatchSettingsApplicationMergePatchPlusJSONRequestBody = SettingsPatch
+
+// CheckTransferShapeJSONRequestBody defines body for CheckTransferShape for application/json ContentType.
+type CheckTransferShapeJSONRequestBody = TransferShape
 
 // CheckTransferProfilesJSONRequestBody defines body for CheckTransferProfiles for application/json ContentType.
 type CheckTransferProfilesJSONRequestBody = TransferRunsThereRequest
@@ -5632,6 +5878,81 @@ type ClientInterface interface {
 	// Corresponds with POST /extensions/links/groups (the `MergeLinkGroups` operationId).
 	MergeLinkGroups(ctx context.Context, params *MergeLinkGroupsParams, body MergeLinkGroupsJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// ClearQueueWithBody Drop everything waiting in the session's inbox
+	//
+	// A person's waiting input is cancelled, as cancelling the input would. What the running turn already took stays with it.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with DELETE /extensions/mail/sessions/{session_id}/queue (the `ClearQueue` operationId).
+	ClearQueueWithBody(ctx context.Context, sessionID ID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ClearQueue Drop everything waiting in the session's inbox
+	//
+	// A person's waiting input is cancelled, as cancelling the input would. What the running turn already took stays with it.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with DELETE /extensions/mail/sessions/{session_id}/queue (the `ClearQueue` operationId).
+	ClearQueue(ctx context.Context, sessionID ID, body ClearQueueJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ReadQueue Read what waits in the session's inbox and the queue page
+	//
+	// Every input the session has not read yet, in the order it will read them, the first 200 shown. Reading never loads the session's kernel.
+	//
+	// Corresponds with GET /extensions/mail/sessions/{session_id}/queue (the `ReadQueue` operationId).
+	ReadQueue(ctx context.Context, sessionID ID, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ArrangeQueueWithBody Put waiting inputs first, in the order given
+	//
+	// The listed inputs move to the front in this order; the rest keep their order after them. Ids that no longer wait are skipped.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with PUT /extensions/mail/sessions/{session_id}/queue/order (the `ArrangeQueue` operationId).
+	ArrangeQueueWithBody(ctx context.Context, sessionID ID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ArrangeQueue Put waiting inputs first, in the order given
+	//
+	// The listed inputs move to the front in this order; the rest keep their order after them. Ids that no longer wait are skipped.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with PUT /extensions/mail/sessions/{session_id}/queue/order (the `ArrangeQueue` operationId).
+	ArrangeQueue(ctx context.Context, sessionID ID, body ArrangeQueueJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// DropQueuedWithBody Take one input out of the session's queue
+	//
+	// A person's input is cancelled, as cancelling the input would. Fails with 404 `queue_item_not_found` when nothing with that id waits, including an input the running turn already took.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with DELETE /extensions/mail/sessions/{session_id}/queue/{item_id} (the `DropQueued` operationId).
+	DropQueuedWithBody(ctx context.Context, sessionID ID, itemID ID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// DropQueued Take one input out of the session's queue
+	//
+	// A person's input is cancelled, as cancelling the input would. Fails with 404 `queue_item_not_found` when nothing with that id waits, including an input the running turn already took.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with DELETE /extensions/mail/sessions/{session_id}/queue/{item_id} (the `DropQueued` operationId).
+	DropQueued(ctx context.Context, sessionID ID, itemID ID, body DropQueuedJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// MoveQueuedFirstWithBody Move one waiting input to the front of the queue
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /extensions/mail/sessions/{session_id}/queue/{item_id}/first (the `MoveQueuedFirst` operationId).
+	MoveQueuedFirstWithBody(ctx context.Context, sessionID ID, itemID ID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// MoveQueuedFirst Move one waiting input to the front of the queue
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /extensions/mail/sessions/{session_id}/queue/{item_id}/first (the `MoveQueuedFirst` operationId).
+	MoveQueuedFirst(ctx context.Context, sessionID ID, itemID ID, body MoveQueuedFirstJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// ListPaperclips List paperclips resources
 	//
 	// Requires enabled extension paperclips. Lists may include bounded page descriptors and glances.
@@ -5711,6 +6032,13 @@ type ClientInterface interface {
 	//
 	// Corresponds with GET /extensions/proxy/v1/models (the `ListProxyModels` operationId).
 	ListProxyModels(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetProxyModel Read one saved-profile OpenAI model and its efforts
+	//
+	// External OpenAI envelope. Bearer required unless operator explicitly configured anonymous loopback access.
+	//
+	// Corresponds with GET /extensions/proxy/v1/models/{id} (the `GetProxyModel` operationId).
+	GetProxyModel(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListJobs Read bounded live job observations and the jobs page
 	//
@@ -6365,6 +6693,49 @@ type ClientInterface interface {
 	// Corresponds with POST /sessions/{session_id}/inputs/{input_id}/cancel (the `CancelInput` operationId).
 	CancelInput(ctx context.Context, sessionID ID, inputID ID, params *CancelInputParams, body CancelInputJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// EditInputWithBody Put an edited message in place of a waiting one
+	//
+	// Replaces a person's typed message that still waits, keeping its id and its place in the queue, and releases any hold on it. 409 input_not_waiting once the session read it or it was cancelled.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /sessions/{session_id}/inputs/{input_id}/edit (the `EditInput` operationId).
+	EditInputWithBody(ctx context.Context, sessionID ID, inputID ID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// EditInput Put an edited message in place of a waiting one
+	//
+	// Replaces a person's typed message that still waits, keeping its id and its place in the queue, and releases any hold on it. 409 input_not_waiting once the session read it or it was cancelled.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /sessions/{session_id}/inputs/{input_id}/edit (the `EditInput` operationId).
+	EditInput(ctx context.Context, sessionID ID, inputID ID, body EditInputJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ReleaseInput Let a held message be read as it is
+	//
+	// Idempotent. A message that was never held is unaffected.
+	//
+	// Corresponds with DELETE /sessions/{session_id}/inputs/{input_id}/hold (the `ReleaseInput` operationId).
+	ReleaseInput(ctx context.Context, sessionID ID, inputID ID, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// HoldInputWithBody Hold a waiting message while it is edited
+	//
+	// Holds a person's typed message that still waits in the session's queue, or renews the hold. Neither it nor anything queued after it is read until the edit is saved, the hold is released, or lease_ms pass without another hold. 409 input_not_waiting once the session read the message or it was cancelled; 409 input_not_editable for any other input.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /sessions/{session_id}/inputs/{input_id}/hold (the `HoldInput` operationId).
+	HoldInputWithBody(ctx context.Context, sessionID ID, inputID ID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// HoldInput Hold a waiting message while it is edited
+	//
+	// Holds a person's typed message that still waits in the session's queue, or renews the hold. Neither it nor anything queued after it is read until the edit is saved, the hold is released, or lease_ms pass without another hold. 409 input_not_waiting once the session read the message or it was cancelled; 409 input_not_editable for any other input.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /sessions/{session_id}/inputs/{input_id}/hold (the `HoldInput` operationId).
+	HoldInput(ctx context.Context, sessionID ID, inputID ID, body HoldInputJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// InterruptSessionWithBody Interrupt a captured run and waiting prefix
 	//
 	// Capture run_id and through_input_order from the installed session. Retry cannot interrupt a later run or cancel newer inputs.
@@ -6510,6 +6881,14 @@ type ClientInterface interface {
 	// Corresponds with POST /sessions/{session_id}/shell-commands/{command_id}/stop (the `StopShellCommand` operationId).
 	StopShellCommand(ctx context.Context, sessionID ID, commandID UUIDv7, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// PatchSideQuestionWithBody performs a PATCH /sessions/{session_id}/side-questions/{question_id} (the `PatchSideQuestion` operationId) request,
+	// with any type of body and a specified content type.
+	PatchSideQuestionWithBody(ctx context.Context, sessionID ID, questionID UUIDv7, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PatchSideQuestionWithApplicationMergePatchPlusJSONBody performs a PATCH /sessions/{session_id}/side-questions/{question_id} (the `PatchSideQuestion` operationId) request.
+	// Takes a body of the `application/merge-patch+json` content type.
+	PatchSideQuestionWithApplicationMergePatchPlusJSONBody(ctx context.Context, sessionID ID, questionID UUIDv7, body PatchSideQuestionApplicationMergePatchPlusJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// PutSideQuestionWithBody performs a PUT /sessions/{session_id}/side-questions/{question_id} (the `PutSideQuestion` operationId) request,
 	// with any type of body and a specified content type.
 	PutSideQuestionWithBody(ctx context.Context, sessionID ID, questionID UUIDv7, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -6608,9 +6987,27 @@ type ClientInterface interface {
 	// Corresponds with GET /terminals/{terminal_id} (the `AttachTerminal` operationId).
 	AttachTerminal(ctx context.Context, terminalID ID, params *AttachTerminalParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// CheckTransferShapeWithBody Whether this daemon would stage rows of these shapes
+	//
+	// Called by a source's preflight through the relay. Runs the owner, table, version and column checks of staging and nothing else. It reads table columns only, and writes no receipt, staging directory or expiry, and checks no free space. A daemon from before this route answers 404 or 405, and the source then leaves the decision to staging. The 422 problem's code is `transfer_unsupported` for an owner or table this build lacks, `transfer_extension_unavailable` for an extension built in here that failed to load, `transfer_version` for a version or column this daemon lacks, or `transfer_protocol` for another transfer protocol.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /transfers/check (the `CheckTransferShape` operationId).
+	CheckTransferShapeWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// CheckTransferShape Whether this daemon would stage rows of these shapes
+	//
+	// Called by a source's preflight through the relay. Runs the owner, table, version and column checks of staging and nothing else. It reads table columns only, and writes no receipt, staging directory or expiry, and checks no free space. A daemon from before this route answers 404 or 405, and the source then leaves the decision to staging. The 422 problem's code is `transfer_unsupported` for an owner or table this build lacks, `transfer_extension_unavailable` for an extension built in here that failed to load, `transfer_version` for a version or column this daemon lacks, or `transfer_protocol` for another transfer protocol.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /transfers/check (the `CheckTransferShape` operationId).
+	CheckTransferShape(ctx context.Context, body CheckTransferShapeJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// GetTransferPreflight Whether a session could move to another daemon now
 	//
-	// Answers within about ten seconds. A target out of reach, a daemon there that speaks another transfer protocol, a session mid-turn or one that already moved is available false with the reason, not an error.
+	// Answers within about ten seconds. A target out of reach, a daemon there that speaks another transfer protocol or can't take what the export would send, a session mid-turn or one that already moved is available false with the reason, not an error. The target is asked through its read-only `POST /transfers/check`. A target from before that route is not checked, and its staging refuses what it lacks once the move starts.
 	//
 	// Corresponds with GET /transfers/preflight (the `GetTransferPreflight` operationId).
 	GetTransferPreflight(ctx context.Context, params *GetTransferPreflightParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -7572,6 +7969,171 @@ func (c *Client) MergeLinkGroups(ctx context.Context, params *MergeLinkGroupsPar
 	return c.Client.Do(req)
 }
 
+// ClearQueueWithBody Drop everything waiting in the session's inbox
+//
+// A person's waiting input is cancelled, as cancelling the input would. What the running turn already took stays with it.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with DELETE /extensions/mail/sessions/{session_id}/queue (the `ClearQueue` operationId).
+func (c *Client) ClearQueueWithBody(ctx context.Context, sessionID ID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewClearQueueRequestWithBody(c.Server, sessionID, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// ClearQueue Drop everything waiting in the session's inbox
+//
+// A person's waiting input is cancelled, as cancelling the input would. What the running turn already took stays with it.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with DELETE /extensions/mail/sessions/{session_id}/queue (the `ClearQueue` operationId).
+func (c *Client) ClearQueue(ctx context.Context, sessionID ID, body ClearQueueJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewClearQueueRequest(c.Server, sessionID, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// ReadQueue Read what waits in the session's inbox and the queue page
+//
+// Every input the session has not read yet, in the order it will read them, the first 200 shown. Reading never loads the session's kernel.
+//
+// Corresponds with GET /extensions/mail/sessions/{session_id}/queue (the `ReadQueue` operationId).
+func (c *Client) ReadQueue(ctx context.Context, sessionID ID, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewReadQueueRequest(c.Server, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// ArrangeQueueWithBody Put waiting inputs first, in the order given
+//
+// The listed inputs move to the front in this order; the rest keep their order after them. Ids that no longer wait are skipped.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with PUT /extensions/mail/sessions/{session_id}/queue/order (the `ArrangeQueue` operationId).
+func (c *Client) ArrangeQueueWithBody(ctx context.Context, sessionID ID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewArrangeQueueRequestWithBody(c.Server, sessionID, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// ArrangeQueue Put waiting inputs first, in the order given
+//
+// The listed inputs move to the front in this order; the rest keep their order after them. Ids that no longer wait are skipped.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with PUT /extensions/mail/sessions/{session_id}/queue/order (the `ArrangeQueue` operationId).
+func (c *Client) ArrangeQueue(ctx context.Context, sessionID ID, body ArrangeQueueJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewArrangeQueueRequest(c.Server, sessionID, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// DropQueuedWithBody Take one input out of the session's queue
+//
+// A person's input is cancelled, as cancelling the input would. Fails with 404 `queue_item_not_found` when nothing with that id waits, including an input the running turn already took.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with DELETE /extensions/mail/sessions/{session_id}/queue/{item_id} (the `DropQueued` operationId).
+func (c *Client) DropQueuedWithBody(ctx context.Context, sessionID ID, itemID ID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDropQueuedRequestWithBody(c.Server, sessionID, itemID, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// DropQueued Take one input out of the session's queue
+//
+// A person's input is cancelled, as cancelling the input would. Fails with 404 `queue_item_not_found` when nothing with that id waits, including an input the running turn already took.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with DELETE /extensions/mail/sessions/{session_id}/queue/{item_id} (the `DropQueued` operationId).
+func (c *Client) DropQueued(ctx context.Context, sessionID ID, itemID ID, body DropQueuedJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDropQueuedRequest(c.Server, sessionID, itemID, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// MoveQueuedFirstWithBody Move one waiting input to the front of the queue
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /extensions/mail/sessions/{session_id}/queue/{item_id}/first (the `MoveQueuedFirst` operationId).
+func (c *Client) MoveQueuedFirstWithBody(ctx context.Context, sessionID ID, itemID ID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewMoveQueuedFirstRequestWithBody(c.Server, sessionID, itemID, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// MoveQueuedFirst Move one waiting input to the front of the queue
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /extensions/mail/sessions/{session_id}/queue/{item_id}/first (the `MoveQueuedFirst` operationId).
+func (c *Client) MoveQueuedFirst(ctx context.Context, sessionID ID, itemID ID, body MoveQueuedFirstJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewMoveQueuedFirstRequest(c.Server, sessionID, itemID, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 // ListPaperclips List paperclips resources
 //
 // Requires enabled extension paperclips. Lists may include bounded page descriptors and glances.
@@ -7742,6 +8304,23 @@ func (c *Client) CreateProxyCompletion(ctx context.Context, body CreateProxyComp
 // Corresponds with GET /extensions/proxy/v1/models (the `ListProxyModels` operationId).
 func (c *Client) ListProxyModels(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewListProxyModelsRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetProxyModel Read one saved-profile OpenAI model and its efforts
+//
+// External OpenAI envelope. Bearer required unless operator explicitly configured anonymous loopback access.
+//
+// Corresponds with GET /extensions/proxy/v1/models/{id} (the `GetProxyModel` operationId).
+func (c *Client) GetProxyModel(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetProxyModelRequest(c.Server, id)
 	if err != nil {
 		return nil, err
 	}
@@ -9215,6 +9794,99 @@ func (c *Client) CancelInput(ctx context.Context, sessionID ID, inputID ID, para
 	return c.Client.Do(req)
 }
 
+// EditInputWithBody Put an edited message in place of a waiting one
+//
+// Replaces a person's typed message that still waits, keeping its id and its place in the queue, and releases any hold on it. 409 input_not_waiting once the session read it or it was cancelled.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /sessions/{session_id}/inputs/{input_id}/edit (the `EditInput` operationId).
+func (c *Client) EditInputWithBody(ctx context.Context, sessionID ID, inputID ID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewEditInputRequestWithBody(c.Server, sessionID, inputID, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// EditInput Put an edited message in place of a waiting one
+//
+// Replaces a person's typed message that still waits, keeping its id and its place in the queue, and releases any hold on it. 409 input_not_waiting once the session read it or it was cancelled.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /sessions/{session_id}/inputs/{input_id}/edit (the `EditInput` operationId).
+func (c *Client) EditInput(ctx context.Context, sessionID ID, inputID ID, body EditInputJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewEditInputRequest(c.Server, sessionID, inputID, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// ReleaseInput Let a held message be read as it is
+//
+// Idempotent. A message that was never held is unaffected.
+//
+// Corresponds with DELETE /sessions/{session_id}/inputs/{input_id}/hold (the `ReleaseInput` operationId).
+func (c *Client) ReleaseInput(ctx context.Context, sessionID ID, inputID ID, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewReleaseInputRequest(c.Server, sessionID, inputID)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// HoldInputWithBody Hold a waiting message while it is edited
+//
+// Holds a person's typed message that still waits in the session's queue, or renews the hold. Neither it nor anything queued after it is read until the edit is saved, the hold is released, or lease_ms pass without another hold. 409 input_not_waiting once the session read the message or it was cancelled; 409 input_not_editable for any other input.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /sessions/{session_id}/inputs/{input_id}/hold (the `HoldInput` operationId).
+func (c *Client) HoldInputWithBody(ctx context.Context, sessionID ID, inputID ID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewHoldInputRequestWithBody(c.Server, sessionID, inputID, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// HoldInput Hold a waiting message while it is edited
+//
+// Holds a person's typed message that still waits in the session's queue, or renews the hold. Neither it nor anything queued after it is read until the edit is saved, the hold is released, or lease_ms pass without another hold. 409 input_not_waiting once the session read the message or it was cancelled; 409 input_not_editable for any other input.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /sessions/{session_id}/inputs/{input_id}/hold (the `HoldInput` operationId).
+func (c *Client) HoldInput(ctx context.Context, sessionID ID, inputID ID, body HoldInputJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewHoldInputRequest(c.Server, sessionID, inputID, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 // InterruptSessionWithBody Interrupt a captured run and waiting prefix
 //
 // Capture run_id and through_input_order from the installed session. Retry cannot interrupt a later run or cancel newer inputs.
@@ -9530,6 +10202,34 @@ func (c *Client) StopShellCommand(ctx context.Context, sessionID ID, commandID U
 	return c.Client.Do(req)
 }
 
+// PatchSideQuestionWithBody performs a PATCH /sessions/{session_id}/side-questions/{question_id} (the `PatchSideQuestion` operationId) request,
+// with any type of body and a specified content type.
+func (c *Client) PatchSideQuestionWithBody(ctx context.Context, sessionID ID, questionID UUIDv7, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPatchSideQuestionRequestWithBody(c.Server, sessionID, questionID, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PatchSideQuestionWithApplicationMergePatchPlusJSONBody performs a PATCH /sessions/{session_id}/side-questions/{question_id} (the `PatchSideQuestion` operationId) request.
+// Takes a body of the `application/merge-patch+json` content type.
+func (c *Client) PatchSideQuestionWithApplicationMergePatchPlusJSONBody(ctx context.Context, sessionID ID, questionID UUIDv7, body PatchSideQuestionApplicationMergePatchPlusJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPatchSideQuestionRequestWithApplicationMergePatchPlusJSONBody(c.Server, sessionID, questionID, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 // PutSideQuestionWithBody performs a PUT /sessions/{session_id}/side-questions/{question_id} (the `PutSideQuestion` operationId) request,
 // with any type of body and a specified content type.
 func (c *Client) PutSideQuestionWithBody(ctx context.Context, sessionID ID, questionID UUIDv7, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
@@ -9768,9 +10468,47 @@ func (c *Client) AttachTerminal(ctx context.Context, terminalID ID, params *Atta
 	return c.Client.Do(req)
 }
 
+// CheckTransferShapeWithBody Whether this daemon would stage rows of these shapes
+//
+// Called by a source's preflight through the relay. Runs the owner, table, version and column checks of staging and nothing else. It reads table columns only, and writes no receipt, staging directory or expiry, and checks no free space. A daemon from before this route answers 404 or 405, and the source then leaves the decision to staging. The 422 problem's code is `transfer_unsupported` for an owner or table this build lacks, `transfer_extension_unavailable` for an extension built in here that failed to load, `transfer_version` for a version or column this daemon lacks, or `transfer_protocol` for another transfer protocol.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /transfers/check (the `CheckTransferShape` operationId).
+func (c *Client) CheckTransferShapeWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCheckTransferShapeRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// CheckTransferShape Whether this daemon would stage rows of these shapes
+//
+// Called by a source's preflight through the relay. Runs the owner, table, version and column checks of staging and nothing else. It reads table columns only, and writes no receipt, staging directory or expiry, and checks no free space. A daemon from before this route answers 404 or 405, and the source then leaves the decision to staging. The 422 problem's code is `transfer_unsupported` for an owner or table this build lacks, `transfer_extension_unavailable` for an extension built in here that failed to load, `transfer_version` for a version or column this daemon lacks, or `transfer_protocol` for another transfer protocol.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /transfers/check (the `CheckTransferShape` operationId).
+func (c *Client) CheckTransferShape(ctx context.Context, body CheckTransferShapeJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCheckTransferShapeRequest(c.Server, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 // GetTransferPreflight Whether a session could move to another daemon now
 //
-// Answers within about ten seconds. A target out of reach, a daemon there that speaks another transfer protocol, a session mid-turn or one that already moved is available false with the reason, not an error.
+// Answers within about ten seconds. A target out of reach, a daemon there that speaks another transfer protocol or can't take what the export would send, a session mid-turn or one that already moved is available false with the reason, not an error. The target is asked through its read-only `POST /transfers/check`. A target from before that route is not checked, and its staging refuses what it lacks once the move starts.
 //
 // Corresponds with GET /transfers/preflight (the `GetTransferPreflight` operationId).
 func (c *Client) GetTransferPreflight(ctx context.Context, params *GetTransferPreflightParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
@@ -11689,6 +12427,242 @@ func NewMergeLinkGroupsRequestWithBody(server string, params *MergeLinkGroupsPar
 	return req, nil
 }
 
+// NewClearQueueRequest calls the generic ClearQueue builder with application/json body
+func NewClearQueueRequest(server string, sessionID ID, body ClearQueueJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewClearQueueRequestWithBody(server, sessionID, "application/json", bodyReader)
+}
+
+// NewClearQueueRequestWithBody constructs an http.Request for the ClearQueue method, with any body, and a specified content type
+func NewClearQueueRequestWithBody(server string, sessionID ID, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/extensions/mail/sessions/%s/queue", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewReadQueueRequest constructs an http.Request for the ReadQueue method
+func NewReadQueueRequest(server string, sessionID ID) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/extensions/mail/sessions/%s/queue", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewArrangeQueueRequest calls the generic ArrangeQueue builder with application/json body
+func NewArrangeQueueRequest(server string, sessionID ID, body ArrangeQueueJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewArrangeQueueRequestWithBody(server, sessionID, "application/json", bodyReader)
+}
+
+// NewArrangeQueueRequestWithBody constructs an http.Request for the ArrangeQueue method, with any body, and a specified content type
+func NewArrangeQueueRequestWithBody(server string, sessionID ID, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/extensions/mail/sessions/%s/queue/order", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPut, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewDropQueuedRequest calls the generic DropQueued builder with application/json body
+func NewDropQueuedRequest(server string, sessionID ID, itemID ID, body DropQueuedJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewDropQueuedRequestWithBody(server, sessionID, itemID, "application/json", bodyReader)
+}
+
+// NewDropQueuedRequestWithBody constructs an http.Request for the DropQueued method, with any body, and a specified content type
+func NewDropQueuedRequestWithBody(server string, sessionID ID, itemID ID, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithOptions("simple", false, "item_id", itemID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/extensions/mail/sessions/%s/queue/%s", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewMoveQueuedFirstRequest calls the generic MoveQueuedFirst builder with application/json body
+func NewMoveQueuedFirstRequest(server string, sessionID ID, itemID ID, body MoveQueuedFirstJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewMoveQueuedFirstRequestWithBody(server, sessionID, itemID, "application/json", bodyReader)
+}
+
+// NewMoveQueuedFirstRequestWithBody constructs an http.Request for the MoveQueuedFirst method, with any body, and a specified content type
+func NewMoveQueuedFirstRequestWithBody(server string, sessionID ID, itemID ID, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithOptions("simple", false, "item_id", itemID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/extensions/mail/sessions/%s/queue/%s/first", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
 // NewListPaperclipsRequest constructs an http.Request for the ListPaperclips method
 func NewListPaperclipsRequest(server string, params *ListPaperclipsParams) (*http.Request, error) {
 	var err error
@@ -11986,6 +12960,40 @@ func NewListProxyModelsRequest(server string) (*http.Request, error) {
 	}
 
 	operationPath := fmt.Sprintf("/extensions/proxy/v1/models")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetProxyModelRequest constructs an http.Request for the GetProxyModel method
+func NewGetProxyModelRequest(server string, id string) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "id", id, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/extensions/proxy/v1/models/%s", pathParam0)
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -15928,6 +16936,155 @@ func NewCancelInputRequestWithBody(server string, sessionID ID, inputID ID, para
 	return req, nil
 }
 
+// NewEditInputRequest calls the generic EditInput builder with application/json body
+func NewEditInputRequest(server string, sessionID ID, inputID ID, body EditInputJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewEditInputRequestWithBody(server, sessionID, inputID, "application/json", bodyReader)
+}
+
+// NewEditInputRequestWithBody constructs an http.Request for the EditInput method, with any body, and a specified content type
+func NewEditInputRequestWithBody(server string, sessionID ID, inputID ID, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithOptions("simple", false, "input_id", inputID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/sessions/%s/inputs/%s/edit", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewReleaseInputRequest constructs an http.Request for the ReleaseInput method
+func NewReleaseInputRequest(server string, sessionID ID, inputID ID) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithOptions("simple", false, "input_id", inputID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/sessions/%s/inputs/%s/hold", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewHoldInputRequest calls the generic HoldInput builder with application/json body
+func NewHoldInputRequest(server string, sessionID ID, inputID ID, body HoldInputJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewHoldInputRequestWithBody(server, sessionID, inputID, "application/json", bodyReader)
+}
+
+// NewHoldInputRequestWithBody constructs an http.Request for the HoldInput method, with any body, and a specified content type
+func NewHoldInputRequestWithBody(server string, sessionID ID, inputID ID, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithOptions("simple", false, "input_id", inputID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/sessions/%s/inputs/%s/hold", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
 // NewInterruptSessionRequest calls the generic InterruptSession builder with application/json body
 func NewInterruptSessionRequest(server string, sessionID ID, body InterruptSessionJSONRequestBody) (*http.Request, error) {
 	var bodyReader io.Reader
@@ -16422,6 +17579,60 @@ func NewStopShellCommandRequest(server string, sessionID ID, commandID UUIDv7) (
 	if err != nil {
 		return nil, err
 	}
+
+	return req, nil
+}
+
+// NewPatchSideQuestionRequestWithApplicationMergePatchPlusJSONBody calls the generic PatchSideQuestion builder with application/merge-patch+json body
+func NewPatchSideQuestionRequestWithApplicationMergePatchPlusJSONBody(server string, sessionID ID, questionID UUIDv7, body PatchSideQuestionApplicationMergePatchPlusJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPatchSideQuestionRequestWithBody(server, sessionID, questionID, "application/merge-patch+json", bodyReader)
+}
+
+// NewPatchSideQuestionRequestWithBody constructs an http.Request for the PatchSideQuestion method, with any body, and a specified content type
+func NewPatchSideQuestionRequestWithBody(server string, sessionID ID, questionID UUIDv7, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithOptions("simple", false, "question_id", questionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: "uuid"})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/sessions/%s/side-questions/%s", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPatch, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
 
 	return req, nil
 }
@@ -16994,6 +18205,46 @@ func NewAttachTerminalRequest(server string, terminalID ID, params *AttachTermin
 	if err != nil {
 		return nil, err
 	}
+
+	return req, nil
+}
+
+// NewCheckTransferShapeRequest calls the generic CheckTransferShape builder with application/json body
+func NewCheckTransferShapeRequest(server string, body CheckTransferShapeJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewCheckTransferShapeRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewCheckTransferShapeRequestWithBody constructs an http.Request for the CheckTransferShape method, with any body, and a specified content type
+func NewCheckTransferShapeRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/transfers/check")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
 
 	return req, nil
 }

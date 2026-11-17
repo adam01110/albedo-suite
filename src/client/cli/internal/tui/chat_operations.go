@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -18,8 +17,8 @@ func (m *ChatModel) Moved(moved daemon.Session, retry *WorkspaceRetry) tea.Cmd {
 	workspace, from := moved.Workspace, m.Workspace
 	m.dropSignIn() // the offer was for the old folder's host
 	// a hint from an earlier move names a folder this one did not leave
-	m.Notices = slices.DeleteFunc(m.Notices, func(n Notice) bool { return strings.HasPrefix(n.Message, linkHintText) })
-	m.Notices.AddNotice(linkHint(from, workspace, retry))
+	m.Notices = slices.DeleteFunc(m.Notices, func(n Notice) bool { return n.Kind == WorkspaceLinkNotice })
+	m.Notices.add(Notice{Kind: WorkspaceLinkNotice, Message: linkHint(from, workspace, retry)})
 	m.direnvAsk = "" // the question was about the folder it left
 	m.syncViewportHeight()
 	m.Workspace, m.Host, m.hostHome = workspace, sessionHost(moved), ""

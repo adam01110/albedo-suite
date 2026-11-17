@@ -1,28 +1,40 @@
-//// One session's composed extensions: every selected extension's static
-//// contributions and prepared managed plugins, composed once and read as
-//// tools, context, instructions, commands, routes, observers, and hooks.
+//// One session's composed extensions: the harness base (`kernel/base`), then
+//// every selected extension's static contributions and prepared managed
+//// plugins, composed once and read as tools, context, instructions, commands,
+//// routes, observers, and hooks.
 
-import albedo/daemon/store
-import albedo/harness/client_api
-import albedo/harness/command
-import albedo/harness/extension
+import albedo/daemon/acp_overlay
+import albedo/daemon/mail
+import albedo/daemon/webhook_intake
 import albedo/harness/extension/prompt_docs
-import albedo/harness/hook
-import albedo/harness/protect
+import albedo/harness/kernel/base
+import albedo/harness/kernel/tool as cell_tool
+import albedo/harness/sdk/client_api
+import albedo/harness/sdk/command
+import albedo/harness/sdk/extension
+import albedo/harness/sdk/hook
+import albedo/harness/sdk/selection
+import albedo/harness/sdk/store
+import albedo_model as types
+import albedo_protect
+import gleam/bool
 import gleam/io
 import gleam/list
 import gleam/option
 import gleam/result
 import gleam/string
 
-/// One session's extension state, composed from nothing: every selected
-/// extension's static contributions in registry order, then every prepared
-/// managed plugin. It is never mutated. A refresh or reload composes a
-/// replacement and closes whichever composition loses, so each contribution
-/// applies exactly once and a plugin that disappears takes its tools with it.
+/// One session's extension state, composed from nothing: the harness base and
+/// every selected extension's static contributions in registry order, then
+/// every prepared managed plugin. It is never mutated. A refresh or reload
+/// composes a replacement and closes whichever composition loses, so each
+/// contribution applies exactly once and a plugin that disappears takes its
+/// tools with it.
 pub opaque type Composition {
   Composition(
     requested: List(extension.Extension),
+    /// The base, then the active selected extensions: every owner whose
+    /// contributions this composition scopes.
     extensions: List(extension.Extension),
     /// Static contributions only; `contributions` appends the other two, so
     /// a composition copied to another process carries each plugin once.
@@ -30,23 +42,33 @@ pub opaque type Composition {
     managed: List(extension.Prepared),
     /// The warning-only contributions of the extensions that broke.
     failures: List(extension.Prepared),
+    /// The store `tools` and `routes` scope each extension's handle on.
+    ledger: store.Store,
+    /// The host's selection capability, which each extension's commands
+    /// receive in their `command.Invocation` when it declares `Selection`.
+    selection: selection.Selection,
   )
 }
 
 /// Compose one session's extensions: static contributions with their loaded
-/// context, then every prepared managed plugin. An extension that fails,
-/// crashes, or collides with another is left out with a warning; the session
-/// composes without it.
+/// context, then every prepared managed plugin. The harness base comes first
+/// whatever `selected` holds, so its python tool claims its names before any
+/// extension can. An extension that fails, crashes, or collides with another
+/// is left out with a warning; the session composes without it. `harness`
+/// is the base (`base.contribution()`); the runtime builds it once and passes
+/// the shared value, so a session holds no copy of its own.
 pub fn compose(
+  harness: extension.Extension,
   selected: List(extension.Extension),
   owner: extension.PreparationOwner,
   ledger: store.Store,
   session: String,
   workspace: String,
+  selection: selection.Selection,
 ) -> Composition {
-  let empty = Composition(selected, [], [], [], [])
+  let empty = Composition(selected, [], [], [], [], ledger, selection)
   let composed =
-    list.fold(selected, empty, fn(composed, candidate) {
+    list.fold([harness, ..selected], empty, fn(composed, candidate) {
       let #(static, load_failures) = split(loaded(candidate, workspace))
       let #(managed, prepare_failures) = case load_failures {
         [] -> split(prepare([candidate], owner, ledger, session, workspace))
@@ -195,7 +217,7 @@ pub fn loaded(
     list.try_map(ext.plugins, fn(plugin) {
       case plugin {
         extension.ContextPlugin(load) ->
-          protect.guarded(fn() { load(workspace) })
+          albedo_protect.guarded(fn() { load(workspace) })
           |> result.map(fn(context) {
             [extension.Managed(..extension.empty(), context: context)]
           })
@@ -224,6 +246,32 @@ fn broken(name: String, reason: String) -> extension.Prepared {
   )
 }
 
+/// Every contribution's value with its tools and routes scoped to its own
+/// extension's storage handle and capabilities, though the host builds one
+/// context for the whole composition. Scoped when read, not when composed:
+/// the composition is copied from the preparing worker to the runtime and
+/// the session, a copy shares nothing, and so each wrapping closure carried
+/// its own copy of the handle. Stored that way it cost about 18 KB per idle
+/// session (idle_session_beam, robot-docs/perf.md).
+fn scoped(composition: Composition) -> List(extension.Managed) {
+  list.map(contributions(composition), scope(composition, _))
+}
+
+fn scope(
+  composition: Composition,
+  item: extension.Prepared,
+) -> extension.Managed {
+  case
+    list.find(composition.extensions, fn(candidate) {
+      candidate.name == item.extension
+    })
+  {
+    Ok(candidate) -> extension.scoped(item.value, candidate, composition.ledger)
+    // A broken extension contributes only its warnings.
+    Error(Nil) -> item.value
+  }
+}
+
 pub fn value(prepared: extension.Prepared) -> extension.Managed {
   prepared.value
 }
@@ -238,7 +286,7 @@ pub fn close(composition: Composition) -> Nil {
 pub fn adopt(composition: Composition) -> Result(Nil, String) {
   let adopted =
     list.try_each(composition.managed, fn(item) {
-      protect.guarded(item.value.adopt)
+      albedo_protect.guarded(item.value.adopt)
       |> result.map_error(fn(reason) {
         "extension " <> item.extension <> " refused adoption: " <> reason
       })
@@ -259,7 +307,7 @@ pub fn observers(
 ) -> List(fn(extension.Session, extension.SessionEvent) -> Nil) {
   list.map(contributions(composition), fn(item) {
     fn(session, event) {
-      case protect.attempt(fn() { item.value.observe(session, event) }) {
+      case albedo_protect.attempt(fn() { item.value.observe(session, event) }) {
         Ok(_) -> Nil
         Error(crash) -> report(item.extension, "observer", crash)
       }
@@ -267,11 +315,37 @@ pub fn observers(
   })
 }
 
-/// Every contributed hook, in registry order.
-pub fn hooks(composition: Composition) -> List(hook.Hook) {
-  list.filter_map(contributions(composition), fn(item) {
-    option.to_result(item.value.hook, Nil)
-    |> result.map(fn(ask) { #(item.extension, ask) })
+/// Every contributed hook, asked for `session` in `workspace`, in the one
+/// order `hook.ask` relies on: extensions in composition order (the harness
+/// base, then the selection in registry order), and within one extension its
+/// `HookPlugin` hooks in plugin order before its managed contribution's hook.
+/// Whether a hook is static or managed never moves it past another
+/// extension's: the first block and argument rewrite win, so the order is
+/// behaviour. Each is asked with its own extension's handle bound to the
+/// session, built when read, as `scoped` builds the tools' and commands', so
+/// the stored composition holds no handle per hook.
+pub fn hooks(
+  composition: Composition,
+  session: String,
+  workspace: String,
+) -> List(hook.Hook) {
+  let contributed = contributions(composition)
+  list.flat_map(composition.extensions, fn(owner) {
+    // `contributions` lists static before managed, each in plugin order.
+    list.filter_map(contributed, fn(item) {
+      use <- bool.guard(item.extension != owner.name, Error(Nil))
+      use ask <- result.map(option.to_result(item.value.hook, Nil))
+      let context =
+        extension.hook_context(owner, composition.ledger, session, workspace)
+      #(item.extension, fn(event) { ask(context, event) })
+    })
+  })
+}
+
+/// Whether any contribution hooks the session.
+fn hooked(composition: Composition) -> Bool {
+  list.any(contributions(composition), fn(item) {
+    option.is_some(item.value.hook)
   })
 }
 
@@ -284,8 +358,10 @@ pub fn requested(composition: Composition) -> List(extension.Extension) {
   composition.requested
 }
 
+/// The active selected extensions, in registry order. The harness base is
+/// not one of them.
 pub fn extensions(composition: Composition) -> List(extension.Extension) {
-  composition.extensions
+  list.filter(composition.extensions, fn(item) { item.name != base.name })
 }
 
 /// Nonempty context blocks, labelled by the extension that supplied them.
@@ -318,17 +394,13 @@ pub fn instructions(composition: Composition) -> String {
   |> string.join("\n")
 }
 
-/// Empty without a python tool; a tool beside it is named, since its schema
-/// is the only place it is described.
+/// Every composition has the cell tool; a tool beside it is named, since its
+/// schema is the only place it is described.
 fn reach(tools: List(String)) -> String {
-  case
-    list.contains(tools, "python"),
-    list.filter(tools, fn(name) { name != "python" })
-  {
-    False, _ -> ""
-    True, [] ->
+  case list.filter(tools, fn(name) { name != cell_tool.name }) {
+    [] ->
       "python is your only tool: every capability this session has is a Python binding in its kernel, so call these names inside a python cell."
-    True, others ->
+    others ->
       "Every capability this session has is a Python binding in the python tool's kernel, except the tools "
       <> string.join(others, ", ")
       <> ", which their own schemas describe; call everything else inside a python cell."
@@ -336,7 +408,34 @@ fn reach(tools: List(String)) -> String {
 }
 
 pub fn tools(composition: Composition) -> List(extension.Tool) {
-  list.flat_map(contributions(composition), fn(item) { item.value.tools })
+  list.flat_map(scoped(composition), fn(value) { value.tools })
+}
+
+/// Every tool's definition, in `tools` order. Reading definitions wraps
+/// nothing, so the per-turn tool list costs no scoping.
+pub fn definitions(composition: Composition) -> List(types.Tool) {
+  list.flat_map(contributions(composition), fn(item) {
+    list.map(item.value.tools, fn(tool) { tool.definition })
+  })
+}
+
+/// The tool named `name`, scoped like `tools` returns it. Only that tool is
+/// wrapped, so a call costs one wrapper rather than every tool's.
+pub fn tool(
+  composition: Composition,
+  name: String,
+) -> Result(extension.Tool, Nil) {
+  list.find_map(contributions(composition), fn(item) {
+    use found <- result.try(
+      list.find(item.value.tools, fn(tool) { tool.definition.name == name }),
+    )
+    let single =
+      extension.Prepared(
+        ..item,
+        value: extension.Managed(..item.value, tools: [found], routes: []),
+      )
+    list.first(scope(composition, single).tools)
+  })
 }
 
 /// With `hook` last when any extension hooks the session: it reports the
@@ -352,29 +451,73 @@ pub fn python_modules(composition: Composition) -> List(String) {
     True -> list.append(modules, ["api_docs"])
     False -> modules
   }
-  case hooks(composition) {
-    [] -> modules
-    _ -> list.append(modules, ["hook"])
+  case hooked(composition) {
+    False -> modules
+    True -> list.append(modules, ["hook"])
   }
 }
 
-/// Every session command, in registry order. One list feeds the CLI menu,
-/// the kernel bindings, and the aggregate command routes.
-pub fn commands(composition: Composition) -> List(command.Command) {
-  list.flat_map(contributions(composition), fn(item) { item.value.commands })
+/// The modules a composition of `extensions` loads from their static
+/// declarations, with `hook`: what a spare imports before any session adopts
+/// it. A managed plugin prepares per session, so the modules it adds (an
+/// editor's `mcp`) and whether it hooks are unknown until then; `hook` is
+/// counted because default sessions hook (agents does). An extension whose
+/// module should load early declares it in a `ToolPlugin`.
+pub fn declared_python_modules(
+  extensions: List(extension.Extension),
+) -> List(String) {
+  extensions
+  |> list.flat_map(extension.declared)
+  |> list.flat_map(fn(value) { value.python_modules })
+  |> list.unique
+  |> list.append(["hook"])
+}
+
+/// Every session command, in registry order, bound like `tools` are
+/// scoped: each runs with its own extension's handle in its
+/// `command.Invocation`. One list feeds the CLI menu, the kernel bindings,
+/// and the aggregate command routes.
+pub fn commands(
+  composition: Composition,
+) -> List(command.Command(command.Context)) {
+  list.flat_map(command_entries(composition), fn(entry) { [entry.1] })
 }
 
 pub fn command_entries(
   composition: Composition,
-) -> List(#(String, command.Command)) {
+) -> List(#(String, command.Command(command.Context))) {
   list.flat_map(contributions(composition), fn(item) {
-    list.map(item.value.commands, fn(command) { #(item.extension, command) })
+    list.map(bound_commands(composition, item), fn(command) {
+      #(item.extension, command)
+    })
   })
+}
+
+/// `item`'s commands bound to its extension. A broken extension
+/// contributes none.
+fn bound_commands(
+  composition: Composition,
+  item: extension.Prepared,
+) -> List(command.Command(command.Context)) {
+  case
+    list.find(composition.extensions, fn(candidate) {
+      candidate.name == item.extension
+    })
+  {
+    Ok(candidate) ->
+      extension.scoped_commands(
+        item.value,
+        candidate,
+        composition.ledger,
+        composition.selection,
+      )
+    Error(Nil) -> []
+  }
 }
 
 pub fn client_commands(
   composition: Composition,
-) -> List(#(String, client_api.Command, command.Command)) {
+) -> List(#(String, client_api.Command, command.Command(command.Context))) {
   let commands = command_entries(composition)
   composition.extensions
   |> list.flat_map(fn(item) {
@@ -398,9 +541,12 @@ pub fn client_commands(
 }
 
 pub fn routes(composition: Composition) -> List(extension.Route) {
-  let items = contributions(composition)
   let routes =
-    extension.contribution_routes(list.map(items, fn(item) { item.value }))
+    extension.contribution_routes(
+      list.flat_map(scoped(composition), fn(value) { value.routes }),
+      commands(composition),
+    )
+  let items = contributions(composition)
   case prompt_docs.available(items) {
     True -> list.append(routes, [prompt_docs.route(items)])
     False -> routes
@@ -417,27 +563,44 @@ pub fn prepare(
   session: String,
   workspace: String,
 ) -> List(Result(extension.Prepared, extension.Prepared)) {
-  extension.plugin_values(installed, fn(name, plugin) {
-    case plugin {
-      extension.ManagedPlugin(run) ->
-        Ok(
-          #(name, fn() {
-            run(ledger, session, workspace) |> result.map(option.Some)
-          }),
-        )
-      extension.OwnedManagedPlugin(run) ->
-        Ok(
-          #(name, fn() {
-            use owned <- result.map(run(owner, ledger, session, workspace))
-            option.map(owned, extension.owned_value)
-          }),
-        )
-      _ -> Error(Nil)
-    }
+  list.flat_map(installed, fn(candidate) {
+    let name = candidate.name
+    let scope = extension.session_storage_of(candidate, ledger, session)
+    list.filter_map(candidate.plugins, fn(plugin) {
+      case plugin {
+        extension.ManagedPlugin(run) ->
+          Ok(
+            #(name, fn() {
+              run(scope, session, workspace) |> result.map(option.Some)
+            }),
+          )
+        extension.OwnedManagedPlugin(run) ->
+          Ok(
+            #(name, fn() {
+              use owned <- result.map(
+                run(extension.gate_preparation(
+                  extension.Preparation(
+                    owner,
+                    mail.letters(),
+                    session,
+                    workspace,
+                    fn() { acp_overlay.resolve(ledger, session) },
+                    webhook_intake.port,
+                    scope,
+                  ),
+                  candidate,
+                )),
+              )
+              option.map(owned, extension.owned_value)
+            }),
+          )
+        _ -> Error(Nil)
+      }
+    })
   })
   |> list.flat_map(fn(item) {
     let #(name, run) = item
-    case protect.guarded(run) {
+    case albedo_protect.guarded(run) {
       Ok(option.Some(value)) -> [Ok(extension.Prepared(name, value))]
       Ok(option.None) -> []
       Error(error) -> [Error(broken(name, "it failed to prepare: " <> error))]
@@ -451,7 +614,7 @@ fn close_prepared(prepared: List(extension.Prepared)) -> Nil {
   prepared
   |> list.reverse
   |> list.each(fn(item) {
-    case protect.attempt(item.value.close) {
+    case albedo_protect.attempt(item.value.close) {
       Ok(_) -> Nil
       Error(crash) -> report(item.extension, "close", crash)
     }

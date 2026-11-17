@@ -152,7 +152,7 @@ func (m *ChatModel) observeActivity(evt daemon.StreamEvent) {
 		m.activityEnded = true
 		if n := len(m.progressOrder); n > 0 {
 			state := "unknown"
-			if evt.Type == daemon.EventInterrupted || evt.Source == "interrupted" {
+			if evt.Type == daemon.EventInterrupted || evt.Outcome == daemon.OutcomeInterrupted {
 				state = "interrupted"
 			}
 			m.activityRemainder = PageRow{Text: fmt.Sprintf("%s · %d unfinished calls", state, n), Tone: ToneWarning}

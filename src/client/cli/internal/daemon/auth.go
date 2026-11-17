@@ -17,6 +17,14 @@ type SignIn struct {
 	Provider, Label, Detail, Protocol, Kind string
 	Flows                                   []string
 	Fields                                  []FormField
+	Terms                                   *Terms
+}
+
+// Terms is a provider's warning that its sign-in breaks its terms outside its
+// own apps. ID is the notice id its dismissal is saved under.
+type Terms struct {
+	ID, About, Headline string
+	Paragraphs          []string
 }
 type Account struct {
 	Provider, ID, Label, Detail, Kind, Source, LimitedUntil string
@@ -98,7 +106,11 @@ func SignInList(ctx context.Context, conn *Connection) (SignIns, error) {
 		}
 		result = SignIns{Logins: []SignIn{}, Accounts: []Account{}}
 		for _, p := range w.Providers {
-			result.Logins = append(result.Logins, SignIn{Provider: p.ID, Label: p.Label, Detail: p.Detail, Kind: p.Kind, Flows: p.Flows, Fields: p.Fields})
+			login := SignIn{Provider: p.ID, Label: p.Label, Detail: p.Detail, Kind: p.Kind, Flows: p.Flows, Fields: p.Fields}
+			if t := p.Terms; t != nil {
+				login.Terms = &Terms{ID: t.ID, About: t.About, Headline: t.Headline, Paragraphs: t.Paragraphs}
+			}
+			result.Logins = append(result.Logins, login)
 		}
 		for _, a := range w.Accounts {
 			result.Accounts = append(result.Accounts, accountValue(a))

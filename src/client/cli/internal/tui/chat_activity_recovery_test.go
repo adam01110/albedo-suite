@@ -39,8 +39,8 @@ func TestActivityStreamShutdownAndResume(t *testing.T) {
 
 func TestActivityHistoricalTerminalDoesNotPoisonLiveTurn(t *testing.T) {
 	for _, old := range []daemon.StreamEvent{
-		{Type: daemon.EventTurnCompleted, Source: "failed"},
-		{Type: daemon.EventTurnCompleted, Source: "interrupted"},
+		{Type: daemon.EventTurnCompleted, Outcome: daemon.OutcomeFailed},
+		{Type: daemon.EventTurnCompleted, Outcome: daemon.OutcomeInterrupted},
 		{Type: daemon.EventError},
 		{Type: daemon.EventInterrupted},
 	} {

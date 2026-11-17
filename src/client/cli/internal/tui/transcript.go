@@ -106,7 +106,7 @@ func (r TranscriptRenderer) nameplate(entry HistoryEntry, flags DisplayFlags, be
 		return ""
 	}
 	style := DefaultStyles.Agent
-	if entry.Kind == EntryUser && (entry.Source == "" || entry.Source == "chat") {
+	if entry.Kind == EntryUser && entry.Source.FromPerson() {
 		style = DefaultStyles.You
 	}
 	var meta []string
@@ -124,6 +124,9 @@ func (r TranscriptRenderer) nameplate(entry HistoryEntry, flags DisplayFlags, be
 	}
 	if entry.Pending == unresolved {
 		meta = append(meta, "unresolved")
+	}
+	if entry.Pending == editing {
+		meta = append(meta, "editing")
 	}
 	plate := markChrome + style.Render(strings.ToLower(who))
 	if len(meta) > 0 {
@@ -516,7 +519,7 @@ func (r TranscriptRenderer) RenderToolTrace(trace *daemon.ToolTrace, flags Displ
 		}
 		rows = append(rows, DefaultStyles.Faint.Render(r.traceLine(act.Kind, act.Target, isPath(act), width)))
 		if act.Kind == "display" && act.Detail != "" {
-			rows = append(rows, r.renderDisplayRows(act.Target, act.Detail, width)...)
+			rows = append(rows, r.renderDisplayRows(act.Target, act.Title, act.Description, act.Detail, width)...)
 		}
 	}
 	for _, change := range trace.Changes {
@@ -544,23 +547,10 @@ func (r TranscriptRenderer) RenderToolTrace(trace *daemon.ToolTrace, flags Displ
 	return strings.Join(rows, "\n")
 }
 
+// toolFailed reports the daemon's outcome for the call.
 func toolFailed(entry HistoryEntry) bool {
-	if entry.ToolName == "python" {
-		var result struct {
-			Status string `json:"status"`
-			Error  string `json:"error"`
-		}
-		if json.Unmarshal([]byte(entry.ToolResult), &result) == nil {
-			if result.Status != "" {
-				return result.Status != "ok"
-			}
-			return result.Error != ""
-		}
-	}
-	return toolErrorLine.MatchString(entry.ToolResult)
+	return entry.ToolStatus == "failed"
 }
-
-var toolErrorLine = regexp.MustCompile(`(?im)^(?:error:|cancelled:|traceback \(most recent call last\):)`)
 
 func (r TranscriptRenderer) faintMarkdownRows(text string, width int) []string {
 	return r.faintRows(RenderMarkdownAnsi(text, width), width)
@@ -600,7 +590,7 @@ func (r TranscriptRenderer) RenderAfter(before prior, entry HistoryEntry, flags 
 			render = renderGrowing
 		}
 		body := render(entry.Text, width)
-		if entry.Kind == EntryUser && (entry.Source == "" || entry.Source == "chat") {
+		if entry.Kind == EntryUser && entry.Source.FromPerson() {
 			body = r.foldTall(entry, body)
 		}
 		rows = append(rows, body)

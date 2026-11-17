@@ -94,6 +94,17 @@ func SplitLocation(workspace string) (host, path string) {
 	return workspace[:i], workspace[i+1:]
 }
 
+// LastUsage is what the provider reported for the session's latest call. It
+// is nil for a session read from a list row, which carries no usage, and for
+// one that has made no call.
+func (s Session) LastUsage() *Usage {
+	usage := usageValue(s.wire.Usage)
+	if usage.PromptTokens == nil && usage.CompletionTokens == nil {
+		return nil
+	}
+	return usage
+}
+
 func sessionValue(wire protocol.Session) Session {
 	location := &Location{Host: wire.Location.Host, User: wire.Location.User, Path: wire.Location.Path, Label: wire.Location.Label}
 	session := Session{ID: wire.ID, Title: wire.Name, Cursor: wire.Cursor, LastAssistantAt: timestampSeconds(value(wire.ActivityAt)), CreatedAt: timestampMilliseconds(value(wire.CreatedAt)), ActivityAt: timestampMilliseconds(value(wire.ActivityAt)), TranscriptCount: int(wire.Preview.TranscriptCount), Workspace: wire.Workspace, Location: location, Model: value(wire.Model), CyberAccess: value(wire.CyberAccess), Effort: value(wire.Effort), Fast: wire.Fast, ContextWindow: wire.ConfigurationResource.Value.ContextWindow, Provider: value(wire.ProviderProfile), ETag: wire.ConfigurationResource.ETag, FamilyRevision: wire.FamilyRevision, ParentID: wire.ParentID, RootID: wire.RootID, Depth: int(wire.Depth), Closed: wire.Closed, Pinned: wire.Preferences.Pinned, Archived: wire.Preferences.Archived, Opens: int(wire.Preferences.Opens), Status: capturedStatus(wire), wire: wire}

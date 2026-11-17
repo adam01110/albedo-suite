@@ -1,5 +1,5 @@
-import albedo/harness/extension
-import albedo/harness/settings
+import albedo/harness/sdk/extension
+import albedo/harness/sdk/settings
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
@@ -9,7 +9,7 @@ pub const endpoint = "https://cloud.zed.dev"
 pub fn catalog() -> extension.ModelCatalog {
   extension.ModelCatalog(
     lookup,
-    fn(provider, at) { extension.Local(list_models(provider, at)) },
+    fn(provider, at, _) { extension.Local(list_models(provider, at)) },
     Some(fn() { reload(settings.home()) }),
   )
 }

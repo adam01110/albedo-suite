@@ -1,9 +1,9 @@
 //// Configure explicit formatting of edited workspace files.
 
-import albedo/harness/extension
-import albedo/harness/rpc
-import albedo/harness/settings
-import albedo/openai_api/types
+import albedo/harness/sdk/extension
+import albedo/harness/sdk/rpc
+import albedo/harness/sdk/settings
+import albedo_model as types
 import gleam/dynamic/decode
 import gleam/json
 import gleam/result
@@ -12,7 +12,7 @@ pub fn extension() -> extension.Extension {
   extension.Extension(
     "formatter",
     "Format explicitly edited files through files.check().",
-    ["files", "python"],
+    ["files"],
     [
       extension.ManagedPlugin(fn(_, _, _) {
         let assert Ok(empty_config) = json.parse("{}", decode.dynamic)
@@ -50,5 +50,7 @@ pub fn extension() -> extension.Extension {
       }),
     ],
     fn(_) { Ok(Nil) },
+    tables: [],
+    uses: [],
   )
 }

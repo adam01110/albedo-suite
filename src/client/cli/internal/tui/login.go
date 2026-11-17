@@ -86,6 +86,9 @@ type LoginModel struct {
 	ProtocolPicker               loginPick
 	ModelPicker                  loginPick
 	confirm
+	// terms warns before a sign-in in termsLogin starts.
+	terms      *termsBox
+	termsLogin daemon.SignIn
 	Generation int
 	Width      int
 	Height     int
@@ -310,6 +313,8 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 	case tea.KeyPressMsg:
 		key := msg.String()
 		switch {
+		case m.terms != nil:
+			return m, m.termsKey(msg)
 		case m.Step == StepRotationPrompt:
 			if key == "esc" || key == "ctrl+c" {
 				return m, m.rotationAnswer(false)
@@ -323,7 +328,7 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 			return m, m.confirmKey(msg)
 		case m.Step == StepChoose && key == "ctrl+t":
 			return m, m.toggleProvider()
-		case m.Step == StepChoose && key == "ctrl+d":
+		case m.Step == StepChoose && (key == "ctrl+d" || key == "ctrl+x"):
 			if item, ok := m.ChoosePicker.Highlighted(); ok {
 				if account, accountOK := m.accountAt(item.ID); accountOK {
 					if account.Source == "env" {

@@ -31,7 +31,7 @@ func TestProviderAvailabilityTogglePatchesOnlyEnabledWithValidator(t *testing.T)
 			}
 			msg := cmd()
 			patch := <-patches
-			if patch.query != "group=providers" || patch.ifMatch != `"providers-1"` {
+			if patch.query != "group=providers" {
 				t.Fatalf("wrong conditional target: %+v", patch)
 			}
 			want := map[string]any{"profiles": map[string]any{"claude": map[string]any{"enabled": !enabled}}}

@@ -1,5 +1,10 @@
-//// Incremental framing. Only newly received bytes are searched for line endings.
+//// An incremental Server-Sent Events parser. `feed` takes the bytes of a
+//// response body as they arrive, split anywhere, and returns the events they
+//// complete; `finish` flushes the last one when the body ends. Only newly
+//// received bytes are searched for line endings, and an event larger than
+//// the parser's limit is refused rather than buffered.
 
+import albedo_bytes as byte_ops
 import gleam/bit_array
 import gleam/int
 import gleam/list
@@ -35,17 +40,6 @@ pub type Error {
   InvalidUtf8
   Malformed(String)
 }
-
-@external(erlang, "albedo_sse_bytes", "newline")
-fn newline(bytes: BitArray) -> Int
-
-@external(erlang, "albedo_sse_bytes", "compact")
-fn compact(bytes: BitArray) -> BitArray
-
-/// A completed line as a string; the UTF-8 check runs natively rather than
-/// one codepoint per call, as `bit_array.to_string` does.
-@external(erlang, "albedo_sse_bytes", "utf8")
-fn utf8(bytes: BitArray) -> Result(String, Nil)
 
 fn field(line: String) -> #(String, String) {
   // Only these fields are consumed. Byte prefixes also match a colon followed
@@ -118,7 +112,7 @@ pub fn feed(
       }
       case bytes {
         <<>> | <<0xEF>> | <<0xEF, 0xBB>> ->
-          Ok(#(Parser(..parser, bom_prefix: compact(bytes)), []))
+          Ok(#(Parser(..parser, bom_prefix: byte_ops.compact(bytes)), []))
         <<0xEF, 0xBB, 0xBF, rest:bytes>> ->
           resume(
             Parser(..parser, bom_prefix: <<>>, bom_handled: True),
@@ -160,7 +154,7 @@ fn scan(
   chunk: BitArray,
   events: List(Event),
 ) -> Result(#(Parser, List(Event)), Error) {
-  let offset = newline(chunk)
+  let offset = byte_ops.newline(chunk)
   let length = case offset {
     -1 -> bit_array.byte_size(chunk)
     _ -> offset
@@ -171,7 +165,7 @@ fn scan(
       let assert <<prefix:bytes-size(length), rest:bytes>> = chunk
       let fragments = case prefix {
         <<>> -> parser.fragments
-        _ -> [compact(prefix), ..parser.fragments]
+        _ -> [byte_ops.compact(prefix), ..parser.fragments]
       }
       let parser =
         Parser(
@@ -206,7 +200,9 @@ fn complete_line(
     [fragment] -> fragment
     fragments -> fragments |> list.reverse |> bit_array.concat
   }
-  use line <- result.try(utf8(bytes) |> result.replace_error(InvalidUtf8))
+  use line <- result.try(
+    byte_ops.utf8(bytes) |> result.replace_error(InvalidUtf8),
+  )
   // Comments are free; every other line counts toward the event budget.
   let bytes = parser.event_bytes + parser.line_bytes
   let parser = Parser(..parser, fragments: [], line_bytes: 0, pending_cr: False)

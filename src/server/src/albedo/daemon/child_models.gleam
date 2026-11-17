@@ -6,13 +6,14 @@
 //// answers every request in the daemon, and an endpoint that never answers
 //// once held it for seconds per spawn, failing every request meanwhile.
 
-import albedo/clock
-import albedo/daemon/configuration
 import albedo/daemon/conversation
+import albedo/daemon/refusal.{type Refusal}
 import albedo/daemon/session_provider
-import albedo/harness/model_lists
 import albedo/harness/runtime
-import albedo/text_scalars
+import albedo/harness/sdk/model_lists
+import albedo/harness/sdk/profiles as configuration
+import albedo_bytes/scalars
+import albedo_clock
 import gleam/dict
 import gleam/erlang/process
 import gleam/int
@@ -23,7 +24,7 @@ import gleam/string
 
 /// A profile and the model to run on it, or why there is none.
 pub type Choice =
-  Result(#(configuration.Provider, String), String)
+  Result(#(configuration.Provider, String), Refusal)
 
 /// One lookup's view: every profile's endpoint, read once, and the time by
 /// which every list it asks for must have answered.
@@ -41,7 +42,7 @@ fn lookup(host: runtime.Runtime, home: String) -> Lookup {
   Lookup(
     host,
     session_provider.profile_endpoints(home),
-    clock.monotonic_ms() + model_lists.first_wait_ms(),
+    albedo_clock.monotonic_ms() + model_lists.first_wait_ms(),
   )
 }
 
@@ -64,13 +65,16 @@ fn resolve_with(
   parent: conversation.Info,
   requested: String,
 ) -> Choice {
-  use saved <- result.try(configuration.profiles(home))
+  use saved <- result.try(
+    configuration.profiles(home)
+    |> result.map_error(refusal.ProviderUnconfigured),
+  )
   use _ <- result.try(
     list.try_each(saved, fn(profile) {
       case profile {
         Error(#(name, reason)) ->
           case string.starts_with(requested, name <> "/") {
-            True -> Error(reason)
+            True -> Error(refusal.ProviderUnconfigured(reason))
             False -> Ok(Nil)
           }
         Ok(_) -> Ok(Nil)
@@ -82,11 +86,7 @@ fn resolve_with(
     list.find_map(profiles, fn(profile) {
       let prefix = profile.name <> "/"
       case string.starts_with(requested, prefix) {
-        True ->
-          Ok(#(
-            profile,
-            text_scalars.drop(requested, text_scalars.length(prefix)),
-          ))
+        True -> Ok(#(profile, scalars.drop(requested, scalars.length(prefix))))
         False -> Error(Nil)
       }
     })
@@ -98,10 +98,12 @@ fn resolve_with(
         || offers(lookup, profile, model)
       {
         True -> Ok(#(profile, model))
-        False -> Error("model is not available from provider " <> profile.name)
+        False -> Error(refusal.ModelUnavailable(profile.name))
       }
     Error(_) -> {
-      use current <- result.try(current(home, parent))
+      use current <- result.try(
+        current(home, parent) |> result.map_error(refusal.ProviderUnconfigured),
+      )
       let model = case requested {
         "" -> parent.model
         _ -> requested
@@ -111,10 +113,7 @@ fn resolve_with(
       case moved(lookup, current, others, model) {
         Ok([profile]) -> Ok(#(profile, model))
         Error(Nil) | Ok([]) -> Ok(#(current, model))
-        Ok(_) ->
-          Error(
-            "model is available from multiple providers; use provider/model",
-          )
+        Ok(_) -> Error(refusal.ModelAmbiguous)
       }
     }
   }
@@ -125,7 +124,7 @@ fn resolve_with(
 fn current(
   home: String,
   parent: conversation.Info,
-) -> Result(configuration.Provider, String) {
+) -> Result(configuration.Provider, configuration.Failure) {
   case parent.provider {
     "" -> configuration.legacy(home)
     name -> configuration.named(home, name)
@@ -155,7 +154,8 @@ pub fn resolve_switch(
   ))
   case offers(lookup, provider, model) {
     True -> Ok(#(provider, model))
-    False -> Error("model is not available from any provider")
+    False ->
+      Error(refusal.Unavailable("model is not available from any provider"))
   }
 }
 
@@ -306,7 +306,7 @@ fn concurrently(
   let received =
     process.receive(
       reply,
-      int.max(0, lookup.deadline - clock.monotonic_ms()) + 1000,
+      int.max(0, lookup.deadline - albedo_clock.monotonic_ms()) + 1000,
     )
     |> result.unwrap(dict.new())
   list.index_map(items, fn(_, index) {
@@ -325,7 +325,10 @@ fn collect(
     True -> received
     False ->
       case
-        process.receive(answers, int.max(0, deadline - clock.monotonic_ms()))
+        process.receive(
+          answers,
+          int.max(0, deadline - albedo_clock.monotonic_ms()),
+        )
       {
         Ok(#(index, value)) ->
           collect(

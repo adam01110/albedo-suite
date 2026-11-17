@@ -2,11 +2,11 @@ import albedo/harness/extensions/codex/wire as codex_wire
 import albedo/harness/extensions/zed/stream as zed_stream
 import albedo/harness/extensions/zed/wire
 import albedo/openai_api
-import albedo/openai_api/replay
 import albedo/openai_api/request as encoder
-import albedo/openai_api/sse
 import albedo/openai_api/stream as albedo_stream
-import albedo/openai_api/types
+import albedo_model as types
+import albedo_model/replay
+import albedo_sse as sse
 import gleam/bit_array
 import gleam/dynamic/decode
 import gleam/int
@@ -41,7 +41,7 @@ fn encoded(model: String, choice: types.ToolChoice) -> String {
       ],
       options: types.Options(
         ..request.options,
-        effort: Some("high"),
+        effort: Some(types.High),
         tool_choice: Some(choice),
       ),
     )
@@ -131,7 +131,7 @@ fn sample(model: String, choice: types.ToolChoice) -> types.Request {
       ..types.defaults,
       temperature: Some(0.2),
       tool_choice: Some(choice),
-      effort: Some("high"),
+      effort: Some(types.High),
       format: Some(types.JsonObject),
     ),
   )
@@ -437,7 +437,7 @@ fn codex_policy() {
       types.Options(
         ..types.defaults,
         temperature: Some(0.2),
-        effort: Some("high"),
+        effort: Some(types.High),
         format: Some(types.JsonObject),
       ),
     )
@@ -842,7 +842,7 @@ fn reduction() {
   usage.output_tokens |> should.equal(7)
   usage.cached_input_tokens |> should.equal(Some(3))
   reducer.feed("{\"status\":{\"failed\":{\"message\":\"quota exhausted\"}}}")
-  |> should.equal(Error(types.ProviderError("quota exhausted")))
+  |> should.equal(Error(types.Refused(types.Failed, None, "quota exhausted")))
   reducer.feed("not JSON") |> should.be_error
 }
 
@@ -1128,7 +1128,7 @@ fn request_body(
 }
 
 fn reasoning_options() -> types.Options {
-  types.Options(..types.defaults, effort: Some("high"))
+  types.Options(..types.defaults, effort: Some(types.High))
 }
 
 /// A thinking-enabled Claude turn continues with the signed blocks the
@@ -1148,7 +1148,7 @@ fn anthropic_thinking_replay() {
       #("type", json.string("tool_use")),
       #("id", json.string("call-1")),
       #("name", json.string("python")),
-      #("input", json.object([])),
+      #("input", json.object([#("code", json.string("x"))])),
     ]),
   ]
   let body =
@@ -1279,8 +1279,8 @@ fn gemini_tool_media() {
   |> should.equal("image/png")
 }
 
-/// A hosted Gemini or effort the local table does not know forwards the
-/// catalog's level instead of failing the request.
+/// A hosted Gemini the local table does not know is still sent, without a
+/// thinking control, rather than failing the request.
 fn gemini_unknown_effort() {
   let body =
     request_body(
@@ -1289,12 +1289,8 @@ fn gemini_unknown_effort() {
       [types.User("hi")],
       reasoning_options(),
     )
-  sent_text(body, [
-    Key("generationConfig"),
-    Key("thinkingConfig"),
-    Key("thinkingLevel"),
-  ])
-  |> should.equal("HIGH")
+  has(body, [Key("generationConfig"), Key("thinkingConfig")])
+  |> should.be_false
 }
 
 /// Encrypted reasoning is requested only when it will be replayed, a summary
@@ -1315,7 +1311,7 @@ fn responses_reasoning() {
       "open_ai",
       "gpt-5.4",
       [types.User("hi")],
-      types.Options(..types.defaults, effort: Some("none")),
+      types.Options(..types.defaults, effort: Some(types.NoReasoning)),
     )
   has(none, [Key("reasoning")]) |> should.be_false
   let item =

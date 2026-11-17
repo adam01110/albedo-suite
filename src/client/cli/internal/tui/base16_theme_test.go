@@ -68,7 +68,7 @@ func TestBase16DetectBypassesTerminal(t *testing.T) {
 		want  string
 	}{
 		{DefaultStyles.You, p[12]}, {DefaultStyles.Error, p[8]}, {DefaultStyles.Warning, p[10]},
-		{DefaultStyles.Success, p[11]}, {DefaultStyles.EffortHigh, p[9]}, {DefaultStyles.Agent, p[14]},
+		{DefaultStyles.Success, p[11]}, {DefaultStyles.Agent, p[14]},
 	} {
 		if pair.style.GetForeground() != lipgloss.Color(pair.want) {
 			t.Errorf("style != %s", pair.want)

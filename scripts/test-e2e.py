@@ -71,7 +71,7 @@ UPSTREAM_CASES = (
 def synchronize_kernel_upgrade_fixture(
     path,
     *,
-    expected_sha256="bf1e90c3f6a93c4b61b14fa767042a3e226499548c4ed85b136301dceb297c0c",
+    expected_sha256="68300636e5cada63b95cb1f5b9154c2dbf23761772562ce245b0a19127fe618d",
 ):
     """Listener readiness precedes asynchronous kernel reattachment after restart."""
     original = "    def test_kernel_upgrade_forces_the_swap_past_a_live_job(self):\n        self.cell(\"import os\\nsurvivor = 41\\nj = run('sleep', '60')\\nos.getpid()\")\n        self.edit_bundle()\n        self.app.restart()\n"

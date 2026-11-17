@@ -28,18 +28,19 @@ import time
 import secrets
 from pathlib import Path
 from collections.abc import Callable
-from typing import Any, TypedDict, cast
+from typing import Any, NotRequired, TypedDict, cast
 
 from albedo_protocol import RemoteCall, RemoteMessage, parse_remote
 
 from albedo_api import OutputCapture, PythonApi, ReadyList, Text, check_timeout, excerpt
 import albedo_bundle
+import albedo_notices
 from albedo_values import InvalidValue, decode
 import albedo_shell
 import albedo_rtk
 import albedo_ssh
 from albedo_plugins import hook
-from albedo_plugins.run import NOTICE_RETRY, notice
+from albedo_plugins.run import NOTICE_RETRY, notice, notices
 
 CONNECT_TIMEOUT = 60  # seconds before an unreachable target gives up
 HANDSHAKE_TIMEOUT = 60  # seconds for the remote kernel to say ready
@@ -67,6 +68,7 @@ class LiveJob(TypedDict):
     command: str
     service: bool  # nothing waits on its end
     started: int  # wall-clock milliseconds
+    cell: NotRequired[str | None]
 
 
 MAX_LISTED_JOBS = 100  # as many rows as the supervisor lists for local jobs
@@ -76,12 +78,13 @@ _fallback_live: dict[str, LiveJob] = {}  # degraded-mode jobs still running over
 _fallback_jobs: dict[str, FallbackJob] = {}
 
 
-def _live_job(id: str, command: str, service: bool) -> LiveJob:
+def _live_job(id: str, command: str, service: bool, cell: str | None = None) -> LiveJob:
     return {
         "id": id,
         "command": command[:COMMAND_SCALARS],
         "service": service,
         "started": time.time_ns() // 1_000_000,
+        **({"cell": cell} if cell is not None else {}),
     }
 
 
@@ -95,10 +98,18 @@ def _report_live() -> None:
     and the cache warmer keeps an idle session warm while one it awaits does.
     """
     try:
-        live = [
-            *_fallback_live.values(),
-            *(job for c in connections if not c.closed for job in c._live.values()),
-        ]
+        live = [*_fallback_live.values()]
+        for c in connections:
+            if c.closed:
+                continue
+            job_cells = {
+                str(c._mirrors[h]["job"]): ref._cell
+                for h, ref in c._refs.items()
+                if h in c._mirrors and ref._cell is not None and "job" in c._mirrors[h]
+            }
+            for job in c._live.values():
+                cell = job_cells.get(job["id"])
+                live.append({**job, "cell": cell} if cell is not None else job)
         send_frame(
             {
                 "type": "jobs",
@@ -702,6 +713,8 @@ class RemoteConnection:
                 if placeholder is not None:
                     placeholder._handle = handle
                     self._refs[handle] = placeholder
+                if isinstance(state, dict) and "job" in state:
+                    _report_live()
             future = self._pending.get(frame["id"])
             if future is not None and not future.done():
                 future.set_result(dict(frame))
@@ -712,6 +725,8 @@ class RemoteConnection:
             _ = loop.create_task(self._relay(frame))
         elif frame["type"] == "mirror":
             self._mirrors[frame["handle"]] = dict(frame)
+            if "job" in frame:
+                _report_live()
         elif frame["type"] == "job_start":
             self._live[frame["id"]] = _live_job(
                 frame["id"],
@@ -757,7 +772,7 @@ class RemoteConnection:
         ]
         if not facts:
             return None
-        return await host_call("jobs.completed", notice(facts))
+        return await host_call("jobs.completed", {"key": args["key"], **notice(facts)})
 
     def _claimed_here(self, job: object) -> bool:
         return any(
@@ -822,15 +837,17 @@ class RemoteConnection:
             }
             for job in jobs
         ]
+        # Nothing withdraws it; one key keeps a retry from posting it twice.
+        posted = albedo_notices.key()
         while True:
             try:
-                await self._wake({"jobs": facts})
+                await self._wake({"key": posted, "jobs": facts})
                 return
             except Exception as error:
-                # A busy session refuses rather than queueing, as it does for a
-                # local job's wake, so this retries until the run ends.
-                if getattr(error, "code", "") not in ("busy", "unknown"):
-                    return  # the daemon is gone, or the session is shutting down
+                # The host route may not be up yet; anything else means the
+                # daemon is gone, or the session is shutting down.
+                if getattr(error, "code", "") != "unknown":
+                    return
                 await asyncio.sleep(NOTICE_RETRY)
 
     # --- calls ---
@@ -998,6 +1015,7 @@ class RemoteConnection:
             return {
                 "ok": reply.get("ok") is True,
                 **({"error": reply["error"]} if "error" in reply else {}),
+                **({"code": reply["code"]} if "code" in reply else {}),
             }
         except asyncio.TimeoutError:
             return {
@@ -1341,7 +1359,7 @@ class FallbackJob(JobOutput):
         self._read = False
         self._announcer: asyncio.Task[None] | None = None
         self._connection = connection
-        _fallback_live[self.id] = _live_job(self.id, self.command, False)
+        _fallback_live[self.id] = _live_job(self.id, self.command, False, self.cell)
         _fallback_jobs[self.id] = self
         _report_live()
         # the remote login shell reads this line; everything in it is quoted
@@ -1422,20 +1440,26 @@ class FallbackJob(JobOutput):
             self._announcer = loop.create_task(self._announce())
 
     async def _announce(self) -> None:
-        """Wake the session for this command, retrying while it runs."""
-        while self._unreported:
+        """Post this command's notice to the session's inbox, withdrawn
+        (`notices`) once its result is read."""
+        call = host_call
+        while self._unreported and call is not None:
+            posted = albedo_notices.key()
             try:
-                await host_call("jobs.completed", self._notice())
-                return
+                await call("jobs.completed", {"key": posted, **self._notice()})
             except HostErrorType as error:
-                if getattr(error, "code", "") not in ("busy", "unknown"):
-                    self.capture.write(
-                        f"\n[completion notice not delivered: {error}]\n"
-                    )
-                    return
+                if getattr(error, "code", "") == "unknown":
+                    await asyncio.sleep(NOTICE_RETRY)
+                    continue
+                self.capture.write(f"\n[completion notice not delivered: {error}]\n")
+                return
             except Exception:
                 return  # the kernel is going away; the result stays on the handle
-            await asyncio.sleep(NOTICE_RETRY)
+            notices.watch(call, posted, lambda: not self._unreported)
+            return
+
+    def _satisfied(self) -> None:
+        notices.poke()
 
     def _notice(self) -> dict[str, object]:
         """The wake turn's display text, model text, and the facts behind both."""
@@ -1457,7 +1481,7 @@ class FallbackJob(JobOutput):
             f"<system-note>a background command finished on {self._connection.host}"
             f" (ssh command mode, {outcome}, {seconds}): {command}."
             f" read its output with .tail() or output.read({self.id!r});"
-            " if nothing else is needed, reply briefly and stay idle.</system-note>"
+            f" {albedo_notices.IDLE}</system-note>"
         )
         return {
             "display": display,
@@ -1478,6 +1502,7 @@ class FallbackJob(JobOutput):
         try:
             await asyncio.shield(self._task)
             self._awaited = True
+            notices.poke()
         finally:
             self._waiters -= 1
             if self._task.done():

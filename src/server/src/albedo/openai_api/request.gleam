@@ -1,8 +1,8 @@
-import albedo/openai_api/types.{
+import albedo_model.{
   type Error, type Input, type Protocol, type Request, type Tool, Assistant,
   ChatCompletions, InvalidRequest, Replay, Responses, ToolOutput, User,
   UserImage,
-}
+} as types
 import gleam/dict.{type Dict}
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
@@ -101,7 +101,9 @@ pub fn fields(
         },
         json.array(_, json.string),
       )
-      |> optional("reasoning_effort", options.effort, json.string)
+      |> optional("reasoning_effort", options.effort, fn(effort) {
+        json.string(types.effort_name(effort))
+      })
       |> optional("response_format", options.format, response_format(
         protocol,
         _,
@@ -141,12 +143,14 @@ fn validate_tools(tools: List(Tool)) -> Result(Nil, Error) {
 
 /// Zed sends no reasoning object for an effort of `none`, and asks for a
 /// streamed summary whenever it does reason.
-fn reasoning_config(effort: Option(String)) -> Option(List(#(String, Json))) {
+fn reasoning_config(
+  effort: Option(types.Effort),
+) -> Option(List(#(String, Json))) {
   case effort {
-    Some("none") | None -> None
+    Some(types.NoReasoning) | None -> None
     Some(effort) ->
       Some([
-        #("effort", json.string(effort)),
+        #("effort", json.string(types.effort_name(effort))),
         #("summary", json.string("auto")),
       ])
   }
@@ -156,7 +160,7 @@ fn reasoning_config(effort: Option(String)) -> Option(List(#(String, Json))) {
 /// replays a reasoning item the provider issued.
 fn includes_reasoning(protocol: Protocol, request: Request) -> Bool {
   case request.options.effort {
-    Some("none") | None -> replays_reasoning(protocol, request.input)
+    Some(types.NoReasoning) | None -> replays_reasoning(protocol, request.input)
     Some(_) -> True
   }
 }
@@ -609,5 +613,7 @@ fn optional(
 @external(erlang, "albedo_openai_json", "flatten")
 fn flatten(json: Json) -> Json
 
-@external(erlang, "albedo_openai_json", "data_url")
-fn data_url(mime_type: String, data: types.ImageData) -> Json
+/// A `data:` URL JSON string for an image payload; see `types.data_url`.
+pub fn data_url(mime_type: String, data: types.ImageData) -> Json {
+  types.data_url(mime_type, data)
+}

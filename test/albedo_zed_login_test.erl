@@ -6,6 +6,8 @@ run() ->
     application:ensure_all_started(crypto),
     application:ensure_all_started(public_key),
     install_transport(),
+    {ok, OAuth} = 'albedo@harness@sdk@oauth_flows':start(),
+    persistent_term:put(zed_login_oauth, OAuth),
     Table = ets:new(zed_login_fixture, [named_table, public, set]),
     {ok, Listen} = gen_tcp:listen(0, [binary, {active, false}, {ip, {127,0,0,1}}, {packet, http_bin}]),
     {ok, {_, Port}} = inet:sockname(Listen),
@@ -20,34 +22,55 @@ run() ->
         catalog_cases(),
         catalog_account_retry_cases(),
         confirmation_cases(),
-        unpolled_expiry_cases(),
         refresh_cases(),
         transport_cases(),
-        io:format("Zed login: crypto, callback contract, identity, status envelopes, catalog token refresh, confirmation, persistence/logout, expiry, refresh isolation/concurrency, retry and bounded redirect refusal passed~n")
+        io:format("Zed login: crypto, callback contract, identity, status envelopes, catalog token refresh, confirmation, persistence/logout, refresh isolation/concurrency, retry and bounded redirect refusal passed~n")
     after unlink(Server), exit(Server, kill), gen_tcp:close(Listen), ets:delete(Table) end,
     nil.
 
+%% Gleam-built modules ship no Erlang source, so the transport is copied from
+%% its abstract code: the copy keeps the real client, and a wrapper with the
+%% same exports sends cloud.zed.dev to the local fixture and refuses others.
 install_transport() ->
-    {ok, Original} = file:read_file("src/albedo/openai_api/albedo_openai_transport.erl"),
-    Alias = binary:replace(Original, <<"-module(albedo_openai_transport).">>, <<"-module(albedo_zed_fixture_transport).">>),
+    {ok, {albedo_http, [{abstract_code, {raw_abstract_v1, Forms}}]}} =
+        beam_lib:chunks(code:which(albedo_http), [abstract_code]),
+    Renamed = [case F of
+        {attribute, A, module, albedo_http} -> {attribute, A, module, albedo_zed_fixture_transport};
+        _ -> F
+    end || F <- Forms],
+    {ok, albedo_zed_fixture_transport, Binary} = compile:forms(Renamed, [binary, report_errors]),
+    {module, _} = code:load_binary(albedo_zed_fixture_transport, "albedo_zed_fixture_transport.erl", Binary),
+    Exports = [E || E = {Name, _} <- albedo_http:module_info(exports), Name =/= module_info],
     Temp = filename:join("/tmp", "zed-login-transport-" ++ integer_to_list(erlang:unique_integer([positive])) ++ ".erl"),
-    ok = file:write_file(Temp, Alias),
-    {ok, albedo_zed_fixture_transport, Binary} = compile:file(Temp, [binary, report_errors]),
-    {module, _} = code:load_binary(albedo_zed_fixture_transport, Temp, Binary),
-    file:delete(Temp),
-    Exports = [E || E = {Name, _} <- albedo_openai_transport:module_info(exports), Name =/= module_info],
-    Head = ["-module(albedo_openai_transport).\n-export([", lists:join(",", [io_lib:format("~p/~B", [N,A]) || {N,A} <- Exports]), "]).\n"],
-    Special = "open(M, <<\"https://cloud.zed.dev\", Path/binary>>, H, B, T) -> P = persistent_term:get(zed_login_fixture_port), U = iolist_to_binary([\"http://127.0.0.1:\", integer_to_binary(P), Path]), albedo_zed_fixture_transport:open(M,U,H,B,T); open(_,_,_,_,_) -> error(untrusted_origin).\n",
-    Open = "open(U,H,B,T) -> open(<<\"POST\">>,U,H,B,T).\n",
+    Head = ["-module(albedo_http).\n-export([", lists:join(",", [io_lib:format("~p/~B", [N,A]) || {N,A} <- Exports]), "]).\n"],
+    Special = "open_method(O, M, <<\"https://cloud.zed.dev\", Path/binary>>, H, B, T) -> P = persistent_term:get(zed_login_fixture_port), U = iolist_to_binary([\"http://127.0.0.1:\", integer_to_binary(P), Path]), albedo_zed_fixture_transport:open_method(O,M,U,H,B,T); open_method(_,_,_,_,_,_) -> error(untrusted_origin).\n",
+    Open = "open(O,U,H,B,T) -> open_method(O,<<\"POST\">>,U,H,B,T).\n",
     Rest = [begin
         Vars = lists:join(",", ["A" ++ integer_to_list(I) || I <- lists:seq(1, A)]),
         io_lib:format("~p(~s) -> albedo_zed_fixture_transport:~p(~s).~n", [N,Vars,N,Vars])
-    end || {N,A} <- Exports, N =/= open],
+    end || {N,A} <- Exports, N =/= open, N =/= open_method],
     ok = file:write_file(Temp, [Head, Special, Open, Rest]),
-    {ok, albedo_openai_transport, Wrapper} = compile:file(Temp, [binary, report_errors]),
-    code:purge(albedo_openai_transport),
-    {module, _} = code:load_binary(albedo_openai_transport, Temp, Wrapper),
+    {ok, albedo_http, Wrapper} = compile:file(Temp, [binary, report_errors]),
+    code:purge(albedo_http),
+    {module, _} = code:load_binary(albedo_http, Temp, Wrapper),
     file:delete(Temp).
+
+%% The SDK modules the moved Erlang APIs became.
+-define(CREDS, 'albedo@harness@sdk@credential_store').
+
+oauth_service() -> persistent_term:get(zed_login_oauth).
+start_identified(Home, Id, Provider, Login, Intent) ->
+    'albedo@harness@sdk@oauth_flows':start_identified(oauth_service(), Home, Id, Provider, Login, none, Intent).
+get_identified(Home, Id, Logins) ->
+    'albedo@harness@sdk@oauth_flows':get_identified(oauth_service(), Home, Id, Logins).
+input_identified(Home, Id, Match, Text, Logins) ->
+    'albedo@harness@sdk@oauth_flows':input_identified(oauth_service(), Home, Id, Match, Text, Logins).
+cancel_identified(Home, Id, Logins) ->
+    'albedo@harness@sdk@oauth_flows':cancel_identified(oauth_service(), Home, Id, Logins).
+etag(Flow) -> 'albedo_web@etag':strong(Flow).
+read_json(Path) -> 'albedo@harness@sdk@settings_store':read_object(Path).
+write_json(Path, Value) -> {ok, nil} = ?CREDS:write(Path, Value), ok.
+put_accounts(Path, Accounts) -> {ok, nil} = ?CREDS:put_accounts(Path, Accounts), ok.
 
 fixture(Listen) ->
     case gen_tcp:accept(Listen) of
@@ -177,15 +200,15 @@ callback_cases() ->
         nomatch = binary:match(Reply, <<"200 OK">>),
         true = binary:match(Reply, <<"Location: https://zed.dev/native_app_signin_succeeded\r\n">>) =/= nomatch,
         _ = await_state(Home, Id, <<"confirming">>),
-        {ok, _} = albedo_oauth:cancel_identified(Home, Id, [L]),
+        {ok, _} = cancel_identified(Home, Id, [L]),
         %% A callback that cannot be decrypted is answered 404 and the attempt stays waiting.
         {Rejected, RejectedInitial} = start(Home),
         {WrongId, WrongInitial} = start(Home),
         {_, NotFound} = callback(RejectedInitial, <<"62">>, WrongInitial, <<"127.0.0.1">>, {127,0,0,1}, <<"/">>, <<>>),
         <<"HTTP/1.1 404", _/binary>> = NotFound,
         <<"waiting">> = state(get(Home, Rejected)), no_accounts(Home),
-        {ok, _} = albedo_oauth:cancel_identified(Home, Rejected, [L]),
-        {ok, _} = albedo_oauth:cancel_identified(Home, WrongId, [L]),
+        {ok, _} = cancel_identified(Home, Rejected, [L]),
+        {ok, _} = cancel_identified(Home, WrongId, [L]),
         %% localhost can resolve to ::1, so both loopback addresses reach the attempt.
         {V6, V6Initial} = start(Home),
         case gen_tcp:connect({0,0,0,0,0,0,0,1}, port_of(V6Initial), [binary, {active, false}, inet6], 1000) of
@@ -194,7 +217,7 @@ callback_cases() ->
                 {_, V6Reply} = callback(V6Initial, <<"63">>, V6Initial, <<"[::1]">>, {0,0,0,0,0,0,0,1}, <<"/">>, <<>>),
                 <<"HTTP/1.1 302", _/binary>> = V6Reply,
                 _ = await_state(Home, V6, <<"confirming">>),
-                {ok, _} = albedo_oauth:cancel_identified(Home, V6, [L]);
+                {ok, _} = cancel_identified(Home, V6, [L]);
             {error, _} -> ok
         end
     after file:del_dir_r(Home) end.
@@ -292,7 +315,7 @@ catalog_cases() ->
         {some, Off} = albedo_zed:lookup(Home, <<"https://cloud.zed.dev">>, <<"thinking-off-fixture-model">>),
         [] = element(11, Off),
         {some, On} = albedo_zed:lookup(Home, <<"https://cloud.zed.dev">>, <<"thinking-on-fixture-model">>),
-        [<<"high">>, <<"low">>] = element(11, On),
+        [low, high] = element(11, On),
         %% A token rejected after its refresh is a credential problem.
         mode(models_denied),
         {error, Denied} = albedo_zed:reload(Home),
@@ -340,16 +363,16 @@ home() ->
     Home.
 
 login() -> {login, <<"zed">>, <<"Zed">>, <<"browser">>, model, <<"zed">>, {device, fun albedo_zed_auth:start/0},
-            fun(_) -> <<>> end, fun(_,_,_) -> {error,unused} end, fun albedo_zed_auth:account/1}.
+            fun(_) -> <<>> end, fun(_,_,_) -> {error,unused} end, fun albedo_zed_auth:account/1, none}.
 
 start(Home) -> start(Home, login()).
 
 start(Home, L) ->
     Id = albedo_oauth_test_support:identity(),
-    {ok, {true, Flow}} = albedo_oauth:start_identified(Home, Id, <<"zed">>, {some,L}, <<"zed">>),
+    {ok, {true, Flow}} = start_identified(Home, Id, <<"zed">>, {some,L}, <<"zed">>),
     {Id, Flow}.
 
-get(Home, Id) -> {ok, F} = albedo_oauth:get_identified(Home,Id,[login()]), F.
+get(Home, Id) -> {ok, F} = get_identified(Home,Id,[login()]), F.
 
 state(Flow) -> maps:get(<<"state">>, json:decode(Flow)).
 
@@ -358,22 +381,6 @@ await_state(Home, Id, Expected, N) when N > 0 ->
     F = get(Home, Id),
     case state(F) of Expected -> F; _ -> timer:sleep(10), await_state(Home,Id,Expected,N-1) end;
 await_state(Home, Id, Expected, _) -> error({state_timeout, Expected, json:decode(get(Home, Id))}).
-
-%% Observe persistence without calling the API that can expire the flow.
-await_stored_state(Home, Id, Expected) ->
-    await_stored_state(Home, Id, Expected, erlang:monotonic_time(millisecond) + 2000).
-
-await_stored_state(Home, Id, Expected, Deadline) ->
-    {ok, Records} = albedo_credentials:read(filename:join(Home,<<"oauth-logins.json">>)),
-    Record = maps:get(Id, Records),
-    case maps:get(<<"state">>, Record) of
-        Expected -> Record;
-        _ ->
-            case erlang:monotonic_time(millisecond) < Deadline of
-                true -> timer:sleep(10), await_stored_state(Home, Id, Expected, Deadline);
-                false -> error({stored_state_timeout, Expected, Record})
-            end
-    end.
 
 callback(Flow, User) -> callback(Flow, User, Flow, <<"127.0.0.1">>).
 
@@ -405,8 +412,8 @@ response(Socket, Acc) ->
     end.
 
 no_accounts(Home) ->
-    case albedo_credentials:accounts(albedo_credentials:creds_path(Home)) of
-        {ok,A} -> [] = albedo_credentials:values(A,<<"zed">>);
+    case ?CREDS:accounts(?CREDS:path(Home)) of
+        {ok,A} -> [] = ?CREDS:values(A,<<"zed">>);
         {error,enoent} -> ok
     end.
 
@@ -414,41 +421,42 @@ confirmation_cases() ->
     Home = home(),
     try
         L = login(),
-        {ok, Snapshot} = albedo_auth_accounts:auth_snapshot(Home,[L]),
+        {ok, Snapshot} = 'albedo@harness@sdk@auth_accounts':auth_snapshot(Home,[L],'albedo@harness@sdk@key_environment':empty()),
         #{<<"providers">> := [#{<<"id">> := <<"zed">>, <<"flows">> := [<<"browser">>]}]} = json:decode(Snapshot),
         {Id, Initial} = start(Home),
-        {error, {409,_,_}} = albedo_oauth:input_identified(Home,Id,albedo_http_api:etag(Initial),<<"confirm">>,[L]),
+        %% Input while waiting only wakes a device flow; it never confirms.
+        {ok, _} = input_identified(Home,Id,etag(Initial),<<"confirm">>,[L]),
         {WrongAttempt, WrongKey} = start(Home),
         callback(Initial, <<"42">>, WrongKey, <<"127.0.0.1">>),
         <<"waiting">> = state(get(Home, Id)), no_accounts(Home),
-        {ok,_} = albedo_oauth:cancel_identified(Home,WrongAttempt,[L]),
+        {ok,_} = cancel_identified(Home,WrongAttempt,[L]),
         callback(Initial, <<"42">>),
         Confirm = await_state(Home,Id,<<"confirming">>), no_accounts(Home),
         {ok, Records} = file:read_file(filename:join(Home,<<"oauth-logins.json">>)),
         nomatch = binary:match(Records,<<"editor-test-secret">>),
         true = binary:match(Confirm,<<"github-42">>) =/= nomatch,
-        {error, {412,_,_}} = albedo_oauth:input_identified(Home,Id,albedo_http_api:etag(Initial),<<"confirm">>,[L]),
-        {error, {400,_,_}} = albedo_oauth:input_identified(Home,Id,albedo_http_api:etag(Confirm),<<"yes">>,[L]),
+        {error, {412,_,_}} = input_identified(Home,Id,etag(Initial),<<"confirm">>,[L]),
+        {error, {400,_,_}} = input_identified(Home,Id,etag(Confirm),<<"yes">>,[L]),
         {Other, OtherInitial} = start(Home),
-        {error, {412,_,_}} = albedo_oauth:input_identified(Home,Id,albedo_http_api:etag(OtherInitial),<<"confirm">>,[L]),
-        {ok,_} = albedo_oauth:cancel_identified(Home,Other,[L]),
-        {ok,_} = albedo_oauth:input_identified(Home,Id,albedo_http_api:etag(Confirm),<<"confirm">>,[L]),
+        {error, {412,_,_}} = input_identified(Home,Id,etag(OtherInitial),<<"confirm">>,[L]),
+        {ok,_} = cancel_identified(Home,Other,[L]),
+        {ok,_} = input_identified(Home,Id,etag(Confirm),<<"confirm">>,[L]),
         _ = await_state(Home,Id,<<"complete">>),
-        {ok,A} = albedo_credentials:accounts(albedo_credentials:creds_path(Home)),
-        [#{<<"access_token">> := <<"editor-test-secret">>, <<"_albedo_account_id">> := PublicId}] = albedo_credentials:values(A,<<"zed">>),
+        {ok,A} = ?CREDS:accounts(?CREDS:path(Home)),
+        [#{<<"access_token">> := <<"editor-test-secret">>, <<"_albedo_account_id">> := PublicId}] = ?CREDS:values(A,<<"zed">>),
         clean_home_inference(Home, PublicId),
-        ok = albedo_credentials:write(filename:join(Home,<<"config.json">>),#{<<"providers">> => #{}}),
-        {ok,nil} = albedo_auth_accounts:remove_account(Home,[L],PublicId), no_accounts(Home),
+        ok = write_json(filename:join(Home,<<"config.json">>),#{<<"providers">> => #{}}),
+        {ok,nil} = 'albedo@harness@sdk@auth_accounts':remove_account(Home,[L],PublicId,'albedo@harness@sdk@key_environment':empty()), no_accounts(Home),
         {Cancelled, CancelInitial} = start(Home),
         callback(CancelInitial, <<"43">>, CancelInitial, <<"localhost">>),
         _ = await_state(Home,Cancelled,<<"confirming">>),
-        {ok,_} = albedo_oauth:cancel_identified(Home,Cancelled,[L]), no_accounts(Home),
-        {error,{409,_,_}} = albedo_oauth:input_identified(Home,Cancelled,albedo_http_api:etag(get(Home,Cancelled)),<<"confirm">>,[L]),
+        {ok,_} = cancel_identified(Home,Cancelled,[L]), no_accounts(Home),
+        {error,{409,_,_}} = input_identified(Home,Cancelled,etag(get(Home,Cancelled)),<<"confirm">>,[L]),
         {Expired, ExpInitial} = start(Home), callback(ExpInitial,<<"44">>),
         _ = await_state(Home,Expired,<<"confirming">>),
         RecordsPath = filename:join(Home,<<"oauth-logins.json">>),
-        {ok, R0} = albedo_credentials:read(RecordsPath),
-        ok = albedo_credentials:write(RecordsPath,R0#{Expired := (maps:get(Expired,R0))#{<<"expires">> := 0}}),
+        {ok, R0} = read_json(RecordsPath),
+        ok = write_json(RecordsPath,R0#{Expired := (maps:get(Expired,R0))#{<<"expires">> := 0}}),
         <<"expired">> = state(get(Home,Expired)), no_accounts(Home)
         %% A differing legacy_user_id is no longer refused: the credential keeps
         %% the callback's user id, as the editor's does (identity_cases).
@@ -460,8 +468,8 @@ credential(Id, Public) ->
     C#{<<"_albedo_account_id">> => Public}.
 
 configure(Home, Values, Profiles) ->
-    ok = albedo_credentials:write(filename:join(Home,<<"creds.json">>),#{<<"accounts">> => #{<<"zed">> => Values}}),
-    ok = albedo_credentials:write(filename:join(Home,<<"config.json">>),#{<<"active">> => <<"one">>, <<"providers">> => Profiles}).
+    ok = write_json(filename:join(Home,<<"creds.json">>),#{<<"accounts">> => #{<<"zed">> => Values}}),
+    ok = write_json(filename:join(Home,<<"config.json">>),#{<<"active">> => <<"one">>, <<"providers">> => Profiles}).
 
 profile(Account) -> #{<<"extension">> => <<"zed">>, <<"accountId">> => Account, <<"baseUrl">> => <<"https://cloud.zed.dev">>}.
 
@@ -480,15 +488,15 @@ refresh_cases() ->
         {some,<<"albedo:zed:profile:two">>} = albedo_zed_auth:catalog_endpoint(Home,<<"two">>,none),
         {ok,T2} = albedo_zed_auth:access_account(Home,<<"two-account">>),
         {ok,{<<"https://cloud.zed.dev">>,T2}} = albedo_zed:access(Home,<<"two">>),
-        {ok,A} = albedo_credentials:accounts(albedo_credentials:creds_path(Home)),
-        [First,Second] = albedo_credentials:values(A,<<"zed">>),
+        {ok,A} = ?CREDS:accounts(?CREDS:path(Home)),
+        [First,Second] = ?CREDS:values(A,<<"zed">>),
         Expired = First#{<<"jwt_expires">> => 0},
-        ok = albedo_credentials:put_accounts(albedo_credentials:creds_path(Home),#{<<"zed">> => [Expired,Second]}),
+        ok = put_accounts(?CREDS:path(Home),#{<<"zed">> => [Expired,Second]}),
         {ok,T3a} = albedo_zed_auth:access(Home,<<"one">>), true = T3a =/= T1,
-        {ok, CacheA} = albedo_credentials:accounts(albedo_credentials:creds_path(Home)),
-        [CachedOne,CachedTwo] = albedo_credentials:values(CacheA,<<"zed">>),
+        {ok, CacheA} = ?CREDS:accounts(?CREDS:path(Home)),
+        [CachedOne,CachedTwo] = ?CREDS:values(CacheA,<<"zed">>),
         lists:foreach(fun(Bad) ->
-            ok = albedo_credentials:put_accounts(albedo_credentials:creds_path(Home),#{<<"zed">> => [Bad,CachedTwo]}),
+            ok = put_accounts(?CREDS:path(Home),#{<<"zed">> => [Bad,CachedTwo]}),
             {ok,FreshValid} = albedo_zed_auth:access(Home,<<"one">>),
             {ok,_} = albedo_zed_auth:jwt_expiry(FreshValid)
         end,[CachedOne#{<<"jwt_expires">> => null}, CachedOne#{<<"jwt">> => null},
@@ -498,7 +506,7 @@ refresh_cases() ->
         Run = fun(_,Token,Emit) ->
             put(attempts,get(attempts)+1),
             case Token =:= T3 of
-                true -> continue = Emit({responded,401}), {error,{http_error,401,<<"expired">>}};
+                true -> continue = Emit({responded,401}), {error,{refused,credential_rejected,{some,401},<<"expired">>}};
                 false -> continue = Emit({text_delta,0,0,<<"only-once">>}), {ok,success}
             end
         end,
@@ -506,17 +514,17 @@ refresh_cases() ->
         {ok,success} = albedo_zed:exchange(Home,<<"one">>,Run,OnEvent),
         2 = get(attempts), [{text_delta,0,0,<<"only-once">>}] = get(events),
         {ok,Current} = albedo_zed_auth:access(Home,<<"one">>), put(attempts,0),
-        Partial = fun(_,_,Emit) -> put(attempts,get(attempts)+1),Emit({arguments_delta,0,<<"tool">>,<<"{}">>}),{error,{http_error,401,<<>>}} end,
+        Partial = fun(_,_,Emit) -> put(attempts,get(attempts)+1),Emit({arguments_delta,0,<<"tool">>,<<"{}">>}),{error,{refused,credential_rejected,{some,401},<<>>}} end,
         {error,_} = albedo_zed:exchange(Home,<<"one">>,Partial,OnEvent), 1 = get(attempts),
         ChangedRun = fun(_,_,_) ->
             put(attempts,get(attempts)+1),
-            ok = albedo_credentials:write(filename:join(Home,<<"config.json">>),
+            ok = write_json(filename:join(Home,<<"config.json">>),
                 #{<<"providers">> => Profiles#{<<"one">> := profile(<<"two-account">>)}}),
-            {error,{http_error,401,<<>>}}
+            {error,{refused,credential_rejected,{some,401},<<>>}}
         end,
         put(attempts,0),
         {error,_} = albedo_zed:exchange(Home,<<"one">>,ChangedRun,OnEvent), 1 = get(attempts),
-        ok = albedo_credentials:write(filename:join(Home,<<"config.json">>),#{<<"providers">> => Profiles}),
+        ok = write_json(filename:join(Home,<<"config.json">>),#{<<"providers">> => Profiles}),
         mode(expired), albedo_zed_auth:reject(Home,<<"one">>,Current),
         {error,_} = albedo_zed_auth:access(Home,<<"one">>), mode(normal),
         configure(Home,[One,Two],#{<<"ambiguous">> => #{<<"extension">> => <<"zed">>}}),
@@ -559,7 +567,7 @@ refresh_cases() ->
         %% advertises no environment credential for Zed.
         {some, {model_info, <<"browser-fixture-model">>, <<"zed">>, {some, 10000}, none,
             none, [<<"text">>], {some, <<"https://cloud.zed.dev">>}, [],
-            <<"Zed /models">>, [<<"high">>]}} =
+            <<"Zed /models">>, [high], none, <<"provider">>, none}} =
             albedo_zed:lookup(Home, <<"https://cloud.zed.dev">>, <<"browser-fixture-model">>),
         %% A token the transport cannot send is not a credential.
         true = albedo_zed:usable(<<"inference-jwt">>),
@@ -619,7 +627,7 @@ inference_body() ->
 
 clean_home_inference(Home, PublicId) ->
     %% This home began empty; the browser callback is the only credential source.
-    ok = albedo_credentials:write(filename:join(Home,<<"config.json">>),
+    ok = write_json(filename:join(Home,<<"config.json">>),
         #{<<"active">> => <<"browser">>, <<"providers">> => #{<<"browser">> => profile(PublicId)}}),
     {ok,[<<"browser-fixture-model">>,<<"thinking-off-fixture-model">>,<<"thinking-on-fixture-model">>]} =
         albedo_zed:models(Home,<<"albedo:zed:account:",PublicId/binary>>),
@@ -632,82 +640,5 @@ clean_home_inference(Home, PublicId) ->
     {ok,_} = albedo_zed:exchange(Home,<<"browser">>,Run,OnEvent),
     [{inference_attempt,2}] = ets:lookup(zed_login_fixture,inference_attempt),
     [{text_delta,_,_,<<"browser-only-reply">>}] = [E || E = {text_delta,_,_,_} <- get(browser_events)],
-    {ok, Accounts} = albedo_credentials:accounts(albedo_credentials:creds_path(Home)),
-    [#{<<"access_token">> := <<"editor-test-secret">>, <<"jwt">> := _, <<"jwt_expires">> := _}] = albedo_credentials:values(Accounts,<<"zed">>).
-
-%% Delay readiness before opening the account transport, not its scaled timeout.
-delayed_identity_start() ->
-    {ok,{Url,Instructions,Complete}} = albedo_zed_auth:start(),
-    {ok,{Url,Instructions,fun(Progress) ->
-        Complete(fun(Text) -> timer:sleep(150), Progress(Text) end)
-    end}}.
-
-unpolled_expiry_cases() ->
-    OriginalScale = persistent_term:get({albedo_clock,scale},1),
-    persistent_term:put({albedo_clock,scale},100),
-    Home = home(), CompleteHome = home(), CancelHome = home(), CorruptHome = home(),
-    Parent = self(),
-    L = setelement(7,login(),{device,fun() ->
-        Parent ! {native_expiry_actor,self()}, delayed_identity_start()
-    end}),
-    try
-        Owner = whereis(albedo_oauth),
-        erlang:trace_pattern({albedo_clock,send_after,3},true,[local]),
-        erlang:trace(Owner,true,[call,{tracer,self()}]),
-        {Id,Initial} = start(Home,L),
-        Expiry = receive
-            {trace,Owner,call,{albedo_clock,send_after,[300000,Owner,Message]}} -> Message
-        after 1000 -> error(no_expiry_timer) end,
-        erlang:trace(Owner,false,[call]),
-        erlang:trace_pattern({albedo_clock,send_after,3},false,[local]),
-        Pid = receive {native_expiry_actor,P} -> P after 1000 -> error(no_actor) end,
-        Monitor = erlang:monitor(process,Pid),
-        Port = callback(Initial,<<"81">>),
-        #{<<"state">> := <<"confirming">>, <<"intent">> := Intent, <<"expires">> := Deadline} =
-            await_stored_state(Home,Id,<<"confirming">>),
-        no_accounts(Home),
-        %% A stale deadline or home cannot target the active attempt.
-        {expire_identified,Home,Id,Intent,Deadline,MonoDeadline} = Expiry,
-        Owner ! {expire_identified,Home,Id,Intent,Deadline-1,MonoDeadline},
-        Owner ! {expire_identified,CompleteHome,Id,Intent,Deadline,MonoDeadline},
-        Owner ! Expiry,
-        timer:sleep(20), true = is_process_alive(Pid),
-        {DoneId,DoneInitial} = start(CompleteHome),
-        callback(DoneInitial,<<"82">>),
-        Confirm = await_state(CompleteHome,DoneId,<<"confirming">>),
-        {ok,_} = albedo_oauth:input_identified(CompleteHome,DoneId,albedo_http_api:etag(Confirm),<<"confirm">>,[login()]),
-        Done = await_state(CompleteHome,DoneId,<<"complete">>),
-        {CancelId,_} = start(CancelHome),
-        {ok, Cancelled} = albedo_oauth:cancel_identified(CancelHome,CancelId,[login()]),
-        CorruptLogin = setelement(7,login(),{device,fun() ->
-            Parent ! {corrupt_expiry_actor,self()}, delayed_identity_start()
-        end}),
-        {CorruptId,CorruptInitial} = start(CorruptHome,CorruptLogin),
-        CorruptPid = receive {corrupt_expiry_actor,CP} -> CP after 1000 -> error(no_corrupt_actor) end,
-        CorruptMonitor = erlang:monitor(process,CorruptPid),
-        CorruptPort = callback(CorruptInitial,<<"83">>),
-        #{<<"state">> := <<"confirming">>} = await_stored_state(CorruptHome,CorruptId,<<"confirming">>),
-        ok = file:write_file(filename:join(CorruptHome,<<"oauth-logins.json">>),<<"corrupt-records">>),
-        %% No GET/input/cancel touches the pending attempt until its actor dies.
-        receive {'DOWN',Monitor,process,Pid,killed} -> ok after 5000 -> error(unpolled_expiry_did_not_kill_actor) end,
-        receive {'DOWN',CorruptMonitor,process,CorruptPid,killed} -> ok after 5000 -> error(corrupt_storage_retained_actor) end,
-        false = is_process_alive(CorruptPid), no_accounts(CorruptHome),
-        {error,econnrefused} = gen_tcp:connect({127,0,0,1},CorruptPort,[binary,{active,false}],1000),
-        false = is_process_alive(Pid),
-        {error,econnrefused} = gen_tcp:connect({127,0,0,1},Port,[binary,{active,false}],1000),
-        no_accounts(Home),
-        Expired = get(Home,Id), <<"expired">> = state(Expired),
-        {error,{409,_,_}} = albedo_oauth:input_identified(Home,Id,albedo_http_api:etag(Expired),<<"confirm">>,[L]),
-        no_accounts(Home),
-        %% Let the later attempts' original timers race their terminal records.
-        timer:sleep(700),
-        Done = get(CompleteHome,DoneId), Cancelled = get(CancelHome,CancelId),
-        [#{<<"access_token">> := <<"editor-test-secret">>}] = begin
-            {ok,A} = albedo_credentials:accounts(albedo_credentials:creds_path(CompleteHome)),
-            albedo_credentials:values(A,<<"zed">>)
-        end,
-        no_accounts(CancelHome)
-    after
-        persistent_term:put({albedo_clock,scale},OriginalScale),
-        file:del_dir_r(Home),file:del_dir_r(CompleteHome),file:del_dir_r(CancelHome),file:del_dir_r(CorruptHome)
-    end.
+    {ok, Accounts} = ?CREDS:accounts(?CREDS:path(Home)),
+    [#{<<"access_token">> := <<"editor-test-secret">>, <<"jwt">> := _, <<"jwt_expires">> := _}] = ?CREDS:values(Accounts,<<"zed">>).

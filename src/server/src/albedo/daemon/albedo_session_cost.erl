@@ -1,5 +1,5 @@
 -module(albedo_session_cost).
--export([estimate/2, estimate_rows/2, estimate_sessions/2, estimate_grouped/2, revision/1]).
+-export([estimate_rows/2, estimate_grouped/2, revision/1]).
 
 -include_lib("kernel/include/file.hrl").
 
@@ -11,16 +11,7 @@ revision(Catalog) ->
         _ -> <<"missing">>
     end.
 
-estimate(Catalog, Rows) ->
-    try estimate_rows(albedo_models:prices(Catalog), Rows)
-    catch _:_ -> none end.
-
 %% Rows lead with their session; each session is priced on its own rows.
-estimate_sessions(Catalog, Rows) ->
-    try albedo_models:prices(Catalog) of
-        Prices -> {ok, estimate_grouped(Prices, Rows)}
-    catch _:_ -> {error, nil} end.
-
 estimate_grouped(Prices, Rows) ->
     Grouped = lists:foldl(fun(Row, Acc) ->
         [Session | Rest] = row_list(Row),

@@ -225,7 +225,7 @@ func (m ChatModel) compactionStatusLine() string {
 	count := ""
 	if progress.Total != nil && (progress.Stage == "summarizing" || *progress.Total > 1) {
 		count = fmt.Sprintf("%d/%d", progress.Completed, *progress.Total)
-	} else if progress.Stage == "summarizing" && progress.Completed > 0 {
+	} else if progress.Completed > 0 {
 		count = fmt.Sprintf("%d completed", progress.Completed)
 	}
 	if count != "" {
@@ -233,6 +233,9 @@ func (m ChatModel) compactionStatusLine() string {
 			label = shortStage
 		}
 		label += " " + count
+	}
+	if progress.Active != nil && *progress.Active > 0 {
+		label += fmt.Sprintf(" · %d active", *progress.Active)
 	}
 	if started, err := time.Parse(time.RFC3339, progress.StartedAt); err == nil {
 		elapsed := time.Since(started).Milliseconds()
@@ -288,12 +291,16 @@ func (m ChatModel) header(width int) string {
 		lead = "● " + host + ":"
 		workspace = scpRelative(underHome(workspace, m.hostHome))
 	}
-	model := m.Model
+	model := m.displayModelName()
 	if m.CyberAccess == "daybreak_blue" {
 		model += " · Daybreak Blue"
 	}
 	if m.Effort != "" {
-		model += ":" + m.Effort
+		modelDefault, profile := "", ""
+		if m.modelNameID == m.Model && m.modelNameProfile == m.Provider {
+			modelDefault, profile = m.effortDefault, m.effortProfile
+		}
+		model += ":" + reasoningValue(m.Effort, modelDefault, profile)
 	}
 	if m.Fast {
 		model += "  ϟ"
@@ -412,8 +419,9 @@ func (m *ChatModel) View() string {
 	}
 	rows = append(rows, m.composeRule(width))
 	if len(m.effortOptions) > 0 {
-		rows = append(rows, "", DefaultStyles.Bold.Render(ansi.Truncate("Reasoning effort", width, "")), m.effortSelectorView(), DefaultStyles.Faint.Render(ansi.Truncate("← → choose  ·  enter apply  ·  esc cancel", width, "")))
+		rows = append(rows, "", DefaultStyles.Bold.Render(ansi.Truncate("Reasoning · "+reasoningValue(m.selectedEffort(), m.effortDefault, m.effortProfile), width, "")), DefaultStyles.Faint.Render(ansi.Truncate(m.effortSelectorDescription(), width, "…")), m.effortSelectorView(), DefaultStyles.Faint.Render(ansi.Truncate(m.effortSelectorHint(), width, "")))
 	} else {
+		rows = append(rows, m.editRows(width)...)
 		rows = append(rows, m.composer()...)
 		if menu := m.CommandMenu.View(m.TextArea.Value(), m.composerCursor(), width); menu != "" {
 			rows = append(rows, strings.Split(strings.TrimSuffix(menu, "\n"), "\n")...)
@@ -429,6 +437,9 @@ func (m *ChatModel) View() string {
 	if m.frame.content == "" || !sameStrings(rows, m.frame.rows) {
 		m.frame.rows = append(m.frame.rows[:0], rows...)
 		m.frame.content = stripPrivateMarks(strings.Join(rows, "\n"))
+	}
+	if m.terms != nil {
+		return overlay(m.frame.content, m.terms.view(m.Width, m.Height), m.Width, m.Height)
 	}
 	if m.btw.open {
 		return overlay(m.frame.content, m.btwPanelView(m.Width, m.Height), m.Width, m.Height)

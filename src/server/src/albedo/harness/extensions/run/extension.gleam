@@ -1,14 +1,17 @@
 //// Start supervised programs from Python, without a shell.
 
-import albedo/daemon/store
-import albedo/harness/client_api
-import albedo/harness/command.{Data}
-import albedo/harness/extension as harness_extension
-import albedo/harness/extension/service as http_service
-import albedo/harness/extensions/python/kernel
 import albedo/harness/extensions/run/service
-import albedo/harness/host
-import albedo/harness/rpc
+import albedo/harness/sdk/capability
+import albedo/harness/sdk/client_api
+import albedo/harness/sdk/command.{Data}
+import albedo/harness/sdk/extension as harness_extension
+import albedo/harness/sdk/host
+import albedo/harness/sdk/input
+import albedo/harness/sdk/kernel
+import albedo/harness/sdk/notice
+import albedo/harness/sdk/rpc
+import albedo/harness/sdk/service as http_service
+import albedo/harness/sdk/storage
 import gleam/dynamic/decode
 import gleam/json
 import gleam/option.{None}
@@ -21,7 +24,7 @@ pub fn extension() -> harness_extension.Extension {
   harness_extension.Extension(
     "run",
     "Start supervised programs from Python, without a shell.",
-    ["python"],
+    [],
     [
       harness_extension.ClientPlugin([
         client_api.Command("/jobs", client_api.Read, [], service.operation()),
@@ -29,17 +32,19 @@ pub fn extension() -> harness_extension.Extension {
       harness_extension.ServicePlugin(http_service.json(1024, service.dispatch)),
       harness_extension.ToolPlugin(instructions, [], ["run"], [
         #("jobs", fn(context: host.Context, method, args) {
-          route(context.store, context.session, method, args)
+          route(context.storage, context.inbox, context.session, method, args)
         }),
       ]),
       harness_extension.CommandPlugin([command()]),
     ],
     harness_extension.no_initialise,
+    tables: [],
+    uses:,
   )
 }
 
 /// `/jobs`: inspect and manage background jobs running in the session.
-fn command() -> command.Command {
+fn command() -> command.Command(command.Invocation) {
   command.Command(
     "/jobs",
     "Show background jobs running in this session.",
@@ -48,54 +53,63 @@ fn command() -> command.Command {
     False,
     True,
     None,
-    fn(ctx, _caller, _args) {
+    fn(ctx: command.Invocation, _caller, _args) {
       ctx.state(
         command.KernelJobs(fn(jobs, live_job_count) {
           json.object(kernel.jobs_fields(jobs, live_job_count))
         }),
       )
+      |> result.map_error(command.state_error_text)
       |> result.map(Data)
     },
   )
 }
 
-/// A session's answer to a job wake. `Busy` is the kernel's retry signal.
-pub type Wake {
-  Delivered
-  Busy
-  Unavailable(reason: String)
-}
-
-/// The kernel's wake route: a finished background job reports itself here, and
-/// the submit closure its session registered turns the notice into an ordinary
-/// user turn, so the model never polls for completion. The reply's code is the
-/// kernel's retry signal: "busy" retries, anything else gives up.
+/// The kernel's notice route (`sdk/notice`): a finished background job whose
+/// result nobody read posts a notice under the kernel's own key; the notice
+/// waits for a running turn to end, so the model never polls for completion.
+/// The kernel withdraws it by that key once the result is read.
 fn route(
-  _store: store.Store,
+  scope: storage.Storage,
+  inbox: input.Inbox,
   session: String,
   method: String,
   args: decode.Dynamic,
 ) -> Result(json.Json, #(String, String)) {
   case method {
     "jobs.completed" ->
-      case rpc.args(args, notice_decoder(), Nil) {
-        Ok(#(display, text)) ->
-          case deliver(session, display, text) {
-            Delivered -> Ok(json.string("delivered"))
-            Busy -> Error(#("busy", "session is busy"))
-            Unavailable(reason) -> Error(#("unavailable", reason))
-          }
+      case rpc.args(args, notice.posted_decoder(session, "job"), Nil) {
+        Ok(posted) ->
+          notice.post(inbox, scope, posted)
+          |> result.map_error(fn(reason) { #("unavailable", reason) })
         Error(_) -> Error(#("invalid", "invalid jobs notice"))
+      }
+    "jobs.withdraw" ->
+      case rpc.args(args, notice.keys_decoder(), Nil) {
+        Ok(keys) ->
+          notice.withdraw(inbox, scope, session, keys)
+          |> result.replace(json.null())
+          |> result.map_error(fn(reason) { #("unavailable", reason) })
+        Error(_) -> Error(#("invalid", "invalid notice keys"))
+      }
+    "jobs.waiting" ->
+      case rpc.args(args, notice.keys_decoder(), Nil) {
+        Ok(keys) ->
+          notice.waiting(inbox, scope, session, keys)
+          |> result.map_error(fn(reason) { #("unavailable", reason) })
+        Error(_) -> Error(#("invalid", "invalid notice keys"))
       }
     _ -> Error(#("invalid", "unknown jobs operation"))
   }
 }
 
-fn notice_decoder() -> decode.Decoder(#(String, String)) {
-  use display <- decode.field("display", decode.string)
-  use text <- decode.field("text", decode.string)
-  decode.success(#(display, text))
-}
-
-@external(erlang, "albedo_wakes", "deliver")
-fn deliver(session: String, display: String, text: String) -> Wake
+/// The host capabilities this extension uses: it posts job notices and reads
+/// job state through the session. Its service, bound to no session, lists
+/// and reads the jobs and output of the session a request names, which is
+/// that session's history, through the host's job book.
+pub const uses = [
+  capability.History,
+  capability.Inbox,
+  capability.KernelJobs,
+  capability.SessionState,
+]

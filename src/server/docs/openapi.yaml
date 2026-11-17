@@ -76,8 +76,11 @@ paths:
       tags: [transfers]
       description:
         Answers within about ten seconds. A target out of reach, a daemon there
-        that speaks another transfer protocol, a session mid-turn or one that
-        already moved is available false with the reason, not an error.
+        that speaks another transfer protocol or can't take what the export
+        would send, a session mid-turn or one that already moved is available
+        false with the reason, not an error. The target is asked through its
+        read-only `POST /transfers/check`. A target from before that route is
+        not checked, and its staging refuses what it lacks once the move starts.
       parameters:
         - name: session_id
           in: query
@@ -597,6 +600,44 @@ paths:
           $ref: '#/components/responses/Problem400'
         '401':
           $ref: '#/components/responses/Problem401'
+  /transfers/check:
+    post:
+      operationId: checkTransferShape
+      summary: Whether this daemon would stage rows of these shapes
+      tags: [transfers]
+      description:
+        Called by a source's preflight through the relay. Runs the owner, table,
+        version and column checks of staging and nothing else. It reads table
+        columns only, and writes no receipt, staging directory or expiry, and
+        checks no free space. A daemon from before this route answers 404 or
+        405, and the source then leaves the decision to staging. The 422
+        problem's code is `transfer_unsupported` for an owner or table this
+        build lacks, `transfer_extension_unavailable` for an extension built in
+        here that failed to load, `transfer_version` for a version or column
+        this daemon lacks, or `transfer_protocol` for another transfer protocol.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransferShape'
+      responses:
+        '200':
+          description: This daemon would stage rows of these shapes.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [accepted]
+                properties:
+                  accepted: { type: boolean, const: true }
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '422':
+          $ref: '#/components/responses/Problem422'
   /mail/forwarded:
     post:
       operationId: admitForwardedMail
@@ -2323,6 +2364,49 @@ paths:
           $ref: '#/components/responses/Problem410'
         '503':
           $ref: '#/components/responses/Problem503'
+    patch:
+      operationId: patchSideQuestion
+      tags: [sessions]
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/ID'
+        - name: question_id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUIDv7'
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema:
+              $ref: '#/components/schemas/SideQuestionPatchRequest'
+      responses:
+        '200':
+          description: Current side question.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SideQuestionEnvelope'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '409':
+          $ref: '#/components/responses/Problem409'
+        '503':
+          $ref: '#/components/responses/Problem503'
   /sessions/{session_id}/side-questions/{question_id}/cancel:
     post:
       operationId: cancelSideQuestion
@@ -2619,7 +2703,7 @@ paths:
                     type: about:blank
                     title: Queue full
                     status: 429
-                    detail: This session already has 32 waiting inputs.
+                    detail: the session's inbox is full
                     code: queue_full
                     decision:
                       kind: input
@@ -2633,7 +2717,7 @@ paths:
                           type: about:blank
                           title: Queue full
                           status: 429
-                          detail: This session already has 32 waiting inputs.
+                          detail: the session's inbox is full
                           code: queue_full
                         accepted_at: null
                         acceptance_order: null
@@ -2775,6 +2859,152 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/EmptyRequest'
+        description: UTF-8 JSON; duplicate keys and unknown fields are rejected.
+  /sessions/{session_id}/inputs/{input_id}/hold:
+    post:
+      operationId: holdInput
+      summary: Hold a waiting message while it is edited
+      tags:
+        - sessions
+      responses:
+        '200':
+          description: Held until the lease runs out, unless asked again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InputHold'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '409':
+          $ref: '#/components/responses/Problem409'
+        '413':
+          $ref: '#/components/responses/Problem413'
+        '415':
+          $ref: '#/components/responses/Problem415'
+        '503':
+          $ref: '#/components/responses/Problem503'
+      description:
+        Holds a person's typed message that still waits in the session's queue,
+        or renews the hold. Neither it nor anything queued after it is read
+        until the edit is saved, the hold is released, or lease_ms pass without
+        another hold. 409 input_not_waiting once the session read the message or
+        it was cancelled; 409 input_not_editable for any other input.
+      parameters:
+        - name: input_id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/ID'
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/ID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmptyRequest'
+        description: UTF-8 JSON; duplicate keys and unknown fields are rejected.
+    delete:
+      operationId: releaseInput
+      summary: Let a held message be read as it is
+      tags:
+        - sessions
+      responses:
+        '204':
+          description: Released; the message keeps its place in the queue.
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '409':
+          $ref: '#/components/responses/Problem409'
+        '503':
+          $ref: '#/components/responses/Problem503'
+      description: Idempotent. A message that was never held is unaffected.
+      parameters:
+        - name: input_id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/ID'
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/ID'
+  /sessions/{session_id}/inputs/{input_id}/edit:
+    post:
+      operationId: editInput
+      summary: Put an edited message in place of a waiting one
+      tags:
+        - sessions
+      responses:
+        '200':
+          description: The message as it now waits.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InputEdit'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '409':
+          $ref: '#/components/responses/Problem409'
+        '413':
+          $ref: '#/components/responses/Problem413'
+        '415':
+          $ref: '#/components/responses/Problem415'
+        '503':
+          $ref: '#/components/responses/Problem503'
+      description:
+        Replaces a person's typed message that still waits, keeping its id and
+        its place in the queue, and releases any hold on it. 409
+        input_not_waiting once the session read it or it was cancelled.
+      parameters:
+        - name: input_id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/ID'
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/ID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MessageInputRequest'
         description: UTF-8 JSON; duplicate keys and unknown fields are rejected.
   /sessions/{session_id}/interrupt:
     post:
@@ -3878,6 +4108,8 @@ paths:
           $ref: '#/components/responses/Problem401'
         '403':
           $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
         '405':
           $ref: '#/components/responses/Problem405'
         '406':
@@ -3929,7 +4161,8 @@ paths:
           description:
             Existing session whose selected account scopes Daybreak Blue
             support; with initial=true, a preallocated new session ID selects
-            its exact future account.
+            its exact future account. Without initial, an unknown or deleted
+            session returns 404 session_not_found.
           schema:
             $ref: '#/components/schemas/ID'
         - name: initial
@@ -6801,6 +7034,74 @@ paths:
       description:
         External OpenAI envelope. Bearer required unless operator explicitly
         configured anonymous loopback access.
+  /extensions/proxy/v1/models/{id}:
+    get:
+      operationId: getProxyModel
+      summary: Read one saved-profile OpenAI model and its efforts
+      tags:
+        - proxy
+      responses:
+        '200':
+          description: Successful result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProxyModel'
+        '400':
+          description: OpenAI proxy error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProxyError'
+        '401':
+          description: OpenAI proxy error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProxyError'
+        '403':
+          description: OpenAI proxy error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProxyError'
+        '404':
+          description: OpenAI proxy error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProxyError'
+        '405':
+          description: OpenAI proxy error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProxyError'
+        '406':
+          description: OpenAI proxy error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProxyError'
+        '503':
+          description: OpenAI proxy error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProxyError'
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description:
+            A `<profile>/<model>` id; its slash may be sent unescaped.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 577
+      description:
+        External OpenAI envelope. Bearer required unless operator explicitly
+        configured anonymous loopback access.
   /extensions/proxy/v1/chat/completions:
     post:
       operationId: createProxyCompletion
@@ -7080,6 +7381,217 @@ paths:
             schema:
               type: object
               additionalProperties: false
+  /extensions/mail/sessions/{session_id}/queue:
+    get:
+      operationId: readQueue
+      summary: Read what waits in the session's inbox and the queue page
+      description:
+        Every input the session has not read yet, in the order it will read
+        them, the first 200 shown. Reading never loads the session's kernel.
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/ID'
+      responses:
+        '200':
+          description: The queue.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueueCollection'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '503':
+          $ref: '#/components/responses/Problem503'
+    delete:
+      operationId: clearQueue
+      summary: Drop everything waiting in the session's inbox
+      description:
+        A person's waiting input is cancelled, as cancelling the input would.
+        What the running turn already took stays with it.
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/ID'
+      responses:
+        '200':
+          description: The queue after the drop.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueueCollection'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '413':
+          $ref: '#/components/responses/Problem413'
+        '415':
+          $ref: '#/components/responses/Problem415'
+        '503':
+          $ref: '#/components/responses/Problem503'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+  /extensions/mail/sessions/{session_id}/queue/order:
+    put:
+      operationId: arrangeQueue
+      summary: Put waiting inputs first, in the order given
+      description:
+        The listed inputs move to the front in this order; the rest keep their
+        order after them. Ids that no longer wait are skipped.
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/ID'
+      responses:
+        '200':
+          description: The queue in its new order.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueueCollection'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '413':
+          $ref: '#/components/responses/Problem413'
+        '415':
+          $ref: '#/components/responses/Problem415'
+        '503':
+          $ref: '#/components/responses/Problem503'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QueueOrder'
+        description: UTF-8 JSON; duplicate keys and unknown fields are rejected.
+  /extensions/mail/sessions/{session_id}/queue/{item_id}:
+    delete:
+      operationId: dropQueued
+      summary: Take one input out of the session's queue
+      description:
+        A person's input is cancelled, as cancelling the input would. Fails with
+        404 `queue_item_not_found` when nothing with that id waits, including an
+        input the running turn already took.
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/ID'
+        - name: item_id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/ID'
+      responses:
+        '200':
+          description: The queue after the drop.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueueCollection'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '413':
+          $ref: '#/components/responses/Problem413'
+        '415':
+          $ref: '#/components/responses/Problem415'
+        '503':
+          $ref: '#/components/responses/Problem503'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+  /extensions/mail/sessions/{session_id}/queue/{item_id}/first:
+    post:
+      operationId: moveQueuedFirst
+      summary: Move one waiting input to the front of the queue
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/ID'
+        - name: item_id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/ID'
+      responses:
+        '200':
+          description: The queue in its new order.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueueCollection'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '413':
+          $ref: '#/components/responses/Problem413'
+        '415':
+          $ref: '#/components/responses/Problem415'
+        '503':
+          $ref: '#/components/responses/Problem503'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
 components:
   securitySchemes:
     DaemonBearer:
@@ -7299,6 +7811,16 @@ components:
         reason:
           type: [string, 'null']
           description: Why the move is unavailable, in words for a person.
+        code:
+          type: [string, 'null']
+          description:
+            The stable code of the refusal that makes the move unavailable, null
+            when it is available or the target was out of reach. It is the code
+            a move would fail with, such as `transfer_target_older` (a missing
+            extension, table, version or column),
+            `transfer_extension_unavailable` (an extension that failed to load
+            there), `transfer_protocol`, `session_busy`, `session_moved` or
+            `profile_unavailable`. Daemons before this field omit it.
         target_daemon:
           $ref: '#/components/schemas/TransferTargetDaemon'
         bytes:
@@ -7378,6 +7900,31 @@ components:
             The target's other profiles offering the model, when this one does
             not.
           items: { type: string }
+    TransferShape:
+      type: object
+      additionalProperties: false
+      required: [protocol, segments]
+      description:
+        What a source's export would list, without the data. Each table is a
+        rows segment. An owner that carries files and no tables, but has files
+        to send, is one file segment, whose owner is checked as staging checks a
+        file's owner.
+      properties:
+        protocol: { type: integer }
+        segments:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [kind, owner, name, version, columns]
+            properties:
+              kind: { type: string, enum: [rows, file] }
+              owner: { type: string }
+              name: { type: string }
+              version: { type: integer }
+              columns:
+                type: array
+                items: { type: string }
     TransferRunsThereRequest:
       type: object
       additionalProperties: false
@@ -7540,7 +8087,17 @@ components:
       additionalProperties: false
       required: [code, detail]
       properties:
-        code: { type: string }
+        code:
+          type: string
+          description:
+            Why the move failed. `transfer_target_older` is a target too old to
+            take a table version or column this daemon sends; moves go only from
+            an older daemon to a newer one. `transfer_unsupported` is a target
+            without an extension or table this daemon sends, because it is older
+            or the extension failed to load there.
+            `transfer_extension_unavailable` is a target whose extension failed
+            to load. The detail is the target's own refusal, naming the first
+            thing it lacks.
         detail: { type: string }
     SessionMovePending:
       type: object
@@ -7767,7 +8324,7 @@ components:
         - type: about:blank
           title: Queue full
           status: 429
-          detail: This session already has 32 waiting inputs.
+          detail: the session's inbox is full
           code: queue_full
           decision:
             kind: input
@@ -7781,7 +8338,7 @@ components:
                 type: about:blank
                 title: Queue full
                 status: 429
-                detail: This session already has 32 waiting inputs.
+                detail: the session's inbox is full
                 code: queue_full
               accepted_at: null
               acceptance_order: null
@@ -8124,6 +8681,10 @@ components:
         model:
           $ref: '#/components/schemas/ID'
         effort:
+          description:
+            Profile reasoning override. A supported level overrides the model
+            default for inheriting sessions. Null, inherit, or default leaves
+            the model default in control.
           anyOf:
             - type: string
               maxLength: 100
@@ -8207,6 +8768,10 @@ components:
         model:
           $ref: '#/components/schemas/ID'
         effort:
+          description:
+            Profile reasoning override. A supported level overrides the model
+            default for inheriting sessions. Null, inherit, or default leaves
+            the model default in control.
           anyOf:
             - type: string
               maxLength: 100
@@ -8842,11 +9407,15 @@ components:
           maxLength: 1024
         kind:
           type: string
-          enum: [integer, text, limit]
+          enum: [integer, text, limit, map, choices]
           description:
             integer takes a whole number from minimum to maximum; text takes a
             non-empty string of at most 4096 bytes; limit takes a whole number
-            from minimum to maximum, or -1 for no limit.
+            from minimum to maximum, or -1 for no limit; map takes an object of
+            at most 64 names to text, each name 1 to 64 bytes without whitespace
+            or =, each value text, and unset reads as empty; choices takes an
+            object like map whose values are each one of options or a name in
+            the section's options_from map, a row left out being unset.
         default:
           anyOf:
             - type: integer
@@ -8860,23 +9429,69 @@ components:
           anyOf:
             - type: integer
             - type: 'null'
-          description: The smallest integer accepted; null for text.
+          description: The smallest integer accepted; null for text and map.
         maximum:
           anyOf:
             - type: integer
             - type: 'null'
-          description: The largest integer accepted; null for text.
+          description: The largest integer accepted; null for text and map.
         value:
           anyOf:
             - type: integer
             - type: string
+            - type: object
+              additionalProperties:
+                type: string
+              maxProperties: 64
             - type: 'null'
           description:
             The saved value, or null when nothing is saved and the default
             applies. A saved value of the wrong kind reads as null, and the
             section's problem names it.
+        rows:
+          anyOf:
+            - type: array
+              items:
+                $ref: '#/components/schemas/DeclaredSettingRow'
+            - type: 'null'
+          description: The rows a choices setting offers; null for other kinds.
+        options:
+          anyOf:
+            - type: array
+              items:
+                type: string
+            - type: 'null'
+          description: The fixed choices of a choices setting.
+        options_from:
+          anyOf:
+            - type: string
+            - type: 'null'
+          description:
+            The map field in this section whose names are options too.
       required:
-        [key, label, description, kind, default, minimum, maximum, value]
+        [
+          key,
+          label,
+          description,
+          kind,
+          default,
+          minimum,
+          maximum,
+          value,
+          rows,
+          options,
+          options_from,
+        ]
+      additionalProperties: false
+    DeclaredSettingRow:
+      type: object
+      properties:
+        name:
+          type: string
+        unset:
+          type: string
+          description: What leaving the row unset means.
+      required: [name, unset]
       additionalProperties: false
     DeclaredSettingsSection:
       type: object
@@ -8950,6 +9565,10 @@ components:
               anyOf:
                 - type: integer
                 - type: string
+                - type: object
+                  additionalProperties:
+                    type: string
+                  maxProperties: 64
                 - type: 'null'
       required: [values]
       additionalProperties: false
@@ -9562,6 +10181,9 @@ components:
             - type: integer
               minimum: 1
             - type: 'null'
+        active:
+          type: integer
+          minimum: 0
         started_at:
           type: string
           format: date-time
@@ -9859,6 +10481,11 @@ components:
             - $ref: '#/components/schemas/ID'
             - type: 'null'
         effort:
+          description:
+            Saved reasoning choice. inherit follows the profile override or
+            model default; default bypasses the profile override. Other strings
+            select an explicit supported level. Null retains legacy unset
+            behavior.
           anyOf:
             - type: string
               maxLength: 100
@@ -10175,6 +10802,11 @@ components:
             - $ref: '#/components/schemas/ID'
             - type: 'null'
         effort:
+          description:
+            Saved reasoning choice. inherit follows the profile override or
+            model default; default bypasses the profile override. Other strings
+            select an explicit supported level. Null retains legacy unset
+            behavior.
           anyOf:
             - type: string
               maxLength: 100
@@ -10271,6 +10903,11 @@ components:
         model:
           $ref: '#/components/schemas/ID'
         effort:
+          description:
+            Saved reasoning choice. inherit follows the profile override or
+            model default; default bypasses the profile override. Other strings
+            select an explicit supported level. Null restores legacy unset
+            behavior. Omission preserves the current choice.
           anyOf:
             - type: string
               maxLength: 100
@@ -10347,6 +10984,10 @@ components:
             - $ref: '#/components/schemas/ID'
             - type: 'null'
         effort:
+          description:
+            Initial reasoning choice. inherit follows the profile override or
+            model default; default bypasses the profile override. Other strings
+            select an explicit supported level. Null or omission uses inherit.
           anyOf:
             - type: string
               maxLength: 100
@@ -10391,6 +11032,10 @@ components:
             - $ref: '#/components/schemas/ID'
             - type: 'null'
         effort:
+          description:
+            Initial reasoning choice. inherit follows the profile override or
+            model default; default bypasses the profile override. Other strings
+            select an explicit supported level. Null or omission uses inherit.
           anyOf:
             - type: string
               maxLength: 100
@@ -10469,6 +11114,10 @@ components:
             - $ref: '#/components/schemas/ID'
             - type: 'null'
         effort:
+          description:
+            Initial reasoning choice. inherit follows the profile override or
+            model default; default bypasses the profile override. Other strings
+            select an explicit supported level. Null or omission uses inherit.
           anyOf:
             - type: string
               maxLength: 100
@@ -10501,6 +11150,10 @@ components:
             - $ref: '#/components/schemas/ID'
             - type: 'null'
         effort:
+          description:
+            Initial reasoning choice. inherit follows the profile override or
+            model default; default bypasses the profile override. Other strings
+            select an explicit supported level. Null or omission uses inherit.
           anyOf:
             - type: string
               maxLength: 100
@@ -10644,6 +11297,160 @@ components:
           availability,
         ]
       additionalProperties: false
+    QueueCollection:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/QueueItem'
+          maxItems: 200
+        total:
+          $ref: '#/components/schemas/Counter'
+        limit:
+          $ref: '#/components/schemas/Counter'
+        page:
+          $ref: '#/components/schemas/PageDescriptor'
+      required: [items, total, limit, page]
+      additionalProperties: false
+      examples:
+        - items: []
+          total: 0
+          limit: 1000
+          page:
+            title: queue
+            empty_state: nothing is waiting
+            rows: []
+            glance: null
+            actions: []
+            summary: 0 inputs waiting
+    QueueItem:
+      type: object
+      description: One input waiting in a session's inbox.
+      properties:
+        id:
+          $ref: '#/components/schemas/ID'
+        kind:
+          type: string
+          enum:
+            [
+              task,
+              request,
+              message,
+              result,
+              unreviewed,
+              webhook,
+              event,
+              chat,
+              continue,
+              acp,
+              shell,
+              note,
+              job,
+            ]
+        source:
+          type: string
+          maxLength: 256
+          description: Who submitted it, as the transcript names the source.
+        from:
+          type: string
+          maxLength: 4096
+        sender_session_id:
+          anyOf:
+            - $ref: '#/components/schemas/ID'
+            - type: 'null'
+        delivery:
+          type: string
+          enum: [steer, wait, alone, next_turn, attach]
+          description:
+            "`steer` joins a running turn at its next step, `wait` waits for the
+            turn to end, `alone` takes a turn of its own, `next_turn` joins a
+            running turn at its next step or rides with the next turn without
+            starting one, and `attach` joins a running turn at its next step or
+            is written into a resting session's transcript without a turn."
+        text:
+          type: string
+          maxLength: 2000
+        text_truncated:
+          type: boolean
+        editable:
+          type: boolean
+          description:
+            A person's typed message whose text is all of it, with no images,
+            files, pasted text or skills, so an edit from the queue loses
+            nothing.
+        images:
+          type: array
+          items:
+            $ref: '#/components/schemas/QueueImage'
+        files:
+          type: array
+          items:
+            $ref: '#/components/schemas/QueueFile'
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+        position:
+          $ref: '#/components/schemas/Counter'
+        attempts:
+          $ref: '#/components/schemas/Counter'
+        last_error:
+          anyOf:
+            - type: string
+              maxLength: 500
+            - type: 'null'
+      required:
+        [
+          id,
+          kind,
+          source,
+          from,
+          sender_session_id,
+          delivery,
+          text,
+          text_truncated,
+          editable,
+          images,
+          files,
+          created_at,
+          position,
+          attempts,
+          last_error,
+        ]
+      additionalProperties: false
+    QueueImage:
+      type: object
+      properties:
+        mime_type:
+          type: string
+          maxLength: 256
+        width:
+          $ref: '#/components/schemas/Counter'
+        height:
+          $ref: '#/components/schemas/Counter'
+        bytes:
+          $ref: '#/components/schemas/Counter'
+      required: [mime_type, width, height, bytes]
+      additionalProperties: false
+    QueueFile:
+      type: object
+      properties:
+        name:
+          type: string
+          maxLength: 4096
+        bytes:
+          $ref: '#/components/schemas/Counter'
+      required: [name, bytes]
+      additionalProperties: false
+    QueueOrder:
+      type: object
+      properties:
+        ids:
+          type: array
+          items:
+            $ref: '#/components/schemas/ID'
+          maxItems: 1000
+      required: [ids]
+      additionalProperties: false
     JobCollection:
       type: object
       properties:
@@ -10688,6 +11495,13 @@ components:
         service:
           type: boolean
           description: Started to keep running, so nothing waits on its end.
+        kind:
+          type: string
+          enum: [command, cell]
+        parent_id:
+          anyOf:
+            - $ref: '#/components/schemas/ID'
+            - type: 'null'
         started_at:
           $ref: '#/components/schemas/Counter'
           description: Wall-clock milliseconds since the epoch.
@@ -10706,6 +11520,8 @@ components:
           exit_code,
           timed_out,
           service,
+          kind,
+          parent_id,
           started_at,
           ended_at,
           bytes,
@@ -10760,12 +11576,19 @@ components:
         command:
           type: string
           maxLength: 4096
+        kind:
+          type: string
+          enum: [command, cell]
+        parent_id:
+          anyOf:
+            - $ref: '#/components/schemas/ID'
+            - type: 'null'
         started_at:
           $ref: '#/components/schemas/Counter'
           description:
             Wall-clock milliseconds since the epoch when the owner recorded the
             job. Zero when unknown, which clients treat as settled work.
-      required: [id, pid, command, started_at]
+      required: [id, pid, command, kind, parent_id, started_at]
       additionalProperties: false
     Kernel:
       type: object
@@ -10893,6 +11716,15 @@ components:
         cache_ttl_seconds:
           anyOf:
             - $ref: '#/components/schemas/Counter'
+            - type: 'null'
+        size:
+          description: >-
+            Set when the token counts are a strategy's size for a request no
+            call has measured yet, such as after a compaction, rather than one
+            call's own report; its parts say how much was measured and how much
+            estimated.
+          anyOf:
+            - $ref: '#/components/schemas/Size'
             - type: 'null'
         cache_miss_tokens:
           anyOf:
@@ -11744,6 +12576,22 @@ components:
           maxLength: 512
       required: [kind, command_id, arguments]
       additionalProperties: false
+    InputHold:
+      type: object
+      properties:
+        lease_ms:
+          type: integer
+          minimum: 1
+          description: How long the hold lasts unless the message is held again.
+      required: [lease_ms]
+      additionalProperties: false
+    InputEdit:
+      type: object
+      properties:
+        input:
+          $ref: '#/components/schemas/Input'
+      required: [input]
+      additionalProperties: false
     InputRequest:
       oneOf:
         - $ref: '#/components/schemas/MessageInputRequest'
@@ -12089,6 +12937,14 @@ components:
         target:
           type: string
           maxLength: 1000
+        title:
+          type: string
+          maxLength: 1000
+          description: The optional display() title.
+        description:
+          type: string
+          maxLength: 4000
+          description: The optional display() description.
         detail:
           type: string
           maxLength: 16000
@@ -12392,9 +13248,17 @@ components:
           type: string
         kind:
           type: string
-          enum:
-            [task, message, result, unreviewed, webhook, event_tool, event_turn]
-      required: [mail_id, sender_session_id, sender_label, kind]
+          enum: [task, request, message, result, unreviewed, webhook, event]
+        external:
+          type: boolean
+          description:
+            The letter came from outside the agents, as a webhook or an
+            extension's channel.
+        answer:
+          type: boolean
+          description: The letter is a child's answer to its parent.
+      required:
+        [mail_id, sender_session_id, sender_label, kind, external, answer]
       additionalProperties: false
     HistoryEntry:
       type: object
@@ -12846,6 +13710,10 @@ components:
             - $ref: '#/components/schemas/ID'
             - type: 'null'
         effort:
+          description:
+            Resolved reasoning level sent with this provider attempt. Null means
+            no explicit level was supplied. Saved choices such as inherit and
+            default are resolved before recording.
           anyOf:
             - type: string
               maxLength: 256
@@ -13933,6 +14801,8 @@ components:
           $ref: '#/components/schemas/ID'
         label:
           type: string
+          description:
+            Human-facing catalog name, or the model ID when unavailable.
           maxLength: 256
         efforts:
           type: array
@@ -13948,6 +14818,16 @@ components:
             required: [id, label]
             additionalProperties: false
           maxItems: 100
+        default_effort_source:
+          type: string
+          enum: [provider, albedo]
+        default_effort:
+          description:
+            Known reasoning default or adapter fallback, null when unknown.
+          anyOf:
+            - type: string
+              maxLength: 100
+            - type: 'null'
         default_context_tokens:
           anyOf:
             - $ref: '#/components/schemas/Counter'
@@ -14743,7 +15623,36 @@ components:
           items:
             $ref: '#/components/schemas/FormField'
           maxItems: 100
-      required: [id, label, detail, kind, flows, fields]
+        terms:
+          anyOf:
+            - $ref: '#/components/schemas/LoginTerms'
+            - type: 'null'
+          description:
+            The provider's warning that using this sign-in outside its own apps
+            breaks its terms. Clients show it before starting the sign-in, and
+            once before the first message on a profile that uses the sign-in
+            rather than an API key. Dismissing that once adds `id` to the ui
+            group's `dismissed_notices`.
+      required: [id, label, detail, kind, flows, fields, terms]
+      additionalProperties: false
+    LoginTerms:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/ID'
+        about:
+          type: string
+          maxLength: 256
+        headline:
+          type: string
+          maxLength: 256
+        paragraphs:
+          type: array
+          items:
+            type: string
+            maxLength: 4096
+          maxItems: 8
+      required: [id, about, headline, paragraphs]
       additionalProperties: false
     Auth:
       type: object
@@ -14869,8 +15778,20 @@ components:
           $ref: '#/components/schemas/ID'
         kind:
           type: string
-          enum:
-            [task, message, result, unreviewed, webhook, event_tool, event_turn]
+          enum: [task, request, message, result, unreviewed, webhook, event]
+        external:
+          type: boolean
+          description:
+            The letter came from outside the agents, as a webhook or an
+            extension's channel.
+        answer:
+          type: boolean
+          description: The letter is a child's answer to its parent.
+        notifies:
+          type: boolean
+          description:
+            The letter is what an agent says or answers, worth telling someone
+            who looked away; a brief or a request is not.
         bytes:
           $ref: '#/components/schemas/Counter'
         sender_label:
@@ -14885,6 +15806,9 @@ components:
           sender_session_id,
           receiver_session_id,
           kind,
+          external,
+          answer,
+          notifies,
           bytes,
           sender_label,
         ]
@@ -14952,6 +15876,13 @@ components:
           x-max-utf8-bytes: 16384
       required: [question]
       additionalProperties: false
+    SideQuestionPatchRequest:
+      type: object
+      properties:
+        dismissed:
+          type: boolean
+      required: [dismissed]
+      additionalProperties: false
     SideQuestion:
       type: object
       properties:
@@ -14970,8 +15901,19 @@ components:
           type: integer
         continuation_session_id:
           type: [string, 'null']
+        dismissed:
+          type: boolean
       required:
-        [id, question, status, answer, error, asked_at, continuation_session_id]
+        [
+          id,
+          question,
+          status,
+          answer,
+          error,
+          asked_at,
+          continuation_session_id,
+          dismissed,
+        ]
       additionalProperties: false
     SideQuestionEnvelope:
       type: object
@@ -15036,6 +15978,11 @@ components:
           type: integer
           minimum: 0
           maximum: 16777216
+        model_text_bytes:
+          type: integer
+          minimum: 0
+          description:
+            UTF-8 bytes in the exact model-facing receipt, before timestamping.
         truncated:
           type: boolean
         error:
@@ -15059,6 +16006,7 @@ components:
           exit_code,
           output,
           output_bytes,
+          model_text_bytes,
           truncated,
           error,
           history_seq,
@@ -17534,21 +18482,7 @@ components:
         data:
           type: array
           items:
-            type: object
-            properties:
-              id:
-                type: string
-                minLength: 1
-                maxLength: 577
-              object:
-                const: model
-              created:
-                $ref: '#/components/schemas/Counter'
-              owned_by:
-                type: string
-                maxLength: 256
-            required: [id, object, created, owned_by]
-            additionalProperties: false
+            $ref: '#/components/schemas/ProxyModel'
         errors:
           type: array
           items:
@@ -17563,6 +18497,29 @@ components:
             additionalProperties: false
           maxItems: 200
       required: [object, data]
+      additionalProperties: false
+    ProxyModel:
+      type: object
+      properties:
+        id:
+          type: string
+          minLength: 1
+          maxLength: 577
+        object:
+          const: model
+        created:
+          $ref: '#/components/schemas/Counter'
+        owned_by:
+          type: string
+          maxLength: 256
+        efforts:
+          description:
+            Nonstandard. Reasoning efforts the model takes; empty when it takes
+            none.
+          type: array
+          items:
+            type: string
+      required: [id, object, created, owned_by, efforts]
       additionalProperties: false
     AdmissionProblem:
       type: object
@@ -17609,19 +18566,23 @@ components:
           anyOf:
             - $ref: '#/components/schemas/ID'
             - type: 'null'
-        trigger_free_percent:
+        trigger_tokens:
+          description: >-
+            The size.tokens at which the active strategy compacts, as its own
+            trigger decides it; null while it has no threshold.
           anyOf:
-            - type: number
-              minimum: 0
-              maximum: 100
+            - $ref: '#/components/schemas/Counter'
             - type: 'null'
         input_limit_tokens:
           anyOf:
             - $ref: '#/components/schemas/Counter'
             - type: 'null'
-        estimated_input_tokens:
+        size:
+          description: >-
+            How big the prepared request is, as its strategy measured it; null
+            while the strategy has no size for it.
           anyOf:
-            - $ref: '#/components/schemas/Counter'
+            - $ref: '#/components/schemas/Size'
             - type: 'null'
         provider_input_tokens:
           anyOf:
@@ -17644,23 +18605,83 @@ components:
             - type: string
               maxLength: 512
             - type: 'null'
-        estimate_method:
-          anyOf:
-            - type: string
-              maxLength: 512
-            - type: 'null'
       required:
         [
           status,
           strategy,
-          trigger_free_percent,
+          trigger_tokens,
           input_limit_tokens,
-          estimated_input_tokens,
+          size,
           provider_input_tokens,
           provider_cached_input_tokens,
           before_items,
           after_items,
           source,
-          estimate_method,
         ]
+      additionalProperties: false
+    Size:
+      description: >-
+        How many tokens something takes, as two parts kept apart: what a
+        provider measured, and what was estimated for what no provider number
+        covers. tokens is their sum.
+      type: object
+      properties:
+        tokens:
+          $ref: '#/components/schemas/Counter'
+        measured:
+          anyOf:
+            - $ref: '#/components/schemas/SizeMeasured'
+            - type: 'null'
+        estimated:
+          anyOf:
+            - $ref: '#/components/schemas/SizeEstimated'
+            - type: 'null'
+      required: [tokens, measured, estimated]
+      additionalProperties: false
+    SizeMeasured:
+      description: >-
+        The part of a size a provider gave: counted by its count endpoint for
+        this very request, or taken from the usage it reported for earlier
+        calls.
+      type: object
+      properties:
+        tokens:
+          $ref: '#/components/schemas/Counter'
+        source:
+          type: string
+          enum: [count_endpoint, reported_usage]
+      required: [tokens, source]
+      additionalProperties: false
+    SizeEstimated:
+      description: >-
+        The part of a size albedo estimated from lengths, with the correction it
+        learned from the route's reported usage; null when it had none.
+      type: object
+      properties:
+        tokens:
+          $ref: '#/components/schemas/Counter'
+        correction:
+          anyOf:
+            - $ref: '#/components/schemas/SizeCorrection'
+            - type: 'null'
+      required: [tokens, correction]
+      additionalProperties: false
+    SizeCorrection:
+      description: >-
+        Provider tokens per thousand estimated ones on one route and model.
+        provisional is the largest ratio seen after reports reports, or the
+        prior before any; calibrated is a moving average over the route's
+        reports, whose number is then null.
+      type: object
+      properties:
+        state:
+          type: string
+          enum: [provisional, calibrated]
+        per_mille:
+          $ref: '#/components/schemas/Counter'
+        reports:
+          anyOf:
+            - $ref: '#/components/schemas/Counter'
+            - type: 'null'
+      required: [state, per_mille, reports]
       additionalProperties: false

@@ -1,9 +1,10 @@
 import albedo/anthropic_api/request as messages
 import albedo/gemini_api/request as gemini
-import albedo/harness/extensions/opencode_go/wire as portable
+import albedo/harness/sdk/opencode_gateway as portable
 import albedo/openai_api
 import albedo/openai_api/request as chat
-import albedo/openai_api/types
+import albedo_model as types
+import albedo_model/refusal
 import gleam/option.{None}
 import gleam/result
 import gleam/string
@@ -44,6 +45,7 @@ pub fn encode(
     None,
     8 * 1024 * 1024,
     False,
+    refusal: refusal.openai,
   ))
 }
 

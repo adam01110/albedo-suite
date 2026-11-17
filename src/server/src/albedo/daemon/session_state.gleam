@@ -1,7 +1,7 @@
 //// Actor-owned session data and its bounded event stream.
 
-import albedo/clock
 import albedo/daemon/active_output
+import albedo/daemon/active_output_store
 import albedo/daemon/bus
 import albedo/daemon/context_snapshot
 import albedo/daemon/conversation
@@ -12,22 +12,24 @@ import albedo/daemon/operations
 import albedo/daemon/session_activity
 import albedo/daemon/shell_commands
 import albedo/daemon/side_question
-import albedo/daemon/store
 import albedo/daemon/tool_progress
-import albedo/daemon/transcript
 import albedo/daemon/turn.{type Submission}
 import albedo/daemon/usage
 import albedo/harness/extension/selection
 import albedo/harness/loop
 import albedo/harness/runtime
 import albedo/harness/runtime/admission
-import albedo/openai_api/types
+import albedo/harness/sdk/queue
+import albedo/harness/sdk/store
+import albedo/harness/sdk/transcript
+import albedo_clock
+import albedo_model as types
+import gleam/dict
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/result
 import gleam/string
 
 pub type Watcher {
@@ -51,6 +53,10 @@ pub type TitleJob {
     worker: process.Pid,
     stop: turn.Latch,
   )
+}
+
+pub type KernelNotice {
+  KernelNotice(text: String, resets: Bool)
 }
 
 pub type State(message) {
@@ -89,18 +95,21 @@ pub type State(message) {
     spent: Option(types.Cost),
     activity: turn.Activity,
     pending_switch: Option(PendingSwitch),
-    steering: List(Submission),
-    /// Admitted inputs whose receipts the store has not committed yet; each
-    /// joins `steering` once it has.
+    /// Admitted inputs whose receipts the store has not committed yet.
     admitting: Int,
     /// The run ended and its end is being committed; it holds the session
     /// until then.
     finishing: Bool,
+    /// Agent close waits for cancellation and durable turn completion.
+    pending_agent_close: Option(message),
     active_submissions: List(Submission),
     sequence: Int,
     events: event_buffer.Buffer,
     watchers: List(Watcher),
-    notice: Option(String),
+    /// What the kernel last told the model about itself (restored, lost,
+    /// restarted), until a turn reads it; it waits in the inbox meanwhile
+    /// (`session_namespace.set_notice`).
+    notice: Option(KernelNotice),
     context: context_snapshot.Snapshot,
     pin: loop.Pin,
     /// Inputs evicted by the last prepared projection; the next live reload
@@ -117,6 +126,7 @@ pub type State(message) {
     /// A remote workspace readiness probe running outside the actor.
     workspace_probe: Option(String),
     releasing: Option(List(message)),
+    checkpointing: Option(List(message)),
     closing: Bool,
     /// What this session answers to new input once it moved to another
     /// daemon (`moves.watch`), or None while it lives here.
@@ -124,9 +134,15 @@ pub type State(message) {
     blocked_until: Int,
     /// Failed kernel startup waits for an explicit retry or workspace move.
     kernel_blocked: Bool,
+    /// Why waiting inputs could not start a turn, until `blocked_until`.
+    blocking: Option(String),
     /// A child's failure letter waits briefly for its siblings' before its
     /// turn starts; the session reports itself preparing meanwhile.
     holding_failure: Bool,
+    /// People's waiting inputs held while they edit them, by input id, with
+    /// the monotonic deadline of each hold. The queue stops at the first held
+    /// row, so neither it nor what waits behind it is read until the hold ends.
+    held: dict.Dict(String, Int),
     generation: String,
     tool_progress: tool_progress.Projection,
     progress_timer_token: Int,
@@ -151,6 +167,8 @@ pub type State(message) {
     output_timer: Option(process.Timer),
     output_published_at: Int,
     publish_output: message,
+    draft_timer: Option(process.Timer),
+    flush_draft: message,
     /// Wraps what goes on after a write `write_then` queued.
     landed: fn(fn(State(message)) -> State(message)) -> message,
     /// Writes `write_then` queued whose `landed` step has not run yet, and
@@ -178,6 +196,9 @@ pub fn write_then(
 
 /// Deltas reach a client at most once a frame; a terminal draws no faster.
 const frame_ms = 16
+
+/// How long unflushed text deltas wait before writing a recovery draft.
+const draft_ms = 1000
 
 /// Streaming clients are woken as each event is published. A text or thinking
 /// delta after a quiet frame goes out at once; later ones wait for the frame
@@ -214,14 +235,14 @@ fn hold(state: State(message), event: view.Event) -> State(message) {
       )
     _ -> event
   }
-  let now = clock.monotonic_ms()
+  let now = albedo_clock.monotonic_ms()
   case state.pending_output, now - state.output_published_at >= frame_ms {
     [], True -> publish_output(State(..state, output_published_at: now), event)
     pending, _ -> {
       let timer = case state.output_timer {
         Some(timer) -> timer
         None ->
-          clock.send_after(
+          albedo_clock.send_after(
             state.self,
             int.max(0, state.output_published_at + frame_ms - now),
             state.publish_output,
@@ -249,7 +270,7 @@ pub fn flush_output(state: State(message)) -> State(message) {
           ..state,
           pending_output: [],
           output_timer: None,
-          output_published_at: clock.monotonic_ms(),
+          output_published_at: albedo_clock.monotonic_ms(),
         )
       list.fold(merge(pending, []), state, publish_output)
     }
@@ -286,15 +307,14 @@ fn publish_output(state: State(message), event: view.Event) -> State(message) {
           state.active_output,
           run_id,
           message_id,
-          "text",
+          active_output_store.Text,
           text,
           None,
         )
-      list.fold(
-        chunks(text),
-        announce_status(State(..state, active_output: output)),
-        fn(state, text) { publish(state, view.Text(run_id, message_id, text)) },
-      )
+      let state = arm_draft(State(..state, active_output: output))
+      list.fold(chunks(text), announce_status(state), fn(state, text) {
+        publish(state, view.Text(run_id, message_id, text))
+      })
     }
     view.Thinking(run_id, message_id, text, elapsed) -> {
       let output =
@@ -302,7 +322,7 @@ fn publish_output(state: State(message), event: view.Event) -> State(message) {
           state.active_output,
           run_id,
           message_id,
-          "thinking",
+          active_output_store.Thinking,
           text,
           elapsed,
         )
@@ -337,6 +357,21 @@ fn chunks(text: String) -> List(String) {
   }
 }
 
+fn arm_draft(state: State(message)) -> State(message) {
+  case state.draft_timer, active_output.draft_dirty(state.active_output) {
+    None, True ->
+      State(
+        ..state,
+        draft_timer: Some(albedo_clock.send_after(
+          state.self,
+          draft_ms,
+          state.flush_draft,
+        )),
+      )
+    _, _ -> state
+  }
+}
+
 fn scalar_chunks(
   scalars: List(UtfCodepoint),
   acc: List(String),
@@ -355,6 +390,12 @@ fn scalar_chunks(
 /// that caused it. Repeated deltas do not allocate repeated status events.
 pub fn announce(state: State(message)) -> State(message) {
   announce_status(flush_output(state))
+}
+
+/// What waits in the session's inbox, or its order, changed: a client showing
+/// the queue reads it again (`queue.url`).
+pub fn queue_changed(state: State(message)) -> State(message) {
+  publish(state, view.Invalidate(view.StaleExtension, queue.url(state.info.id)))
 }
 
 fn announce_status(state: State(message)) -> State(message) {
@@ -412,7 +453,7 @@ pub fn watch_glances(state: State(message)) -> State(message) {
     [_, ..], None ->
       State(
         ..state,
-        glance_timer: Some(clock.send_after(
+        glance_timer: Some(albedo_clock.send_after(
           state.self,
           glance_ms,
           state.glances_due,
@@ -446,16 +487,10 @@ pub fn retry_pending(deadline: Int, monotonic_now: Int) -> Bool {
 pub fn current_status(state: State(message)) -> session_activity.Status {
   let blocking = case
     state.kernel_blocked
-    || retry_pending(state.blocked_until, clock.monotonic_ms()),
-    state.steering
+    || retry_pending(state.blocked_until, albedo_clock.monotonic_ms())
   {
-    True, [first, ..] ->
-      option.then(first.operation_id, fn(id) {
-        operations.input_outcome(runtime.ledger(state.host), id)
-        |> result.unwrap(None)
-        |> option.then(fn(outcome) { outcome.receipt.blocking_reason })
-      })
-    _, _ -> None
+    True -> state.blocking
+    False -> None
   }
   session_activity.status(
     state.activity,
@@ -482,7 +517,8 @@ fn publish(state: State(message), event: view.Event) -> State(message) {
     })
   let observed = view.observe(state.live_activity, event, usage.now())
   let committed_mail = case event {
-    view.Input(outcome, _) -> outcome.receipt.delivery == Some("committed")
+    view.Input(outcome, _) ->
+      outcome.receipt.delivery == Some(operations.Committed)
     view.Message(entry, _) -> entry.letter != None
     _ -> False
   }
@@ -538,7 +574,7 @@ fn publish(state: State(message), event: view.Event) -> State(message) {
 
 pub fn invalidate(
   state: State(message),
-  kind: String,
+  kind: view.InvalidateKind,
   url: String,
 ) -> State(message) {
   emit(state, view.Invalidate(kind, url))

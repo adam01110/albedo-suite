@@ -1,10 +1,11 @@
-import albedo/harness/extension
 import albedo/harness/extensions/zed/catalog
+import albedo/harness/extensions/zed/quota
 import albedo/harness/extensions/zed/stream
 import albedo/harness/extensions/zed/wire
-import albedo/harness/oauth
-import albedo/harness/rotation
-import albedo/openai_api/types
+import albedo/harness/sdk/extension
+import albedo/harness/sdk/oauth
+import albedo/harness/sdk/rotation
+import albedo_model as types
 import gleam/dict.{type Dict}
 import gleam/dynamic.{type Dynamic}
 import gleam/option.{type Option, None, Some}
@@ -23,8 +24,11 @@ pub fn extension() -> extension.Extension {
         resolve,
         None,
       )),
+      extension.QuotaPlugin(quota.source()),
     ],
     extension.no_initialise,
+    tables: [],
+    uses: [],
   )
 }
 
@@ -59,9 +63,9 @@ fn resolve(
     },
     fn(error) {
       case error {
-        types.HttpError(401, _) ->
+        types.Refused(types.CredentialRejected, ..) ->
           Some("Zed rejected the token; sign in again with /login zed")
-        types.HttpError(451, _) ->
+        types.Refused(_, Some(451), _) ->
           Some("Zed does not allow requests from this network region")
         _ -> None
       }
@@ -70,6 +74,8 @@ fn resolve(
     fn(_) { [] },
     types.anthropic_images,
     extension.NoCeiling,
+    None,
+    None,
   ))
 }
 
@@ -98,6 +104,7 @@ fn login() -> oauth.Login {
     fn(_) { Error("Zed uses native browser sign-in") },
     fn(_, _, _) { Error("Zed uses native browser sign-in") },
     native_account,
+    None,
   )
 }
 

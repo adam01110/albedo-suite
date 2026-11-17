@@ -2,9 +2,23 @@ package daemon
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"testing"
 )
+
+func TestProviderAvailabilityToggleIsConditional(t *testing.T) {
+	conn := controlledConnection(t, func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(r.Body)
+		if r.Method != http.MethodPatch || r.URL.String() != "/settings?group=providers" || r.Header.Get("If-Match") != `"providers-1"` ||
+			string(data) != `{"profiles":{"claude":{"enabled":false}}}` {
+			t.Errorf("unexpected toggle %s %s If-Match=%q %s", r.Method, r.URL, r.Header.Get("If-Match"), data)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{}`)
+	})
+	_ = SetProviderEnabled(t.Context(), conn, "claude", false, `"providers-1"`)
+}
 
 func TestProviderAvailabilitySettingsRetainEnabledState(t *testing.T) {
 	for _, enabled := range []any{nil, false, true} {

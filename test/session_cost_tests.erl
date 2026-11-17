@@ -42,7 +42,6 @@ run() ->
     [] = albedo_session_cost:estimate_grouped(P, []),
     subscription_prices(),
     endpoint_prices(),
-    catalog_prices(),
     io:format("session cost pricing tests passed~n"), ok.
 
 subscription_prices() ->
@@ -90,26 +89,3 @@ endpoint_prices() ->
     none = albedo_session_cost:estimate_rows(Prices,
         [row(<<"other">>, <<"responses:https://other.example/v1">>, <<"deepseek-v4.1-flash">>, Tokens, <<"ok">>, 1)]).
 
-catalog_prices() ->
-    Catalog = "session-cost-models.json",
-    Cost = #{<<"input">> => 2, <<"output">> => 10},
-    Data = #{<<"openai">> => #{<<"name">> => <<"OpenAI">>, <<"models">> =>
-        #{<<"gpt-test">> => #{<<"id">> => <<"gpt-test">>, <<"cost">> => Cost}}}},
-    try
-        ok = file:write_file(Catalog, json:encode(Data)),
-        {ok, Info} = file:read_file_info(Catalog, [{time, posix}]),
-        Revision = {element(2, Info), element(6, Info)},
-        %% Version 3 predates the price index and must be rebuilt from JSON.
-        ok = file:write_file(Catalog ++ ".index", term_to_binary(
-            {3, Revision, #{index => #{}, providers => #{}}})),
-        Expected = #{{<<"openai">>, <<"gpt-test">>} => Cost},
-        Expected = albedo_models:prices(Catalog),
-        %% Trimming and loading the persisted index both retain prices.
-        persistent_term:erase({albedo_models, Catalog}),
-        Expected = albedo_models:prices(Catalog),
-        {ok, Trimmed} = file:read_file(Catalog),
-        #{<<"openai">> := #{<<"models">> := #{<<"gpt-test">> := #{<<"cost">> := Cost}}}} = json:decode(Trimmed)
-    after
-        persistent_term:erase({albedo_models, Catalog}),
-        file:delete(Catalog), file:delete(Catalog ++ ".index")
-    end.

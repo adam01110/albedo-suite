@@ -1,11 +1,12 @@
-import albedo/daemon/conversation
-import albedo/daemon/images
-import albedo/harness/extension
-import albedo/harness/host
 import albedo/harness/location
-import albedo/harness/rpc
+import albedo/harness/sdk/extension
+import albedo/harness/sdk/history as conversation
+import albedo/harness/sdk/host
+import albedo/harness/sdk/images
+import albedo/harness/sdk/rpc
+import albedo/harness/sdk/transcript
 import albedo/harness/ssh
-import albedo/openai_api/types
+import albedo_model as types
 import gleam/bit_array
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
@@ -17,9 +18,11 @@ pub fn extension() -> extension.Extension {
   extension.Extension(
     "files",
     "Read, search, and exactly edit workspace files and read uploaded images from Python.",
-    ["python"],
+    [],
     [extension.ToolPlugin(instructions, [], ["files"], [#("files", route)])],
     extension.no_initialise,
+    tables: [],
+    uses: [],
   )
 }
 
@@ -79,7 +82,7 @@ fn image(
       })
       use lookup <- result.try(
         conversation.uploaded_image(
-          context.store,
+          context.storage,
           context.session,
           position,
           index,
@@ -88,11 +91,11 @@ fn image(
         |> result.map_error(fn(message) { #("image_unavailable", message) }),
       )
       case lookup {
-        conversation.ImageBefore(before) ->
+        transcript.ImageBefore(before) ->
           Ok(json.object([#("before", json.int(before))]))
-        conversation.ImageFound(image) -> {
+        transcript.ImageFound(image) -> {
           use bytes <- result.try(
-            images.bytes(context.store, image)
+            images.bytes(context.storage, image)
             |> result.replace_error(#(
               "image_unavailable",
               "uploaded image bytes not found",

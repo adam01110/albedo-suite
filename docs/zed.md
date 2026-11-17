@@ -162,9 +162,9 @@ follow the editor because the wire shape decides whether the request works:
   none when it issued none; no placeholder is invented. Tool-result media is
   nested under `functionResponse.parts` except for `gemini-2.5-pro`,
   `gemini-2.5-flash` and `gemini-2.5-flash-lite`, which take sibling parts.
-  Function calls and responses carry their call ids. An effort the local
-  thinking table does not list for a model is forwarded as a level instead of
-  failing the request.
+  Function calls and responses carry their call ids. A model the local thinking
+  table does not list gets no thinking configuration, following upstream, so an
+  unlisted hosted Gemini model runs without `thinkingLevel`.
 - GPT: `reasoning.encrypted_content` is requested only when the request reasons
   or replays a reasoning item, `reasoning.summary` is `auto` whenever the
   request reasons, an effort of `none` sends no reasoning object, and

@@ -6,14 +6,14 @@
 //// speaks Responses keeps one history shape across its routes, so switching
 //// models keeps the conversation. OpenCode Go and GitHub Copilot both need it.
 
-import albedo/openai_api/cost
-import albedo/openai_api/decoding
-import albedo/openai_api/replay
 import albedo/openai_api/stream as reducer
-import albedo/openai_api/types.{
+import albedo_json/decoding
+import albedo_model.{
   type Error, type Input, Assistant, ChatCompletions, InvalidRequest, Replay,
   Responses,
-}
+} as types
+import albedo_model/cost
+import albedo_model/replay
 import gleam/dynamic/decode
 import gleam/json
 import gleam/list

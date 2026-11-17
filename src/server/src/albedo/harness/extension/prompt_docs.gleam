@@ -1,7 +1,7 @@
 //// Project only optional API reference prose; preserve executable contributions.
 
-import albedo/harness/extension
-import albedo/harness/host
+import albedo/harness/sdk/extension
+import albedo/harness/sdk/host
 import gleam/dynamic/decode
 import gleam/json
 import gleam/list
@@ -12,6 +12,7 @@ pub fn available(items: List(extension.Prepared)) -> Bool {
   let values = list.map(items, fn(item) { item.value })
   let modules = list.flat_map(values, fn(value) { value.python_modules })
   list.contains(list.map(items, fn(item) { item.extension }), "python")
+  && list.any(items, compacted)
   && !extension.duplicate_capabilities(
     list.append(values, [
       extension.Managed(
@@ -25,6 +26,12 @@ pub fn available(items: List(extension.Prepared)) -> Bool {
   )
   && !list.contains(modules, "api_docs")
   && !list.contains(modules, "albedo_plugins.api_docs")
+}
+
+/// Whether retrieval has anything to add: a contribution whose startup
+/// instructions shrink to a summary.
+fn compacted(item: extension.Prepared) -> Bool {
+  summary(item.extension) != "" && string.trim(item.value.instructions) != ""
 }
 
 fn summary(name: String) -> String {
@@ -56,11 +63,7 @@ pub fn instructions(items: List(extension.Prepared)) -> String {
   <> {
     items
     |> list.map(fn(item) {
-      case
-        compact
-        && summary(item.extension) != ""
-        && string.trim(item.value.instructions) != ""
-      {
+      case compact && compacted(item) {
         True -> summary(item.extension)
         False -> item.value.instructions
       }

@@ -1,18 +1,20 @@
 //// Session listing and its bounded invalidation subscription.
 
-import albedo/clock
 import albedo/daemon/bus
 import albedo/daemon/http_api
 import albedo/daemon/http_session_resource
 import albedo/daemon/http_stream
 import albedo/daemon/http_wire
 import albedo/daemon/moves
+import albedo/daemon/refusal
 import albedo/daemon/registry.{type Config, type Message}
 import albedo/daemon/session
 import albedo/daemon/session_collection
 import albedo/daemon/session_cost
 import albedo/daemon/usage
 import albedo/harness/runtime
+import albedo/harness/sdk/http_api as sdk_http_api
+import albedo_clock
 import gleam/dynamic/decode
 import gleam/erlang/process.{type Subject}
 import gleam/http/request
@@ -29,7 +31,7 @@ fn collection_filter(
   config: Config,
   host: runtime.Runtime,
   parameters: List(#(String, String)),
-) -> Result(session_collection.Filter, http_api.Failure) {
+) -> Result(session_collection.Filter, sdk_http_api.Failure) {
   let value = fn(name) { list.key_find(parameters, name) |> option.from_result }
   let parent = value("parent_id")
   let family = value("family_id")
@@ -49,7 +51,7 @@ fn collection_filter(
       || !list.contains(["activity", "frequent"], sort)
     {
       True ->
-        Error(http_api.invalid(
+        Error(sdk_http_api.invalid(
           "choose roots/all, one parent or family filter, and an activity/frequent sort",
         ))
       False -> Ok(Nil)
@@ -62,9 +64,9 @@ fn collection_filter(
         "workspace" -> 4096
         _ -> 16_384
       }
-      case http_api.scalar_prefix(parameter.1, maximum) == parameter.1 {
+      case sdk_http_api.scalar_prefix(parameter.1, maximum) == parameter.1 {
         True -> Ok(Nil)
-        False -> Error(http_api.invalid(parameter.0 <> " is too long"))
+        False -> Error(sdk_http_api.invalid(parameter.0 <> " is too long"))
       }
     }),
   )
@@ -78,7 +80,7 @@ fn collection_filter(
     None -> Ok([])
     Some(_) ->
       runtime.needs_reload(host, config.home)
-      |> result.map_error(http_api.failure)
+      |> result.map_error(refusal.unavailable)
   })
   Ok(
     session_collection.Filter(
@@ -117,7 +119,7 @@ pub fn read(
 ) -> response.Response(mist.ResponseData) {
   let outcome = {
     use parameters <- result.try(
-      http_api.parameters(req, [
+      sdk_http_api.parameters(req, [
         "scope",
         "parent_id",
         "family_id",
@@ -131,7 +133,7 @@ pub fn read(
         "next",
       ]),
     )
-    use watching <- result.try(http_api.wants_events(req))
+    use watching <- result.try(sdk_http_api.wants_events(req))
     use _ <- result.try(
       case
         watching
@@ -140,21 +142,21 @@ pub fn read(
         })
       {
         True ->
-          Error(http_api.invalid(
+          Error(sdk_http_api.invalid(
             "collection watch accepts scope filters without sort or pagination",
           ))
         False -> Ok(Nil)
       },
     )
     use host <- result.try(
-      registry.host(registry) |> result.map_error(http_api.failure),
+      registry.host(registry) |> result.map_error(refusal.failure),
     )
     use filter <- result.try(collection_filter(config, host, parameters))
     case watching {
       True -> {
         use _ <- result.try(
           session_collection.page(runtime.ledger(host), filter, None, 1)
-          |> result.map_error(http_api.failure),
+          |> result.map_error(refusal.failure),
         )
         use _ <- result.try(http_stream.configure(live.body))
         let coded = http_stream.coded(live)
@@ -163,7 +165,7 @@ pub fn read(
           http_stream.response(live, coded),
           fn(subject) {
             process.send(subject, StreamWake)
-            let _ = clock.send_after(subject, 5000, StreamTick)
+            let _ = albedo_clock.send_after(subject, 5000, StreamTick)
             CollectionStream(
               None,
               fn() {
@@ -186,9 +188,9 @@ pub fn read(
           Error(_) -> Ok(None)
           Ok(token) -> {
             use state <- result.try(
-              http_api.page_state(config.token, binding, token)
+              sdk_http_api.page_state(config.token, binding, token)
               |> result.map_error(fn(_) {
-                http_api.invalid(
+                sdk_http_api.invalid(
                   "session continuation does not belong to this query",
                 )
               }),
@@ -196,13 +198,13 @@ pub fn read(
             json.parse(state, collection_key())
             |> result.map(Some)
             |> result.map_error(fn(_) {
-              http_api.invalid("invalid session continuation")
+              sdk_http_api.invalid("invalid session continuation")
             })
           }
         })
         use page <- result.try(
           session_collection.page(runtime.ledger(host), filter, cursor, limit)
-          |> result.map_error(http_api.failure),
+          |> result.map_error(refusal.failure),
         )
         let cost =
           session_cost.totals(
@@ -213,7 +215,7 @@ pub fn read(
           list.try_map(page.items, fn(durable) {
             use live <- result.try(
               registry.existing(registry, durable.info.id)
-              |> result.map_error(http_api.failure),
+              |> result.map_error(refusal.failure),
             )
             use live <- result.try(case live {
               None -> Ok(None)
@@ -223,7 +225,7 @@ pub fn read(
                   Error(reason) ->
                     // An unloading session can stop after the lookup.
                     case session.alive(worker) {
-                      True -> Error(http_api.failure(reason))
+                      True -> Error(refusal.unavailable(reason))
                       False -> Ok(None)
                     }
                 }
@@ -250,7 +252,7 @@ pub fn read(
         )
         let next =
           json.nullable(page.next, fn(key) {
-            json.string(http_api.page_token(
+            json.string(sdk_http_api.page_token(
               config.token,
               binding,
               json.to_string(
@@ -301,7 +303,7 @@ pub fn read(
             ),
           ]
         }
-        Ok(http_api.reply(
+        Ok(sdk_http_api.reply(
           200,
           json.object([
             #("items", json.array(items, fn(value) { value })),
@@ -324,8 +326,8 @@ type CollectionStream {
   CollectionStream(
     /// None until the first message: opening reads every session in scope,
     /// which can outlast the second mist gives a chunked response to start.
-    follow: Option(Result(Follow, http_api.Failure)),
-    open: fn() -> Result(Follow, http_api.Failure),
+    follow: Option(Result(Follow, sdk_http_api.Failure)),
+    open: fn() -> Result(Follow, sdk_http_api.Failure),
     subject: Subject(StreamMessage),
     writer: http_stream.Writer,
     initial: Bool,
@@ -371,7 +373,7 @@ pub fn open(
   host: runtime.Runtime,
   parameters: List(#(String, String)),
   notify: fn() -> Nil,
-) -> Result(Follow, http_api.Failure) {
+) -> Result(Follow, sdk_http_api.Failure) {
   let subscription = bus.subscribe_filtered(process.self(), notify, [])
   let follow = Follow(config, host, parameters, subscription)
   case refresh(follow) {
@@ -383,7 +385,7 @@ pub fn open(
   }
 }
 
-fn refresh(follow: Follow) -> Result(Nil, http_api.Failure) {
+fn refresh(follow: Follow) -> Result(Nil, sdk_http_api.Failure) {
   let revision = bus.filter_revision(follow.subscription)
   use filter <- result.try(collection_filter(
     follow.config,
@@ -392,7 +394,7 @@ fn refresh(follow: Follow) -> Result(Nil, http_api.Failure) {
   ))
   use ids <- result.try(
     session_collection.ids(runtime.ledger(follow.host), filter)
-    |> result.map_error(http_api.failure),
+    |> result.map_error(refusal.failure),
   )
   bus.set_filter(follow.subscription, revision, ids)
   Ok(Nil)
@@ -402,7 +404,7 @@ fn refresh(follow: Follow) -> Result(Nil, http_api.Failure) {
 pub fn next(
   follow: Follow,
   initial: Bool,
-) -> Result(Option(String), http_api.Failure) {
+) -> Result(Option(String), sdk_http_api.Failure) {
   let batch = case initial {
     True ->
       Ok(Some(
@@ -428,7 +430,7 @@ pub fn next(
       ))
     False ->
       case bus.drain(follow.subscription) {
-        bus.Overflow -> Error(http_api.failure("collection_overflow"))
+        bus.Overflow -> Error(refusal.unavailable("collection_overflow"))
         bus.Batch(encoded, invalidated) -> {
           use _ <- result.try(case invalidated {
             True -> refresh(follow)
@@ -444,10 +446,11 @@ pub fn next(
   }
   use batch <- result.try(batch)
   case
-    string.byte_size(option.unwrap(batch, "")) <= http_api.response_limit - 1024
+    string.byte_size(option.unwrap(batch, ""))
+    <= sdk_http_api.response_limit - 1024
   {
     True -> Ok(batch)
-    False -> Error(http_api.failure("collection_overflow"))
+    False -> Error(refusal.unavailable("collection_overflow"))
   }
 }
 
@@ -494,7 +497,8 @@ fn collection_stream_loop(
               case message {
                 StreamWake -> Nil
                 StreamTick -> {
-                  let _ = clock.send_after(state.subject, 5000, StreamTick)
+                  let _ =
+                    albedo_clock.send_after(state.subject, 5000, StreamTick)
                   Nil
                 }
               }

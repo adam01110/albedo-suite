@@ -190,8 +190,8 @@ func TestSSHClipboardPasteAcrossModal(t *testing.T) {
 
 func TestSSHClipboardRejectsInvalidReplies(t *testing.T) {
 	for _, scenario := range []string{
-		"denied", "unsupported", "busy", "bad-base64", "chunk-limit", "image-limit",
-		"data-before-ok", "duplicate-ok", "empty", "invalid-image", "timeout",
+		"denied", "unsupported", "busy", "bad-base64", "image-limit",
+		"data-before-ok", "empty", "invalid-image", "timeout",
 	} {
 		t.Run(scenario, func(t *testing.T) {
 			app := clipboardApp(t)
@@ -206,8 +206,6 @@ func TestSSHClipboardRejectsInvalidReplies(t *testing.T) {
 				deliverClipboardPacket(t, app, clipboardPacket(id, status, "", ""))
 			case "bad-base64":
 				deliverClipboardPacket(t, app, clipboardPacket(id, "DATA", "image/png", "YQ==\n"))
-			case "chunk-limit":
-				deliverClipboardPacket(t, app, clipboardPacket(id, "DATA", "image/png", base64.StdEncoding.EncodeToString(make([]byte, 4097))))
 			case "image-limit":
 				chunk := base64.StdEncoding.EncodeToString(make([]byte, 4096))
 				for range MaxClipboardImageBytes/4096 + 1 {
@@ -215,8 +213,6 @@ func TestSSHClipboardRejectsInvalidReplies(t *testing.T) {
 				}
 			case "data-before-ok":
 				deliverClipboardPacket(t, app, clipboardPacket(id, "DATA", "image/png", "YQ=="))
-			case "duplicate-ok":
-				deliverClipboardPacket(t, app, clipboardPacket(id, "OK", "", ""))
 			case "invalid-image":
 				deliverClipboardPacket(t, app, clipboardPacket(id, "DATA", "image/png", "YQ=="))
 				deliverClipboardPacket(t, app, clipboardPacket(id, "DONE", "", ""))

@@ -4,20 +4,24 @@ import albedo/daemon/conversation
 import albedo/daemon/events
 import albedo/daemon/http_acp
 import albedo/daemon/http_active_output
-import albedo/daemon/http_api
 import albedo/daemon/http_configuration
 import albedo/daemon/http_transcript
 import albedo/daemon/http_wire
 import albedo/daemon/moves
 import albedo/daemon/operations
+import albedo/daemon/refusal
 import albedo/daemon/session
 import albedo/daemon/session_cost
-import albedo/daemon/session_submission
 import albedo/daemon/shell_commands
 import albedo/daemon/side_question
-import albedo/daemon/store
+import albedo/daemon/turn
+import albedo/harness/capability_catalog
 import albedo/harness/extension/selection
 import albedo/harness/runtime
+import albedo/harness/sdk/history
+import albedo/harness/sdk/http_api as sdk_http_api
+import albedo/harness/sdk/storage
+import albedo/harness/sdk/store
 import gleam/dict
 import gleam/int
 import gleam/json
@@ -30,7 +34,7 @@ pub fn acp_field(
   ledger: store.Store,
   id: String,
 ) -> List(#(String, json.Json)) {
-  case conversation.acp_marker(ledger, id) {
+  case history.acp_marker(storage.host(ledger), id) {
     Ok(Some(_)) -> http_acp.state_field(id)
     _ -> []
   }
@@ -38,13 +42,13 @@ pub fn acp_field(
 
 pub fn creation(
   record: conversation.CreationRecord,
-) -> Result(json.Json, http_api.Failure) {
+) -> Result(json.Json, sdk_http_api.Failure) {
   case record.submitted, record.resolved {
     Some(submitted), Some(resolved) -> {
       use submitted <- result.try(
-        http_api.json_value(submitted)
+        sdk_http_api.json_value(submitted)
         |> result.map_error(fn(_) {
-          http_api.Failure(
+          sdk_http_api.Failure(
             503,
             "creation_unavailable",
             "stored creation intent is unavailable",
@@ -52,9 +56,9 @@ pub fn creation(
         }),
       )
       use resolved <- result.try(
-        http_api.json_value(resolved)
+        sdk_http_api.json_value(resolved)
         |> result.map_error(fn(_) {
-          http_api.Failure(
+          sdk_http_api.Failure(
             503,
             "creation_unavailable",
             "stored creation resolution is unavailable",
@@ -65,7 +69,7 @@ pub fn creation(
     }
     None, None -> Ok(json.null())
     _, _ ->
-      Error(http_api.Failure(
+      Error(sdk_http_api.Failure(
         503,
         "creation_unavailable",
         "stored creation provenance is incomplete",
@@ -74,11 +78,11 @@ pub fn creation(
 }
 
 fn pending_input(input: operations.Pending) -> json.Json {
-  let submission = session_submission.decode(input.payload)
-  let preview = http_api.scalar_prefix(submission.display, 256)
+  let submission = turn.decode(input.payload)
+  let preview = sdk_http_api.scalar_prefix(submission.display, 256)
   json.object([
     #("id", json.string(input.id)),
-    #("kind", json.string(input.kind)),
+    #("kind", json.string(operations.kind_name(input.kind))),
     #(
       "preview",
       json.object([
@@ -89,10 +93,13 @@ fn pending_input(input: operations.Pending) -> json.Json {
     ),
     #("accepted_at", http_wire.timestamp(input.accepted_at)),
     #("acceptance_order", json.int(input.acceptance_order)),
-    #("delivery", json.string("pending")),
+    #("delivery", json.string(operations.delivery_name(operations.Awaiting))),
     #(
       "blocking_reason",
-      json.nullable(input.blocking_reason, http_api.reason("input_blocked", _)),
+      json.nullable(input.blocking_reason, sdk_http_api.reason(
+        "input_blocked",
+        _,
+      )),
     ),
   ])
 }
@@ -114,7 +121,7 @@ fn composition_value(observed: runtime.CompositionObservation) -> json.Json {
       json.array(list.take(observed.quarantine, 200), fn(item) {
         json.object([
           #("id", json.string(item.name)),
-          #("reason", http_api.reason("extension_unavailable", item.reason)),
+          #("reason", sdk_http_api.reason("extension_unavailable", item.reason)),
         ])
       }),
     ),
@@ -149,10 +156,10 @@ pub fn encode(
   ledger: store.Store,
   capture: session.Capture,
   tail: Int,
-) -> Result(json.Json, http_api.Failure) {
+) -> Result(json.Json, sdk_http_api.Failure) {
   use provenance <- result.try(
     conversation.creation(ledger, capture.info.id)
-    |> result.map_error(http_api.failure),
+    |> result.map_error(refusal.unavailable),
   )
   use creation <- result.try(case provenance {
     None -> Ok(json.null())
@@ -278,7 +285,7 @@ pub fn encode(
                       json.object(
                         capture.composition.discovery.candidates
                         |> list.filter(fn(candidate) {
-                          candidate.kind == kind.1
+                          capability_catalog.kind_name(candidate.kind) == kind.1
                         })
                         |> list.map(fn(candidate) {
                           #(

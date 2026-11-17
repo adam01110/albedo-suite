@@ -8,23 +8,21 @@ import albedo/anthropic_api/request as messages_request
 import albedo/anthropic_api/stream as messages_stream
 import albedo/gemini_api/request as gemini_request
 import albedo/gemini_api/stream as gemini_stream
-import albedo/harness/settings
+import albedo/harness/extensions/opencode_go/routing
+import albedo/harness/sdk/network_context
+import albedo/harness/sdk/opencode_gateway as gateway
+import albedo/harness/sdk/settings
 import albedo/openai_api
-import albedo/openai_api/bridge
-import albedo/openai_api/cost
-import albedo/openai_api/request as openai_request
 import albedo/openai_api/stream as reducer
-import albedo/openai_api/types.{type Error, type Request, Responses}
-import gleam/dynamic.{type Dynamic}
-import gleam/json
+import albedo_model.{type Error, type Request} as types
+import albedo_model/refusal as openai_refusal
 import gleam/list
-import gleam/option.{type Option, None, Some}
+import gleam/option.{None}
 import gleam/result
 import gleam/string
-import gleam/string_tree.{type StringTree}
 
 pub type Client {
-  Client(connection: types.Client, session_id: String, org_id: String)
+  Client(connection: openai_api.Client, session_id: String, org_id: String)
 }
 
 pub fn client(
@@ -70,7 +68,7 @@ pub type Route {
 
 /// Which upstream route OpenCode Go uses for `model`.
 pub fn route(model: String) -> Route {
-  case metadata_route(settings.home(), model) {
+  case routing.metadata_route(settings.home(), model) {
     "messages" -> MessagesRoute
     "responses" -> ResponsesRoute
     "chat_completions" -> ChatRoute
@@ -78,9 +76,6 @@ pub fn route(model: String) -> Route {
     _ -> documented_route(model)
   }
 }
-
-@external(erlang, "albedo_opencode_go", "metadata_route")
-fn metadata_route(home: String, model: String) -> String
 
 fn documented_route(model: String) -> Route {
   let id = string.lowercase(string.trim(model))
@@ -108,12 +103,17 @@ pub fn stream(
   case route(request.model) {
     ChatRoute -> stream_chat(client, request, on_event)
     ResponsesRoute -> {
-      use exchange <- result.try(encode_responses(
+      use exchange <- result.try(gateway.encode_responses(
         client.connection,
         headers(client),
         request,
       ))
-      openai_api.exchange(exchange, responses_reducer(), on_event)
+      openai_api.exchange(
+        openai_api.Exchange(..exchange, refusal:),
+        network_context.transport(),
+        gateway.responses_reducer(),
+        on_event,
+      )
     }
     MessagesRoute -> {
       use exchange <- result.try(encode_messages(
@@ -123,7 +123,8 @@ pub fn stream(
       ))
       openai_api.exchange(
         exchange,
-        messages_stream.reducer(request.model, request.tools, cost),
+        network_context.transport(),
+        messages_stream.reducer(request.model, request.tools, gateway.cost),
         on_event,
       )
     }
@@ -133,41 +134,48 @@ pub fn stream(
         headers(client),
         request,
       ))
-      openai_api.exchange(exchange, gemini_stream.reducer(), on_event)
+      openai_api.exchange(
+        exchange,
+        network_context.transport(),
+        gemini_stream.reducer(),
+        on_event,
+      )
     }
   }
 }
 
-/// Canonical inference base URL; `/zen/go/v1` is rewritten to `/inference/go/v1`
-/// so Gemini's `/models/{id}:streamGenerateContent` route resolves on the
-/// direct inference gateway.
-pub fn base_url(url: String) -> String {
-  let trimmed = string.remove_suffix(string.trim(url), "/")
-  case trimmed {
-    "https://opencode.ai/zen/go/v1" -> "https://opencode.ai/inference/go/v1"
-    _ -> trimmed
+/// OpenCode Go's failures on any route. A 403 refuses a model the plan does
+/// not include, and a 429 is lasting when it names a usage limit or a plan
+/// window, which its body does only by name or in words.
+pub fn refusal(status: Int, body: String) -> Error {
+  case openai_refusal.openai(status, body), status {
+    types.Refused(_, at, detail), 403 ->
+      types.Refused(types.AccountBlocked(types.NotEntitled), at, detail)
+    types.Refused(_, at, detail), 429 -> {
+      let lasting =
+        openai_refusal.spent_quota(body)
+        || list.any(
+          [
+            "usage_limit",
+            "UsageLimit",
+            "RateLimit",
+            "monthly",
+            "weekly",
+            "rolling",
+          ],
+          string.contains(body, _),
+        )
+      types.Refused(
+        openai_refusal.limited(case lasting {
+          True -> types.Lasting
+          False -> types.Brief
+        }),
+        at,
+        detail,
+      )
+    }
+    refused, _ -> refused
   }
-}
-
-/// Encodes a ChatCompletions-projected request into an OpenAI `/responses`
-/// exchange for OpenCode Go models backed by Responses (GPT, Grok, Muse Spark).
-pub fn encode_responses(
-  client: types.Client,
-  headers: List(#(String, String)),
-  request: Request,
-) -> Result(openai_api.Exchange, Error) {
-  use inputs <- result.try(bridge.responses_inputs(request.input))
-  let rewritten = types.Request(..request, input: inputs)
-  use body <- result.map(encode_openai(Responses, rewritten))
-  openai_api.Exchange(
-    base_url(client.base_url) <> "/responses",
-    headers,
-    body,
-    client.timeout_ms,
-    None,
-    client.max_event_bytes,
-    True,
-  )
 }
 
 /// The lease OpenCode Go keeps on a marked prefix: its `/messages` route
@@ -187,7 +195,7 @@ pub fn cache_marks(request: Request) -> List(types.CacheMark) {
 /// exchange via `messages_request.encode_body_cached`, marking the prefixes the gateway
 /// can serve from its cache.
 pub fn encode_messages(
-  client: types.Client,
+  client: openai_api.Client,
   headers: List(#(String, String)),
   request: Request,
 ) -> Result(openai_api.Exchange, Error) {
@@ -209,26 +217,27 @@ pub fn encode_messages(
     ..headers
   ]
   openai_api.Exchange(
-    base_url(client.base_url) <> "/messages",
+    gateway.base_url(client.base_url) <> "/messages",
     headers,
     body,
     120_000,
     None,
     client.max_event_bytes,
     True,
+    refusal:,
   )
 }
 
 /// Encodes a ChatCompletions-projected request into a Gemini
 /// `:streamGenerateContent?alt=sse` exchange via `gemini_request.encode_body`.
 pub fn encode_gemini(
-  client: types.Client,
+  client: openai_api.Client,
   headers: List(#(String, String)),
   request: Request,
 ) -> Result(openai_api.Exchange, Error) {
   use body <- result.map(gemini_request.encode_body(request))
   let url =
-    base_url(client.base_url)
+    gateway.base_url(client.base_url)
     <> "/models/"
     <> request.model
     <> ":streamGenerateContent?alt=sse"
@@ -240,41 +249,7 @@ pub fn encode_gemini(
     None,
     client.max_event_bytes,
     True,
-  )
-}
-
-/// Reduces an OpenAI `/responses` SSE stream into a Turn whose replay item is a
-/// single portable `ChatCompletions` assistant message.
-pub fn responses_reducer() -> reducer.Reducer {
-  bridge.responses_reducer(cost)
-}
-
-/// The cost that OpenCode Go reports for a call. `cost` is money charged to a
-/// balance or a key. `opencode.allowance` is the amount that a Go plan counted
-/// against its limit. `opencode.list_cost` is the list price of the call when a
-/// plan included it. A call that a plan covers reports zero charged and still
-/// names the last two figures.
-pub fn cost(frame: Dynamic) -> Option(types.Cost) {
-  let figures =
-    types.Cost(
-      charged_usd: cost.in_usage(frame, ["cost"]),
-      counted_usd: cost.in_usage(frame, ["opencode", "allowance"]),
-      listed_usd: cost.in_usage(frame, ["opencode", "list_cost"]),
-    )
-  case cost.priced(figures) {
-    True -> Some(figures)
-    False -> None
-  }
-}
-
-/// The gateway does not accept OpenAI service tiers on either OpenAI route.
-pub fn encode_openai(
-  protocol: types.Protocol,
-  request: Request,
-) -> Result(StringTree, Error) {
-  use fields <- result.map(openai_request.fields(protocol, request))
-  json.to_string_tree(
-    json.object(list.filter(fields, fn(field) { field.0 != "service_tier" })),
+    refusal:,
   )
 }
 
@@ -287,11 +262,12 @@ pub fn stream_chat(
   use prepared <- result.try(openai_api.encode_request(
     client.connection,
     request,
-    encode_openai,
+    gateway.encode_openai,
   ))
   openai_api.exchange(
-    openai_api.Exchange(..prepared, headers: headers(client)),
-    reducer.reducer_with(client.connection.protocol, cost),
+    openai_api.Exchange(..prepared, headers: headers(client), refusal:),
+    network_context.transport(),
+    reducer.reducer_with(client.connection.protocol, gateway.cost),
     on_event,
   )
 }

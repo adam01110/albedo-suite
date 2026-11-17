@@ -110,7 +110,7 @@ func (t *transcriptState) streamDelta(kind ActiveStreamKind, text, agentName, me
 // apply returns newly settled entries. The history owner stamps committed rows.
 func (t *transcriptState) apply(evt daemon.StreamEvent, agentName string) []HistoryEntry {
 	// Empty provider records and agent progress are observations, not replies.
-	if evt.Type == daemon.EventMessage && evt.Text == "" || evt.Type == daemon.EventNote && evt.Source == "agent" {
+	if evt.Type == daemon.EventMessage && evt.Text == "" || evt.Type == daemon.EventNote && evt.Origin == "agent" {
 		return nil
 	}
 	if evt.EntryID != "" && !evt.Replayed && len(t.liveIDs) > 0 && (evt.Type == daemon.EventMessage || evt.Type == daemon.EventThinking || evt.Type == daemon.EventNote) {
@@ -172,7 +172,7 @@ func (t *transcriptState) apply(evt daemon.StreamEvent, agentName string) []Hist
 		}
 		// Your message closes the previous turn. Other sources open a turn
 		// only when none is in flight.
-		opens := t.turn == nil || evt.Source == "" || evt.Source == "chat"
+		opens := t.turn == nil || evt.Source.FromPerson()
 		if opens {
 			entries = append(entries, t.closeTurn(false)...)
 		}
@@ -217,7 +217,7 @@ func (t *transcriptState) apply(evt daemon.StreamEvent, agentName string) []Hist
 		entries = t.settle(agentName)
 		entries = append(entries, HistoryEntry{
 			Kind: EntryTool, ID: evt.EntryID, Seq: evt.Position, ToolName: evt.ToolName, ToolArgs: evt.ToolArgs,
-			ToolResult: evt.ToolResult, ToolTrace: evt.ToolTrace, ToolTitle: evt.ToolTitle, Images: evt.Images,
+			ToolResult: evt.ToolResult, ToolStatus: evt.ToolStatus, ToolTrace: evt.ToolTrace, ToolTitle: evt.ToolTitle, Images: evt.Images,
 			Timestamp: time.Now().UnixMilli(),
 		})
 		if t.turn == nil {
@@ -261,8 +261,8 @@ func (t *transcriptState) apply(evt daemon.StreamEvent, agentName string) []Hist
 	case daemon.EventTurnCompleted:
 		entries = t.settle(agentName)
 		if t.turn != nil {
-			t.turn.failed = t.turn.failed || evt.Source == "failed"
-			entries = append(entries, t.closeTurn(evt.Source == "interrupted")...)
+			t.turn.failed = t.turn.failed || evt.Outcome == daemon.OutcomeFailed
+			entries = append(entries, t.closeTurn(evt.Outcome == daemon.OutcomeInterrupted)...)
 		}
 	case daemon.EventInterrupted:
 		entries = t.settle(agentName)
@@ -402,14 +402,14 @@ func (t *transcriptState) closeTurn(stopped bool) []HistoryEntry {
 
 func inputSpeaker(evt daemon.StreamEvent) string {
 	switch evt.Source {
-	case "mail":
+	case daemon.SourceMail:
 		return cmp.Or(evt.Speaker, "Agent")
-	case "event":
+	case daemon.SourceEvent:
 		// Named by its producer, such as discord.
 		return cmp.Or(evt.Speaker, "event")
 	}
-	if evt.Source == "" || evt.Source == "chat" {
+	if evt.Source.FromPerson() {
 		return "You"
 	}
-	return evt.Source
+	return string(evt.Source)
 }

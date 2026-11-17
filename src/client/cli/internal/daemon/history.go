@@ -160,7 +160,7 @@ func historyEntryEvents(entry historyEntry) ([]StreamEvent, error) {
 			case "elapsed_ms":
 				_ = json.Unmarshal(part.Value, &event.ElapsedMs)
 			case "origin":
-				if err := json.Unmarshal(part.Value, &event.Source); err != nil {
+				if err := json.Unmarshal(part.Value, &event.Origin); err != nil {
 					return nil, fieldError("history origin")
 				}
 			case "skill":
@@ -212,17 +212,17 @@ func historyEntryEvents(entry historyEntry) ([]StreamEvent, error) {
 		event.Type = EventUser
 		switch event.TurnType {
 		case "agent":
-			event.Source = "mail"
+			event.Source = SourceMail
 		case "webhook":
-			event.Source = "webhook"
+			event.Source = SourceWebhook
 		case "event":
-			event.Source = "event"
+			event.Source = SourceEvent
 		case "scheduled":
-			event.Source = "job"
+			event.Source = SourceJob
 		case "continue":
-			event.Source = "continue"
+			event.Source = SourceContinue
 		default:
-			event.Source = "chat"
+			event.Source = SourceChat
 		}
 	case "assistant":
 		event.Type = EventMessage

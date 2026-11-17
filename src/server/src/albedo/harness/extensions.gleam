@@ -1,9 +1,11 @@
-import albedo/harness/extension
+import albedo/harness/extension_cache
 import albedo/harness/extensions/agents/extension as agents
+import albedo/harness/extensions/anthropic_api/extension as anthropic_api
 import albedo/harness/extensions/antigravity/extension as antigravity
 import albedo/harness/extensions/artifacts/extension as artifacts
 import albedo/harness/extensions/bedrock/extension as bedrock
 import albedo/harness/extensions/browser/extension as browser
+import albedo/harness/extensions/checklist/extension as checklist
 import albedo/harness/extensions/claude/extension as claude
 import albedo/harness/extensions/codex/extension as codex
 import albedo/harness/extensions/colab/extension as colab
@@ -36,7 +38,6 @@ import albedo/harness/extensions/paperclips/extension as paperclips
 import albedo/harness/extensions/perplexity/extension as perplexity
 import albedo/harness/extensions/persistent_agent/extension as persistent_agent
 import albedo/harness/extensions/proxy/extension as proxy
-import albedo/harness/extensions/python/extension as python
 import albedo/harness/extensions/remote/extension as remote
 import albedo/harness/extensions/rolling/extension as rolling
 import albedo/harness/extensions/run/extension as run
@@ -51,6 +52,7 @@ import albedo/harness/extensions/webhooks/extension as webhooks
 import albedo/harness/extensions/work/extension as work
 import albedo/harness/extensions/worktrees/extension as worktrees
 import albedo/harness/extensions/zed/extension as zed
+import albedo/harness/sdk/extension
 
 pub type Config {
   Config(extensions: List(extension.Extension), default_enabled: List(String))
@@ -59,21 +61,17 @@ pub type Config {
 /// The installed extensions: a sealed build's cached declarations, or the
 /// constructors' result.
 pub fn defaults() -> Config {
-  case sealed() {
+  case extension_cache.load() {
     Ok(config) -> config
     Error(Nil) -> declared()
   }
 }
-
-@external(erlang, "albedo_extension_cache", "load")
-fn sealed() -> Result(Config, Nil)
 
 /// Calls every extension's constructor. Declarations must not capture the
 /// environment: a sealed build caches this value.
 pub fn declared() -> Config {
   Config(
     [
-      python.extension(),
       run.extension(),
       work.extension(),
       mail.extension(),
@@ -83,6 +81,7 @@ pub fn declared() -> Config {
       agents.extension(),
       schedule.extension(),
       paperclips.extension(),
+      checklist.extension(),
       artifacts.extension(),
       files.extension(),
       // Diagnostics inspect published formatter output, not unfinished edits.
@@ -100,6 +99,7 @@ pub fn declared() -> Config {
       opencode_zen.extension(),
       github_copilot.extension(),
       bedrock.extension(),
+      anthropic_api.extension(),
       claude.extension(),
       vertex.extension(),
       // Ahead of models.dev: its `perplexity-agent` namespace lists a staler
@@ -141,13 +141,13 @@ pub fn declared() -> Config {
       imagegen.extension(),
     ],
     [
-      "python", "run", "work", "mail", "jj", "git", "worktrees", "agents",
-      "schedule", "files", "memory", "links", "instructions", "commands",
-      "skills", "paperclips", "artifacts", "models", "openai", "codex",
-      "antigravity", "opencode-go", "opencode-zen", "bedrock", "claude",
-      "vertex", "rolling", "snapcompact-memory", "lcm-memory", "notes", "remote",
-      "browser", "warm", "exa", "perplexity", "mistral", "github-copilot",
-      "web-search", "editor-mcp", "zed",
+      "run", "work", "mail", "jj", "git", "worktrees", "agents", "schedule",
+      "files", "memory", "links", "instructions", "commands", "skills",
+      "paperclips", "artifacts", "models", "openai", "codex", "antigravity",
+      "opencode-go", "opencode-zen", "bedrock", "claude", "vertex", "rolling",
+      "snapcompact-memory", "lcm-memory", "notes", "remote", "browser", "warm",
+      "exa", "perplexity", "mistral", "github-copilot", "web-search",
+      "editor-mcp", "anthropic-api", "zed",
     ],
   )
 }

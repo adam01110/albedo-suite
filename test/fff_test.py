@@ -52,18 +52,18 @@ class DaemonRpc:
             raise RuntimeError("FFF runtime missing for integration tests")
         self.command = shlex.split(command)
         self.configure(self.command)
-        stub = directory / "albedo_python.erl"
+        stub = directory / "kernel_environment.erl"
         stub.write_text(
-            "-module(albedo_python). -export([clean_environment/0]). "
-            "clean_environment() -> []."
+            "-module('albedo@harness@kernel@environment'). -export([clean/0]). "
+            "clean() -> []."
         )
         bridge = directory / "bridge.escript"
         bridge.write_text("""#!/usr/bin/env escript
 %%! +S 2:2
 -mode(compile).
 main([Source, Stub]) ->
-    {ok, albedo_python, StubCode} = compile:file(Stub, [binary]),
-    {module, albedo_python} = code:load_binary(albedo_python, Stub, StubCode),
+    {ok, Environment, StubCode} = compile:file(Stub, [binary]),
+    {module, Environment} = code:load_binary(Environment, Stub, StubCode),
     {ok, albedo_fff, Code} = compile:file(Source, [binary]),
     {module, albedo_fff} = code:load_binary(albedo_fff, Source, Code),
     loop().

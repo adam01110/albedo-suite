@@ -1,6 +1,6 @@
 {
   "harness.py": {
-    "sha256": "e07183cd1763fb2d9d8c9f6643aedf0ed0d1d20e2392e01ef0d0461402ed596c",
+    "sha256": "694a1547ec51a3cc57135309e093ac6d20ad661663869d356b22b13a6ed8571b",
     "replacements": [
       [
         "def prompt_text(request):",
@@ -11,13 +11,13 @@
         "message_text(item)"
       ],
       [
-        "            item.get(\"content\", \"\")\n            for item in reversed(messages)",
-        "            message_text(item)\n            for item in reversed(messages)"
+        "strip_timestamp(item.get(\"content\", \"\"))",
+        "strip_timestamp(message_text(item))"
       ]
     ]
   },
   "kernel_detach_test.py": {
-    "sha256": "fe4b96034ce033390015355629efc9b6d9153a931b1ebf5d82d92608f14267b5",
+    "sha256": "2087bcdafaa015a811fe6bfb7841c7f7e3d26601c1c8e13c8e5da1214c2f3d1f",
     "replacements": [
       [
         "item[\"content\"] for item in request[\"input\"] if item.get(\"role\") == \"user\"",
@@ -38,42 +38,25 @@
       ]
     ]
   },
-  "cache_miss_test.py": {
-    "sha256": "669ac7000a0db5735da631babcd388c6ee7164a9380e5a64422d88fe33cf4aef",
-    "replacements": [
-      [
-        "import json",
-        "import json\nimport harness"
-      ],
-      [
-        "str(item.get(\"content\", \"\"))",
-        "harness.message_text(item)"
-      ]
-    ]
-  },
   "image_limits_test.py": {
-    "sha256": "9a31b9261dd2f848967da98e3b96c1370a6c0bf0ac1dfccf97ed9b5137286e5b",
+    "sha256": "a9d94dd51e538308f20268cadfdceae5a83959859a657a0858544ac576e187be",
     "replacements": [
-      [
-        "import base64\n",
-        "import base64\nimport harness\n"
-      ],
       [
         "                item.get(\"content\")\n",
         "                harness.message_text(item)\n"
       ]
     ]
   },
-  "usage_test.py": {
-    "sha256": "2f4d55d82f86baf5ea0bf919b1a11d3845a724dc7abd0be81c86ac89a9f3320d",
+  "history_content_test.py": {
+    "sha256": "7553aa0ece17ab387b5046061e5474b6e94d8711c242609afffb29660a58d882",
     "replacements": [
       [
-        "from harness import Albedo, Provider, Reply, exclusive, text, wait_until",
-        "import harness\nfrom harness import Albedo, Provider, Reply, exclusive, text, wait_until"
+        "from harness import Albedo, Provider, Reply, exclusive, operation_id, python, text",
+        "import harness\nfrom harness import Albedo, Provider, Reply, exclusive, operation_id, python, text"
       ],
       [
-        "            str(item.get(\"content\", \"\"))\n            for item in reversed(request[\"input\"])",
-        "            harness.message_text(item)\n            for item in reversed(request[\"input\"])"
+        "                item[\"content\"]\n                for item in ",
+        "                harness.message_text(item)\n                for item in "
       ]
     ]
   }

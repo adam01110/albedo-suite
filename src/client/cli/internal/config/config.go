@@ -89,8 +89,8 @@ func (s Settings) Validate() (Settings, error) {
 		}
 	}
 
-	if ext == "openai" && endpoint == "" {
-		return s, errors.New("OpenAI provider needs an API base URL")
+	if (ext == "openai" || ext == "anthropic-api") && endpoint == "" {
+		return s, errors.New("provider needs an API base URL")
 	}
 
 	if strings.ContainsFunc(s.APIKey, func(r rune) bool { return unicode.IsSpace(r) || r < 0x20 || r == 0x7f }) {

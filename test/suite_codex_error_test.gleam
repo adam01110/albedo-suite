@@ -1,9 +1,10 @@
 // Error envelope variants are wire-parser regressions, independent of daemon lifecycle.
-import albedo/openai_api/cost
 import albedo/openai_api/responses
-import albedo/openai_api/types
+import albedo_model as types
+import albedo_model/cost
 import gleam/io
 import gleam/list
+import gleam/option.{None}
 import gleam/string
 
 pub fn main() -> Nil {
@@ -18,9 +19,10 @@ pub fn main() -> Nil {
         "{\"type\":\"error\",\"message\":null,\"error\":{\"message\":\"nested\"}}",
         "nested",
       ),
+      // Upstream's refusal decoder reads a nested error object first.
       #(
         "{\"type\":\"error\",\"message\":\"flat\",\"error\":{\"message\":\"nested\"}}",
-        "flat",
+        "nested",
       ),
       #(
         "{\"type\":\"error\",\"error\":\"upstream unavailable\"}",
@@ -37,8 +39,9 @@ pub fn main() -> Nil {
       ),
     ],
     fn(entry) {
-      assert responses.feed(responses.new(cost.none), entry.0)
-        == Error(types.ProviderError(entry.1))
+      let assert Error(types.Refused(_, None, message)) =
+        responses.feed(responses.new(cost.none), entry.0)
+      assert message == entry.1
     },
   )
   list.each(
@@ -47,7 +50,7 @@ pub fn main() -> Nil {
       "{\"type\":\"error\",\"message\":42,\"error\":{\"message\":false,\"code\":null}}",
     ],
     fn(data) {
-      let assert Error(types.ProviderError(message)) =
+      let assert Error(types.Refused(_, None, message)) =
         responses.feed(responses.new(cost.none), data)
       assert string.starts_with(message, "malformed error:")
       assert !string.contains(message, data)

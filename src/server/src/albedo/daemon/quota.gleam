@@ -16,25 +16,20 @@
 //// errors exactly as the feed reported them, never anything derived. Phase 2
 //// derives what it needs from these rows.
 
-import albedo/clock
-import albedo/harness/extensions/antigravity/accounts as antigravity_accounts
-import albedo/harness/extensions/claude/accounts as claude_accounts
-import albedo/harness/extensions/codex/accounts as codex_accounts
-import albedo/harness/extensions/opencode_go/accounts as go_accounts
-import albedo/harness/protect
-import albedo/openai_api/types
-import gleam/erlang/atom
-
-import albedo/daemon/configuration
-import albedo/daemon/store
-import albedo/harness/extensions/openai/extension as openai
 import albedo/harness/extensions/zed/quota as zed_quota
-import albedo/harness/key_accounts
-import albedo/harness/settings
-import albedo/harness/usage_feed.{type Limit, type Report}
+import albedo/harness/sdk/key_environment.{type KeyEnvironment}
+import albedo/harness/sdk/network
+import albedo/harness/sdk/network_context
+import albedo/harness/sdk/profiles as configuration
+import albedo/harness/sdk/settings
+import albedo/harness/sdk/store
+import albedo/harness/sdk/usage_feed.{type Limit, type Report, type Target}
+import albedo_clock
+import albedo_process
+import albedo_protect
 import gleam/dict.{type Dict}
-import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
+import gleam/erlang/atom
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/io
@@ -43,19 +38,11 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
-import gleam/string
-import gleam/uri
 import sqlight
 
 /// The feed the poller polls through: the real one, or a fake in tests.
 pub type Fetch =
   fn(String, json.Json, Int) -> Result(Report, String)
-
-/// One polled account: a provide-usage provider id, the account's non-secret
-/// label, and the credential to poll it with.
-pub type Target {
-  Target(provider: String, label: String, credential: json.Json)
-}
 
 pub type Settings {
   Settings(poll_seconds: Int, busy_poll_seconds: Int, enabled: Bool)
@@ -90,140 +77,49 @@ fn clamped(settings: Settings) -> Settings {
   )
 }
 
+/// One account to poll, and the step its source runs after each report.
+pub opaque type Watched {
+  Watched(
+    target: Target,
+    heal: fn(String, String, List(Limit)) -> Nil,
+    service: network.Service,
+  )
+}
+
 /// The accounts this daemon can poll, with credentials refreshed the way
-/// requests refresh them.
-fn enumerate(home: String) -> List(Target) {
-  list.flatten([
-    oauth_targets("anthropic", claude_accounts.quota(home)),
-    oauth_targets("openai-codex", codex_accounts.quota(home)),
-    oauth_targets("google-antigravity", antigravity_accounts.quota(home)),
-    oauth_targets("zed", zed_accounts(home)),
-    oauth_targets("opencode-go", go_accounts.quota(home)),
-    profile_targets(home),
-  ])
-}
-
-fn oauth_targets(
-  provider: String,
-  values: List(#(String, json.Json)),
-) -> List(Target) {
-  list.map(values, fn(value) { Target(provider, value.0, value.1) })
-}
-
-@external(erlang, "albedo_zed_auth", "accounts")
-fn zed_stored(home: String) -> List(Dynamic)
-
-/// Zed accounts as its feed reads them: the label /login shows, the legacy
-/// user id and the stored access token, which polling never renews.
-fn zed_accounts(home: String) -> List(#(String, json.Json)) {
-  let decoder = {
-    use label <- decode.field("label", decode.string)
-    use id <- decode.optional_field("accountId", "", decode.string)
-    use access <- decode.optional_field("access", "", decode.string)
-    decode.success(#(label, id, access))
-  }
-  list.filter_map(zed_stored(home), fn(value) {
-    case decode.run(value, decoder) {
-      Ok(#(label, id, access)) if label != "" && access != "" ->
-        Ok(#(
-          label,
-          json.object([
-            #("kind", json.string("oauth")),
-            #("access", json.string(access)),
-            #("accountId", json.string(id)),
-          ]),
-        ))
-      _ -> Error(Nil)
-    }
-  })
-}
-
-/// Compatible profiles map to a feed by endpoint host; Alibaba uses `bl`.
-fn profile_targets(home: String) -> List(Target) {
-  configuration.providers(home)
-  |> result.unwrap([])
-  |> list.filter_map(fn(profile) {
-    case profile.extension {
-      "opencode-go" -> provider_key_target(home, profile.name, "opencode-go")
-      "openai" -> key_target(home, profile.name)
-      _ -> Error(Nil)
-    }
-  })
-}
-
-fn provider_key_target(
+/// requests refresh them: every source's sign-in accounts, then each saved
+/// profile the source of its extension maps to a feed.
+fn enumerate(
   home: String,
-  name: String,
-  provider: String,
-) -> Result(Target, Nil) {
-  use keys <- result.try(
-    key_accounts.resolve(key_accounts.Profile(home, provider, name))
-    |> result.replace_error(Nil),
-  )
-  use account <- result.try(list.first(keys))
-  let api_key = key_accounts.key(account)
-  api_key_target(provider, name, api_key)
-}
-
-fn key_target(home: String, name: String) -> Result(Target, Nil) {
-  use #(base_url, _) <- result.try(
-    configuration.settings(home, name, profile_decoder())
-    |> result.replace_error(Nil),
-  )
-  use provider <- result.try(feed_provider(base_url))
-  case provider {
-    "alibaba" ->
-      Ok(Target(
-        "alibaba",
-        "alibaba",
-        json.object([#("kind", json.string("cli"))]),
-      ))
-    _ -> {
-      let pool = openai.pool(home, name, "quota", types.Responses)
-      use connection <- result.try(pool.current() |> result.replace_error(Nil))
-      api_key_target(provider, name, key_accounts.key(connection.account))
-    }
-  }
-}
-
-fn api_key_target(
-  provider: String,
-  name: String,
-  api_key: String,
-) -> Result(Target, Nil) {
-  case string.trim(api_key) {
-    "" -> Error(Nil)
-    key ->
-      Ok(Target(
-        provider,
-        name,
-        json.object([
-          #("kind", json.string("apiKey")),
-          #("apiKey", json.string(key)),
-        ]),
-      ))
-  }
-}
-
-fn profile_decoder() -> decode.Decoder(#(String, String)) {
-  use base_url <- decode.optional_field("baseUrl", "", decode.string)
-  use api_key <- decode.optional_field("apiKey", "", decode.string)
-  decode.success(#(base_url, api_key))
-}
-
-fn feed_provider(base_url: String) -> Result(String, Nil) {
-  use parsed <- result.try(uri.parse(base_url) |> result.replace_error(Nil))
-  use host <- result.try(parsed.host |> option.to_result(Nil))
-  case string.lowercase(host) {
-    "hyper.charm.land" -> Ok("hyper")
-    "api.deepseek.com" -> Ok("deepseek")
-    "token-plan.ap-southeast-1.maas.aliyuncs.com"
-    | "dashscope.aliyuncs.com"
-    | "dashscope-intl.aliyuncs.com"
-    | "coding.dashscope.aliyuncs.com"
-    | "coding-intl.dashscope.aliyuncs.com" -> Ok("alibaba")
-    _ -> Error(Nil)
-  }
+  sources: List(#(String, usage_feed.Source)),
+  keys: KeyEnvironment,
+) -> List(Watched) {
+  let accounts =
+    list.flat_map(sources, fn(entry) {
+      let source = entry.1
+      network_context.routed(network.Extension(entry.0), fn() {
+        Ok(source.accounts(home, keys))
+      })
+      |> result.unwrap([])
+      |> list.map(Watched(_, source.heal, network.Extension(entry.0)))
+    })
+  let profiles =
+    configuration.providers(home)
+    |> result.unwrap([])
+    |> list.filter_map(fn(profile) {
+      use source <- result.try(list.key_find(sources, profile.extension))
+      use route <- result.try(
+        network.resolve(network.Extension(profile.extension))
+        |> result.replace_error(Nil),
+      )
+      use target <- result.map(
+        network_context.with_route(route, fn() {
+          source.profile(home, profile.name, keys)
+        }),
+      )
+      Watched(target, source.heal, network.Extension(profile.extension))
+    })
+  list.append(accounts, profiles)
 }
 
 // ---- the poller ---------------------------------------------------------
@@ -232,7 +128,7 @@ pub type Message {
   Tick(generation: Int)
   WorkerTimedOut(process.Pid)
   /// The account list, as a spawn saw it.
-  Enumerated(pid: process.Pid, targets: List(Target))
+  Enumerated(pid: process.Pid, targets: List(Watched))
   /// One poll finished: the account key, whether it failed, and whether it
   /// is busy.
   Polled(
@@ -249,7 +145,7 @@ type Account {
   Account(
     /// provider <> "/" <> label: one polled account, never two polls at once.
     key: String,
-    target: Target,
+    watched: Watched,
     /// Wall-clock milliseconds for this account's next poll.
     next_due: Int,
     /// Consecutive failed polls, for backoff.
@@ -264,7 +160,8 @@ type State {
     home: String,
     database: store.Store,
     fetch: Fetch,
-    enumerate: fn(String) -> List(Target),
+    /// Every installed extension's quota source, with its extension's name.
+    sources: List(#(String, usage_feed.Source)),
     settings: fn() -> Settings,
     worker_timeout_ms: Int,
     accounts: Dict(String, Account),
@@ -275,6 +172,8 @@ type State {
     /// The process listing accounts now, so a crash cannot wedge it.
     enumerating: Option(process.Pid),
     last_enumerated: Int,
+    /// The runtime's key environment, for sources that poll key accounts.
+    keys: KeyEnvironment,
   )
 }
 
@@ -301,6 +200,8 @@ pub fn start(
   home: String,
   database: store.Store,
   fetch: Fetch,
+  sources: List(#(String, usage_feed.Source)),
+  keys: KeyEnvironment,
 ) -> Result(actor.Started(Subject(Message)), actor.StartError) {
   start_with(
     home,
@@ -308,7 +209,8 @@ pub fn start(
     fn(provider, credential, now) {
       feed(provider, credential, now, zed_quota.fetch, fetch)
     },
-    enumerate,
+    sources,
+    keys,
     load_settings,
     120_000,
   )
@@ -319,19 +221,20 @@ pub fn start_with(
   home: String,
   database: store.Store,
   fetch: Fetch,
-  enumerate: fn(String) -> List(Target),
+  sources: List(#(String, usage_feed.Source)),
+  keys: KeyEnvironment,
   settings: fn() -> Settings,
   worker_timeout_ms: Int,
 ) -> Result(actor.Started(Subject(Message)), actor.StartError) {
   actor.new_with_initialiser(30_000, fn(self) {
-    label("albedo_quota", home)
-    let timer = clock.send_after(self, 0, Tick(0))
+    albedo_process.label("albedo_quota", home)
+    let timer = albedo_clock.send_after(self, 0, Tick(0))
     Ok(
       actor.initialised(State(
         home,
         database,
         fetch,
-        enumerate,
+        sources,
         settings,
         worker_timeout_ms,
         dict.new(),
@@ -340,6 +243,7 @@ pub fn start_with(
         0,
         None,
         0,
+        keys,
       ))
       |> actor.returning(self)
       |> actor.selecting(
@@ -373,7 +277,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           retick(merged(
             State(..state, enumerating: None),
             targets,
-            clock.system_ms(),
+            albedo_clock.system_ms(),
           ))
       }
     }
@@ -393,7 +297,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
 
 fn on_tick(state: State) -> State {
   let config = state.settings()
-  let now = clock.system_ms()
+  let now = albedo_clock.system_ms()
   case config.enabled {
     False -> State(..state, accounts: dict.new())
     True -> {
@@ -415,14 +319,18 @@ fn on_tick(state: State) -> State {
 fn enumerate_now(state: State, now: Int) -> State {
   let self = state.self
   let home = state.home
-  let enumerate = state.enumerate
+  let sources = state.sources
+  let keys = state.keys
   let pid =
     process.spawn_unlinked(fn() {
-      process.send(self, Enumerated(process.self(), enumerate(home)))
+      process.send(
+        self,
+        Enumerated(process.self(), enumerate(home, sources, keys)),
+      )
     })
   let _ = process.monitor(pid)
   let _ =
-    clock.send_after(
+    albedo_clock.send_after(
       state.self,
       state.worker_timeout_ms * 5 / 2,
       WorkerTimedOut(pid),
@@ -432,13 +340,13 @@ fn enumerate_now(state: State, now: Int) -> State {
 
 /// New accounts poll at once; an account that is polling now finishes first,
 /// so its readings stay even if the account has since gone.
-fn merged(state: State, targets: List(Target), now: Int) -> State {
+fn merged(state: State, targets: List(Watched), now: Int) -> State {
   let fresh =
-    list.fold(targets, dict.new(), fn(accounts, target) {
-      let key = key_of(target)
+    list.fold(targets, dict.new(), fn(accounts, watched) {
+      let key = key_of(watched.target)
       let account = case dict.get(state.accounts, key) {
-        Ok(existing) -> Account(..existing, target: target)
-        Error(_) -> Account(key, target, now, 0, None)
+        Ok(existing) -> Account(..existing, watched: watched)
+        Error(_) -> Account(key, watched, now, 0, None)
       }
       dict.insert(accounts, key, account)
     })
@@ -459,16 +367,20 @@ fn start_due(state: State, now: Int) -> State {
   dict.fold(state.accounts, state, fn(state, key, account) {
     case account.next_due <= now, account.polling {
       True, None -> {
-        let target = account.target
+        let watched = account.watched
         let home = state.home
         let pid =
           process.spawn_unlinked(fn() {
-            let #(failed, busy) = run(fetch, database, target, home)
+            let #(failed, busy) = run(fetch, database, watched, home)
             process.send(self, Polled(key, process.self(), failed, busy, now))
           })
         let _ = process.monitor(pid)
         let _ =
-          clock.send_after(self, state.worker_timeout_ms, WorkerTimedOut(pid))
+          albedo_clock.send_after(
+            self,
+            state.worker_timeout_ms,
+            WorkerTimedOut(pid),
+          )
         State(
           ..state,
           accounts: dict.insert(
@@ -551,8 +463,15 @@ fn fell(state: State, pid: process.Pid, message: String) -> State {
       {
         Error(_) -> state
         Ok(#(key, account)) -> {
-          let now = clock.system_ms()
-          record(state.database, account.target, None, [], Some(message), now)
+          let now = albedo_clock.system_ms()
+          record(
+            state.database,
+            account.watched.target,
+            None,
+            [],
+            Some(message),
+            now,
+          )
           finished(state, key, True, False, now)
         }
       }
@@ -563,14 +482,15 @@ fn fell(state: State, pid: process.Pid, message: String) -> State {
 fn retick(state: State) -> actor.Next(State, Message) {
   let _ = option.map(state.timer, process.cancel_timer)
   let generation = state.generation + 1
-  let timer = clock.send_after(state.self, tick_delay(state), Tick(generation))
+  let timer =
+    albedo_clock.send_after(state.self, tick_delay(state), Tick(generation))
   actor.continue(State(..state, timer: Some(timer), generation: generation))
 }
 
 fn tick_delay(state: State) -> Int {
   next_delay(
     state.settings(),
-    clock.system_ms(),
+    albedo_clock.system_ms(),
     state.last_enumerated,
     state.enumerating != None,
     list.map(dict.values(state.accounts), fn(account) {
@@ -620,26 +540,27 @@ fn minimum(values: List(Int)) -> Option(Int) {
 }
 
 /// One poll of one account, off the poller: whatever comes back is recorded
-/// exactly as it came, then the schedule hears whether it failed and whether
-/// the account is busy.
+/// exactly as it came, then the account's source heals from the report, and
+/// the schedule hears whether it failed and whether the account is busy.
 fn run(
   fetch: Fetch,
   database: store.Store,
-  target: Target,
+  watched: Watched,
   home: String,
 ) -> #(Bool, Bool) {
-  let now = clock.system_ms()
+  let target = watched.target
+  let now = albedo_clock.system_ms()
   let fetched =
-    protect.attempt(fn() { fetch(target.provider, target.credential, now) })
+    albedo_protect.attempt(fn() {
+      network_context.routed(watched.service, fn() {
+        fetch(target.provider, target.credential, now)
+      })
+    })
     |> result.unwrap(Error("quota feed worker crashed"))
   case fetched {
     Ok(report) -> {
       record(database, target, report.plan, report.limits, report.error, now)
-      case target.provider {
-        "google-antigravity" ->
-          heal_antigravity(home, target.label, report.limits)
-        _ -> Nil
-      }
+      watched.heal(home, target.label, report.limits)
       #(report.error != None, is_busy(report, now))
     }
     Error(message) -> {
@@ -648,29 +569,6 @@ fn run(
     }
   }
 }
-
-/// A poll is the provider's own view of the account's quota, so it is also
-/// what heals that account's marks: a legacy `limitedUntil` is re-keyed to the
-/// meters its reset matched, a meter at 100 percent is marked until the reset
-/// the report names, and a mark the report has superseded is dropped.
-fn heal_antigravity(
-  home: String,
-  account: String,
-  limits: List(usage_feed.Limit),
-) -> Nil {
-  let readings =
-    list.map(limits, fn(limit) {
-      #(limit.id, limit.used_percent, limit.resets_at)
-    })
-  native_heal(home, account, readings)
-}
-
-@external(erlang, "albedo_antigravity", "heal")
-fn native_heal(
-  home: String,
-  account: String,
-  readings: List(#(String, Option(Float), Option(Int))),
-) -> Nil
 
 fn is_busy(report: Report, now: Int) -> Bool {
   list.any(report.limits, fn(limit) {
@@ -905,7 +803,9 @@ fn erlang_rfc3339_to_system_time(
 
 pub fn parse_rfc3339(stamp: String) -> Result(Int, Nil) {
   let opts = [#(atom.create("unit"), atom.create("millisecond"))]
-  case protect.attempt(fn() { erlang_rfc3339_to_system_time(stamp, opts) }) {
+  case
+    albedo_protect.attempt(fn() { erlang_rfc3339_to_system_time(stamp, opts) })
+  {
     Ok(ms) -> Ok(ms)
     Error(_) -> Error(Nil)
   }
@@ -1016,6 +916,3 @@ pub fn history(
 fn key_of(target: Target) -> String {
   target.provider <> "/" <> target.label
 }
-
-@external(erlang, "albedo_inspect", "label")
-fn label(kind: String, id: String) -> Nil

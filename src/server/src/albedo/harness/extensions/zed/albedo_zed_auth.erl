@@ -1,13 +1,14 @@
 -module(albedo_zed_auth).
 -include_lib("public_key/include/public_key.hrl").
 -export([catalog_endpoint/3, access_account/2, accounts/1, binding/2, start/0, account/1, access/2, reject/3, refresh_rejected_token/2, decrypt/3,
-         identity/3, request/4, read_response/2, read_body/2, jwt_expiry/1]).
+         identity/3, request/4, read_response/2, read_body/2, jwt_expiry/1, open/5, with_lock/3]).
 
 -define(ORIGIN, <<"https://cloud.zed.dev">>).
 -define(SIGN_IN, <<"https://zed.dev/native_app_signin">>).
 -define(SUCCEEDED, <<"https://zed.dev/native_app_signin_succeeded">>).
 -define(ATTEMPT_MS, 300000).
 -define(LIMIT, 1048576).
+-define(STORE, 'albedo@harness@sdk@credential_store').
 
 start() ->
     try
@@ -55,7 +56,7 @@ verify(Id, Token, Progress) ->
             case identity(Id, Token, Response) of
                 {ok, Credential} ->
                     {account, _, Label, Detail, _} = account(Credential),
-                    case albedo_oauth:confirm(<<"Zed account: ", Label/binary, " (", Detail/binary, ")">>) of
+                    case 'albedo@harness@sdk@oauth_flows':confirm(<<"Zed account: ", Label/binary, " (", Detail/binary, ")">>) of
                         {ok, nil} -> {ok, Credential};
                         Error -> Error
                     end;
@@ -200,10 +201,9 @@ account(C) ->
 %% Native credentials are never sent to a profile-controlled endpoint.
 request(Method, Path, Headers, Body) when Path =:= <<"/client/users/me">>; Path =:= <<"/client/llm_tokens">> ->
     Url = <<?ORIGIN/binary, Path/binary>>,
-    case albedo_openai_transport:open(Method, Url,
-            [{<<"content-type">>, <<"application/json">>} | Headers], Body, 15000) of
+    case open(Method, Url, [{<<"content-type">>, <<"application/json">>} | Headers], Body, 15000) of
         {ok, Connection} ->
-            albedo_openai_transport:with_connection_discard_errors(Connection, fun() ->
+            albedo_http:with_connection_discard_errors(Connection, fun() ->
                 read_response(Connection, erlang:monotonic_time(millisecond) + 15000)
             end);
         _ -> {error, <<"Could not reach Zed account service">>}
@@ -211,7 +211,7 @@ request(Method, Path, Headers, Body) when Path =:= <<"/client/users/me">>; Path 
 request(_, _, _, _) -> {error, <<"Untrusted Zed account endpoint">>}.
 
 read_response(Connection, Deadline) ->
-    case albedo_openai_transport:receive_until(Connection, Deadline) of
+    case albedo_http:receive_until(Connection, Deadline) of
         {ok, {headers, 200, _, false}} -> body(Connection, Deadline, [], 0);
         {ok, {headers, Status, _, _}} ->
             {error, iolist_to_binary(io_lib:format("Zed account service returned HTTP ~B (redirects are refused)", [Status]))};
@@ -222,7 +222,7 @@ read_response(Connection, Deadline) ->
 read_body(Connection, Deadline) -> body(Connection, Deadline, [], 0).
 
 body(Connection, Deadline, Chunks, Size) ->
-    case albedo_openai_transport:receive_until(Connection, Deadline) of
+    case albedo_http:receive_until(Connection, Deadline) of
         {ok, {data, Bytes, Final}} when Size + byte_size(Bytes) =< ?LIMIT ->
             case Final of
                 false -> body(Connection, Deadline, [Bytes | Chunks], Size + byte_size(Bytes));
@@ -235,14 +235,14 @@ body(Connection, Deadline, Chunks, Size) ->
     end.
 
 access(Home, Profile) ->
-    albedo_settings_lock:with_lock(Home, fun() -> access_locked(Home, Profile) end,
+    with_lock(Home, fun() -> access_locked(Home, Profile) end,
         fun() -> {error, <<"Zed credential store is busy">>} end).
 
 access_locked(Home, Profile) ->
-    Path = albedo_credentials:creds_path(Home),
-    case albedo_credentials:accounts(Path) of
+    Path = ?STORE:path(Home),
+    case ?STORE:accounts(Path) of
         {ok, Accounts} ->
-            Values = albedo_credentials:values(Accounts, <<"zed">>),
+            Values = ?STORE:values(Accounts, <<"zed">>),
             case selected(Home, Profile, Values) of
                 {ok, [C]} -> token(Home, Accounts, C);
                 {error, _} = Error -> Error;
@@ -252,12 +252,12 @@ access_locked(Home, Profile) ->
     end.
 
 selected(Home, Profile, Values) ->
-    case albedo_credentials:config(Home) of
+    case ?STORE:config(Home) of
         {ok, #{<<"providers">> := Profiles}} ->
             P = maps:get(Profile, Profiles, #{}),
             case {maps:get(<<"accountId">>, P, null), maps:get(<<"accountIds">>, P, null)} of
                 {null, null} -> case Values of [C] -> {ok, [C]}; _ -> {ok, []} end;
-                _ -> albedo_credentials:bound_values(Home, Profile, Values)
+                _ -> ?STORE:bound_values(Home, Profile, Values)
             end;
         _ -> {error, <<"Zed profile is unavailable">>}
     end.
@@ -282,10 +282,10 @@ refresh_token(Home, Accounts, C, Now) ->
             case jwt_expiry(Jwt) of
                 {ok, Expiry} when Expiry > Now + 60 ->
                     Updated = C#{<<"jwt">> => Jwt, <<"jwt_expires">> => Expiry},
-                    Values = [case V =:= C of true -> Updated; false -> V end || V <- albedo_credentials:values(Accounts, <<"zed">>)],
-                    case albedo_credentials:put_accounts(albedo_credentials:creds_path(Home),
-                            albedo_credentials:put_values(Accounts, <<"zed">>, Values)) of
-                        ok -> {ok, Jwt};
+                    Values = [case V =:= C of true -> Updated; false -> V end || V <- ?STORE:values(Accounts, <<"zed">>)],
+                    case ?STORE:put_accounts(?STORE:path(Home),
+                            ?STORE:put_values(Accounts, <<"zed">>, Values)) of
+                        {ok, nil} -> {ok, Jwt};
                         _ -> {error, <<"Could not save Zed token">>}
                     end;
                 _ -> {error, <<"Zed returned an invalid or expired inference token">>}
@@ -302,15 +302,15 @@ jwt_expiry(Jwt) ->
     catch _:_ -> {error, invalid_jwt} end.
 
 reject(Home, Profile, Jwt) ->
-    albedo_settings_lock:with_lock(Home, fun() ->
-        Path = albedo_credentials:creds_path(Home),
-        case albedo_credentials:accounts(Path) of
+    with_lock(Home, fun() ->
+        Path = ?STORE:path(Home),
+        case ?STORE:accounts(Path) of
             {ok, Accounts} ->
-                Values = albedo_credentials:values(Accounts, <<"zed">>),
+                Values = ?STORE:values(Accounts, <<"zed">>),
                 case selected(Home, Profile, Values) of
                     {ok, [#{<<"jwt">> := Jwt} = C]} ->
                         Updated = maps:without([<<"jwt">>, <<"jwt_expires">>], C),
-                        albedo_credentials:put_accounts(Path, albedo_credentials:put_values(Accounts, <<"zed">>,
+                        ?STORE:put_accounts(Path, ?STORE:put_values(Accounts, <<"zed">>,
                             [case V =:= C of true -> Updated; false -> V end || V <- Values]));
                     _ -> ok
                 end;
@@ -321,11 +321,11 @@ reject(Home, Profile, Jwt) ->
 %% Refresh the account that owned the rejected JWT, never a profile selected
 %% later by endpoint. An ambiguous or superseded credential fails closed.
 refresh_rejected_token(Home, Token) ->
-    albedo_settings_lock:with_lock(Home, fun() ->
-        Path = albedo_credentials:creds_path(Home),
-        case albedo_credentials:accounts(Path) of
+    with_lock(Home, fun() ->
+        Path = ?STORE:path(Home),
+        case ?STORE:accounts(Path) of
             {ok, Accounts} ->
-                Values = albedo_credentials:values(Accounts, <<"zed">>),
+                Values = ?STORE:values(Accounts, <<"zed">>),
                 case [C || #{<<"jwt">> := Jwt} = C <- Values, Jwt =:= Token] of
                     [C] -> refresh_token(Home, Accounts, C, erlang:system_time(second));
                     _ -> {error, <<"Zed account changed during model discovery">>}
@@ -335,7 +335,7 @@ refresh_rejected_token(Home, Token) ->
     end, fun() -> {error, <<"Zed credential store is busy">>} end).
 
 catalog_endpoint(Home, Profile, Ordinary) ->
-    case albedo_credentials:config(Home) of
+    case ?STORE:config(Home) of
         {ok, #{<<"providers">> := Ps}} ->
             case maps:get(Profile, Ps, #{}) of
                 #{<<"extension">> := <<"zed">>} -> {some, <<"albedo:zed:profile:", Profile/binary>>};
@@ -345,10 +345,10 @@ catalog_endpoint(Home, Profile, Ordinary) ->
     end.
 
 access_account(Home, Id) ->
-    albedo_settings_lock:with_lock(Home, fun() ->
-        case albedo_credentials:accounts(albedo_credentials:creds_path(Home)) of
+    with_lock(Home, fun() ->
+        case ?STORE:accounts(?STORE:path(Home)) of
             {ok, Accounts} ->
-                case [C || C <- albedo_credentials:values(Accounts, <<"zed">>), maps:get(<<"_albedo_account_id">>, C, null) =:= Id] of
+                case [C || C <- ?STORE:values(Accounts, <<"zed">>), maps:get(<<"_albedo_account_id">>, C, null) =:= Id] of
                     [C] -> token(Home, Accounts, C);
                     _ -> {error, <<"Selected Zed account is unavailable">>}
                 end;
@@ -362,10 +362,10 @@ access_account(Home, Id) ->
 %% JWT, so polling renews nothing: it must not spend a token exchange on an
 %% account nobody is inferring with.
 accounts(Home) ->
-    albedo_settings_lock:with_lock(Home, fun() ->
-        case albedo_credentials:accounts(albedo_credentials:creds_path(Home)) of
+    with_lock(Home, fun() ->
+        case ?STORE:accounts(?STORE:path(Home)) of
             {ok, Accounts} ->
-                lists:filtermap(fun entry/1, albedo_credentials:values(Accounts, <<"zed">>));
+                lists:filtermap(fun entry/1, ?STORE:values(Accounts, <<"zed">>));
             _ -> []
         end
     end, fun() -> [] end).
@@ -390,12 +390,21 @@ label(C) ->
 %% Browser sign-in is the only credential, so every Zed profile refreshes the
 %% same way; a profile without one has nothing to refresh.
 binding(Home, Profile) ->
-    case albedo_credentials:accounts(albedo_credentials:creds_path(Home)) of
+    case ?STORE:accounts(?STORE:path(Home)) of
         {ok, Accounts} ->
-            case selected(Home, Profile, albedo_credentials:values(Accounts, <<"zed">>)) of
+            case selected(Home, Profile, ?STORE:values(Accounts, <<"zed">>)) of
                 {ok, [C]} -> {ok, crypto:hash(sha256, term_to_binary(maps:with(
                     [<<"_albedo_account_id">>, <<"user_id">>, <<"organization_id">>, <<"access_token">>], C)))};
                 _ -> none
             end;
         _ -> none
     end.
+
+%% A request on the calling process's route, verified against albedo's roots.
+open(Method, Url, Headers, Body, Timeout) ->
+    albedo_http:open_method('albedo@harness@sdk@network_context':connection_options(),
+        Method, Url, Headers, Body, Timeout).
+
+%% The home's settings lock, which also guards creds.json.
+with_lock(Home, Run, Busy) ->
+    'albedo@harness@sdk@settings_store':lock(Home, Run, fun(_) -> Busy() end).

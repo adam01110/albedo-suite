@@ -25,7 +25,7 @@ const (
 type HistoryEntry struct {
 	MessageID       string
 	ID              string
-	Source          string
+	Source          daemon.InputSource
 	MailKind        string
 	SenderSessionID string
 	Images          []daemon.ImageMetadata
@@ -46,6 +46,8 @@ type HistoryEntry struct {
 	Text       string
 	ToolName   string
 	ToolResult string
+	// ToolStatus is the daemon's outcome of the call: "completed" or "failed".
+	ToolStatus string
 	ToolTitle  string
 	// Strategy is the compaction strategy that produced a compacted entry.
 	Strategy  string
@@ -83,6 +85,8 @@ const (
 	sending
 	queued
 	unresolved
+	// editing is a queued message of yours that the composer is changing.
+	editing
 )
 
 func (e *HistoryEntry) ComputeSize() int64 {

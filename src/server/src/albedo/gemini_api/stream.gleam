@@ -3,11 +3,12 @@
 //// each thought signature it issued, so a replay sends the signature back
 //// unmodified.
 
-import albedo/openai_api/decoding
-import albedo/openai_api/fields
-import albedo/openai_api/replay
+import albedo/gemini_api/refusal
 import albedo/openai_api/stream as reducer
-import albedo/openai_api/types
+import albedo_json/decoding
+import albedo_json/fields
+import albedo_model as types
+import albedo_model/replay
 import gleam/bit_array
 import gleam/crypto
 import gleam/dynamic
@@ -95,13 +96,9 @@ fn decode_chunk(
           None,
           present(
             object({
-              use message <- decode.optional_field("message", "", decode.string)
-              use status <- decode.optional_field("status", "", decode.string)
-              decode.success(case message, status {
-                "", "" -> "unknown Vertex stream error"
-                "", status -> status
-                message, _ -> message
-              })
+              use _ <- decode.optional_field("message", "", decode.string)
+              use _ <- decode.optional_field("status", "", decode.string)
+              decode.success(Nil)
             }),
           ),
         )
@@ -113,7 +110,7 @@ fn decode_chunk(
     }),
   )
   case error {
-    Some(message) -> Error(types.ProviderError(message))
+    Some(_) -> Error(refusal.event(value, "unknown Vertex stream error"))
     None -> {
       use chunk <- result.try(
         decode.run(value, chunk_decoder())
@@ -131,8 +128,7 @@ fn apply(
   chunk: Chunk,
 ) -> Result(#(State, List(types.Event)), types.Error) {
   case chunk.blocked {
-    Some(reason) ->
-      Error(types.ProviderError("request blocked by Google (" <> reason <> ")"))
+    Some(reason) -> Error(refusal.blocked(reason))
     None -> {
       let #(state, events) =
         list.fold(chunk.parts, #(state, []), fn(acc, part) {

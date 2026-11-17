@@ -3,11 +3,11 @@
 //// issued, and no signature where it issued none. Routes own their URL,
 //// authentication and headers.
 
-import albedo/openai_api/replay
-import albedo/openai_api/types.{
+import albedo_model.{
   type Error, type Input, type Request, Assistant, InvalidRequest, Replay,
   ToolOutput, User, UserImage,
-}
+} as types
+import albedo_model/replay
 import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode
@@ -39,26 +39,59 @@ type History {
 
 /// Encodes `request` into a portable Gemini `generateContent` JSON body.
 pub fn encode_body(request: Request) -> Result(StringTree, Error) {
-  use history <- result.try(
-    list.try_fold(request.input, History([], dict.new()), fn(h, i) {
-      add(request.model, h, i)
-    }),
-  )
-  let contents =
-    history.contents
-    |> list.reverse
-    |> list.map(fn(content) {
-      json.object([
-        #("role", json.string(content.role)),
-        #("parts", json.preprocessed_array(content.parts)),
-      ])
-    })
-  use config <- result.try(generation_config(request))
+  use contents <- result.try(contents_json(request))
+  let config = generation_config(request)
   let fields = [
     #("contents", json.preprocessed_array(contents)),
     #("generationConfig", config),
   ]
-  let fields = case request.instructions {
+  let fields = list.append(system_field(request), fields)
+  let fields = case tools_json(request) {
+    Some(tools) -> [
+      #("tools", tools),
+      #("toolConfig", tool_config(request.options.tool_choice)),
+      ..fields
+    ]
+    None -> fields
+  }
+  Ok(json.to_string_tree(json.object(fields)))
+}
+
+/// The fields of a Gemini `countTokens` request, which every route that
+/// counts takes: the request's contents, system instruction and tools, and
+/// not its generation settings. A route wraps them as its endpoint asks, in
+/// a `generateContentRequest` or beside the model.
+pub fn count_fields(request: Request) -> Result(List(#(String, Json)), Error) {
+  use contents <- result.map(contents_json(request))
+  [
+    [#("contents", json.preprocessed_array(contents))],
+    system_field(request),
+    case tools_json(request) {
+      Some(tools) -> [#("tools", tools)]
+      None -> []
+    },
+  ]
+  |> list.flatten
+}
+
+fn contents_json(request: Request) -> Result(List(Json), Error) {
+  use history <- result.map(
+    list.try_fold(request.input, History([], dict.new()), fn(h, i) {
+      add(request.model, h, i)
+    }),
+  )
+  history.contents
+  |> list.reverse
+  |> list.map(fn(content) {
+    json.object([
+      #("role", json.string(content.role)),
+      #("parts", json.preprocessed_array(content.parts)),
+    ])
+  })
+}
+
+fn system_field(request: Request) -> List(#(String, Json)) {
+  case request.instructions {
     Some(text) if text != "" -> [
       #(
         "systemInstruction",
@@ -67,15 +100,16 @@ pub fn encode_body(request: Request) -> Result(StringTree, Error) {
           #("parts", json.preprocessed_array([text_part(text)])),
         ]),
       ),
-      ..fields
     ]
-    _ -> fields
+    _ -> []
   }
-  let fields = case request.tools {
-    [] -> fields
-    tools -> [
-      #(
-        "tools",
+}
+
+fn tools_json(request: Request) -> Option(Json) {
+  case request.tools {
+    [] -> None
+    tools ->
+      Some(
         json.preprocessed_array([
           json.object([
             #(
@@ -90,20 +124,17 @@ pub fn encode_body(request: Request) -> Result(StringTree, Error) {
             ),
           ]),
         ]),
-      ),
-      #("toolConfig", tool_config(request.options.tool_choice)),
-      ..fields
-    ]
+      )
   }
-  Ok(json.to_string_tree(json.object(fields)))
 }
 
-fn generation_config(request: Request) -> Result(Json, Error) {
-  use thinking <- result.try(thinking_config(
-    request.model,
-    request.options.effort,
-    request.max_output_tokens,
-  ))
+fn generation_config(request: Request) -> Json {
+  let thinking =
+    thinking_config(
+      request.model,
+      request.options.effort,
+      request.max_output_tokens,
+    )
   let fields = case thinking {
     [] -> []
     fields -> [#("thinkingConfig", json.object(fields))]
@@ -135,25 +166,28 @@ fn generation_config(request: Request) -> Result(Json, Error) {
         #("responseJsonSchema", schema),
       ]
     })
-  Ok(json.object(fields))
+  json.object(fields)
 }
 
 type Thinking {
   Budget(low: Int, medium: Int, high: Int, disable: Bool)
-  Levels(efforts: List(String))
+  Levels(efforts: List(types.Effort))
 }
 
 /// Google's documented thinking controls for each Gemini family, kept here
 /// rather than importing a provider's catalog. Only known families and their
-/// version suffixes match.
+/// version suffixes match, and a model none matches gets no thinking control.
+/// A budgeted model takes every effort as a budget, none and minimal turning
+/// thinking off where the model allows it; a model with named levels gets the
+/// nearest one it lists.
 fn thinking_config(
   model: String,
-  effort: Option(String),
+  effort: Option(types.Effort),
   limit: Option(Int),
-) -> Result(List(#(String, Json)), Error) {
+) -> List(#(String, Json)) {
   let model = string.lowercase(model)
-  let levels = Levels(["minimal", "low", "medium", "high"])
-  let pro_levels = Levels(["low", "medium", "high"])
+  let levels = Levels([types.Minimal, types.Low, types.Medium, types.High])
+  let pro_levels = Levels([types.Low, types.Medium, types.High])
   let flash = Budget(1024, 8192, 24_576, True)
   let policy =
     list.find(
@@ -161,7 +195,7 @@ fn thinking_config(
         #("gemini-2.5-pro", Budget(1024, 8192, 32_768, False)),
         #("gemini-2.5-flash-lite", flash),
         #("gemini-2.5-flash", flash),
-        #("gemini-3-pro", Levels(["low", "high"])),
+        #("gemini-3-pro", Levels([types.Low, types.High])),
         #("gemini-3-flash", levels),
         #("gemini-3.1-pro", pro_levels),
         #("gemini-3.1-flash-lite", levels),
@@ -181,45 +215,29 @@ fn thinking_config(
       },
     )
   let thoughts = [#("includeThoughts", json.bool(True))]
-  case effort {
-    None ->
-      Ok(case policy {
-        Ok(_) -> thoughts
-        Error(_) -> []
-      })
-    Some(effort) -> {
-      let unsupported =
-        InvalidRequest(
-          "unsupported Vertex effort " <> effort <> " for " <> model,
-        )
-      // A hosted Gemini this table does not know receives the catalog's level
-      // rather than failing the whole request.
-      let thinking = case policy {
-        Ok(#(_, known)) -> known
-        Error(_) -> Levels(["minimal", "low", "medium", "high"])
+  case policy, effort {
+    Error(_), _ -> []
+    Ok(_), None -> thoughts
+    Ok(#(_, Budget(low, medium, high, disable))), Some(effort) -> {
+      let budget = case effort {
+        types.NoReasoning | types.Minimal if disable -> 0
+        types.NoReasoning | types.Minimal | types.Low -> low
+        types.Medium -> medium
+        types.High | types.XHigh | types.Max -> high
       }
-      let control = case thinking {
-        Budget(low, medium, high, disable) -> {
-          let budget = case effort {
-            "minimal" if disable -> Ok(0)
-            "low" -> Ok(low)
-            "medium" -> Ok(medium)
-            "high" -> Ok(high)
-            _ -> Error(unsupported)
-          }
-          use budget <- result.map(budget)
-          #("thinkingBudget", json.int(answer_room(budget, limit)))
-        }
-        Levels(efforts) ->
-          case list.contains(efforts, effort) {
-            True ->
-              Ok(#("thinkingLevel", json.string(string.uppercase(effort))))
-            False -> Error(unsupported)
-          }
-      }
-      use control <- result.map(control)
-      [control, ..thoughts]
+      [#("thinkingBudget", json.int(answer_room(budget, limit))), ..thoughts]
     }
+    Ok(#(_, Levels(efforts))), Some(effort) ->
+      case types.nearest_effort(effort, efforts) {
+        Some(level) -> [
+          #(
+            "thinkingLevel",
+            json.string(string.uppercase(types.effort_name(level))),
+          ),
+          ..thoughts
+        ]
+        None -> thoughts
+      }
   }
 }
 

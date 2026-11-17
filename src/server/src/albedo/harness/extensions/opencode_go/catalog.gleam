@@ -1,11 +1,13 @@
 //// OpenCode Go catalog: model context limits, modalities, reasoning effort,
 //// and live /models entitlement discovery.
 
-import albedo/harness/extension
-import albedo/harness/extensions/models/extension as models
+import albedo/harness/extensions/models/catalogue as models
 import albedo/harness/extensions/opencode_go/accounts
-import albedo/harness/model_lists
-import albedo/harness/settings
+import albedo/harness/extensions/opencode_go/routing
+import albedo/harness/sdk/extension
+import albedo/harness/sdk/key_environment.{type KeyEnvironment}
+import albedo/harness/sdk/model_lists
+import albedo/harness/sdk/settings
 import albedo/openai_api/catalog as model_catalog
 import gleam/bool
 import gleam/int
@@ -23,7 +25,7 @@ pub fn catalog() -> extension.ModelCatalog {
 fn lookup(id: String, at: Option(String)) -> Option(extension.ModelInfo) {
   let is_opencode_go_endpoint = case at {
     None -> True
-    Some(url) -> owns_endpoint(settings.home(), url)
+    Some(url) -> routing.owns_endpoint(settings.home(), url)
   }
   use <- bool.guard(!is_opencode_go_endpoint, None)
 
@@ -60,19 +62,17 @@ fn lookup(id: String, at: Option(String)) -> Option(extension.ModelInfo) {
   }
 }
 
-@external(erlang, "albedo_opencode_go", "owns_endpoint")
-fn owns_endpoint(home: String, endpoint: String) -> Bool
-
 fn list_models(
   provider: String,
   endpoint: Option(String),
+  keys: KeyEnvironment,
 ) -> extension.Listing {
   case provider {
     "opencode-go" -> {
       let home = settings.home()
       extension.Remote(
         list_key(endpoint),
-        fn() { models(home, option.unwrap(endpoint, "")) },
+        fn() { models(home, option.unwrap(endpoint, ""), keys) },
         models.list("opencode-go", None),
       )
     }
@@ -85,8 +85,12 @@ fn list_key(endpoint: Option(String)) -> String {
   string.remove_suffix(option.unwrap(endpoint, default_base_url), "/")
 }
 
-fn models(home: String, endpoint: String) -> Result(List(String), String) {
-  use #(url, key) <- result.try(accounts.discovery(home, endpoint))
+fn models(
+  home: String,
+  endpoint: String,
+  keys: KeyEnvironment,
+) -> Result(List(String), String) {
+  use #(url, key) <- result.try(accounts.discovery(home, endpoint, keys))
   // Lists are cached per endpoint, so fetch the requested one, keyless when
   // discovery only found another endpoint's key.
   let #(url, key) = case
@@ -95,7 +99,7 @@ fn models(home: String, endpoint: String) -> Result(List(String), String) {
     True -> #(url, key)
     False -> #(endpoint, "")
   }
-  use #(status, body) <- result.try(model_catalog.fetch(
+  use #(status, body) <- result.try(model_lists.fetch(
     url,
     key,
     "albedo/1.0",

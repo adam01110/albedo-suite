@@ -115,6 +115,11 @@ type ChatModel struct {
 	btw                btwState
 	artifactConn       *daemon.Connection
 	openBrowser        func(string)
+	// termsFor is the terms warning a message on a profile still owes, if
+	// any; terms holds termsHeld back until it is answered.
+	termsFor           func(profile string) *daemon.Terms
+	terms              *termsBox
+	termsHeld          string
 	History            *BoundedHistory
 	toolImageSelection *toolImageSelection
 
@@ -131,6 +136,9 @@ type ChatModel struct {
 	Workspace           string
 	Host                string // the label of a remote workspace's host; "" when local
 	Model               string
+	modelName           string
+	modelNameID         string
+	modelNameProfile    string
 	CyberAccess         string
 	Effort              string
 	Fast                bool
@@ -145,8 +153,13 @@ type ChatModel struct {
 	hostHome, hostAsked string
 
 	// userRows are the settled rows where user messages start.
-	userRows      []int
-	effortOptions []string
+	userRows            []int
+	effortOptions       []string
+	effortLevels        []string
+	effortDefault       string
+	effortDefaultSource string
+	effortDefaultChoice string
+	effortProfile       string
 	// direnvAsk is the blocked .envrc the question above the composer offers
 	// to allow; empty when nothing asks.
 	direnvAsk string
@@ -182,7 +195,12 @@ type ChatModel struct {
 	settledLines []string
 	settledSpans []settledSpan
 
-	pendingUsers         []PendingUserTurn
+	pendingUsers []PendingUserTurn
+	// editing is the queued message the composer is editing, held meanwhile.
+	editing *queuedEdit
+	// queueHold is set while a hold on a queued message is in flight, so a
+	// second Up does not hold the same message twice.
+	queueHold            bool
 	pendingContinuations map[string]pendingOperation
 	Glances              []PageGlance
 	// layoutSidebar is the sidebar width the last layout reserved.
@@ -203,11 +221,8 @@ type ChatModel struct {
 	terminalClipboard  terminalClipboardRead
 	copyStatusRevision uint64
 	burstEpoch         int
-	// burstRenders counts frame builds; tests watch it to catch a cache that
-	// redraws every refresh or misses an invalidation.
-	burstRenders  int
-	ProgressFrame int
-	Width         int
+	ProgressFrame      int
+	Width              int
 	// moodSeed selects the status-face animation for the current stretch.
 	moodSeed            int64
 	Height              int
@@ -377,6 +392,9 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 	if cmd, handled := m.handleOperationResults(msg); handled {
 		return m, cmd
 	}
+	if cmd, handled := m.handleQueueEdit(msg); handled {
+		return m, cmd
+	}
 	if cmd, handled := m.handleInput(msg); handled {
 		return m, cmd
 	}
@@ -505,6 +523,13 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 	case ChatWindowMsg:
 		if msg.SessionID == m.SessionID && msg.Generation == m.Generation && msg.Err == nil {
 			m.window, m.windowModel = msg.Tokens, &msg.Model
+		}
+		return m, nil
+
+	case chatModelNameMsg:
+		if msg.SessionID == m.SessionID && msg.Generation == m.Generation && msg.Model == m.Model && msg.Profile == m.Provider && msg.Err == nil {
+			m.modelName, m.modelNameID, m.modelNameProfile = msg.Label, msg.Model, msg.Profile
+			m.effortDefault, m.effortDefaultSource, m.effortProfile = msg.DefaultEffort, msg.DefaultEffortSource, msg.ProfileEffort
 		}
 		return m, nil
 

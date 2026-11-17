@@ -101,6 +101,8 @@
           ''
           + (old.postPatch or "");
         doCheck = true;
+        # The lazy MCP test drives upstream's Python fake stdio server.
+        nativeCheckInputs = (old.nativeCheckInputs or []) ++ [pkgs.python3];
         postCheck =
           (old.postCheck or "")
           + ''
@@ -119,6 +121,12 @@
             cp ${../../test/suite_zed_login_test.gleam} test/suite_zed_login_test.gleam
             cp ${../../test/albedo_zed_login_test.erl} test/albedo_zed_login_test.erl
             gleam run -m suite_zed_login_test
+            cp ${../../test/suite_catalog_prices_test.gleam} test/suite_catalog_prices_test.gleam
+            gleam run -m suite_catalog_prices_test
+            cp ${../../test/suite_memory_index_test.gleam} test/suite_memory_index_test.gleam
+            gleam run -m suite_memory_index_test
+            cp ${../../test/suite_lazy_mcp_test.gleam} test/suite_lazy_mcp_test.gleam
+            gleam run -m suite_lazy_mcp_test
           '';
         postInstall =
           (old.postInstall or "")
@@ -129,7 +137,7 @@
         postFixup =
           (old.postFixup or "")
           + ''
-            ALBEDO_BUILD_APP="$out/lib/albedo/albedo" erl +S 2:2 -pa "$out/lib/albedo"/*/ebin -noshell -eval 'application:ensure_all_started(crypto), ok = albedo_daemon:seal_build(unicode:characters_to_binary(os:getenv("ALBEDO_BUILD_APP"))), halt().'
+            ALBEDO_BUILD_APP="$out/lib/albedo/albedo" erl +S 2:2 -pa "$out/lib/albedo"/*/ebin -noshell -eval 'application:ensure_all_started(crypto), {ok, nil} = albedo@daemon@build_identity:seal_build(unicode:characters_to_binary(os:getenv("ALBEDO_BUILD_APP"))), halt().'
           '';
       }));
 
@@ -187,7 +195,7 @@
             go test ./internal/tui -run '^TestToolImages' -count=1 -v
             go test ./internal/tui -run '^TestActivity' -count=1 -v
             go test ./internal/tui -run '^TestZoxide' -count=1 -v
-            go test ./internal/tui -run '^TestQuestions' -count=1 -v
+            go test ./internal/tui -run '^(TestClipboardProbe|TestSSHClipboard)' -count=1 -v
             go test ./internal/terminal -run '^TestSuiteInline' -count=1 -v
             ${pkgs.lib.optionalString showDiffs "go test ./internal/tui -run '^TestDefaultDiffVisibility$' -count=1 -v"}
           '';

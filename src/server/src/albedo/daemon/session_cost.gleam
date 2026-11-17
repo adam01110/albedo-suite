@@ -1,6 +1,7 @@
-import albedo/daemon/store
-import albedo/harness/settings
-import gleam/dict.{type Dict}
+import albedo/harness/extensions/models/catalog_cache
+import albedo/harness/sdk/settings
+import albedo/harness/sdk/store
+import gleam/dict
 import gleam/dynamic
 import gleam/dynamic/decode
 import gleam/float
@@ -25,7 +26,13 @@ const schema =
 const pricing = "1"
 
 type Cached {
-  Cached(session: String, valid: Bool, usd: Option(Float), requests: Int, through: Int)
+  Cached(
+    session: String,
+    valid: Bool,
+    usd: Option(Float),
+    requests: Int,
+    through: Int,
+  )
 }
 
 type Estimate {
@@ -48,11 +55,9 @@ pub fn totals(
   let priced = case sessions {
     [] -> Ok(dict.new())
     _ ->
-      estimates(
-        ledger,
-        "SELECT value FROM json_each(?)",
-        [sqlight.text(json.to_string(json.array(sessions, json.string)))],
-      )
+      estimates(ledger, "SELECT value FROM json_each(?)", [
+        sqlight.text(json.to_string(json.array(sessions, json.string))),
+      ])
       |> result.map(fn(found) {
         list.map(found, fn(estimate) { #(estimate.session, estimate.usd) })
         |> dict.from_list
@@ -95,7 +100,9 @@ fn estimates(
   let catalog = catalog()
   let revision = pricing <> ":" <> revision(catalog)
   let load = fn() {
-    store.snapshot(ledger, fn(db) { read(db, catalog, revision, target, arguments) })
+    store.snapshot(ledger, fn(db) {
+      read(db, catalog, revision, target, arguments)
+    })
   }
   use #(found, changed) <- result.map(case load() {
     Ok(found) -> Ok(found)
@@ -110,7 +117,10 @@ fn estimates(
   })
   case changed {
     [] -> Nil
-    _ -> store.query_then(ledger, fn(db) { save(db, revision, changed) }, fn(_) { Nil })
+    _ ->
+      store.query_then(ledger, fn(db) { save(db, revision, changed) }, fn(_) {
+        Nil
+      })
   }
   found
 }
@@ -122,21 +132,23 @@ fn read(
   target: String,
   arguments: List(sqlight.Value),
 ) -> Result(#(List(Estimate), List(Estimate)), String) {
-  use cached <- result.try(store.rows(
-    db,
-    "WITH target(session) AS ("
-      <> target
-      <> ") SELECT t.session,c.session IS NOT NULL AND c.requests=(SELECT COUNT(*) FROM provider_requests p WHERE p.session=t.session AND p.id<=c.through),c.usd,COALESCE(c.requests,0),COALESCE(c.through,0) FROM target t LEFT JOIN suite_session_costs c ON c.session=t.session AND c.catalog=?",
-    list.append(arguments, [sqlight.text(revision)]),
-    {
-      use session <- decode.field(0, decode.string)
-      use valid <- decode.field(1, decode.int)
-      use usd <- decode.field(2, decode.optional(decode.float))
-      use requests <- decode.field(3, decode.int)
-      use through <- decode.field(4, decode.int)
-      decode.success(Cached(session, valid != 0, usd, requests, through))
-    },
-  ))
+  use cached <- result.try(
+    store.rows(
+      db,
+      "WITH target(session) AS ("
+        <> target
+        <> ") SELECT t.session,c.session IS NOT NULL AND c.requests=(SELECT COUNT(*) FROM provider_requests p WHERE p.session=t.session AND p.id<=c.through),c.usd,COALESCE(c.requests,0),COALESCE(c.through,0) FROM target t LEFT JOIN suite_session_costs c ON c.session=t.session AND c.catalog=?",
+      list.append(arguments, [sqlight.text(revision)]),
+      {
+        use session <- decode.field(0, decode.string)
+        use valid <- decode.field(1, decode.int)
+        use usd <- decode.field(2, decode.optional(decode.float))
+        use requests <- decode.field(3, decode.int)
+        use through <- decode.field(4, decode.int)
+        decode.success(Cached(session, valid != 0, usd, requests, through))
+      },
+    ),
+  )
   // Requests after each valid cache row, or every request of the rest.
   let after =
     json.to_string(
@@ -152,18 +164,20 @@ fn read(
     )
   let pending =
     "WITH after(session,id) AS (SELECT json_extract(value,'$[0]'),json_extract(value,'$[1]') FROM json_each(?)) "
-  use stats <- result.try(store.rows(
-    db,
-    pending
-      <> "SELECT p.session,COUNT(*),MAX(p.id) FROM after a JOIN provider_requests p ON p.session=a.session AND p.id>a.id GROUP BY p.session",
-    [sqlight.text(after)],
-    {
-      use session <- decode.field(0, decode.string)
-      use count <- decode.field(1, decode.int)
-      use through <- decode.field(2, decode.int)
-      decode.success(#(session, #(count, through)))
-    },
-  ))
+  use stats <- result.try(
+    store.rows(
+      db,
+      pending
+        <> "SELECT p.session,COUNT(*),MAX(p.id) FROM after a JOIN provider_requests p ON p.session=a.session AND p.id>a.id GROUP BY p.session",
+      [sqlight.text(after)],
+      {
+        use session <- decode.field(0, decode.string)
+        use count <- decode.field(1, decode.int)
+        use through <- decode.field(2, decode.int)
+        decode.success(#(session, #(count, through)))
+      },
+    ),
+  )
   use priced <- result.try(case stats {
     [] -> Ok(dict.new())
     _ -> {
@@ -177,9 +191,7 @@ fn read(
         [sqlight.text(after)],
         decode.dynamic,
       ))
-      estimate_sessions(catalog, rows)
-      |> result.map(dict.from_list)
-      |> result.replace_error("models catalog is unreadable")
+      Ok(dict.from_list(estimate_grouped(catalog_cache.prices(catalog), rows)))
     }
   })
   let stats = dict.from_list(stats)
@@ -236,8 +248,9 @@ fn catalog() -> String {
 @external(erlang, "albedo_session_cost", "revision")
 fn revision(catalog: String) -> String
 
-@external(erlang, "albedo_session_cost", "estimate_sessions")
-fn estimate_sessions(
-  catalog: String,
+/// Prices each session's rows with the catalog's `{provider, model}` prices.
+@external(erlang, "albedo_session_cost", "estimate_grouped")
+fn estimate_grouped(
+  prices: catalog_cache.Prices,
   rows: List(dynamic.Dynamic),
-) -> Result(List(#(String, Option(Float))), Nil)
+) -> List(#(String, Option(Float)))

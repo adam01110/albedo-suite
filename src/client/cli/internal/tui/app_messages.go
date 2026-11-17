@@ -45,18 +45,20 @@ type modelChangedMsg struct {
 }
 
 type commandExecutedMsg struct {
-	Page             *daemon.PageDocument
-	ContextWindow    *int64
-	ETag, ModelsETag string
-	Err              error
-	Name             string
-	Message          string
-	Effort           string
-	SessionID        string
-	Available        []string
-	Gen              int
-	EffortChanged    bool
-	WindowChanged    bool
+	Page                *daemon.PageDocument
+	ContextWindow       *int64
+	ETag, ModelsETag    string
+	Err                 error
+	Name                string
+	Message             string
+	Effort              string
+	DefaultEffort       string
+	DefaultEffortSource string
+	SessionID           string
+	Available           []string
+	Gen                 int
+	EffortChanged       bool
+	WindowChanged       bool
 }
 
 type profilesLoadedMsg struct {

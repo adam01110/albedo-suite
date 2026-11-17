@@ -76,8 +76,8 @@ worker_port(#{argv := Argv, auth := Auth}) ->
         [Ssh | Options] -> {binary_to_list(Ssh), [binary_to_list(A) || A <- Options] ++ ["exec albedo-fff --stdio"]}
     end,
     Env = case Auth of
-        {some, Sock} -> [{"SSH_AUTH_SOCK", binary_to_list(Sock)} | albedo_python:clean_environment()];
-        none -> albedo_python:clean_environment()
+        {some, Sock} -> [{"SSH_AUTH_SOCK", binary_to_list(Sock)} | 'albedo@harness@kernel@environment':clean()];
+        none -> 'albedo@harness@kernel@environment':clean()
     end,
     case os:find_executable(Program) of
         false -> {error, <<"FFF runtime missing on this host: install albedo-fff">>};

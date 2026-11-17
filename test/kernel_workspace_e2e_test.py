@@ -91,9 +91,19 @@ class KernelWorkspaceTests(unittest.TestCase):
         # Cross the old 15-second automatic retry deadline.
         time.sleep(16)
         still_blocked = self.snapshot()
-        self.assertEqual(still_blocked["cursor"], blocked["cursor"])
         self.assertEqual(still_blocked["status"], blocked["status"])
+        self.assertEqual(still_blocked["kernel"], blocked["kernel"])
         self.assertEqual(self.provider.requests, [])
+        # The mail dispatcher's tick re-reads waiting inboxes and republishes
+        # queue invalidations; nothing else may happen while paused.
+        if still_blocked["cursor"] != blocked["cursor"]:
+            cursor = blocked["cursor"]
+            page = self.app.stream_page(
+                self.session,
+                {"generation": cursor["generation"], "cursor": cursor["sequence"]},
+            )
+            kinds = {event["type"] for event in page["events"]}
+            self.assertEqual(kinds, {"invalidate"}, page)
         saved.rename(self.workspace)
         # Replaying an admission is not a new request to retry the kernel.
         self.api(

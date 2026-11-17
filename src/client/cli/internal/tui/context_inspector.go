@@ -139,8 +139,18 @@ func (m ContextInspectorModel) Init() tea.Cmd {
 	return m.loadSnapshotCmd(m.Generation)
 }
 
-var compactionStatuses = map[string]string{
-	"not_configured": "not configured", "not_needed": "not needed", "compacted": "applied", "unknown": "state unavailable",
+// compactionStatusLabel is how the inspector words a compaction status.
+func compactionStatusLabel(status daemon.CompactionStatus) string {
+	switch status {
+	case daemon.CompactionNotConfigured:
+		return "not configured"
+	case daemon.CompactionNotNeeded:
+		return "not needed"
+	case daemon.CompactionApplied:
+		return "applied"
+	default:
+		return "state unavailable"
+	}
 }
 
 func (m ContextInspectorModel) loadSnapshotCmd(gen int) tea.Cmd {
@@ -259,25 +269,63 @@ func (m ContextInspectorModel) requestFacts(width int) []string {
 	lines := factRows("model", label, width)
 	lines = append(lines, factRows("window", window, width)...)
 	strategy := cmp.Or(compaction.Strategy, "none")
-	if status := compactionStatuses[compaction.Status]; status != "" {
-		strategy += " · " + status
-	}
+	strategy += " · " + compactionStatusLabel(compaction.Status)
 	lines = append(lines, factRows("compact", strategy, width)...)
-	if compaction.TriggerFreePercent != nil {
-		lines = append(lines, factRows("trigger", fmt.Sprintf("keep %g%% free", *compaction.TriggerFreePercent), width)...)
+	if compaction.TriggerTokens != nil {
+		lines = append(lines, factRows("trigger", "compacts at "+contextCount(*compaction.TriggerTokens, "token"), width)...)
 	}
-	switch {
-	case compaction.ProviderInputTokens != nil:
+	if compaction.Size != nil {
+		lines = append(lines, sizeFacts(*compaction.Size, width)...)
+	}
+	if compaction.ProviderInputTokens != nil {
 		measured := contextCount(*compaction.ProviderInputTokens, "token") + " from provider"
 		if compaction.ProviderCachedInputTokens != nil {
 			measured += " · " + contextCount(*compaction.ProviderCachedInputTokens, "cached token")
 		}
 		lines = append(lines, factRows("input", measured, width)...)
-	case compaction.EstimatedInputTokens != nil:
-		method := cmp.Or(compaction.EstimateMethod, "method not reported")
-		lines = append(lines, factRows("input", contextCount(*compaction.EstimatedInputTokens, "token")+" estimated · "+method, width)...)
 	}
 	return lines
+}
+
+// sizeFacts shows a request's size by what is behind it: the part a provider
+// measured, and the part albedo estimated, labelled as an estimate with the
+// correction it used. One part reads on a single row; two read as their sum
+// and then each.
+func sizeFacts(size daemon.Size, width int) []string {
+	measured, estimated := "", ""
+	if m := size.Measured; m != nil {
+		measured = contextCount(m.Tokens, "token") + " from the provider's reported usage"
+		if m.Counted {
+			measured = contextCount(m.Tokens, "token") + " counted by the provider"
+		}
+	}
+	if e := size.Estimated; e != nil {
+		estimated = contextCount(e.Tokens, "token") + " estimated"
+		if e.Correction != nil {
+			estimated += " · " + correctionText(*e.Correction)
+		}
+	}
+	switch {
+	case measured != "" && estimated != "":
+		lines := factRows("size", contextCount(size.Tokens, "token"), width)
+		lines = append(lines, factRows("measured", measured, width)...)
+		return append(lines, factRows("estimated", estimated, width)...)
+	case measured != "":
+		return factRows("size", measured, width)
+	case estimated != "":
+		return factRows("size", estimated, width)
+	}
+	return factRows("size", contextCount(size.Tokens, "token"), width)
+}
+
+// correctionText says how an estimate was corrected towards what providers
+// reported for the route.
+func correctionText(c daemon.SizeCorrection) string {
+	factor := fmt.Sprintf("×%d.%02d", c.PerMille/1000, c.PerMille%1000/10)
+	if c.Calibrated {
+		return "corrected " + factor + " from reported usage"
+	}
+	return "provisional correction " + factor + " after " + contextCount(c.Reports, "report")
 }
 
 // emptyText says why there are no section rows.

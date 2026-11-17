@@ -37,14 +37,14 @@ func decodeChatEnvelope(envelope sessionEventEnvelope, wireBytes int, content *e
 	switch envelope.Type {
 	case "reset":
 		var data struct {
-			Reason string `json:"reason"`
+			Reason ResetReason `json:"reason"`
 		}
 		if err := decodeRequired(envelope.Data, &data, "reason"); err != nil {
 			return nil, err
 		}
 		switch data.Reason {
-		case "initial", "generation_changed", "replay_unavailable", "recovery":
-			event.Reason = data.Reason
+		case ResetInitial, ResetGenerationChanged, ResetReplayUnavailable, ResetRecovery:
+			event.Reset = data.Reason
 		default:
 			return nil, fieldError("reset reason")
 		}
@@ -132,7 +132,7 @@ func decodeChatEnvelope(envelope sessionEventEnvelope, wireBytes int, content *e
 		if err := decodeRequired(envelope.Data, &data, "entry_id", "origin", "text", "mail"); err != nil {
 			return nil, err
 		}
-		event.Text, event.Source = data.Text, data.Origin
+		event.Text, event.Origin = data.Text, data.Origin
 	case "shell_command":
 		var data struct {
 			ShellCommand ShellCommand `json:"shell_command"`
@@ -260,11 +260,14 @@ func decodeChatEnvelope(envelope sessionEventEnvelope, wireBytes int, content *e
 			return nil, fieldError("turn completion")
 		}
 		event.TurnID, event.SubmissionIDs = data.RunID, data.InputIDs
-		if data.State == "interrupted" {
-			event.Source = "interrupted"
-		} else if data.State == "failed" || data.State == "abandoned" {
-			event.Source = "failed"
-		} else if data.State != "completed" {
+		switch data.State {
+		case "completed":
+			event.Outcome = OutcomeCompleted
+		case "interrupted":
+			event.Outcome = OutcomeInterrupted
+		case "failed", "abandoned":
+			event.Outcome = OutcomeFailed
+		default:
 			return nil, fieldError("turn state")
 		}
 	case "retry":
@@ -296,7 +299,7 @@ func decodeChatEnvelope(envelope sessionEventEnvelope, wireBytes int, content *e
 		if data.Code == "history_publication_failed" {
 			return nil, &APIError{StatusCode: 503, Code: data.Code, Message: data.Message}
 		}
-		event.Text, event.TurnID, event.Reason = data.Message, value(data.RunID), data.Code
+		event.Text, event.TurnID, event.Code = data.Message, value(data.RunID), data.Code
 	case "invalidate":
 		var data struct {
 			Kind string `json:"kind"`

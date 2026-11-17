@@ -58,6 +58,8 @@ type AppModel struct {
 	Sessions         []daemon.Session
 	Notices          Notices
 	CommandCatalog   []daemon.SessionCommand
+	// signIns are the daemon's sign-ins, read once for their terms warnings.
+	signIns          []daemon.SignIn
 	ExtensionPicker  ExtensionPickerModel
 	CapabilityPage   CapabilityPageModel
 	WebhooksPage     WebhooksPageModel
@@ -119,6 +121,7 @@ func (m *AppModel) newChatModel(session *daemon.Session) ChatModel {
 	chat := NewChatModel(session, daemon.NewChatClient(m.Conn, session.ID))
 	chat.artifactConn = m.Conn
 	chat.openBrowser = m.openBrowser
+	chat.termsFor = m.termsFor
 	if pending, ok := m.pendingBySession[session.ID]; ok {
 		chat.pendingUsers = slices.Clone(pending.users)
 		chat.pendingContinuations = maps.Clone(pending.continuations)
@@ -179,7 +182,7 @@ func NewLoginAppModel(conn *daemon.Connection, bootstrap Bootstrap, workspace, n
 }
 
 func (m *AppModel) Init() tea.Cmd {
-	return m.initScreen()
+	return tea.Batch(m.initScreen(), m.loadTermsCmd())
 }
 
 func (m *AppModel) AddNotice(message string) {
@@ -238,6 +241,9 @@ func (m *AppModel) Update(msg tea.Msg) (model tea.Model, resultCmd tea.Cmd) {
 	}
 
 	if cmd, handled := m.handlePreferences(msg); handled {
+		return m, cmd
+	}
+	if cmd, handled := m.handleTerms(msg); handled {
 		return m, cmd
 	}
 	if cmd, handled := m.handleSessionResults(msg); handled {
@@ -331,7 +337,7 @@ func (m *AppModel) Update(msg tea.Msg) (model tea.Model, resultCmd tea.Cmd) {
 		m.ModelPicker.Saving = true
 		m.ModelPicker.Error = ""
 		m.ModelGen++
-		return m, m.changeModelAccessCmd(msg.Model, msg.Provider, msg.Effort, new(msg.CyberAccess), m.ModelGen)
+		return m, m.changeModelAccessCmd(msg.Model, msg.Provider, msg.Effort, new(msg.CyberAccess), msg.MakeDefault, m.ModelGen)
 
 	case ModelPickerCapsMsg:
 		return m, m.saveCapsCmd(msg)
@@ -536,6 +542,9 @@ func (m *AppModel) Update(msg tea.Msg) (model tea.Model, resultCmd tea.Cmd) {
 			return m, nil
 		}
 		cleanup := m.Login.Close()
+		if len(m.Login.SignIns) > 0 {
+			m.signIns = m.Login.SignIns
+		}
 		m.ProfileGen++
 		return m, tea.Batch(cleanup, m.loadProfilesCmd(msg.Name, m.ProfileGen))
 

@@ -1,17 +1,18 @@
 //// Project-scoped, agent-maintained notes; never a source of mandatory instructions.
 ////
-//// The files live on the daemon's disk (albedo_memory.erl), and the kernel's
+//// The files live on the daemon's disk (files.gleam), and the kernel's
 //// `memory` object reaches them through the route below wherever it runs.
 //// A workspace writes only its own memory and reads its whole link group.
 
-import albedo/clock
-import albedo/harness/extension
-import albedo/harness/host
+import albedo/harness/extensions/memory/files
 import albedo/harness/links
-import albedo/harness/rpc
+import albedo/harness/sdk/extension
+import albedo/harness/sdk/host
+import albedo/harness/sdk/rpc
 import albedo/transfer
+import albedo_clock
+import albedo_file
 import gleam/bit_array
-import gleam/dynamic
 import gleam/dynamic/decode
 import gleam/json
 import gleam/list
@@ -21,7 +22,7 @@ pub fn extension() -> extension.Extension {
   extension.Extension(
     "memory",
     "Durable project memory and dated journal entries.",
-    ["python"],
+    [],
     [
       extension.TransferPlugin(transfer_adapter()),
       extension.ToolPlugin(
@@ -35,20 +36,21 @@ pub fn extension() -> extension.Extension {
         ["memory"],
         [],
       ),
-      extension.ManagedPlugin(fn(store, _, workspace) {
-        let own = links.origin(store, workspace)
-        use context <- result.try(load(links.group(store, own)))
+      extension.ManagedPlugin(fn(scope, _, workspace) {
+        let own = links.origin(scope, workspace)
+        use context <- result.try(load(links.group(scope, own)))
         Ok(
           extension.Managed(..extension.empty(), context: context, routes: [
             #("memory", fn(context: host.Context, method, args) {
-              let store = context.store
-              handle(own, links.group(store, own), method, args)
+              handle(own, links.group(context.storage, own), method, args)
             }),
           ]),
         )
       }),
     ],
     extension.no_initialise,
+    tables: [],
+    uses: [],
   )
 }
 
@@ -109,55 +111,54 @@ fn path(written: Result(String, String)) -> Result(json.Json, String) {
   result.map(written, json.string)
 }
 
-@external(erlang, "albedo_memory", "load")
-fn load(group: List(String)) -> Result(String, String)
+fn load(group: List(String)) -> Result(String, String) {
+  files.load(group)
+}
 
-@external(erlang, "albedo_memory", "read")
-fn read(workspace: String) -> Result(String, String)
+fn read(workspace: String) -> Result(String, String) {
+  files.read(workspace)
+}
 
-@external(erlang, "albedo_memory", "save")
-fn save(workspace: String, text: String) -> Result(String, String)
+fn save(workspace: String, text: String) -> Result(String, String) {
+  files.save(workspace, text)
+}
 
-@external(erlang, "albedo_memory", "append")
-fn append(workspace: String, text: String) -> Result(String, String)
+fn append(workspace: String, text: String) -> Result(String, String) {
+  files.append(workspace, text)
+}
 
-@external(erlang, "albedo_memory", "journal")
 fn journal(
   workspace: String,
   date: String,
   text: String,
-) -> Result(String, String)
+) -> Result(String, String) {
+  files.journal(workspace, date, text)
+}
 
-@external(erlang, "albedo_memory", "documents")
-fn documents(group: List(String)) -> #(List(#(String, String, String)), Bool)
-
-/// A source workspace label and its relative UTF-8 memory and journal files.
-pub type Snapshot {
-  Snapshot(workspace: String, files: List(#(String, String)))
+fn documents(group: List(String)) -> #(List(#(String, String, String)), Bool) {
+  files.documents(group)
 }
 
 /// Reads this workspace's memory only, without checking its working directory.
-@external(erlang, "albedo_memory", "export_snapshot")
-pub fn export_snapshot(workspace: String) -> Result(Snapshot, String)
+pub fn export_snapshot(workspace: String) -> Result(files.Snapshot, String) {
+  files.export_snapshot(workspace)
+}
 
 /// Imports once per origin, transfer, source workspace and target file.
 pub fn import_snapshot(
   target: String,
   origin: String,
   transfer_id: String,
-  snapshot: Snapshot,
+  snapshot: files.Snapshot,
 ) -> Result(Nil, String) {
-  import_files(target, origin, transfer_id, snapshot, clock.system_seconds())
+  files.import_snapshot(
+    target,
+    origin,
+    transfer_id,
+    snapshot,
+    albedo_clock.system_seconds(),
+  )
 }
-
-@external(erlang, "albedo_memory", "import_snapshot")
-fn import_files(
-  target: String,
-  origin: String,
-  transfer_id: String,
-  snapshot: Snapshot,
-  seconds: Int,
-) -> Result(Nil, String)
 
 /// The moved workspace's memory files, named `memory/<relative path>`, merged
 /// into the destination workspace's memory at activation.
@@ -189,7 +190,7 @@ fn install(
         name -> Error("not a memory file: " <> name)
       })
       use bytes <- result.try(
-        read_file(file.path)
+        albedo_file.read(file.path)
         |> result.replace_error("cannot read staged " <> file.name),
       )
       bit_array.to_string(bytes)
@@ -204,11 +205,8 @@ fn install(
         scope.workspace,
         origin.daemon,
         origin.transfer,
-        Snapshot(origin.workspace, files),
+        files.Snapshot(origin.workspace, files),
       )
       |> result.replace([])
   }
 }
-
-@external(erlang, "file", "read_file")
-fn read_file(path: String) -> Result(BitArray, dynamic.Dynamic)

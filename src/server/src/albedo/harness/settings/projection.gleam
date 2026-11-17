@@ -1,10 +1,12 @@
 //// Read-only projections at the native settings document boundary.
 //// Values not validated by the original reader remain raw until encoding.
 
-import albedo/daemon/configuration
 import albedo/harness/cache_ttl
+import albedo/harness/sdk/profiles as configuration
+import albedo/harness/sdk/settings_store
 import albedo/harness/settings/declared
-import albedo/openai_api/types
+import albedo_clock
+import albedo_model as types
 import gleam/dict.{type Dict}
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
@@ -48,8 +50,9 @@ type Source {
   Environment(Dynamic)
 }
 
-@external(erlang, "albedo_settings_read", "json_null")
-fn null() -> Dynamic
+fn null() -> Dynamic {
+  settings_store.null()
+}
 
 fn object(fields: List(#(String, Dynamic))) -> Dynamic {
   dynamic.properties(
@@ -432,7 +435,7 @@ fn auth_view(secret: Dict(String, Dynamic)) -> Dynamic {
         state,
         decode.run(record, decode.at(["expires"], decode.int))
       {
-        "signed_in", Ok(ms) -> dynamic.string(native_timestamp(ms))
+        "signed_in", Ok(ms) -> dynamic.string(albedo_clock.format_rfc3339(ms))
         _, _ -> null()
       }
       object([
@@ -450,9 +453,6 @@ fn auth_view(secret: Dict(String, Dynamic)) -> Dynamic {
     }
   }
 }
-
-@external(erlang, "albedo_http_api", "timestamp")
-fn native_timestamp(ms: Int) -> String
 
 fn source_view(
   definition: Dict(String, Dynamic),

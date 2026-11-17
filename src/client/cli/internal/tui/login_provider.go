@@ -35,6 +35,15 @@ type customProvider struct {
 
 var customProviders = []customProvider{
 	{
+		ID:            "add-anthropic-api",
+		Label:         "Anthropic-compatible",
+		Detail:        "your own base URL and bearer token",
+		Extension:     "anthropic-api",
+		DefaultName:   "anthropic-api",
+		DefaultURL:    "https://api.anthropic.com/v1",
+		FixedProtocol: "chat_completions",
+	},
+	{
 		ID:              "add-alibaba",
 		Label:           "Alibaba",
 		Detail:          "Qwen, DeepSeek, GLM",
@@ -173,6 +182,8 @@ func (p customProvider) facts() []loginFact {
 	switch {
 	case p.Scoped:
 		facts = append(facts, loginFact{"auth", "application default credentials"}, loginFact{"asks for", "project and location"})
+	case p.Extension == "anthropic-api":
+		facts = append(facts, loginFact{"auth", "bearer token"})
 	case p.Optional:
 		facts = append(facts, loginFact{"auth", "api key, or none"})
 	default:

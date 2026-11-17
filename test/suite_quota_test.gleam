@@ -1,8 +1,9 @@
-import albedo/clock
 import albedo/daemon/quota
-import albedo/daemon/store
 import albedo/harness/extensions/zed/quota as zed_quota
-import albedo/harness/usage_feed
+import albedo/harness/sdk/key_environment
+import albedo/harness/sdk/store
+import albedo/harness/sdk/usage_feed
+import albedo_clock as clock
 import gleam/erlang/process
 import gleam/io
 import gleam/json
@@ -61,8 +62,17 @@ fn projection() -> Nil {
   store.close(db)
 }
 
-fn target() -> quota.Target {
-  quota.Target("fixture", "account", json.object([]))
+/// One extension's quota source offering `accounts`, as the daemon composes
+/// installed extensions' sources.
+fn sources(
+  provider: String,
+  accounts: fn() -> List(#(String, json.Json)),
+) -> List(#(String, usage_feed.Source)) {
+  [#(provider, usage_feed.accounts_source(provider, fn(_) { accounts() }))]
+}
+
+fn fixture() -> List(#(String, usage_feed.Source)) {
+  sources("fixture", fn() { [#("account", json.object([]))] })
 }
 
 fn report() -> usage_feed.Report {
@@ -86,7 +96,6 @@ fn report() -> usage_feed.Report {
   )
 }
 
-
 // ---- the Zed account reading -------------------------------------------
 
 /// The credential the poller hands a Zed account: its stored access token and
@@ -102,11 +111,20 @@ fn zed_credential() -> json.Json {
 /// Zed's own account payload, nested the way the service nests it.
 fn zed_body(used: json.Json, limit: json.Json) -> String {
   json.object([
-    #("plan", json.object([
-      #("usage", json.object([
-        #("edit_predictions", json.object([#("used", used), #("limit", limit)])),
-      ])),
-    ])),
+    #(
+      "plan",
+      json.object([
+        #(
+          "usage",
+          json.object([
+            #(
+              "edit_predictions",
+              json.object([#("used", used), #("limit", limit)]),
+            ),
+          ]),
+        ),
+      ]),
+    ),
   ])
   |> json.to_string
 }
@@ -120,12 +138,14 @@ fn zed_status(status: Int) -> fn(json.Json) -> Result(#(Int, String), String) {
 }
 
 fn read_zed(body: String) -> usage_feed.Report {
-  let assert Ok(report) = zed_quota.fetch_with(zed_credential(), zed_reads(body))
+  let assert Ok(report) =
+    zed_quota.fetch_with(zed_credential(), zed_reads(body))
   report
 }
 
 fn read_zed_status(status: Int) -> usage_feed.Report {
-  let assert Ok(report) = zed_quota.fetch_with(zed_credential(), zed_status(status))
+  let assert Ok(report) =
+    zed_quota.fetch_with(zed_credential(), zed_status(status))
   report
 }
 
@@ -165,10 +185,7 @@ fn zed_readings() -> Nil {
   // reports an error instead of a zero reading.
   let cases = [
     #("a payload without the reading", "{}"),
-    #(
-      "a reading without a count",
-      zed_body(json.null(), json.string("120")),
-    ),
+    #("a reading without a count", zed_body(json.null(), json.string("120"))),
     #("a reading without a limit", zed_body(json.int(3), json.null())),
     #("a zero limit", zed_body(json.int(3), json.string("0"))),
     #("a negative count", zed_body(json.int(-1), json.string("120"))),
@@ -243,7 +260,8 @@ fn zed_poller() -> Nil {
         process.send(polls, Nil)
         report
       },
-      fn(_) { [quota.Target("zed", "okami", zed_credential())] },
+      sources("zed", fn() { [#("okami", zed_credential())] }),
+      key_environment.empty(),
       fn() { quota.Settings(600, 120, True) },
       1000,
     )
@@ -282,7 +300,8 @@ fn startup_and_crash() -> Nil {
       "fixture",
       db,
       healthy_fetch(polls),
-      fn(_) { [target()] },
+      fixture(),
+      key_environment.empty(),
       fn() { quota.Settings(600, 120, True) },
       1000,
     )
@@ -301,7 +320,8 @@ fn startup_and_crash() -> Nil {
         process.send(calls, Nil)
         panic as "fixture crash"
       },
-      fn(_) { [target()] },
+      fixture(),
+      key_environment.empty(),
       fn() { quota.Settings(1, 1, True) },
       1000,
     )
@@ -343,7 +363,8 @@ fn poll_timeout() -> Nil {
         let assert Ok(Nil) = process.receive(gate, 30_000)
         Ok(report())
       },
-      fn(_) { [target()] },
+      fixture(),
+      key_environment.empty(),
       fn() { quota.Settings(1, 1, True) },
       100,
     )
@@ -370,12 +391,13 @@ fn discovery_timeout() -> Nil {
       "fixture",
       db,
       healthy_fetch(polls),
-      fn(_) {
+      sources("fixture", fn() {
         let answer = process.new_subject()
         process.send(discoveries, #(process.self(), answer))
-        let assert Ok(targets) = process.receive(answer, 30_000)
-        targets
-      },
+        let assert Ok(accounts) = process.receive(answer, 30_000)
+        accounts
+      }),
+      key_environment.empty(),
       fn() { quota.Settings(1, 1, True) },
       100,
     )
@@ -386,7 +408,7 @@ fn discovery_timeout() -> Nil {
     |> process.select_specific_monitor(monitor, fn(down) { down })
     |> process.selector_receive(1000)
   let assert Ok(#(_, answer)) = process.receive(discoveries, 2000)
-  process.send(answer, [target()])
+  process.send(answer, [#("account", json.object([]))])
   let assert Ok(Nil) = process.receive(polls, 1500)
   // A later discovery timeout must not discard the previously known target.
   let assert Ok(#(blocked, _)) = process.receive(discoveries, 2000)

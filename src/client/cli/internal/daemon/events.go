@@ -34,6 +34,9 @@ type ToolActivity struct {
 	Target   string            `json:"target"`
 	Artifact *ArtifactActivity `json:"artifact,omitempty"`
 	Skill    *SkillActivity    `json:"skill,omitempty"`
+	// Title and Description are the display() metadata; they are separate from content.
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
 	// Detail is the markdown a web search answered with or display() showed; empty otherwise.
 	Detail string `json:"detail,omitempty"`
 	// MS and OK are how long the call took and whether it worked, when it
@@ -200,6 +203,10 @@ type Usage struct {
 	// CacheFade is how CachedPromptTokens fades once the session goes quiet,
 	// in time order.
 	CacheFade []CacheStep `json:"cacheFade,omitempty"`
+	// Size is set when the token counts are a strategy's size for a request no
+	// call has measured yet, as after a compaction, and not one call's own
+	// report. It says how much of them was measured and how much estimated.
+	Size *Size `json:"size,omitempty"`
 }
 
 // CacheStep says that from At (unix ms) on, a request would read Cached
@@ -235,14 +242,16 @@ type StreamEvent struct {
 	Usage         *Usage
 	ToolTrace     *ToolTrace
 	// Skill is the skill a user's slash activation loaded.
-	Skill          *SkillLoad
-	Timestamp      *int64
-	ToolArgs       map[string]any
-	Progress       *ToolProgress
-	TurnID         string
-	Type           EventType
-	Text           string
-	Source         string
+	Skill     *SkillLoad
+	Timestamp *int64
+	ToolArgs  map[string]any
+	Progress  *ToolProgress
+	TurnID    string
+	Type      EventType
+	Text      string
+	// Source is who submitted a user entry; Origin names what wrote a note.
+	Source         InputSource
+	Origin         string
 	Summary        string
 	Strategy       string
 	ToolName       string
@@ -262,14 +271,55 @@ type StreamEvent struct {
 	// its first row (the cursor for the next older page), More whether one exists.
 	Before int64
 	More   bool
-	// Reason is the failure code or the reason a reset replaced the history:
-	// initial, generation_changed, replay_unavailable, or recovery.
-	Reason string
+	// Reset is why a reset replaced the history.
+	Reset ResetReason
+	// Code is the failure code of an error event.
+	Code string
+	// Outcome is how a turn ended, for a turn_completed event.
+	Outcome TurnOutcome
 	// Replayed marks an event from the transcript snapshot that follows a
 	// reset: history, which says nothing about what the session does now.
 	Replayed       bool
 	SnapshotOrigin bool
 }
+
+// InputSource is who submitted a user entry.
+type InputSource string
+
+const (
+	SourceChat     InputSource = "chat"
+	SourceMail     InputSource = "mail"
+	SourceWebhook  InputSource = "webhook"
+	SourceEvent    InputSource = "event"
+	SourceJob      InputSource = "job"
+	SourceContinue InputSource = "continue"
+)
+
+// FromPerson reports whether a person typed the entry. A local echo the
+// daemon has not confirmed yet has no source and is a person's.
+func (s InputSource) FromPerson() bool {
+	return s == "" || s == SourceChat
+}
+
+// ResetReason is why the daemon replaced the history a stream had shown.
+type ResetReason string
+
+const (
+	ResetInitial           ResetReason = "initial"
+	ResetGenerationChanged ResetReason = "generation_changed"
+	ResetReplayUnavailable ResetReason = "replay_unavailable"
+	ResetRecovery          ResetReason = "recovery"
+)
+
+// TurnOutcome is how a turn ended. A turn the daemon abandoned reports
+// OutcomeFailed.
+type TurnOutcome string
+
+const (
+	OutcomeCompleted   TurnOutcome = "completed"
+	OutcomeInterrupted TurnOutcome = "interrupted"
+	OutcomeFailed      TurnOutcome = "failed"
+)
 
 type ResourceInvalidation struct {
 	Session, Settings, Catalog, Context, Extension bool
@@ -359,6 +409,13 @@ func usageValue(wire protocol.Usage) *Usage {
 	usage := &Usage{SessionCostUSD: wire.SessionCostUsd, Model: value(wire.Model), PromptTokens: intPointer(wire.PromptTokens), CachedPromptTokens: intPointer(wire.CachedPromptTokens), CacheWriteTokens: intPointer(wire.CacheWriteTokens), CompletionTokens: intPointer(wire.CompletionTokens), TotalTokens: intPointer(wire.TotalTokens), ElapsedMs: wire.ElapsedMs, TokensPerSecond: wire.TokensPerSecond, CacheMissTokens: intPointer(wire.CacheMissTokens), CacheDriftTokens: intPointer(wire.CacheDriftTokens), Spent: costValue(wire.Spent)}
 	if wire.ObservedAt != nil {
 		usage.RecordedAt = timestampMilliseconds(*wire.ObservedAt)
+	}
+	if wire.Size != nil {
+		// A size this client cannot read leaves the counts as plain numbers,
+		// as before the daemon reported one, rather than losing the event.
+		if size, err := sizeOf(*wire.Size); err == nil {
+			usage.Size = &size
+		}
 	}
 	for _, step := range wire.CacheFade {
 		if at := timestampMilliseconds(step.At); at != nil {

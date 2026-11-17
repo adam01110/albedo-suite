@@ -47,6 +47,9 @@ func (m ChatModel) liveActionLabel(progress *daemon.ToolProgress) string {
 // work a running cell is doing, not background work.
 func (m ChatModel) runningJobCommand() string {
 	for _, job := range m.Status.RunningJobs {
+		if job.Kind == "cell" {
+			continue
+		}
 		if command := oneLine(job.Command); command != "" {
 			return command
 		}
@@ -54,12 +57,15 @@ func (m ChatModel) runningJobCommand() string {
 	return ""
 }
 
-// agedJobCommand is the idle status line's example: the first job past its
-// grace, matching the count it sits beside.
+// agedJobCommand is the idle status line's example: the first top-level job
+// past its grace, matching the count it sits beside.
 func (m ChatModel) agedJobCommand() string {
-	for _, job := range m.agedJobs() {
-		if command := oneLine(job.Command); command != "" {
-			return command
+	aged := m.agedJobs()
+	for _, job := range aged {
+		if isTopLevelJob(job, aged) {
+			if command := oneLine(job.Command); command != "" {
+				return command
+			}
 		}
 	}
 	return ""
@@ -106,7 +112,7 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 			case daemon.EventNote:
 				entry.Text = evt.Text
 			case daemon.EventTool:
-				entry.ToolArgs, entry.ToolResult, entry.ToolTrace = evt.ToolArgs, evt.ToolResult, evt.ToolTrace
+				entry.ToolArgs, entry.ToolResult, entry.ToolTrace, entry.ToolStatus = evt.ToolArgs, evt.ToolResult, evt.ToolTrace, evt.ToolStatus
 				entry.Images = evt.Images
 			case daemon.EventCompacted:
 				entry.Text = evt.Summary
@@ -123,7 +129,7 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 	}
 	opensTurn := evt.Type == daemon.EventUser && (m.transcript.turn == nil || evt.Source == "" || evt.Source == "chat")
 	m.observeActivity(evt)
-	retireAll := evt.Type == daemon.EventRetry || evt.Type == daemon.EventError || evt.Type == daemon.EventInterrupted || evt.Type == daemon.EventTurnCompleted && evt.Source != ""
+	retireAll := evt.Type == daemon.EventRetry || evt.Type == daemon.EventError || evt.Type == daemon.EventInterrupted || evt.Type == daemon.EventTurnCompleted && (evt.Outcome == daemon.OutcomeInterrupted || evt.Outcome == daemon.OutcomeFailed)
 	var anchor readingAnchor
 	retired := false
 	if len(evt.ReplacesLiveIDs) > 0 || retireAll || evt.ReplacesAllLive {
@@ -201,7 +207,7 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 		// A first subscription has shown nothing the notices could be about,
 		// so they report what happened here meanwhile: an editor that failed,
 		// a paste, a session the app recovered.
-		if evt.Reason != "initial" {
+		if evt.Reset != daemon.ResetInitial {
 			m.ClearNotices()
 		}
 		m.TurnFailed, m.Stopping, m.Stopped = false, false, false
@@ -290,10 +296,10 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 		}
 		if evt.Type == daemon.EventTurnCompleted {
 			m.Stopping = false
-			if evt.Source == "interrupted" {
+			if evt.Outcome == daemon.OutcomeInterrupted {
 				m.Stopped = true
 			}
-			if evt.Source == "failed" {
+			if evt.Outcome == daemon.OutcomeFailed {
 				m.TurnFailed = true
 			}
 		}

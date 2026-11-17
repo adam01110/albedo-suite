@@ -18,6 +18,9 @@ func (m *ChatModel) handleInput(msg tea.Msg) (tea.Cmd, bool) {
 	var cmds []tea.Cmd
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
+		if m.terms != nil {
+			return m.termsKey(msg), true
+		}
 		// The side question panel owns keys while open, before the turn
 		// interrupt or composer input.
 		if m.btw.open {
@@ -31,8 +34,22 @@ func (m *ChatModel) handleInput(msg tea.Msg) (tea.Cmd, bool) {
 				m.effortSelected = max(0, m.effortSelected-1)
 			case "right", "down":
 				m.effortSelected = min(len(m.effortOptions)-1, m.effortSelected+1)
+			case "ctrl+t":
+				if profileEffort(m.effortProfile) {
+					if m.effortDefaultChoice == "default" {
+						m.effortDefaultChoice = "inherit"
+					} else {
+						m.effortDefaultChoice = "default"
+					}
+					m.rebuildEffortOptions("")
+					m.syncLayout()
+				}
+			case "ctrl+x":
+				m.effortDefaultChoice = "inherit"
+				m.rebuildEffortOptions("")
+				m.syncLayout()
 			case "enter", "esc":
-				level := m.effortOptions[m.effortSelected]
+				level := m.selectedEffort()
 				m.effortOptions = nil
 				m.syncLayout()
 				if msg.String() == "enter" {
@@ -116,6 +133,12 @@ func (m *ChatModel) handleInput(msg tea.Msg) (tea.Cmd, bool) {
 			}
 			return nil, true
 		case "esc":
+			if m.editing != nil {
+				if m.editing.saving {
+					return nil, true
+				}
+				return m.cancelEdit(), true
+			}
 			if m.isSending {
 				m.interruptDeferred = true
 				m.Stopping = true
@@ -150,6 +173,14 @@ func (m *ChatModel) handleInput(msg tea.Msg) (tea.Cmd, bool) {
 			m.scrollBy(delta)
 			return nil, true
 		case "up":
+			if m.editing != nil && m.TextArea.Value() == m.editing.loaded {
+				return m.startQueueEdit(m.editing.id), true
+			}
+			if m.editing == nil && m.TextArea.Value() == "" {
+				if cmd := m.startQueueEdit(""); cmd != nil {
+					return cmd, true
+				}
+			}
 			if m.TextArea.Line() == 0 && m.TextArea.LineInfo().RowOffset == 0 {
 				m.scrollBy(-1)
 				return nil, true
@@ -190,6 +221,9 @@ func (m *ChatModel) handleInput(msg tea.Msg) (tea.Cmd, bool) {
 				return cmd, true
 			}
 		case "enter":
+			if m.editing != nil {
+				return m.submitQueueEdit(), true
+			}
 			trimmed := strings.TrimSpace(m.TextArea.Value())
 			// a draft typed while connecting waits in the composer
 			if m.connecting() && (!strings.HasPrefix(trimmed, "/") || !m.isRecognizedCommand(trimmed)) {
@@ -417,7 +451,36 @@ func (m *ChatModel) submitInput(input string, cmds *[]tea.Cmd) {
 		m.handleSubmittedCommand(input, cmds)
 		return
 	}
+	if input != "." && m.termsFor != nil {
+		if terms := m.termsFor(m.Provider); terms != nil {
+			m.terms, m.termsHeld = messageTerms(*terms), input
+			return
+		}
+	}
+	m.submitPrompt(input, cmds)
+}
 
+// termsKey answers the terms box: enter sends the held message and records
+// the warning as seen, esc puts the message back in the composer.
+func (m *ChatModel) termsKey(msg tea.KeyPressMsg) tea.Cmd {
+	proceed, closed := m.terms.key(msg)
+	if !closed {
+		return nil
+	}
+	id, held := m.terms.terms.ID, m.termsHeld
+	m.terms, m.termsHeld = nil, ""
+	if !proceed {
+		m.TextArea.SetValue(held)
+		m.syncLayout()
+		return nil
+	}
+	cmds := []tea.Cmd{func() tea.Msg { return termsSeenMsg{ID: id} }}
+	m.submitPrompt(held, &cmds)
+	return tea.Batch(cmds...)
+}
+
+// submitPrompt sends input as a message, or queues it behind the turn.
+func (m *ChatModel) submitPrompt(input string, cmds *[]tea.Cmd) {
 	if m.pendingSendCount() >= MaxPendingUsers {
 		m.AddError("Too many messages are waiting. Wait for the current reply to finish before sending another message.")
 		m.refreshViewportContent()

@@ -1,14 +1,13 @@
-import albedo/daemon/store
-import albedo/harness/extension
 import albedo/harness/extension/prompt_docs
 import albedo/harness/extensions/agents/extension as agents
 import albedo/harness/extensions/browser/extension as browser
 import albedo/harness/extensions/mail/extension as mail
 import albedo/harness/extensions/paperclips/extension as paperclips
-import albedo/harness/extensions/python/extension as python
 import albedo/harness/extensions/remote/extension as remote
 import albedo/harness/extensions/schedule/extension as schedule
-import albedo/harness/host
+import albedo/harness/kernel/base as python
+import albedo/harness/sdk/extension
+import albedo/harness/sdk/host
 import gleam/dynamic
 import gleam/dynamic/decode
 import gleam/int
@@ -27,7 +26,7 @@ fn item(name: String, text: String) -> extension.Prepared {
 pub fn main() -> Nil {
   let actual =
     [
-      python.extension(),
+      python.contribution(),
       agents.extension(),
       remote.extension(),
       browser.extension(),
@@ -81,8 +80,8 @@ pub fn main() -> Nil {
     ])
     == "shared binding instructions"
 
-  let assert Ok(ledger) = store.start(":memory:", "")
-  let context = host.Context(ledger, "test", "", [], [], [])
+  // The route reads no host context.
+  let context = unused_context(Nil)
   let #(_, call) = prompt_docs.route(items)
   let assert Ok(args) =
     json.parse("\"invalid native arguments\"", decode.dynamic)
@@ -104,6 +103,11 @@ pub fn main() -> Nil {
     call(context, "api_docs.read", missing)
   let assert Error(#("invalid", _)) = call(context, "api_docs.unknown", args)
 
+  // Nothing compacted leaves nothing to retrieve, so no binding is added.
+  assert !prompt_docs.available([
+    item("python", "core rules"),
+    item("custom", "custom instructions"),
+  ])
   let without_python = [item("agents", original)]
   assert !prompt_docs.available(without_python)
   assert prompt_docs.instructions(without_python) == original
@@ -123,11 +127,13 @@ pub fn main() -> Nil {
       extension.Managed(..extension.empty(), routes: [prompt_docs.route(items)]),
     )
   assert !prompt_docs.available(list.append(items, [collision]))
-  store.close(ledger)
   io.println(
     "Prompt docs: projection, exact retrieval, stable prefix, disabled and collision cases passed",
   )
 }
+
+@external(erlang, "gleam_stdlib", "identity")
+fn unused_context(value: Nil) -> host.Context
 
 fn decode_dynamic() -> decode.Decoder(dynamic.Dynamic) {
   decode.dynamic

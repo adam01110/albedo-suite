@@ -82,8 +82,18 @@ func (m *LoginModel) SetSize(width, height int) {
 
 // View is the login step in the list frame: a list for a choice, the
 // question's input in the search line for a text step, and the step's text
-// above it. Errors and progress sit in the footer.
+// above it. Errors and progress sit in the footer. A terms warning sits over
+// all of it.
 func (m LoginModel) View() string {
+	screen := m.screen()
+	if m.terms != nil {
+		width, height := cmp.Or(m.Width, 80), cmp.Or(m.Height, 24)
+		return overlay(screen, m.terms.view(width, height), width, height)
+	}
+	return screen
+}
+
+func (m LoginModel) screen() string {
 	width := cmp.Or(m.Width, 80)
 	title := brand("albedo") + " " + DefaultStyles.Muted.Render("/login")
 	right := m.Name
@@ -189,6 +199,9 @@ func (m LoginModel) question() (string, []string) {
 		}
 		return "API base URL", nil
 	case StepAPIKey:
+		if m.Draft.Extension == "anthropic-api" {
+			return "bearer token", []string{"the daemon keeps the token in creds.json, not in config.json"}
+		}
 		return "API key", []string{"the daemon keeps a key in creds.json, not in config.json"}
 	case StepProject:
 		return "Google Cloud project ID", nil
@@ -237,7 +250,7 @@ func (m LoginModel) hints() []hint {
 				hints = append(hints, hint{"ctrl+r", "rename"})
 			}
 			if _, removable := m.removalFor(item.ID); removable && !external {
-				hints = append(hints, hint{"ctrl+d", "remove"})
+				hints = append(hints, hint{"ctrl+x", "remove"})
 			}
 		}
 		return append(hints, hint{"esc", "back"})

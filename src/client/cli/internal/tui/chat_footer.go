@@ -20,27 +20,47 @@ import (
 // work and shows up as such.
 const jobGrace = 3 * time.Second
 
+func isAgedJob(job protocol.KernelJob) bool {
+	return job.StartedAt <= 0 || time.Since(time.UnixMilli(job.StartedAt)) >= jobGrace
+}
+
+func isTopLevelJob(job protocol.KernelJob, jobs []protocol.KernelJob) bool {
+	return job.ParentID == nil || !slices.ContainsFunc(jobs, func(j protocol.KernelJob) bool { return j.ID == *job.ParentID })
+}
+
+func jobLabel(job protocol.KernelJob) string {
+	if cmd := oneLine(job.Command); cmd != "" {
+		return cmd
+	}
+	return "job " + job.ID
+}
+
 // agedJobs are the live jobs past their grace: the work the sidebar and the
 // idle status line call background. A job with no start time is settled.
 func (m ChatModel) agedJobs() []protocol.KernelJob {
 	jobs := make([]protocol.KernelJob, 0, len(m.Status.RunningJobs))
 	for _, job := range m.Status.RunningJobs {
-		if job.StartedAt <= 0 || time.Since(time.UnixMilli(job.StartedAt)) >= jobGrace {
+		if isAgedJob(job) {
 			jobs = append(jobs, job)
 		}
 	}
 	return jobs
 }
 
-// backgroundJobCount is the background work the interface names: aged jobs,
-// plus live remote jobs the observation could only count.
+// backgroundJobCount is the background work the interface names: top-level
+// aged jobs, plus live remote jobs the observation could only count.
 func (m ChatModel) backgroundJobCount() int64 {
-	count := int64(len(m.agedJobs()))
-	if m.Status.KernelJobs == nil {
-		return count
+	var count, allTop int64
+	for _, job := range m.Status.RunningJobs {
+		if isTopLevelJob(job, m.Status.RunningJobs) {
+			allTop++
+			if isAgedJob(job) {
+				count++
+			}
+		}
 	}
-	if extra := *m.Status.KernelJobs - int64(len(m.Status.RunningJobs)); extra > 0 {
-		count += extra
+	if m.Status.KernelJobs != nil && *m.Status.KernelJobs > allTop {
+		count += *m.Status.KernelJobs - allTop
 	}
 	return count
 }
@@ -52,12 +72,15 @@ func (m ChatModel) jobRows() []PageRow {
 		return nil
 	}
 	rows := make([]PageRow, 0, len(jobs))
-	for _, job := range jobs {
-		command := oneLine(job.Command)
-		if command == "" {
-			command = "job " + job.ID
+	for _, root := range jobs {
+		if isTopLevelJob(root, jobs) {
+			rows = append(rows, PageRow{Text: jobLabel(root), Tone: ToneActive})
+			for _, child := range jobs {
+				if child.ParentID != nil && *child.ParentID == root.ID {
+					rows = append(rows, PageRow{Text: "  └ " + jobLabel(child), Tone: ToneActive})
+				}
+			}
 		}
-		rows = append(rows, PageRow{Text: command, Tone: ToneActive})
 	}
 	return rows
 }
@@ -206,6 +229,14 @@ func (m ChatModel) renderFooter() string {
 			{left: []hint{mode, commands, {"ctrl+shift+o", "output"}}, right: compact},
 		}, candidates...)
 	}
+	if m.editing != nil {
+		candidates = append([]struct {
+			right string
+			left  []hint
+		}{
+			{left: []hint{{"enter", "save edit"}, {"esc", "cancel edit"}}, right: compact},
+		}, candidates...)
+	}
 	for _, c := range candidates {
 		left := keyHints(c.left...)
 		if gap := width - lipgloss.Width(left) - lipgloss.Width(c.right); gap > 0 {
@@ -232,6 +263,13 @@ func (m ChatModel) contextStat() (full, short string) {
 		return shortCount(*n)
 	}
 	ratio := DefaultStyles.Muted.Render(count(cachedNow(usage, time.Now())) + "/" + count(usage.PromptTokens))
+	fullRatio, shortRatio := ratio+DefaultStyles.Faint.Render(" cached"), ratio
+	if usage.Size != nil {
+		// No call measured this request, so there is no cache to show: show
+		// what the size is made of instead.
+		sizeFull, sizeShort := sizeStat(*usage.Size)
+		fullRatio, shortRatio = DefaultStyles.Muted.Render(sizeFull), DefaultStyles.Muted.Render(sizeShort)
+	}
 	share := ""
 	if total := contextTokens(usage); total != nil && m.window != nil && m.windowModel != nil && *m.windowModel == usage.Model {
 		pct := int(math.Round(100 * float64(*total) / float64(*m.window)))
@@ -241,7 +279,30 @@ func (m ChatModel) contextStat() (full, short string) {
 		}
 		share = " " + style.Render(fmt.Sprintf("(%d%%)", pct))
 	}
-	return ratio + DefaultStyles.Faint.Render(" cached") + share, ratio + share
+	return fullRatio + share, shortRatio + share
+}
+
+// sizeStat says how big a request is when no call has measured it yet, as
+// after a compaction: "12k (9k counted, 3k estimated)", and "~12k" in the
+// short form when any of it is an estimate.
+func sizeStat(size daemon.Size) (full, short string) {
+	full, short = shortCount(size.Tokens), shortCount(size.Tokens)
+	var parts []string
+	if m := size.Measured; m != nil {
+		source := "reported"
+		if m.Counted {
+			source = "counted"
+		}
+		parts = append(parts, shortCount(m.Tokens)+" "+source)
+	}
+	if e := size.Estimated; e != nil {
+		parts = append(parts, shortCount(e.Tokens)+" estimated")
+		short = "~" + short
+	}
+	if len(parts) > 0 {
+		full += " (" + strings.Join(parts, ", ") + ")"
+	}
+	return full, short
 }
 
 // cachedNow is what a request would read from cache at now: the measured

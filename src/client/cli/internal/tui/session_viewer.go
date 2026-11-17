@@ -540,7 +540,7 @@ func (m SessionViewer) Update(msg tea.Msg) (SessionViewer, tea.Cmd) {
 			return m, nil
 		}
 		switch key := msg.String(); {
-		case key == "ctrl+d" && m.ArchiveView:
+		case (key == "ctrl+d" || key == "ctrl+x") && m.ArchiveView:
 			if item, ok := m.Highlighted(); ok {
 				m.confirm.ask("delete", item.ID, "delete", sessionDeletePrompt)
 			}

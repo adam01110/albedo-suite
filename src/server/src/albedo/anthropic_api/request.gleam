@@ -1,19 +1,22 @@
-//// Portable Anthropic Messages bodies with text, images and tool calls. A
-//// replayed turn from the same model carries the signed thinking blocks Claude
-//// recorded. Routes own their URL, authentication and headers.
+//// Portable Anthropic Messages bodies with text, images and tool calls.
+//// `encode_body` replays a same-model turn with the signed thinking blocks
+//// Claude recorded; `fields` replays natively only under an explicit detail
+//// tag. Routes own their URL, authentication and headers.
 
 import albedo/anthropic_api/schema
-import albedo/openai_api/replay
-import albedo/openai_api/types.{
+import albedo_model.{
   type Error, type Input, type Request, Assistant, InvalidRequest, Replay,
   ToolOutput, User, UserImage,
-}
+} as types
+import albedo_model/replay
 import gleam/bool
+import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/json.{type Json}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import gleam/string_tree.{type StringTree}
 
 type Message {
@@ -36,10 +39,40 @@ pub fn encode_body_cached(
   request: Request,
   ttl_seconds: Int,
 ) -> Result(StringTree, Error) {
-  case request.options.cache {
-    True -> encode_with_marks(request, Some(ttl_seconds))
-    False -> encode_with_marks(request, None)
+  encode_with_marks(request, Some(ttl_seconds))
+}
+
+/// Shared adaptive-thinking fields for Messages providers.
+pub fn adaptive_thinking_fields(effort: types.Effort) -> List(#(String, Json)) {
+  [
+    #(
+      "thinking",
+      json.object([
+        #("type", json.string("adaptive")),
+        #("display", json.string("summarized")),
+      ]),
+    ),
+    #(
+      "output_config",
+      json.object([#("effort", json.string(types.effort_name(effort)))]),
+    ),
+  ]
+}
+
+/// The detail type `anthropic_api/stream` records Claude's blocks under; the
+/// stream module imports this one, so the name is repeated here.
+const blocks_detail = "claude.blocks"
+
+fn encode_with_marks(
+  request: Request,
+  ttl: Option(Int),
+) -> Result(StringTree, Error) {
+  use fields <- result.map(fields(request, ttl, Some(blocks_detail)))
+  let fields = case request.options.effort {
+    Some(effort) -> list.append(adaptive_thinking_fields(effort), fields)
+    None -> fields
   }
+  json.to_string_tree(json.object(fields))
 }
 
 /// What `encode_body_cached` marks, in the order the body carries them, as the
@@ -74,27 +107,62 @@ pub fn cache_marks(
   list.flatten([tools, shared, system, tail])
 }
 
-fn encode_with_marks(
+/// Standard Messages fields, before a provider adds its thinking policy.
+/// Cache marks require both an enabled cache and a TTL. Native replay requires
+/// the same model and the supplied detail tag; other replay remains portable.
+pub fn fields(
   request: Request,
   ttl: Option(Int),
-) -> Result(StringTree, Error) {
-  use <- bool.guard(
-    request.model == "",
-    Error(InvalidRequest("invalid Anthropic Messages model")),
-  )
+  detail_tag: Option(String),
+) -> Result(List(#(String, Json)), Error) {
   use max_tokens <- result.try(types.required_output_limit(
     request,
     "Anthropic Messages",
   ))
+  prompt_fields(request, ttl, detail_tag, [
+    #("max_tokens", json.int(max_tokens)),
+    #("stream", json.bool(True)),
+  ])
+}
+
+/// The fields `/messages/count_tokens` takes: what the model reads, without
+/// the output limit or streaming.
+pub fn count_fields(
+  request: Request,
+  detail_tag: Option(String),
+) -> Result(List(#(String, Json)), Error) {
+  prompt_fields(request, None, detail_tag, [])
+}
+
+fn prompt_fields(
+  request: Request,
+  ttl: Option(Int),
+  detail_tag: Option(String),
+  generation: List(#(String, Json)),
+) -> Result(List(#(String, Json)), Error) {
+  let ttl = case request.options.cache {
+    True -> ttl
+    False -> None
+  }
+  use <- bool.guard(
+    request.model == "",
+    Error(InvalidRequest("invalid Anthropic Messages model")),
+  )
   use messages <- result.try(
     list.try_fold(
       mark_last(request.input, fn(input, last) { #(input, last) }),
       [],
       fn(acc, pair) {
-        add(request.model, acc, pair.0, case pair.1 {
-          True -> ttl
-          False -> None
-        })
+        add(
+          acc,
+          pair.0,
+          case pair.1 {
+            True -> ttl
+            False -> None
+          },
+          request.model,
+          detail_tag,
+        )
       },
     ),
   )
@@ -110,8 +178,7 @@ fn encode_with_marks(
   let fields = [
     #("model", json.string(request.model)),
     #("messages", json.preprocessed_array(messages)),
-    #("max_tokens", json.int(max_tokens)),
-    #("stream", json.bool(True)),
+    ..generation
   ]
   let fields = case system_field(request, ttl) {
     Some(system) -> [#("system", system), ..fields]
@@ -140,30 +207,15 @@ fn encode_with_marks(
     Some(types.NamedTool(name)) -> [tool_choice("tool", Some(name)), ..fields]
     _ -> fields
   }
-  // Thinking is requested only with an effort, and a model whose catalog entry
-  // does not support thinking is never offered one.
-  let fields = case request.options.effort {
-    Some(effort) -> [
-      #(
-        "thinking",
-        json.object([
-          #("type", json.string("adaptive")),
-          #("display", json.string("summarized")),
-        ]),
-      ),
-      #("output_config", json.object([#("effort", json.string(effort))])),
-      ..fields
-    ]
-    None -> fields
-  }
-  Ok(json.to_string_tree(json.object(fields)))
+  Ok(fields)
 }
 
 fn add(
-  model: String,
   acc: List(Message),
   input: Input,
   mark: Option(Int),
+  model: String,
+  detail_tag: Option(String),
 ) -> Result(List(Message), Error) {
   case input {
     User(text) -> Ok(push(acc, "user", [text_block(text, mark)]))
@@ -191,50 +243,139 @@ fn add(
         Error(InvalidRequest("cannot replay output across protocols")),
       )
       use message <- result.try(
-        types.inspect_item(item, replay.message_decoder(detail_decoder()))
+        types.inspect_item(
+          item,
+          replay.message_decoder(case detail_tag {
+            Some(tag) -> native_detail(tag)
+            None -> decode.success(None)
+          }),
+        )
         |> result.replace_error(InvalidRequest(
           "replayed assistant message is not portable",
         )),
       )
-      let blocks = case message.details {
-        // The blocks the reducer recorded, in the order Claude sent them, with
-        // the signature that lets the provider verify its own thinking.
-        [Recorded(original, blocks), ..] if original == model -> blocks
-        _ -> portable_blocks(message)
+      let blocks = case
+        native_blocks(
+          message.details,
+          model,
+          message.text,
+          message.calls,
+          fn(name) { name },
+        )
+      {
+        Some(blocks) -> blocks
+        None ->
+          list.append(
+            case message.text {
+              "" -> []
+              text -> [text_block(text, None)]
+            },
+            list.map(message.calls, fn(call) {
+              tool_use_block(call.id, call.name, call.arguments)
+            }),
+          )
       }
       Ok(push(acc, "assistant", blocks))
     }
   }
 }
 
-/// The detail type `anthropic_api/stream` records Claude's blocks under; the
-/// stream module imports this one, so the name is repeated here.
-const blocks_detail = "claude.blocks"
-
-type Recorded {
-  Recorded(model: String, blocks: List(Json))
+/// A replay detail's native blocks, as a Messages stream recorded them under
+/// `tag`, with the model that wrote them; None for any other detail.
+pub fn native_detail(
+  tag: String,
+) -> decode.Decoder(Option(#(String, List(Dynamic)))) {
+  use kind <- decode.optional_field("type", "", decode.string)
+  case kind == tag {
+    True -> {
+      use model <- decode.optional_field("model", "", decode.string)
+      use blocks <- decode.optional_field(
+        "blocks",
+        [],
+        decode.list(decode.dynamic),
+      )
+      decode.success(Some(#(model, blocks)))
+    }
+    False -> decode.success(None)
+  }
 }
 
-fn detail_decoder() -> decode.Decoder(Option(Recorded)) {
-  use kind <- decode.field("type", decode.string)
-  use model <- decode.optional_field("model", "", decode.string)
-  use blocks <- decode.optional_field("blocks", [], decode.list(decode.dynamic))
-  decode.success(case kind == blocks_detail {
-    True -> Some(Recorded(model, list.map(blocks, types.encode_value)))
-    False -> None
-  })
+/// The blocks to replay an assistant message with as it was sent: those of its
+/// first native detail, when `model` wrote them and they still hold the
+/// message's text and calls, named as `wire_name` sends them. None after a
+/// model change or a transcript edit; the message is then replayed portably.
+pub fn native_blocks(
+  details: List(#(String, List(Dynamic))),
+  model: String,
+  text: String,
+  calls: List(types.ToolCall),
+  wire_name: fn(String) -> String,
+) -> Option(List(Json)) {
+  case details {
+    [#(original, [_, ..] as blocks), ..] if original == model ->
+      case native_matches(blocks, text, calls, wire_name) {
+        True -> Some(list.map(blocks, types.encode_value))
+        False -> None
+      }
+    _ -> None
+  }
 }
 
-fn portable_blocks(message: replay.Message(Recorded)) -> List(Json) {
-  list.append(
-    case message.text {
-      "" -> []
-      text -> [text_block(text, None)]
-    },
-    list.map(message.calls, fn(call) {
-      tool_use_block(call.id, call.name, call.arguments)
-    }),
-  )
+// A stream records text, calls, and signed or redacted thinking; the text and
+// calls must still be the transcript's.
+fn native_matches(
+  blocks: List(Dynamic),
+  text: String,
+  calls: List(types.ToolCall),
+  wire_name: fn(String) -> String,
+) -> Bool {
+  let decoder = {
+    use kind <- decode.field("type", decode.string)
+    case kind {
+      "tool_use" -> {
+        use id <- decode.field("id", decode.string)
+        use name <- decode.field("name", decode.string)
+        use input <- decode.field("input", decode.dynamic)
+        case id != "" && name != "" {
+          True -> decode.success(#("", Some(#(id, name, input))))
+          False -> decode.failure(#("", None), "native call with an identity")
+        }
+      }
+      "thinking" -> {
+        use _ <- decode.field("thinking", decode.string)
+        use signature <- decode.field("signature", decode.string)
+        case signature != "" {
+          True -> decode.success(#("", None))
+          False -> decode.failure(#("", None), "signed thinking block")
+        }
+      }
+      "redacted_thinking" -> {
+        use data <- decode.field("data", decode.string)
+        case data != "" {
+          True -> decode.success(#("", None))
+          False -> decode.failure(#("", None), "redacted thinking data")
+        }
+      }
+      "text" -> {
+        use text <- decode.field("text", decode.string)
+        decode.success(#(text, None))
+      }
+      _ -> decode.failure(#("", None), "native Anthropic block")
+    }
+  }
+  let native = list.try_map(blocks, decode.run(_, decoder))
+  let portable =
+    list.try_map(calls, fn(call) {
+      use input <- result.map(json.parse(call.arguments, decode.dynamic))
+      #(call.id, wire_name(call.name), input)
+    })
+  case native, portable {
+    Ok(native), Ok(portable) -> {
+      let #(texts, native_calls) = list.unzip(native)
+      string.concat(texts) == text && option.values(native_calls) == portable
+    }
+    _, _ -> False
+  }
 }
 
 /// Adjacent turns of one role merge: Anthropic rejects back-to-back messages

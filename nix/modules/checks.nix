@@ -77,22 +77,9 @@
 
     checks.session-cost = runCommand "albedo-session-cost-tests" {nativeBuildInputs = [pkgs.beam29Packages.erlang];} ''
       cp ${../../src/server/src/albedo/daemon/albedo_session_cost.erl} albedo_session_cost.erl
-      cp ${../../src/server/src/albedo/harness/extensions/models/albedo_models.erl} albedo_models.erl
-      cp ${runtime.server.src}/src/albedo/harness/albedo_cached_fetch.erl albedo_cached_fetch.erl
-      cp ${runtime.server.src}/src/albedo/harness/albedo_credentials.erl albedo_credentials.erl
       cp ${../../test/session_cost_tests.erl} session_cost_tests.erl
       erlc -Werror -o . *.erl
       erl +S 2:2 -noshell -pa . -eval 'session_cost_tests:run(), halt().'
-      touch $out
-    '';
-
-    checks.native-mcp = runCommand "albedo-native-mcp-tests" {nativeBuildInputs = [pkgs.beam29Packages.erlang];} ''
-      export ERL_AFLAGS="-public_key cacerts_path '\"${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt\"'"
-      cp ${../../src/server/src/albedo/harness/extensions/mcp/albedo_mcp.erl} albedo_mcp.erl
-      cp ${runtime.server.src}/src/albedo/harness/extensions/mcp/albedo_mcp_catalogue.erl albedo_mcp_catalogue.erl
-      cp -r ${../../test/fixtures/native}/. .
-      erlc -Werror -o . *.erl
-      erl -noshell -pa . -eval 'lazy_mcp_native_tests:run(), halt().'
       touch $out
     '';
 
@@ -171,8 +158,6 @@
         python3 -m unittest discover -s ${../../test} -p files_check_test.py -v
         python3 ${../../test}/e2e_runner_test.py -v
         python3 ${../../test}/prompt_context_python_test.py -v
-        export ALBEDO_MEMORY_ERLANG=${../../src/server/src/albedo/harness/extensions/memory/albedo_memory.erl}
-        python3 ${../../test}/memory_index_test.py -v
         python3 -m unittest discover -s ${../../test} -p lazy_mcp_python_test.py -v
         python3 ${../../test}/lsp_test.py -v
         python3 ${../../test}/remote_path_test.py -v

@@ -11,10 +11,12 @@
 //// reading carries a window or a reset time, because Zed reports neither, and
 //// nothing else is derived from what it does report.
 
-import albedo/harness/usage_feed.{type Report}
+import albedo/harness/sdk/usage_feed.{type Report}
+import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/int
 import gleam/json
+import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 
@@ -26,6 +28,38 @@ const limit_id = "edit-predictions"
 
 const scope =
   "Account edit-prediction usage, not hosted-model spend; Zed reports no window or reset"
+
+@external(erlang, "albedo_zed_auth", "accounts")
+fn stored(home: String) -> List(Dynamic)
+
+/// Zed accounts for the daemon's quota poller: the label /login shows, the
+/// legacy user id and the stored access token, which polling never renews.
+pub fn source() -> usage_feed.Source {
+  usage_feed.accounts_source("zed", accounts)
+}
+
+fn accounts(home: String) -> List(#(String, json.Json)) {
+  let decoder = {
+    use label <- decode.field("label", decode.string)
+    use id <- decode.optional_field("accountId", "", decode.string)
+    use access <- decode.optional_field("access", "", decode.string)
+    decode.success(#(label, id, access))
+  }
+  list.filter_map(stored(home), fn(value) {
+    case decode.run(value, decoder) {
+      Ok(#(label, id, access)) if label != "" && access != "" ->
+        Ok(#(
+          label,
+          json.object([
+            #("kind", json.string("oauth")),
+            #("access", json.string(access)),
+            #("accountId", json.string(id)),
+          ]),
+        ))
+      _ -> Error(Nil)
+    }
+  })
+}
 
 /// The suite's feed for provider `zed`. The Zig usage core has no Zed provider,
 /// so this reading is Albedo's own; a failure is still a report error, as it is

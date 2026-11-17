@@ -2,26 +2,32 @@
 //// from producing native history. A fake runtime provider and explicit home
 //// exercise the real queue/configuration boundaries without auth or HTTP.
 
+import albedo/harness/sdk/family
+import albedo/harness/sdk/session_info
+
 import albedo/daemon/active_output
 import albedo/daemon/conversation
 import albedo/daemon/event_buffer
-import albedo/daemon/family
 import albedo/daemon/mail
+import albedo/daemon/refusal
 import albedo/daemon/session_activity
 import albedo/daemon/session_configuration as config
 import albedo/daemon/session_configure
 import albedo/daemon/session_history
 import albedo/daemon/session_state
 import albedo/daemon/session_switch
-import albedo/daemon/store
 import albedo/daemon/tool_progress
-import albedo/daemon/transcript
 import albedo/daemon/turn
-import albedo/harness/extension
 import albedo/harness/extensions/bedrock/converse_wire
+import albedo/harness/extensions/bedrock/extension as bedrock
 import albedo/harness/loop
 import albedo/harness/runtime
-import albedo/openai_api/types
+import albedo/harness/sdk/extension
+import albedo/harness/sdk/storage
+import albedo/harness/sdk/store
+import albedo/harness/sdk/transcript
+import albedo_model as types
+import gleam/dict
 import gleam/erlang/process
 import gleam/json
 import gleam/list
@@ -121,26 +127,31 @@ fn fake_provider() -> extension.Extension {
               cache_marks: fn(_) { [] },
               images: types.any_images,
               output: extension.NoCeiling,
+              resolved_effort: None,
+              count: None,
             )),
           )
         },
         None,
       )),
+      extension.ProfileModelPlugin(bedrock.profile_model()),
     ],
     extension.no_initialise,
+    tables: [],
+    uses: [],
   )
 }
 
 fn state(home: String, host: runtime.Runtime) -> session_state.State(Nil) {
   let info =
-    conversation.Info(
+    session_info.Info(
       "child",
       "fixture",
       home,
       "converse",
       origin,
       types.ChatCompletions,
-      conversation.Idle,
+      session_info.Idle,
       None,
       None,
       False,
@@ -149,7 +160,7 @@ fn state(home: String, host: runtime.Runtime) -> session_state.State(Nil) {
   let ledger = runtime.ledger(host)
   let assert Ok(_) = conversation.create(ledger, info)
   let assert Ok(_) =
-    conversation.create(ledger, conversation.Info(..info, id: "parent"))
+    conversation.create(ledger, session_info.Info(..info, id: "parent"))
   session_state.State(
     title_job: None,
     title_revision: 0,
@@ -172,9 +183,9 @@ fn state(home: String, host: runtime.Runtime) -> session_state.State(Nil) {
     spent: None,
     activity: turn.Resting,
     pending_switch: None,
-    steering: [],
     admitting: 0,
     finishing: False,
+    pending_agent_close: None,
     active_submissions: [],
     sequence: 0,
     events: event_buffer.new(),
@@ -190,10 +201,13 @@ fn state(home: String, host: runtime.Runtime) -> session_state.State(Nil) {
     workspace_reset: None,
     workspace_probe: None,
     releasing: None,
+    checkpointing: None,
     closing: False,
     blocked_until: 0,
+    blocking: None,
     holding_failure: False,
     kernel_blocked: False,
+    held: dict.new(),
     generation: "fixture",
     tool_progress: tool_progress.new(),
     progress_timer_token: 0,
@@ -209,6 +223,8 @@ fn state(home: String, host: runtime.Runtime) -> session_state.State(Nil) {
     output_timer: None,
     output_published_at: 0,
     publish_output: Nil,
+    draft_timer: None,
+    flush_draft: Nil,
     landed: fn(_) { Nil },
     writing: 0,
     captures: [],
@@ -221,7 +237,7 @@ fn fixture(home: String, check: fn(session_state.State(Nil)) -> Nil) -> Nil {
     runtime.start_with_extensions(home <> "/fixture.db", [fake_provider()])
   let ledger = runtime.ledger(host)
   let assert Ok(_) = conversation.initialise(ledger)
-  let assert Ok(_) = family.initialise(ledger)
+  let assert Ok(_) = family.initialise(storage.host(ledger))
   let assert Ok(_) = mail.initialise(ledger)
   check(state(home, host))
   runtime.stop(host)
@@ -248,7 +264,7 @@ fn remember(
       runtime.ledger(state.host),
       state.info.id,
       inputs,
-      conversation.Idle,
+      session_info.Idle,
       Some(state.info.provider),
     )
   session_history.remember_response(state, inputs, timestamp, None)
@@ -272,7 +288,7 @@ pub fn incompatible_queue_leaves_configuration_and_notes_unchanged_test() -> Nil
   })
 }
 
-pub fn manual_and_direct_apply_refuse_before_defaults_or_note_commit_test() -> Nil {
+pub fn manual_and_direct_apply_refuse_before_configuration_or_note_commit_test() -> Nil {
   use home <- with_home
   use state <- fixture(home)
   let state =
@@ -286,17 +302,17 @@ pub fn manual_and_direct_apply_refuse_before_defaults_or_note_commit_test() -> N
   let settings = settings_bytes(home)
   list.each(
     [
-      session_configure.SelectModel(target, None, None, True),
+      session_configure.SelectModel(target, None, None),
       session_configure.SwitchModel(
         target,
         "converse",
-        "must not save this note",
+        #(types.User("must not save this note"), transcript.Said(None)),
         1,
       ),
     ],
     fn(request) {
       let #(kept, outcome) = session_configure.change(state, request)
-      outcome |> should.equal(Error(refused))
+      outcome |> should.equal(Error(refusal.Unavailable(refused)))
       kept |> should.equal(state)
       saved(kept) |> should.equal(before)
       history(kept) |> should.equal(rows)
@@ -333,7 +349,12 @@ pub fn queued_empty_history_revalidates_native_output_at_apply_time_test() -> Ni
   selection |> should.equal(None)
   saved(unloaded) |> should.equal(before)
   history(unloaded) |> should.equal(rows)
-  let assert Ok(letters) = mail.pending(runtime.ledger(state.host), 10)
+  let assert Ok(recipients) = mail.recipients(runtime.ledger(state.host))
+  let letters =
+    list.flat_map(recipients, fn(recipient) {
+      let assert Ok(rows) = mail.queued(runtime.ledger(state.host), recipient)
+      list.map(rows, fn(row) { row.letter })
+    })
   list.length(letters) |> should.equal(2)
   list.each(letters, fn(letter) {
     string.contains(letter.body, refused) |> should.be_true
@@ -367,7 +388,7 @@ pub fn blue_rename_skips_capability_lookup_and_preserves_saved_intent_test() -> 
   use home <- with_home
   use original <- fixture(home)
   let info =
-    conversation.Info(
+    session_info.Info(
       ..original.info,
       id: "blue-unrelated-rename",
       cyber_access: Some("daybreak_blue"),
@@ -391,7 +412,7 @@ pub fn busy_blue_switch_clears_intent_for_same_and_changed_model_test() -> Nil {
   use original <- fixture(home)
   list.each([origin, target], fn(model) {
     let info =
-      conversation.Info(
+      session_info.Info(
         ..original.info,
         id: "blue-" <> model,
         cyber_access: Some("daybreak_blue"),
@@ -439,7 +460,7 @@ pub fn untyped_and_plaintext_history_accept_cross_model_and_other_modes_are_unch
     let same_profile =
       session_state.State(
         ..state,
-        info: conversation.Info(..state.info, provider: profile),
+        info: session_info.Info(..state.info, provider: profile),
         history: Some(
           list.map(entries, fn(entry) {
             transcript.Entry(..entry, provider: Some(profile))

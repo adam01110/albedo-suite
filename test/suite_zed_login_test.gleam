@@ -1,11 +1,11 @@
-import albedo/harness/extension
 import albedo/harness/extensions/zed/extension as zed
 import albedo/harness/extensions/zed/quota as zed_quota
 import albedo/harness/extensions/zed/stream as zed_stream
 import albedo/harness/extensions/zed/wire
-import albedo/harness/oauth
+import albedo/harness/sdk/extension
+import albedo/harness/sdk/oauth
 import albedo/openai_api
-import albedo/openai_api/types
+import albedo_model as types
 import gleam/dynamic/decode
 import gleam/json
 import gleam/list
@@ -57,7 +57,7 @@ pub fn header_case(endpoint: String) -> Nil {
   let request = types.Request(..request, max_output_tokens: Some(512))
   let assert Ok(exchange) =
     wire.encode("anthropic", endpoint, "fixture-jwt", "session", request)
-  let assert Error(types.HttpError(401, _)) =
+  let assert Error(types.Refused(types.CredentialRejected, Some(401), _)) =
     zed_stream.exchange("anthropic", exchange, request, fn(_) { types.Continue })
   Nil
 }

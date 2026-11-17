@@ -40,7 +40,7 @@ refusal(P, Endpoint) ->
     end.
 
 profiles(Home) ->
-    case albedo_credentials:config(Home) of
+    case 'albedo@harness@sdk@credential_store':config(Home) of
         {ok, #{<<"providers">> := Ps}} when is_map(Ps) -> Ps;
         _ -> #{}
     end.
@@ -73,7 +73,7 @@ catalog_access(Home, <<"albedo:zed:account:", Id/binary>>) ->
 catalog_access(Home, Endpoint) ->
     Matches = [Name || {Name, #{<<"extension">> := <<"zed">>} = P} <- lists:sort(maps:to_list(profiles(Home))),
         endpoint(maps:get(<<"baseUrl">>, P, ?ENDPOINT)) =:= Endpoint],
-    Active = case albedo_credentials:config(Home) of
+    Active = case 'albedo@harness@sdk@credential_store':config(Home) of
         {ok, Config} -> maps:get(<<"active">>, Config, <<>>);
         _ -> <<>>
     end,
@@ -109,7 +109,8 @@ lookup(Home, Endpoint, Id) ->
                     {some, {model_info, Id, <<"zed">>, positive(maps:get(<<"max_token_count">>, M, 0)),
                         positive(maps:get(<<"max_token_count_in_max_mode">>, M, 0)),
                         positive(maps:get(<<"max_output_tokens">>, M, 0)), Modalities,
-                        {some, Endpoint}, [], <<"Zed /models">>, Efforts}};
+                        {some, Endpoint}, [], <<"Zed /models">>, albedo_model:parse_efforts(Efforts),
+                        none, <<"provider">>, none}};
                 _ -> none
             end;
         _ -> none
@@ -251,7 +252,7 @@ exchange(Home, Profile, Run, OnEvent) ->
     end.
 
 snapshot(Home, Profile) ->
-    albedo_settings_lock:with_lock(Home, fun() ->
+    albedo_zed_auth:with_lock(Home, fun() ->
         case access(Home, Profile) of
             {ok, {Endpoint, Token}} -> {ok, {Endpoint, Token, albedo_zed_auth:binding(Home, Profile)}};
             Error -> Error
@@ -268,10 +269,10 @@ retry(Home, Profile, Endpoint, Token, Binding, Run, OnEvent) ->
         end
     end,
     try Run(Endpoint, Token, Forward) of
-        {error, {http_error, 401, _}} = Error ->
+        {error, {refused, credential_rejected, _, _}} = Error ->
             case get(Ref) of
                 false when Binding =/= none ->
-                    Refreshed = albedo_settings_lock:with_lock(Home, fun() ->
+                    Refreshed = albedo_zed_auth:with_lock(Home, fun() ->
                         case albedo_zed_auth:binding(Home, Profile) =:= Binding of
                             true -> albedo_zed_auth:reject(Home, Profile, Token), snapshot(Home, Profile);
                             false -> {error, <<"Zed account changed during the request">>}
@@ -289,12 +290,12 @@ retry(Home, Profile, Endpoint, Token, Binding, Run, OnEvent) ->
 %% A rejected token is reported as such, so discovery can refresh it instead of
 %% presenting an authentication failure as an unreachable service.
 model_response(Endpoint, Headers) ->
-    case albedo_openai_transport:open(<<"GET">>, <<Endpoint/binary, "/models">>,
+    case albedo_zed_auth:open(<<"GET">>, <<Endpoint/binary, "/models">>,
             [{list_to_binary(K), list_to_binary(V)} || {K, V} <- Headers], <<>>, 10000) of
         {ok, Connection} ->
             Deadline = erlang:monotonic_time(millisecond) + 10000,
-            albedo_openai_transport:with_connection_discard_errors(Connection, fun() ->
-                case albedo_openai_transport:receive_until(Connection, Deadline) of
+            albedo_http:with_connection_discard_errors(Connection, fun() ->
+                case albedo_http:receive_until(Connection, Deadline) of
                     {ok, {headers, 200, _, false}} -> albedo_zed_auth:read_body(Connection, Deadline);
                     {ok, {headers, 401, _, _}} -> {error, unauthorized};
                     {ok, {headers, Status, _, _}} -> {error, {http, Status}};

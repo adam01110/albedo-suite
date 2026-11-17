@@ -1,15 +1,23 @@
 //// One coordinator per session. Workers own model/tool loops; clients never own workers.
 
-import albedo/actor_call
-import albedo/clock
+import albedo/daemon/lifecycle
+import albedo/harness/sdk/family as families
+import albedo/harness/sdk/input
+import albedo/harness/sdk/letter as mail_value
+import albedo/harness/sdk/session_control as agents
+import albedo/harness/sdk/session_info
+
+import albedo_clock
+import albedo_process/actor_call
 
 import albedo/daemon/acp
 import albedo/daemon/acp_attachments
 import albedo/daemon/acp_session
 import albedo/daemon/active_output
-import albedo/daemon/agents
+import albedo/daemon/active_output_store
 import albedo/daemon/bus
 import albedo/daemon/child_failure
+import albedo/daemon/command_state
 import albedo/daemon/context_snapshot
 import albedo/daemon/conversation
 import albedo/daemon/event_buffer
@@ -18,20 +26,23 @@ import albedo/daemon/family
 import albedo/daemon/history
 import albedo/daemon/http_history
 import albedo/daemon/images
+import albedo/daemon/inbox
 import albedo/daemon/mail
 import albedo/daemon/moves
 import albedo/daemon/operations
+import albedo/daemon/refusal.{type Refusal}
 import albedo/daemon/requests
+import albedo/daemon/session/creation as session_creation
 import albedo/daemon/session_activity
 import albedo/daemon/session_configuration
 import albedo/daemon/session_configure
+import albedo/daemon/session_control
 import albedo/daemon/session_cost
 import albedo/daemon/session_extensions
 import albedo/daemon/session_history
 import albedo/daemon/session_last_call
 import albedo/daemon/session_namespace
 import albedo/daemon/session_naming
-import albedo/daemon/session_notes
 import albedo/daemon/session_prompt
 import albedo/daemon/session_provider
 import albedo/daemon/session_run
@@ -43,26 +54,38 @@ import albedo/daemon/session_switch
 import albedo/daemon/session_workspace
 import albedo/daemon/shell_commands
 import albedo/daemon/side_question
-import albedo/daemon/store
 import albedo/daemon/tool_progress as tool_progress_state
-import albedo/daemon/transcript
 import albedo/daemon/turn.{type Submission, Submission}
 import albedo/daemon/usage
 import albedo/harness/cache_fade
-import albedo/harness/command
 import albedo/harness/compaction
-import albedo/harness/extension
 import albedo/harness/extension/selection
-import albedo/harness/extensions/python/kernel as python
-import albedo/harness/extensions/run/extension as run
+import albedo/harness/kernel as python
+import albedo/harness/kernel/link
 import albedo/harness/location
 import albedo/harness/loop
-import albedo/harness/oauth
-import albedo/harness/protect
 import albedo/harness/runtime
+import albedo/harness/runtime/catalog as session_catalog
+import albedo/harness/runtime/state as runtime_state
+import albedo/harness/sdk/auth_accounts
+import albedo/harness/sdk/command
+import albedo/harness/sdk/extension
+import albedo/harness/sdk/history as stored_history
+import albedo/harness/sdk/storage
+import albedo/harness/sdk/store
+import albedo/harness/sdk/transcript
 import albedo/harness/ssh
-import albedo/openai_api/types
+import albedo_model as types
+import albedo_model/size
+import albedo_process
+import albedo_process/registry.{type Registry}
+import albedo_protect
+import gleam/bit_array
 import gleam/bool
+import gleam/crypto
+import gleam/dict
+import gleam/dynamic.{type Dynamic}
+import gleam/erlang/atom
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/io
@@ -79,18 +102,20 @@ import sqlight
 const restart_text =
   "albedo restarted while this turn was running. Tool calls that were in flight are marked interrupted with an unknown outcome; check their effects before retrying anything, then continue the task."
 
-const restart_note =
+fn restart_note() -> Submission {
   Submission(
     restart_text,
     restart_text,
     "daemon",
     turn.Note("daemon restart"),
     [],
-    None,
+    Some(mail.new_id()),
     None,
     None,
     [],
+    None,
   )
+}
 
 const continue_prompt =
   "<system-notice>
@@ -213,47 +238,39 @@ pub type ModelSelection {
   )
 }
 
+/// Why waiting inputs could not start a turn.
 pub type SubmissionError {
   WorkspaceMissing(String)
-  /// A run is active and this submission cannot wait for it.
-  Busy
-  /// The session did not answer in time; it may still take the submission.
-  Unanswered
   Rejected(String)
-  /// The session moved to another daemon; the words name where.
-  Moved(String)
 }
 
 pub fn submission_error(error: SubmissionError) -> String {
   case error {
     WorkspaceMissing(path) -> "workspace not found: " <> path
-    Busy -> "session is busy or message queue is full"
-    Unanswered -> "session did not answer in time"
     Rejected(message) -> message
-    Moved(detail) -> detail
   }
 }
 
 pub type Message {
-  StartShell(String, String, Subject(Result(shell_commands.Command, String)))
-  StopShell(String, Subject(Result(shell_commands.Command, String)))
+  StartShell(String, String, Subject(Result(shell_commands.Command, Refusal)))
+  StopShell(String, Subject(Result(shell_commands.Command, Refusal)))
   ShellChanged(shell_commands.Command, Subject(Nil))
   ShellEnded(
     String,
-    String,
+    shell_commands.Status,
     Option(Int),
     Option(String),
     Subject(Result(Nil, String)),
   )
-  FlushShell
+  FlushAttached
   Resume
   /// An idle session started after a daemon restart because it waits on
   /// work that will wake it: its extensions hear its last turn call again.
   Rewarm
   /// Saved profiles were renamed, old name first.
   RenameProfiles(List(#(String, String)))
-  ReadCapture(Subject(Result(Unobserved, String)))
-  CaptureIn(Option(sqlight.Connection), Subject(Result(Unobserved, String)))
+  ReadCapture(Subject(Result(Unobserved, Refusal)))
+  CaptureIn(Option(sqlight.Connection), Subject(Result(Unobserved, Refusal)))
   ReadSummary(Subject(Summary))
   /// The live facts alone, for a client that keeps its history over the stream.
   ReadStatus(Subject(fn() -> Result(StatusRead, String)))
@@ -266,8 +283,10 @@ pub type Message {
   ReadAwaited(Subject(fn() -> Bool))
   /// The kernel handle, for a read that must wait on it outside the actor.
   ReadKernel(Subject(Option(python.Kernel)))
-  /// A note for the transcript that starts no turn (`session_notes`).
-  RecordNote(String, Subject(session_notes.Outcome))
+  /// A commit stored or withdrew a row in this session's inbox
+  /// (`mail.register`): clients reread the queue, and a resting session
+  /// starts a turn if a waiting row starts one.
+  InboxChanged
   /// A move of this session finished; the words name where it went.
   MovedAway(String)
   SwitchModel(String, String, String, Subject(Result(Bool, String)))
@@ -276,21 +295,33 @@ pub type Message {
     session_configuration.Version,
     session_configuration.Patch,
     Option(acp.Digest),
-    Subject(Result(Unobserved, String)),
+    Subject(Result(Unobserved, Refusal)),
   )
   InterruptCaptured(Option(String), Int, Subject(Result(Interruption, String)))
   Abort(String)
-  Submit(Submission, Subject(Result(Bool, SubmissionError)))
-  /// A turn a user-invoked command submits. It is the person acting again,
-  /// so it clears a workspace block that mail, job wakes and notes wait out.
-  SubmitUserTurn(Submission, Subject(Result(Bool, SubmissionError)))
+  DropQueued(List(String), Subject(Result(List(String), String)))
+  ArrangeQueue(List(String), Subject(Result(Nil, String)))
+  /// Hold a person's waiting message while they edit it, or renew the hold.
+  HoldInput(String, Subject(Result(Nil, Refusal)))
+  /// The hold on this input reached this deadline without a renewal.
+  HoldLapsed(String, Int)
+  ReleaseInput(String, Subject(Nil))
+  /// Let the running turn end without a reply (`turn.quiet`).
+  QuietTurn(Subject(Result(Nil, String)))
+  /// Put an edited message in place of the waiting one under its id.
+  EditInput(Submission, Subject(Result(Nil, Refusal)))
+  /// A person's command-routed turn reached the inbox. It is the person acting
+  /// again, so it clears a workspace block that mail, job wakes and notes wait out.
+  UserTurnQueued
   CancelInput(
     String,
     Option(acp.Digest),
-    Subject(Result(InputCancellation, String)),
+    Subject(Result(InputCancellation, Refusal)),
   )
   ReadCommands(
-    Subject(Result(#(List(command.Command), command.Context), String)),
+    Subject(
+      Result(#(List(command.Command(command.Context)), command.Context), String),
+    ),
   )
   ReadSelection(Subject(ModelSelection))
   ChangeWorkspace(
@@ -299,12 +330,11 @@ pub type Message {
   )
   ApplyWorkspace(Subject(Result(Bool, String)))
   Interrupt(Subject(Bool))
-  /// A model switch; the last flag also makes it the default for new sessions.
+  /// A model switch for this session. Profile defaults are saved separately.
   ChangeModel(
     String,
     Option(String),
     Option(String),
-    Bool,
     Subject(Result(ModelSelection, String)),
   )
   ReadEffort(Subject(Result(json.Json, String)))
@@ -328,24 +358,29 @@ pub type Message {
     String,
     Subject(Result(side_question.Exchange, side_question.Refusal)),
   )
+  DismissSideQuestion(
+    String,
+    Bool,
+    Subject(Result(side_question.Exchange, side_question.Refusal)),
+  )
   ClaimSideContinuation(
     String,
     String,
     Subject(Result(side_question.Promotion, side_question.Refusal)),
   )
   SettleSideContinuation(String, String, Bool)
-  GenerateTitle(Subject(Result(Nil, String)))
+  GenerateTitle(Subject(Result(Nil, Refusal)))
   TitleFinished(Int, Result(String, String))
   /// The person's name for the session, or None to clear it.
   ChangeName(Option(String), Subject(Result(json.Json, String)))
   /// The model's name for the session.
   SuggestName(String, Subject(Result(json.Json, String)))
-  StopJob(String, Subject(Result(Nil, String)))
+  StopJob(String, Subject(Result(Nil, command.StateError)))
   /// Report on the kernel's staleness, or (True) force its swap now.
-  UpgradeKernel(Subject(Result(runtime.KernelUpgrade, String)))
+  UpgradeKernel(Subject(Result(runtime.KernelUpgrade, Refusal)))
   UpgradeCompletion(
     Result(runtime.KernelUpgrade, String),
-    Subject(Result(runtime.KernelUpgrade, String)),
+    Subject(Result(runtime.KernelUpgrade, Refusal)),
   )
   /// `/kernel restart`, by the user (None) or by the named agent that
   /// started this session.
@@ -358,7 +393,7 @@ pub type Message {
   )
   Read(
     Option(Cursor),
-    Subject(Result(#(Cursor, List(json.Json), Option(Unobserved)), String)),
+    Subject(Result(#(Cursor, List(json.Json), Option(Unobserved)), Refusal)),
   )
   Watch(process.Pid, String, fn() -> Nil)
   Unwatch(process.Pid, String)
@@ -372,6 +407,16 @@ pub type Message {
   ProgressFlush(Int)
   /// The frame's held text and thinking deltas are due.
   PublishOutput
+  /// Unflushed text deltas are due for crash-recovery draft persistence.
+  FlushDraft
+  /// A debounced background Python state checkpoint is due.
+  CheckpointKernel(Int)
+  /// The background Python state checkpoint completed.
+  Checkpointed
+  /// Apply a persisted pending model switch on reload when idle.
+  ApplyPendingSwitch
+  /// Retry an interrupted initial title generation after a crash.
+  ResumeTitle
   Commit(
     String,
     List(types.Input),
@@ -385,7 +430,7 @@ pub type Message {
   CommitFits(
     String,
     List(transcript.ImageFit),
-    Subject(Result(Nil, String)),
+    Subject(Result(Int, String)),
     Subject(Nil),
   )
   /// The worker's stream broke for this reason after it showed output, and
@@ -393,7 +438,7 @@ pub type Message {
   Salvage(
     String,
     String,
-    Subject(Result(List(types.Input), String)),
+    Subject(Result(#(Int, List(types.Input)), String)),
     Subject(Nil),
   )
   /// A write `write_then` queued has committed; this goes on from it.
@@ -414,18 +459,18 @@ pub type Message {
   )
   /// A background call's worker finished.
   BackgroundFinished(String, Int, Result(compaction.Answer, String))
-  Compact(Option(String), Subject(Result(turn.CompactionReport, String)))
+  Compact(Option(String), Subject(Result(turn.CompactionReport, Refusal)))
   ReloadData(Subject(Result(session_extensions.Reloaded, String)))
   /// An extension asks for a refresh and gives its reason; see
   /// `extension.Session`.
   RefreshRequested(String)
   DrainSteering(
     String,
-    Subject(Result(List(types.Input), String)),
+    Subject(Result(#(Int, List(types.Input)), String)),
     Subject(Nil),
   )
   ReadContext(Subject(context_snapshot.Snapshot))
-  Finished(String, Result(Nil, String))
+  Finished(String, Result(Nil, loop.Failure))
   Down(process.Down)
   Idle(Subject(Report))
   /// An automatic release keeps a kernel whose save missed names; the sweep
@@ -440,6 +485,7 @@ pub type Message {
     automatic: Bool,
   )
   Deleted(Result(Nil, String), Subject(Result(Nil, String)))
+  CloseAgent(Subject(Result(Nil, String)))
   ExpireState(Subject(Bool))
   EvictHistory(Subject(Bool))
   /// Queued behind a handler that dropped a large part of the state. An idle
@@ -459,7 +505,7 @@ pub type Message {
     Int,
     Option(String),
     Option(Int),
-    Subject(Result(history.Rewound, String)),
+    Subject(Result(history.Rewound, Refusal)),
   )
   /// Summarize the rows from a user message on, for a rewind that keeps a
   /// summary. The worker answers the first subject with the text and the last
@@ -468,14 +514,14 @@ pub type Message {
     Int,
     Option(String),
     Subject(Result(#(String, Int), String)),
-    Subject(Result(Nil, String)),
+    Subject(Result(Nil, Refusal)),
   )
   CloseForDeletion(Subject(Result(Nil, String)))
   ClaimDeletion(
     family.DeletionRequest,
     String,
     Int,
-    Subject(Result(family.DeletionClaim, String)),
+    Subject(Result(family.DeletionClaim, Refusal)),
   )
   /// The runtime answered this session's kernel request.
   KernelOpened(Int, Result(runtime.Session, python.Error))
@@ -487,10 +533,7 @@ pub type Message {
   /// was armed; see `request_resting_release`.
   IdleKernel(Int)
   /// A run's worker asks for the kernel its next tool call runs in.
-  AcquireKernel(
-    String,
-    Subject(Result(#(runtime.Session, Option(String)), String)),
-  )
+  AcquireKernel(String, Subject(Result(runtime.Session, String)))
   WorkspaceReset(session_workspace.Pending, Result(Nil, String))
   /// A workspace probe completed outside the actor; stale generations are ignored.
   WorkspaceReady(String, WorkspaceProbe, Result(Nil, String))
@@ -500,7 +543,7 @@ pub type Message {
   AdmitOperation(
     operations.Request,
     Submission,
-    Subject(Result(operations.Receipt, String)),
+    Subject(Result(operations.Receipt, Refusal)),
     Subject(Admission),
   )
   /// Recheck the ACP lease at admission, inside its ordering authority.
@@ -508,14 +551,14 @@ pub type Message {
     operations.Request,
     Submission,
     acp.Digest,
-    Subject(Result(operations.Receipt, String)),
+    Subject(Result(operations.Receipt, Refusal)),
     Subject(Admission),
   )
   /// The store committed an admission; its receipt goes to the subject.
   AdmissionCommitted(
     Submission,
-    Result(operations.Receipt, String),
-    Subject(Result(operations.Receipt, String)),
+    Result(operations.Receipt, Refusal),
+    Subject(Result(operations.Receipt, Refusal)),
   )
   PublishACPOverlay(
     acp.Digest,
@@ -540,12 +583,14 @@ pub fn start(
   home: String,
 ) -> Result(Session, actor.StartError) {
   actor.new_with_initialiser(10_000, fn(self) {
-    label("albedo_session", info.id)
+    albedo_process.label("albedo_session", info.id)
     // The one write a start waits for: registration is ordered with deletion
     // claims on the writer. Orphaned shell commands end in the same turn.
     use _ <- result.try(
       store.query(runtime.ledger(host), fn(db) {
-        use _ <- result.try(family.available_in(db, info.id))
+        use _ <- result.try(
+          family.open_in(db, info.id) |> result.map_error(refusal.explain),
+        )
         live_register(info.id, self)
         shell_commands.interrupt_orphans_in(db, info.id)
       }),
@@ -566,12 +611,69 @@ pub fn start(
       runtime.ledger(host),
       info.id,
     ))
-    use captured <- result.try(conversation.capture(
-      runtime.ledger(host),
-      info.id,
-    ))
-    use marker <- result.try(conversation.acp_marker(
-      runtime.ledger(host),
+    use captured <- result.try(
+      conversation.capture(runtime.ledger(host), info.id)
+      |> result.map_error(refusal.explain),
+    )
+    let recovered = case info.stage {
+      session_info.Idle | session_info.Importing -> {
+        active_output.finish_recovery(home, info.id, [])
+        False
+      }
+      _ ->
+        session_salvage.recover_crashed(
+          runtime.ledger(host),
+          home,
+          info,
+          captured.history_high_water,
+        )
+    }
+    use captured <- result.try(case recovered {
+      True ->
+        conversation.capture(runtime.ledger(host), info.id)
+        |> result.map_error(refusal.explain)
+      False -> Ok(captured)
+    })
+    let saved_switch = case
+      conversation.pending_switch(runtime.ledger(host), info.id)
+    {
+      Ok(found) -> found
+      Error(reason) -> {
+        io.println_error("pending switch load skipped: " <> reason)
+        None
+      }
+    }
+    let saved_side = case
+      session_side_question.load(runtime.ledger(host), info.id)
+    {
+      Ok(found) -> found
+      Error(reason) -> {
+        io.println_error("side question load skipped: " <> reason)
+        None
+      }
+    }
+    let now_sys = albedo_clock.system_ms()
+    let now_mono = albedo_clock.monotonic_ms()
+    let active_holds = case
+      mail.active_holds(runtime.ledger(host), info.id, now_sys)
+    {
+      Ok(rows) -> rows
+      Error(reason) -> {
+        io.println_error("active holds load skipped: " <> reason)
+        []
+      }
+    }
+    let max_hold = albedo_clock.delay_ms(hold_ms)
+    let held_map =
+      list.fold(active_holds, dict.new(), fn(acc, entry) {
+        let #(id, until) = entry
+        let remaining = int.clamp(until - now_sys, 1, max_hold)
+        let deadline = now_mono + remaining
+        let _ = process.send_after(self, remaining, HoldLapsed(id, deadline))
+        dict.insert(acc, id, deadline)
+      })
+    use marker <- result.try(stored_history.acp_marker(
+      storage.host(runtime.ledger(host)),
       info.id,
     ))
     use pinned <- result.try(conversation.prompt_pin(
@@ -586,29 +688,59 @@ pub fn start(
       runtime.ledger(host),
       info.id,
     ))
-    process.send(self, FlushShell)
+    process.send(self, FlushAttached)
     case conversation.resumable(info.stage) {
       True -> process.send(self, Resume)
       False -> Nil
     }
     let activity = case info.stage {
-      conversation.Idle -> turn.Resting
+      session_info.Idle -> turn.Resting
       _ -> turn.Interrupted
     }
-    use pending <- result.try(operations.pending(runtime.ledger(host), info.id))
-    let steering =
-      list.map(pending, fn(row) { session_submission.decode(row.payload) })
-    case steering {
-      [] -> Nil
-      _ -> process.send(self, StartQueued)
+    // A finished command's receipt waits in the inbox; one that finished
+    // before this session loaded is posted now (once: its key is its id).
+    list.each(shells, fn(command) {
+      case command.status {
+        shell_commands.Running -> Ok(False)
+        _ ->
+          mail.post_input(
+            runtime.ledger(host),
+            shell_commands.receipt(info.id, command),
+          )
+      }
+    })
+    // What waits in the inbox starts a turn once the session is up. A closed
+    // agent leaves the letters it was sent there.
+    let closed =
+      families.closed(storage.host(runtime.ledger(host)), info.id) == Ok(True)
+    use waiting <- result.try(inbox.waiting(
+      runtime.ledger(host),
+      info.id,
+      [],
+      closed,
+    ))
+    let unheld =
+      list.take_while(waiting, fn(row) { !dict.has_key(held_map, row.id) })
+    case turn.starts_turn(unheld) {
+      False -> Nil
+      True -> process.send(self, StartQueued)
+    }
+    case saved_switch, conversation.resumable(info.stage) {
+      Some(_), False -> process.send(self, ApplyPendingSwitch)
+      _, _ -> Nil
+    }
+    case captured.history_high_water > 0 {
+      True -> process.send(self, ResumeTitle)
+      False -> Nil
     }
     let generation = new_generation()
     let state =
       session_state.State(
         title_job: None,
         title_revision: 0,
-        active_output: active_output.new(home, info.id, generation),
-        side_question: None,
+        active_output: active_output.new(home, info.id, generation)
+          |> active_output.set_high_water(captured.history_high_water),
+        side_question: saved_side,
         shell_commands: shells,
         shell_worker: None,
         info: info,
@@ -625,10 +757,12 @@ pub fn start(
         latest_usage: latest_usage,
         spent: spent,
         activity: activity,
-        pending_switch: None,
-        steering: steering,
+        pending_switch: option.map(saved_switch, fn(p) {
+          session_state.PendingSwitch(p.0, p.1, p.2)
+        }),
         admitting: 0,
         finishing: False,
+        pending_agent_close: None,
         active_submissions: [],
         sequence: 0,
         events: event_buffer.new(),
@@ -640,17 +774,20 @@ pub fn start(
           None -> loop.Unpinned
         },
         prepared_head: prepared_head,
-        last_touch: clock.monotonic_ms(),
+        last_touch: albedo_clock.monotonic_ms(),
         booting: None,
         boot_ticket: None,
         boot_token: 0,
         workspace_reset: None,
         workspace_probe: None,
         releasing: None,
+        checkpointing: None,
         closing: False,
         blocked_until: 0,
         kernel_blocked: False,
+        blocking: None,
         holding_failure: False,
+        held: held_map,
         generation: generation,
         tool_progress: tool_progress_state.new(),
         progress_timer_token: 0,
@@ -667,45 +804,27 @@ pub fn start(
         glance_timer: None,
         pending_output: [],
         output_timer: None,
-        output_published_at: clock.monotonic_ms(),
+        output_published_at: albedo_clock.monotonic_ms(),
         publish_output: PublishOutput,
+        draft_timer: None,
+        flush_draft: FlushDraft,
         landed: Landed,
         writing: 0,
         captures: [],
         moved: moved,
       )
-    // Background jobs and cells wake through their kernel host routes; the
-    // registered closure lands a completion notice as an ordinary submit, so
-    // the wake reuses the whole turn pipeline and busy answers itself. Its own
-    // input id keeps the one-line display beside the model's longer notice.
-    wakes_register(info.id, fn(origin, display, text) {
-      wake(
-        self,
-        Submission(
-          display,
-          text,
-          origin,
-          turn.JobWake,
-          [],
-          Some(mail.new_id()),
-          None,
-          None,
-          [],
-        ),
-      )
-    })
-    commands_register(info.id, fn(op) {
+    command_state.register(info.id, fn(op) {
       command_op(self, host, home, info.id, op)
     })
     bus.register_progress(info.id, process.self(), fn(text) {
       process.send(self, AgentProgress(text))
     })
-    mailbox_register(info.id, fn(letter) {
-      submit_mail(self, letter) |> result.map_error(submission_error)
-    })
-    session_notes.register(info.id, fn(text) {
-      actor_call.try_call(self, 10_000, RecordNote(text, _))
-      |> result.unwrap(session_notes.Failed("the session did not answer"))
+    // Whoever stores a row in this session's inbox, it hears after the
+    // commit.
+    let actor_pid = process.self()
+    mail.register(info.id, fn() {
+      process.send(self, InboxChanged)
+      process.is_alive(actor_pid)
     })
     Ok(
       actor.initialised(state)
@@ -731,46 +850,64 @@ pub fn start(
   })
 }
 
-/// A stored letter, admitted like any submission. Its receipt commits with the
-/// transcript input it becomes; a letter already queued or committed is
-/// accepted again without a second copy.
-pub fn submit_mail(
+/// Take these rows out of the session's queue for good and return the ones
+/// it took. A person's input is cancelled, as `cancel_input` would; a row the
+/// running turn already took is left alone.
+pub fn drop_queued(
   session: Session,
-  letter: mail.Letter,
-) -> Result(Bool, SubmissionError) {
-  call_submit(
-    session,
-    Submission(
-      mail.display(letter),
-      mail.text(letter),
-      letter.id,
-      turn.Mail(letter.id, letter.kind),
-      [],
-      None,
-      None,
-      None,
-      [],
-    ),
-  )
+  ids: List(String),
+) -> Result(List(String), String) {
+  actor_call.try_call(session, 15_000, DropQueued(ids, _))
+  |> result.replace_error("the session did not answer")
+  |> result.flatten
 }
 
-pub fn submit(
+/// Put these waiting rows first in the session's queue, in this order; the
+/// rest keep their order after them.
+pub fn arrange_queue(
   session: Session,
-  text: String,
-  client_id: String,
-  images: List(types.Image),
-) -> Result(Bool, SubmissionError) {
-  call_submit(
-    session,
-    Submission(text, text, client_id, turn.Chat, images, None, None, None, []),
-  )
+  ids: List(String),
+) -> Result(Nil, String) {
+  actor_call.try_call(session, 15_000, ArrangeQueue(ids, _))
+  |> result.replace_error("the session did not answer")
+  |> result.flatten
+}
+
+/// Hold `input_id`, a person's message still waiting, while they edit it:
+/// neither it nor what waits behind it is read until the edit is saved, the
+/// hold is released, or `hold_ms` pass without asking again.
+pub fn hold_input(session: Session, input_id: String) -> Result(Nil, Refusal) {
+  actor_call.try_call(session, 15_000, HoldInput(input_id, _))
+  |> result.replace_error(refusal.Unavailable("the session did not answer"))
+  |> result.flatten
+}
+
+/// Let a held input be read again as it is.
+pub fn release_input(
+  session: Session,
+  input_id: String,
+) -> Result(Nil, String) {
+  actor_call.try_call(session, 15_000, ReleaseInput(input_id, _))
+  |> result.replace_error("the session did not answer")
+}
+
+/// Put `submission` in place of the person's message still waiting under its
+/// id, and release any hold on it. Errors with `input_not_waiting` once the
+/// session read it or it was cancelled.
+pub fn edit_input(
+  session: Session,
+  submission: Submission,
+) -> Result(Nil, Refusal) {
+  actor_call.try_call(session, 15_000, EditInput(submission, _))
+  |> result.replace_error(refusal.Unavailable("the session did not answer"))
+  |> result.flatten
 }
 
 pub fn cancel_input(
   session: Session,
   input_id: String,
   digest: Option(acp.Digest),
-) -> Result(InputCancellation, String) {
+) -> Result(InputCancellation, Refusal) {
   actor.call(session, 5000, CancelInput(input_id, digest, _))
 }
 
@@ -778,7 +915,7 @@ pub fn cancel_input(
 /// Answered through the kernel's session, so the list matches its bindings.
 pub fn commands(
   session: Session,
-) -> Result(#(List(command.Command), command.Context), String) {
+) -> Result(#(List(command.Command(command.Context)), command.Context), String) {
   actor.call(session, 15_000, ReadCommands)
 }
 
@@ -816,9 +953,9 @@ pub fn interrupt_captured(
   actor.call(session, 5000, InterruptCaptured(run_id, through_input_order, _))
 }
 
-pub fn capture(session: Session) -> Result(Capture, String) {
+pub fn capture(session: Session) -> Result(Capture, Refusal) {
   actor_call.try_call(session, 5000, ReadCapture)
-  |> result.replace_error("session capture unavailable")
+  |> result.replace_error(refusal.Unavailable("session capture unavailable"))
   |> result.flatten
   |> result.try(fn(observe) { observe() })
 }
@@ -860,7 +997,7 @@ pub fn change_configuration(
   expected: session_configuration.Version,
   patch: session_configuration.Patch,
   attachment: Option(acp.Digest),
-) -> Result(Capture, String) {
+) -> Result(Capture, Refusal) {
   actor.call(session, 30_000, ChangeConfiguration(
     expected,
     patch,
@@ -900,7 +1037,7 @@ pub fn consumed(
 
 /// Events after the fully consumed actor cursor. A reset returns a captured
 /// session state; the HTTP owner reads history through its durable boundary.
-pub fn read(session: Session, after: Option(Cursor)) -> Result(Page, String) {
+pub fn read(session: Session, after: Option(Cursor)) -> Result(Page, Refusal) {
   use #(cursor, events, unobserved) <- result.try(
     actor.call(session, 5000, Read(after, _)),
   )
@@ -917,10 +1054,10 @@ pub fn read(session: Session, after: Option(Cursor)) -> Result(Page, String) {
 pub fn prepared_context(
   session: Session,
   expected: Option(String),
-) -> Result(context_snapshot.Snapshot, String) {
+) -> Result(context_snapshot.Snapshot, Refusal) {
   let snapshot = actor.call(session, 5000, ReadContext)
   case expected, context_snapshot.identity(snapshot) {
-    Some(id), actual if actual != Some(id) -> Error("context_changed")
+    Some(id), actual if actual != Some(id) -> Error(refusal.ContextChanged)
     _, _ -> Ok(snapshot)
   }
 }
@@ -960,17 +1097,19 @@ pub fn claim_deletion(
   session: Session,
   request: family.DeletionRequest,
   token: String,
-) -> Result(family.DeletionClaim, String) {
+) -> Result(family.DeletionClaim, Refusal) {
   actor_call.try_call(session, 5000, ClaimDeletion(
     request,
     token,
-    clock.monotonic_ms() + 5000,
+    albedo_clock.monotonic_ms() + 5000,
     _,
   ))
   |> result.map_error(fn(error) {
     case error {
-      actor_call.CalleeDown -> "session owner stopped before deletion admission"
-      actor_call.TimedOut -> "deletion admission deadline reached"
+      actor_call.CalleeDown ->
+        refusal.Unavailable("session owner stopped before deletion admission")
+      actor_call.TimedOut ->
+        refusal.Unavailable("deletion admission deadline reached")
     }
   })
   |> result.flatten
@@ -990,7 +1129,7 @@ pub fn close_for_deletion(
   case process.subject_owner(session) {
     Error(_) -> Ok(Nil)
     Ok(owner) -> {
-      let deadline = clock.monotonic_ms() + timeout_ms
+      let deadline = albedo_clock.monotonic_ms() + timeout_ms
       let monitor = process.monitor(owner)
       let reply = process.new_subject()
       process.send(session, CloseForDeletion(reply))
@@ -1004,7 +1143,7 @@ pub fn close_for_deletion(
         Ok(Stopped) -> Ok(Nil)
         Ok(StopAcknowledged(Error(error))) -> Error(error)
         Ok(StopAcknowledged(Ok(_))) -> {
-          let remaining = deadline - clock.monotonic_ms()
+          let remaining = deadline - albedo_clock.monotonic_ms()
           case remaining <= 0 {
             True -> Error("session did not stop before deletion deadline")
             False ->
@@ -1048,14 +1187,86 @@ pub fn close(session: Session) -> Nil {
   actor.call(session, 30_000, Close)
 }
 
+/// Close an agent without deleting its transcript, files or saved namespace.
+/// A timeout leaves cleanup running; the durable closed row blocks new mail.
+pub fn close_agent(session: Session) -> Result(Nil, String) {
+  actor_call.try_call(session, 100_000, CloseAgent)
+  |> result.replace_error(
+    "agent is closed but cleanup is unconfirmed; repeat close to reconcile",
+  )
+  |> result.flatten
+}
+
+/// Save a live kernel before confirmed shutdown, including one whose session
+/// actor was lost. Reattachment must not start a fresh kernel in its place.
+/// Run outside actors: both snapshotting and runtime shutdown can wait.
+pub fn close_agent_kernel(
+  host: runtime.Runtime,
+  home: String,
+  id: String,
+  known: Option(runtime.Session),
+) -> Result(Nil, String) {
+  albedo_protect.guarded(fn() {
+    use recorded <- result.try(link.lookup(runtime.ledger(host), id))
+    let known =
+      option.then(known, fn(kernel) {
+        case runtime.alive(kernel) {
+          True -> Some(kernel)
+          False -> None
+        }
+      })
+    case known, recorded {
+      None, Some(record) -> runtime.reattach_session(host, id, record.cwd)
+      _, _ -> Nil
+    }
+    let kernel = case known {
+      Some(kernel) -> Some(kernel)
+      None ->
+        runtime.held_kernels(host)
+        |> list.find(fn(entry) { entry.0 == id })
+        |> result.map(fn(entry) { entry.1 })
+        |> option.from_result
+    }
+    use _ <- result.try(case kernel {
+      Some(kernel) ->
+        case runtime.alive(kernel) {
+          True ->
+            session_namespace.save_state_within(
+              home,
+              id,
+              kernel,
+              session_namespace.close_state_timeout,
+            )
+            |> result.replace(Nil)
+          False -> {
+            use recorded <- result.try(link.lookup(runtime.ledger(host), id))
+            case recorded {
+              None -> Ok(Nil)
+              Some(_) ->
+                Error(
+                  "agent is closed but its kernel owner stopped before saving; repeat close to reconcile",
+                )
+            }
+          }
+        }
+      None -> {
+        use recorded <- result.try(link.lookup(runtime.ledger(host), id))
+        case recorded {
+          Some(_) ->
+            Error(
+              "agent is closed but its recorded kernel could not be attached for saving; repeat close to reconcile",
+            )
+          None -> Ok(Nil)
+        }
+      }
+    })
+    runtime.delete_session(host, id)
+  })
+}
+
 /// Whether this session holds a kernel, and how long since a client last spoke.
 pub fn report(session: Session) -> Report {
   actor.call(session, 5000, Idle)
-}
-
-/// Release the kernel if nothing is attached or running. True when one was released.
-pub fn release(session: Session) -> Bool {
-  actor.call(session, 40_000, Release(_, automatic: False))
 }
 
 /// Delete the saved variables unless a kernel, turn or boot uses them now.
@@ -1073,7 +1284,7 @@ pub fn rewind(
   archive_id: String,
   checkpoint: Int,
   summary: Option(#(String, Int)),
-) -> Result(history.Rewound, String) {
+) -> Result(history.Rewound, Refusal) {
   actor_call.try_call(session, 30_000, RewindHistory(
     archive_id,
     checkpoint,
@@ -1081,7 +1292,9 @@ pub fn rewind(
     option.map(summary, fn(done) { done.1 }),
     _,
   ))
-  |> result.replace_error("rewind response unavailable; inspect the session")
+  |> result.replace_error(refusal.Unavailable(
+    "rewind response unavailable; inspect the session",
+  ))
   |> result.flatten
 }
 
@@ -1092,7 +1305,7 @@ pub fn summarize_tail(
   session: Session,
   checkpoint: Int,
   instructions: Option(String),
-) -> Result(#(String, Int), String) {
+) -> Result(#(String, Int), Refusal) {
   let out = process.new_subject()
   use _ <- result.try(
     actor_call.try_call(session, 60_000, StartSummary(
@@ -1101,12 +1314,15 @@ pub fn summarize_tail(
       out,
       _,
     ))
-    |> result.replace_error("summary response unavailable; inspect the session")
+    |> result.replace_error(refusal.Unavailable(
+      "summary response unavailable; inspect the session",
+    ))
     |> result.flatten,
   )
   case process.receive(out, 600_000) {
-    Ok(outcome) -> outcome
-    Error(Nil) -> Error("the summary went unanswered for ten minutes")
+    Ok(outcome) -> outcome |> refusal.storage
+    Error(Nil) ->
+      Error(refusal.Unavailable("the summary went unanswered for ten minutes"))
   }
 }
 
@@ -1292,7 +1508,7 @@ fn schedule_progress_flush(state: State) -> State {
     False, None | True, Some(_) -> state
     True, None -> {
       let token = state.progress_timer_token + 1
-      let timer = clock.send_after(state.self, 100, ProgressFlush(token))
+      let timer = albedo_clock.send_after(state.self, 100, ProgressFlush(token))
       session_state.State(
         ..state,
         progress_timer_token: token,
@@ -1341,21 +1557,25 @@ fn interrupt_kernel(state: State) -> Nil {
 
 pub fn upgrade_kernel(
   session: Session,
-) -> Result(runtime.KernelUpgrade, String) {
+) -> Result(runtime.KernelUpgrade, Refusal) {
   actor_call.try_call(session, 185_000, UpgradeKernel)
-  |> result.replace_error(
+  |> result.replace_error(refusal.Unavailable(
     "kernel upgrade response unavailable; inspect the session kernel",
-  )
+  ))
   |> result.flatten
 }
 
 fn begin_upgrade(
   state: State,
-  reply: Subject(Result(runtime.KernelUpgrade, String)),
+  reply: Subject(Result(runtime.KernelUpgrade, Refusal)),
 ) -> actor.Next(State, Message) {
   case busy(state) || uses_kernel_transition(state), state.booting {
     True, _ ->
-      answer(state, reply, Error("session must be idle to upgrade the kernel"))
+      answer(
+        state,
+        reply,
+        Error(refusal.Busy("session must be idle to upgrade the kernel")),
+      )
     // A kernel or composition still on its way (a restart reattaching it, say)
     // is waited out: the upgrade runs once it arrives.
     False, Some(_) -> actor.continue(park_kernel(state, UpgradeKernel(reply)))
@@ -1375,7 +1595,7 @@ fn begin_upgrade(
 fn upgraded_kernel(
   state: State,
   outcome: Result(runtime.KernelUpgrade, String),
-  reply: Subject(Result(runtime.KernelUpgrade, String)),
+  reply: Subject(Result(runtime.KernelUpgrade, Refusal)),
 ) -> actor.Next(State, Message) {
   let parked =
     option.map(state.booting, fn(value) { value.1 }) |> option.unwrap([])
@@ -1386,10 +1606,13 @@ fn upgraded_kernel(
   }
   let state =
     session_state.announce(state)
-    |> session_state.invalidate("session", "/sessions/" <> state.info.id)
+    |> session_state.invalidate(
+      view.StaleSession,
+      "/sessions/" <> state.info.id,
+    )
   list.each(parked, process.send(state.self, _))
   process.send(state.self, StartQueued)
-  answer(state, reply, outcome)
+  answer(state, reply, refusal.storage(outcome))
 }
 
 /// Replace the session's kernel with an empty one, stopping what runs first.
@@ -1432,8 +1655,8 @@ fn begin_restart(
   })
   case operations.cancel(runtime.ledger(state.host), state.info.id) {
     Error(error) -> answer(state, reply, Error(error))
-    Ok(_) -> {
-      let #(state, _) = stop_waiting(state)
+    Ok(cancelled) -> {
+      let #(state, _) = stop_waiting(state, cancelled)
       case replacing_kernel(state) || state.booting != None {
         True -> actor.continue(park(state, RestartKernel(by, reply)))
         False -> restart_now(state, by, reply)
@@ -1479,19 +1702,11 @@ fn restart_now(
       context: session_state.unprepared(),
     )
     |> session_state.announce
-    |> session_state.invalidate("session", "/sessions/" <> state.info.id),
+    |> session_state.invalidate(
+      view.StaleSession,
+      "/sessions/" <> state.info.id,
+    ),
   )
-}
-
-fn call_submit(
-  session: Session,
-  submission: Submission,
-) -> Result(Bool, SubmissionError) {
-  case actor_call.try_call(session, 10_000, Submit(submission, _)) {
-    Ok(outcome) -> outcome
-    Error(actor_call.TimedOut) -> Error(Unanswered)
-    Error(actor_call.CalleeDown) -> Error(Rejected("the session stopped"))
-  }
 }
 
 fn summary_state(state: State) -> Summary {
@@ -1550,7 +1765,10 @@ fn glances_due(state: State) -> State {
     process.spawn_unlinked(fn() {
       process.send(
         self,
-        GlancesObserved(runtime.observe_composition(host, home, id)),
+        GlancesObserved(
+          runtime.observe_composition(host, home, id)
+          |> result.map_error(session_catalog.failure_text),
+        ),
       )
     })
   session_state.watch_glances(state)
@@ -1561,10 +1779,10 @@ fn glances_due(state: State) -> State {
 /// composition on worker slots that kernel boots share, and stops kernels
 /// inline, so it can take seconds; the caller waits for it, never the actor.
 type Unobserved =
-  fn() -> Result(Capture, String)
+  fn() -> Result(Capture, Refusal)
 
 /// Queue reader admission in the caller, without retaining the actor's state.
-fn capture_state(state: State) -> Result(Unobserved, String) {
+fn capture_state(state: State) -> Result(Unobserved, Refusal) {
   let #(ledger, self) = #(runtime.ledger(state.host), state.self)
   Ok(fn() {
     use observe <- result.try(
@@ -1572,7 +1790,7 @@ fn capture_state(state: State) -> Result(Unobserved, String) {
         // A queued request can still use db after a timeout. Keep the exclusive
         // loan until the actor replies or dies, never recycle a live connection.
         case process.subject_owner(self) {
-          Error(_) -> Error("session capture unavailable")
+          Error(_) -> Error(refusal.Unavailable("session capture unavailable"))
           Ok(owner) -> {
             let monitor = process.monitor(owner)
             let reply = process.new_subject()
@@ -1581,7 +1799,7 @@ fn capture_state(state: State) -> Result(Unobserved, String) {
               process.new_selector()
               |> process.select(reply)
               |> process.select_specific_monitor(monitor, fn(_) {
-                Error("session capture unavailable")
+                Error(refusal.Unavailable("session capture unavailable"))
               })
               |> process.selector_receive_forever
             process.demonitor_process(monitor)
@@ -1598,7 +1816,7 @@ fn capture_state(state: State) -> Result(Unobserved, String) {
 fn capture_in(
   state: State,
   db: Option(sqlight.Connection),
-) -> Result(Unobserved, String) {
+) -> Result(Unobserved, Refusal) {
   use durable <- result.try(case db {
     Some(db) -> conversation.capture_in(db, state.info.id)
     None -> conversation.capture(runtime.ledger(state.host), state.info.id)
@@ -1613,8 +1831,11 @@ fn capture_in(
   let kernel = session_namespace.kernel_observer(state)
   let #(host, home, id) = #(state.host, state.home, state.info.id)
   Ok(fn() {
-    use kernel <- result.try(kernel())
-    use composition <- result.try(runtime.observe_composition(host, home, id))
+    use kernel <- result.try(kernel() |> refusal.storage)
+    use composition <- result.try(
+      runtime.observe_composition(host, home, id)
+      |> result.map_error(session_catalog.refuse),
+    )
     Ok(Capture(
       durable.info,
       summary.cursor,
@@ -1663,10 +1884,8 @@ fn publish_active(state: State, event: view.Event) -> State {
 }
 
 fn cleanup_registrations(id: String) -> Nil {
-  wakes_forget(id)
-  commands_forget(id)
-  mailbox_forget(id)
-  session_notes.forget(id)
+  command_state.forget(id)
+  mail.forget(id)
   moves.unwatch(id)
   live_forget(id)
 }
@@ -1678,9 +1897,7 @@ fn handle(
   // Anything a client sends counts as attention; a detached session goes quiet.
   // Listing sessions reads their summaries and is not attention.
   let state = case message {
-    Submit(..)
-    | SubmitUserTurn(..)
-    | ReadCapture(..)
+    ReadCapture(..)
     | ReadStatus(..)
     | ChangeConfiguration(..)
     | GenerateTitle(..)
@@ -1688,6 +1905,9 @@ fn handle(
     | ReadCommands(..)
     | Interrupt(..)
     | CancelInput(..)
+    | HoldInput(..)
+    | ReleaseInput(..)
+    | EditInput(..)
     | Read(..)
     | ReadContext(..)
     | ChangeModel(..)
@@ -1695,7 +1915,7 @@ fn handle(
     | ReloadData(..)
     | ChangeWorkspace(..)
     | ApplyWorkspace(..) ->
-      session_state.State(..state, last_touch: clock.monotonic_ms())
+      session_state.State(..state, last_touch: albedo_clock.monotonic_ms())
     _ -> state
   }
   // Runs end in finish_turn and background_finish, which follow at once; this
@@ -1751,14 +1971,16 @@ fn handle(
             )
             |> session_state.emit(view.ShellCommand(command))
             |> queue_shell(command)
-            |> flush_shell
+            |> flush_attached
           answer(state, reply, Ok(Nil))
         }
       }
     }
     ShellChanged(command, reply) -> {
       let worker = case state.shell_worker {
-        Some(#(id, _)) if id == command.id && command.status != "running" -> None
+        Some(#(id, _))
+          if id == command.id && command.status != shell_commands.Running
+        -> None
         other -> other
       }
       let state =
@@ -1768,10 +1990,10 @@ fn handle(
         ])
         |> session_state.emit(view.ShellCommand(command))
         |> queue_shell(command)
-        |> flush_shell
+        |> flush_attached
       answer(state, reply, Nil)
     }
-    FlushShell -> actor.continue(flush_shell(state))
+    FlushAttached -> actor.continue(flush_attached(state))
     ReadCapture(reply) -> answer(state, reply, capture_state(state))
     CaptureIn(db, reply) ->
       actor.continue(answer_captures(
@@ -1801,26 +2023,7 @@ fn handle(
         reply,
         option.map(state.kernel, fn(session) { session.kernel }),
       )
-    RecordNote(text, reply) ->
-      case
-        conversation.append_note(
-          runtime.ledger(state.host),
-          state.info.id,
-          text,
-        )
-      {
-        Error(reason) -> answer(state, reply, session_notes.Failed(reason))
-        Ok(timestamp) -> {
-          let state =
-            session_history.remember(state, [types.User(text)], timestamp)
-          // A turn still running commits on its own boundary; reload after it.
-          let state = case turn.running(state.activity) {
-            None -> state
-            Some(_) -> session_state.State(..state, history: None)
-          }
-          answer(state, reply, session_notes.Appended)
-        }
-      }
+    InboxChanged -> actor.continue(inbox_changed(state))
     MovedAway(detail) ->
       actor.continue(
         session_state.State(..session_naming.cancel(state), moved: Some(detail)),
@@ -1842,7 +2045,7 @@ fn handle(
     ChangeConfiguration(expected, patch, attachment, reply) -> {
       // Recheck ownership in the actor: the lease can expire after HTTP validation.
       case option.map(attachment, acp_attachments.holds(state.info.id, _)) {
-        Some(False) -> answer(state, reply, Error("attachment_lost"))
+        Some(False) -> answer(state, reply, Error(refusal.AttachmentLost))
         _ -> {
           let #(state, changed) =
             session_configure.change(
@@ -1858,7 +2061,7 @@ fn handle(
     }
     Resume -> actor.continue(begin_workspace_probe(state, ResumeStart))
     Rewarm ->
-      case busy(state) || state.steering != [] {
+      case busy(state) || queue_starts(state) {
         True -> actor.continue(state)
         False ->
           // Rewarming rebuilds the last request, which needs only the
@@ -1876,7 +2079,9 @@ fn handle(
         False -> {
           let base = "/sessions/" <> state.info.id
           bus.invalidate(["/sessions", base], [state.info.id], False)
-          actor.continue(state |> session_state.invalidate("session", base))
+          actor.continue(
+            state |> session_state.invalidate(view.StaleSession, base),
+          )
         }
       }
     }
@@ -1923,7 +2128,7 @@ fn handle(
         False, _ -> actor.continue(state)
         // A swap or boot under way: look again once it settles.
         True, True -> {
-          let _ = clock.send_after(state.self, 1000, IdleKernel(token))
+          let _ = albedo_clock.send_after(state.self, 1000, IdleKernel(token))
           actor.continue(state)
         }
         True, False -> begin_release(state, None, True)
@@ -1935,7 +2140,7 @@ fn handle(
       admit_operation(state, operation, submission, committed, reply)
     AdmitACP(operation, submission, digest, committed, reply) ->
       case acp_attachments.holds(state.info.id, digest), editor_ready(state) {
-        False, _ -> answer(state, reply, Decided(Error("attachment_lost")))
+        False, _ -> answer(state, reply, Decided(Error(refusal.AttachmentLost)))
         True, Error(reason) -> answer(state, reply, Decided(Error(reason)))
         True, Ok(_) ->
           admit_operation(state, operation, submission, committed, reply)
@@ -1999,32 +2204,42 @@ fn handle(
           // Abort past a tool gate, so interrupt whatever runs now too.
           interrupt_kernel(state)
           kill(run.pid)
-          finish_run(state, run, Error("cancelled"))
+          finish_run(state, run, Error(loop.RunFailed("cancelled")))
         }
         _ -> actor.continue(state)
       }
-    // The dispatcher retries letters it cannot see were admitted; one already
-    // queued or committed here is accepted again without a second copy.
-    Submit(Submission(source: turn.Mail(id, _), ..) as submission, reply) ->
-      // A letter in a turn whose commit is still queued is held too.
-      case
-        turn.holds_letter(
-          list.append(state.steering, state.active_submissions),
-          id,
-        ),
-        mail.undelivered(runtime.ledger(state.host), id)
-      {
-        True, _ -> answer(state, reply, Ok(True))
-        False, False -> answer(state, reply, Ok(False))
-        False, True -> admit(state, submission, reply)
+    DropQueued(ids, reply) -> {
+      let #(state, dropped) = drop_queued_in(state, ids)
+      answer(state, reply, dropped)
+    }
+    ArrangeQueue(ids, reply) -> {
+      let #(state, arranged) = arrange_queue_in(state, ids)
+      answer(state, reply, arranged)
+    }
+    HoldInput(id, reply) -> {
+      let #(state, held) = hold_input_in(state, id)
+      answer(state, reply, held)
+    }
+    HoldLapsed(id, deadline) ->
+      case dict.get(state.held, id) {
+        Ok(held) if held == deadline ->
+          actor.continue(release_input_in(state, id))
+        _ -> actor.continue(state)
       }
-    Submit(submission, reply) -> admit(state, submission, reply)
-    SubmitUserTurn(submission, reply) ->
-      admit(
+    ReleaseInput(id, reply) -> answer(release_input_in(state, id), reply, Nil)
+    QuietTurn(reply) ->
+      answer(state, reply, case turn.quiet(state.activity) {
+        True -> Ok(Nil)
+        False -> Error("no turn is running")
+      })
+    EditInput(submission, reply) -> {
+      let #(state, edited) = edit_input_in(state, submission)
+      answer(state, reply, edited)
+    }
+    UserTurnQueued ->
+      actor.continue(start_queued(
         session_state.State(..state, kernel_blocked: False),
-        submission,
-        reply,
-      )
+      ))
     ReadCommands(reply) -> {
       let host = state.host
       let id = state.info.id
@@ -2056,18 +2271,10 @@ fn handle(
         Error(error) -> answer(state, reply, Error(error))
         Ok(cancelled) -> {
           let state = session_naming.cancel_through(state, through_order)
-          let steering =
-            list.filter(state.steering, fn(input) {
-              case input.operation_id {
-                Some(id) -> !list.contains(cancelled, id)
-                None -> True
-              }
-            })
-          let state = session_state.State(..state, steering: steering)
           let requested = case interruptible_run(state), run_id {
             Some(run), Some(id) if run.id == id -> {
               interrupt_kernel(state)
-              let _ = clock.send_after(state.self, 2500, Abort(run.id))
+              let _ = albedo_clock.send_after(state.self, 2500, Abort(run.id))
               True
             }
             _, _ -> False
@@ -2082,17 +2289,18 @@ fn handle(
           }
           let state =
             session_submission.refresh_ids(state, cancelled)
+            |> session_state.queue_changed
             |> session_state.announce
           answer(state, reply, Ok(Interruption(run_id, requested, cancelled)))
         }
       }
     }
     Interrupt(reply) -> {
-      let state = session_naming.cancel(state)
+      let state = session_naming.cancel_initial(state)
       case operations.cancel(runtime.ledger(state.host), state.info.id) {
         Error(error) ->
           answer(session_state.emit(state, view.error(error)), reply, False)
-        Ok(_) -> interrupt_waiting(state, reply)
+        Ok(cancelled) -> interrupt_waiting(state, cancelled, reply)
       }
     }
     ChangeWorkspace(request, reply) -> {
@@ -2101,9 +2309,11 @@ fn handle(
         busy(state) || uses_kernel_transition(state) || state.booting != None
       {
         True ->
-          Error(session_workspace.Native(
-            "session must be idle to change workspace",
-          ))
+          Error(
+            session_workspace.Native(refusal.Busy(
+              "session must be idle to change workspace",
+            )),
+          )
         False -> {
           use destination <- result.try(
             location.workspace(request.destination)
@@ -2141,16 +2351,17 @@ fn handle(
         }
       }
     }
-    ChangeModel(model, provider_name, effort, remember, reply) -> {
+    ChangeModel(model, provider_name, effort, reply) -> {
       let #(state, outcome) =
         session_configure.change(
           stirred(state),
-          session_configure.SelectModel(model, provider_name, effort, remember),
+          session_configure.SelectModel(model, provider_name, effort),
         )
       answer(
         state,
         reply,
-        result.map(outcome, fn(_) { model_selection(state.info) }),
+        result.map(outcome, fn(_) { model_selection(state.info) })
+          |> result.map_error(refusal.explain),
       )
     }
 
@@ -2189,7 +2400,8 @@ fn handle(
             #("effort", json.string(effort)),
             #("message", json.string("reasoning effort set to " <> effort)),
           ])
-        }),
+        })
+          |> result.map_error(refusal.explain),
       )
     }
     ReadCompactAt(reply) ->
@@ -2216,7 +2428,8 @@ fn handle(
             #("context_window", json.nullable(saved.context_window, json.int)),
             #("message", json.string(message)),
           ])
-        }),
+        })
+          |> result.map_error(refusal.explain),
       )
     }
 
@@ -2241,15 +2454,29 @@ fn handle(
         _ -> answer(state, reply, Error(side_question.NotFound))
       }
     }
+    DismissSideQuestion(id, dismissed, reply) -> {
+      case side_question.dismiss(state.side_question, id, dismissed) {
+        Error(reason) -> answer(state, reply, Error(reason))
+        Ok(exchange) ->
+          answer(publish_side(state, exchange), reply, Ok(exchange))
+      }
+    }
     ClaimSideContinuation(id, target, reply) -> {
       case side_question.claim(state.side_question, id, target) {
         Error(reason) -> answer(state, reply, Error(reason))
-        Ok(#(exchange, promotion)) ->
+        Ok(#(exchange, promotion)) -> {
+          let _ =
+            session_side_question.save(
+              runtime.ledger(state.host),
+              state.info.id,
+              exchange,
+            )
           answer(
             session_state.State(..state, side_question: Some(exchange)),
             reply,
             Ok(promotion),
           )
+        }
       }
     }
     SettleSideContinuation(id, target, created) -> {
@@ -2299,7 +2526,12 @@ fn handle(
       }
     Compact(strategy, reply) ->
       case busy(state) {
-        True -> answer(state, reply, Error("session must be idle to compact"))
+        True ->
+          answer(
+            state,
+            reply,
+            Error(refusal.Busy("session must be idle to compact")),
+          )
         False ->
           // Compaction needs the composition, not a kernel.
           case turn_or_park(state, Compact(strategy, reply)) {
@@ -2309,9 +2541,20 @@ fn handle(
       }
     StopJob(id, reply) ->
       case state.kernel {
-        Some(kernel) -> answer(state, reply, runtime.stop_job(kernel, id))
+        Some(kernel) ->
+          answer(
+            state,
+            reply,
+            runtime.stop_job(kernel, id)
+              |> result.map_error(fn(error) {
+                case error {
+                  python.JobNotFound -> command.JobNotFound
+                  python.StopFailed(detail) -> command.Other(detail)
+                }
+              }),
+          )
         // A kernel is released only with no live job, so none runs now.
-        None -> answer(state, reply, Error("job not found"))
+        None -> answer(state, reply, Error(command.JobNotFound))
       }
     Watch(owner, key, notify) -> {
       let watchers = case
@@ -2407,7 +2650,7 @@ fn handle(
                   activity: turn.committed(
                     state.activity,
                     id,
-                    conversation.Idle,
+                    session_info.Idle,
                   ),
                 )
                   |> session_state.announce,
@@ -2487,13 +2730,67 @@ fn handle(
       actor.continue(session_state.flush_output(
         session_state.State(..state, output_timer: None),
       ))
+    FlushDraft ->
+      actor.continue(
+        session_state.State(
+          ..state,
+          draft_timer: None,
+          active_output: active_output.flush_text(state.active_output),
+        ),
+      )
+    CheckpointKernel(token) -> {
+      case
+        token == state.rest_token
+        && turn.running(state.activity) == None
+        && !uses_kernel_transition(state)
+        && state.booting == None
+        && !state.closing
+        && option.map(state.kernel, runtime.live_work) == Some(Ok(0)),
+        state.kernel
+      {
+        True, Some(kernel) -> {
+          let #(home, id, self) = #(state.home, state.info.id, state.self)
+          let _ =
+            process.spawn_unlinked(fn() {
+              let _ =
+                albedo_protect.attempt(fn() {
+                  session_namespace.save_state_within(
+                    home,
+                    id,
+                    kernel,
+                    session_namespace.close_state_timeout,
+                  )
+                })
+              process.send(self, Checkpointed)
+            })
+          actor.continue(session_state.State(..state, checkpointing: Some([])))
+        }
+        _, _ -> actor.continue(state)
+      }
+    }
+    Checkpointed -> {
+      let parked = option.unwrap(state.checkpointing, [])
+      list.each(parked, process.send(state.self, _))
+      actor.continue(session_state.State(..state, checkpointing: None))
+    }
+    ApplyPendingSwitch -> {
+      case turn.running(state.activity) != None || state.booting != None {
+        True -> actor.continue(state)
+        False -> {
+          let #(state, _) = session_switch.apply_pending(state)
+          actor.continue(state)
+        }
+      }
+    }
+    ResumeTitle ->
+      actor.continue(session_naming.resume_initial(state, TitleFinished))
     Commit(
       id,
       [],
       stage,
       _,
       _,
-      conversation.Follow(None, None, None),
+      conversation.Follow(None, None, None, _, []),
       answer,
       ack,
     ) -> {
@@ -2583,8 +2880,10 @@ fn handle(
             process.send(
               answer,
               result.map(written, fn(salvaged) {
-                option.map(salvaged, fn(salvaged) { salvaged.inputs })
-                |> option.unwrap([])
+                option.map(salvaged, fn(salvaged) {
+                  #(salvaged.timestamp, salvaged.inputs)
+                })
+                |> option.unwrap(#(0, []))
               }),
             )
             session_salvage.remember(state, written |> result.unwrap(None))
@@ -2592,7 +2891,7 @@ fn handle(
           |> actor.continue
         }
         _ -> {
-          process.send(answer, Ok([]))
+          process.send(answer, Ok(#(0, [])))
           actor.continue(state)
         }
       }
@@ -2612,7 +2911,10 @@ fn handle(
               conversation.commit_fits(ledger, session, fits, provider)
             }),
             fn(state, written) {
-              process.send(answer, result.replace(written, Nil))
+              process.send(
+                answer,
+                result.map(written, fn(outcome) { outcome.0 }),
+              )
               case written {
                 Ok(#(timestamp, boundary)) ->
                   session_history.remember_fits(
@@ -2638,26 +2940,33 @@ fn handle(
         continue(session_state.State(..state, writing: state.writing - 1))
       actor.continue(answer_captures(state))
     }
-    // Inputs that wait for the turn to end stay queued; the run's end starts
-    // the next turn with them.
+    // The running turn takes what steers it from the inbox at each step; what
+    // waits for the turn to end stays there and starts the next one.
     DrainSteering(id, answer, ack) -> {
       process.send(ack, Nil)
-      case
-        turn.live(state.activity, id),
-        case turn.exclusive(state.active_submissions) {
-          True -> #([], state.steering)
-          False -> list.partition(state.steering, turn.steers)
-        }
-      {
-        False, _ -> {
+      let exclusive = turn.exclusive(state.active_submissions)
+      let #(state, taken) = case turn.live(state.activity, id) {
+        False -> #(state, Error(Nil))
+        True ->
+          case take_queued(state, turn.steering(_, exclusive)) {
+            Ok(queued) -> #(state, Ok(queued))
+            // An unreadable inbox steers nothing this step.
+            Error(error) -> #(
+              session_state.emit(state, view.error(error)),
+              Ok([]),
+            )
+          }
+      }
+      case taken {
+        Error(_) -> {
           process.send(answer, Error("cancelled"))
           actor.continue(state)
         }
-        True, #([], _) -> {
-          process.send(answer, Ok([]))
+        Ok([]) -> {
+          process.send(answer, Ok(#(0, [])))
           actor.continue(state)
         }
-        True, #(queued, held) -> {
+        Ok(queued) -> {
           let inputs = session_submission.inputs(queued)
           let #(ledger, session, provider, cwd) = #(
             runtime.ledger(state.host),
@@ -2668,12 +2977,11 @@ fn handle(
           let letters = turn.letters(queued)
           let commits = session_submission.commits(queued, 0)
           let shells = session_submission.shells(queued, 0)
-          // The drained inputs join the run now, so a retried letter finds
-          // them held; a failed commit puts them back in the queue.
+          // The drained rows join the run now; a failed commit leaves them
+          // waiting in the inbox.
           let drained =
             session_state.State(
               ..state,
-              steering: held,
               active_submissions: list.append(state.active_submissions, queued),
             )
           drained
@@ -2683,23 +2991,26 @@ fn handle(
                 ledger,
                 session,
                 inputs,
-                conversation.Model,
+                session_info.Model,
                 provider,
                 letters,
                 commits,
                 shells,
+                session_submission.kinds(queued, 0),
                 id,
                 cwd,
                 [],
               )
             }),
             fn(state, written) {
-              process.send(answer, result.replace(written, inputs))
+              process.send(
+                answer,
+                result.map(written, fn(outcome) { #(outcome.0, inputs) }),
+              )
               case written {
                 Error(_) ->
                   session_state.State(
                     ..state,
-                    steering: list.append(queued, state.steering),
                     active_submissions: list.filter(
                       state.active_submissions,
                       fn(active) { !list.contains(queued, active) },
@@ -2715,6 +3026,8 @@ fn handle(
                   |> session_submission.emit(queued, timestamp)
                   |> session_submission.membership(id)
                   |> publish_steered_shells(shells, id, timestamp)
+                  |> session_namespace.notice_read(queued)
+                  |> session_state.queue_changed
               }
             },
           )
@@ -2837,7 +3150,7 @@ fn handle(
               False -> state
             }
             |> session_state.invalidate(
-              "context",
+              view.StaleContext,
               "/sessions/" <> state.info.id <> "/context?view=summary",
             )
           }
@@ -2885,7 +3198,9 @@ fn handle(
               finish_run(
                 state,
                 run,
-                Error("worker stopped; execution may have had effects"),
+                Error(loop.RunFailed(
+                  "worker stopped; execution may have had effects",
+                )),
               )
           }
         _ -> actor.continue(state)
@@ -2909,7 +3224,7 @@ fn handle(
           uses_kernel(state),
           kernel,
           state.history != None,
-          clock.monotonic_ms() - state.last_touch,
+          albedo_clock.monotonic_ms() - state.last_touch,
           jobs,
         ),
       )
@@ -2987,7 +3302,7 @@ fn handle(
       let claimed = case
         !request.subtree && { busy(state) || state.booting != None }
       {
-        True -> Error("session must be idle to delete")
+        True -> Error(refusal.Busy("session must be idle to delete"))
         False ->
           family.claim_deletion(
             runtime.ledger(state.host),
@@ -2998,6 +3313,56 @@ fn handle(
       }
       answer(state, reply, claimed)
     }
+    CloseAgent(reply) -> {
+      use <- bool.lazy_guard(
+        state.closing || state.pending_agent_close != None,
+        fn() {
+          answer(
+            state,
+            reply,
+            Error("agent is closed; cleanup is still pending"),
+          )
+        },
+      )
+      let cancelled =
+        operations.cancel(runtime.ledger(state.host), state.info.id)
+      use <- bool.lazy_guard(result.is_error(cancelled), fn() {
+        answer(state, reply, Error("could not cancel agent inputs"))
+      })
+      let #(state, _) = stop_waiting(state, result.unwrap(cancelled, []))
+      use <- bool.lazy_guard(
+        turn.running(state.activity) != None || state.finishing,
+        fn() {
+          actor.continue(
+            session_state.State(
+              ..state,
+              pending_agent_close: Some(CloseAgent(reply)),
+            ),
+          )
+        },
+      )
+      case replacing_kernel(state) || state.booting != None {
+        True -> actor.continue(park(state, CloseAgent(reply)))
+        False -> {
+          let state = session_naming.cancel(state)
+          cancel_side_worker(state)
+          stop_shell_worker(state)
+          let #(home, host, id, kernel, self) = #(
+            state.home,
+            state.host,
+            state.info.id,
+            state.kernel,
+            state.self,
+          )
+          let _ =
+            process.spawn_unlinked(fn() {
+              let stopped = close_agent_kernel(host, home, id, kernel)
+              process.send(self, Deleted(stopped, reply))
+            })
+          actor.continue(session_state.State(..state, closing: True))
+        }
+      }
+    }
     CloseForDeletion(reply) -> {
       let state = withdraw_boot(state)
       let state = session_naming.cancel(state)
@@ -3006,7 +3371,6 @@ fn handle(
       let state =
         session_state.State(
           ..state,
-          steering: [],
           booting: None,
           activity: cancel_turn(state),
         )
@@ -3033,7 +3397,7 @@ fn handle(
             Error(error),
           )
         Ok(_) -> {
-          active_output.revoke(state.home, state.info.id)
+          active_output_store.revoke(state.home, state.info.id)
           cleanup_registrations(state.info.id)
           wake_watchers(state)
           process.send(reply, Ok(Nil))
@@ -3042,11 +3406,14 @@ fn handle(
       }
     }
     Close(reply) -> {
+      let _ = option.map(state.draft_timer, process.cancel_timer)
       let state = session_naming.cancel(state)
       cancel_side_worker(state)
       stop_shell_worker(state)
       case turn.running(state.activity) {
         Some(run) -> {
+          let state = session_state.flush_output(state)
+          let _ = active_output.flush_text(state.active_output)
           interrupt_kernel(state)
           kill(run.pid)
           forget(state)
@@ -3068,18 +3435,18 @@ pub fn start_shell_command(
   worker: Session,
   id: String,
   command: String,
-) -> Result(shell_commands.Command, String) {
+) -> Result(shell_commands.Command, Refusal) {
   actor_call.try_call(worker, 5000, StartShell(id, command, _))
-  |> result.replace_error("shell_command_unavailable")
+  |> result.replace_error(refusal.Unavailable("shell_command_unavailable"))
   |> result.flatten
 }
 
 pub fn stop_shell_command(
   worker: Session,
   id: String,
-) -> Result(shell_commands.Command, String) {
+) -> Result(shell_commands.Command, Refusal) {
   actor_call.try_call(worker, 5000, StopShell(id, _))
-  |> result.replace_error("shell_command_unavailable")
+  |> result.replace_error(refusal.Unavailable("shell_command_unavailable"))
   |> result.flatten
 }
 
@@ -3094,7 +3461,7 @@ fn start_shell(
   state: State,
   id: String,
   command: String,
-  reply: Subject(Result(shell_commands.Command, String)),
+  reply: Subject(Result(shell_commands.Command, Refusal)),
 ) -> actor.Next(State, Message) {
   let #(closing, resetting, cwd, session_id) = #(
     state.closing,
@@ -3109,13 +3476,13 @@ fn start_shell(
       id,
       command,
       fn(db) {
-        use _ <- result.try(family.available_in(db, session_id))
+        use _ <- result.try(family.open_in(db, session_id))
         case closing || resetting || cwd == "" {
-          True -> Error("shell_command_unavailable")
+          True -> Error(refusal.Unavailable("shell_command_unavailable"))
           False ->
             case location.parse(cwd) {
               Ok(location.Local(_)) -> Ok(Nil)
-              _ -> Error("shell_command_remote_unsupported")
+              _ -> Error(refusal.ShellCommandRemoteUnsupported)
             }
         }
       },
@@ -3139,7 +3506,7 @@ fn start_shell(
       let failed = fn(error) {
         // Whatever was captured is flushed before the outcome is recorded.
         let _ = shell_commands.sync(ledger, session, id)
-        case ended("failed", None, Some(error)) {
+        case ended(shell_commands.Failed, None, Some(error)) {
           // No actor is left to own the outcome. A replacement actor also
           // reconciles running records before admitting any new command.
           Error(actor_call.CalleeDown) -> {
@@ -3148,7 +3515,7 @@ fn start_shell(
                 ledger,
                 session,
                 id,
-                "interrupted",
+                shell_commands.Interrupted,
                 None,
                 Some(error),
               )
@@ -3196,37 +3563,28 @@ fn start_shell(
   }
 }
 
-/// Finished shell outputs enter the same FIFO as human steering, but carry
-/// no ordinary input identity and cannot start a turn while idle.
+/// A finished command's receipt waits in the inbox like any input: a running
+/// turn reads it at its next step, and a resting session writes it into its
+/// transcript at once (`flush_attached`).
 fn queue_shell(state: State, command: shell_commands.Command) -> State {
-  case turn.running(state.activity), command.status {
-    Some(turn.Run(work: turn.Turn(..), ..)), status if status != "running" -> {
-      let already_queued =
-        list.any(state.steering, fn(submission) {
-          submission.source == turn.Shell(command.id)
-        })
-      case already_queued {
-        True -> state
-        False ->
-          session_state.State(
-            ..state,
-            steering: list.append(state.steering, [
-              Submission(
-                command.command,
-                shell_commands.model_text(state.info.id, command),
-                "shell",
-                turn.Shell(command.id),
-                [],
-                None,
-                None,
-                None,
-                [],
-              ),
-            ]),
+  case command.status {
+    shell_commands.Running -> state
+    _ ->
+      case
+        mail.post_input(
+          runtime.ledger(state.host),
+          shell_commands.receipt(state.info.id, command),
+        )
+      {
+        Error(refused) ->
+          session_state.emit(
+            state,
+            view.error(
+              "shell receipt not queued: " <> input.refused_text(refused),
+            ),
           )
+        Ok(_) -> state
       }
-    }
-    _, _ -> state
   }
 }
 
@@ -3246,7 +3604,8 @@ fn publish_steered_shells(
     )
   list.fold(ids, state, fn(state, id) {
     case shell_commands.read(runtime.ledger(state.host), state.info.id, id) {
-      Error(error) -> session_state.emit(state, view.error(error))
+      Error(error) ->
+        session_state.emit(state, view.error(refusal.explain(error)))
       Ok(command) ->
         state
         |> session_state.emit(
@@ -3263,43 +3622,85 @@ fn publish_steered_shells(
   })
 }
 
-/// Idle publication attaches context without ever starting a model turn.
-/// This function never submits input or starts a model turn.
-fn flush_shell(state: State) -> State {
+/// A resting session writes the rows waiting in its inbox to be attached
+/// (shell receipts, a moved session's notes) into its transcript at once. It
+/// never starts a model turn.
+fn flush_attached(state: State) -> State {
+  flush(state, turn.attached)
+}
+
+/// The rows `pick` chooses, written into the transcript while the session
+/// rests.
+fn flush(state: State, pick: fn(List(turn.Queued)) -> List(String)) -> State {
   case turn.running(state.activity), state.closing {
     None, False ->
-      list.fold(list.reverse(state.shell_commands), state, fn(state, command) {
-        case command.status {
-          "running" -> state
-          _ ->
-            case
-              conversation.commit_shell(
-                runtime.ledger(state.host),
-                state.info.id,
-                command,
-                state.info.provider,
-              )
-            {
-              Error(error) -> session_state.emit(state, view.error(error))
-              Ok(committed) ->
-                session_state.State(
-                  ..state,
-                  history: None,
-                  steering: list.filter(state.steering, fn(submission) {
-                    submission.source != turn.Shell(committed.id)
-                  }),
-                  shell_commands: list.filter(state.shell_commands, fn(c) {
-                    c.id != committed.id
-                  }),
-                )
-                |> session_state.emit(
-                  view.Message(http_history.shell_entry(committed, None), []),
-                )
-                |> session_state.emit(view.ShellCommand(committed))
-            }
-        }
-      })
+      case take_queued(state, pick) {
+        Error(error) -> session_state.emit(state, view.error(error))
+        Ok([]) -> state
+        Ok(attached) ->
+          list.fold(attached, state, flush_one)
+          |> session_state.queue_changed
+      }
     _, _ -> state
+  }
+}
+
+fn flush_one(state: State, receipt: Submission) -> State {
+  case receipt.source, receipt.submission_id {
+    turn.Note(origin), Some(id) ->
+      case
+        conversation.commit_note(
+          runtime.ledger(state.host),
+          state.info.id,
+          id,
+          receipt.text,
+          note_kind(origin, receipt.display),
+          state.info.provider,
+        )
+      {
+        Error(error) -> session_state.emit(state, view.error(error))
+        Ok(timestamp) ->
+          session_history.remember(state, [types.User(receipt.text)], timestamp)
+      }
+    _, _ -> flush_receipt(state, receipt)
+  }
+}
+
+/// The kind of the row a note from `origin` is written as: the kernel's
+/// notices show nothing, every other note shows its `display`.
+fn note_kind(origin: String, display: String) -> transcript.Kind {
+  case origin == session_namespace.notice_origin {
+    True -> transcript.Notice
+    False -> transcript.Note(origin, display)
+  }
+}
+
+fn flush_receipt(state: State, receipt: Submission) -> State {
+  case receipt.source {
+    turn.Shell(id) ->
+      case
+        conversation.commit_shell(
+          runtime.ledger(state.host),
+          state.info.id,
+          id,
+          state.info.provider,
+        )
+      {
+        Error(error) -> session_state.emit(state, view.error(error))
+        Ok(committed) ->
+          session_state.State(
+            ..state,
+            history: None,
+            shell_commands: list.filter(state.shell_commands, fn(c) {
+              c.id != committed.id
+            }),
+          )
+          |> session_state.emit(
+            view.Message(http_history.shell_entry(committed, None), []),
+          )
+          |> session_state.emit(view.ShellCommand(committed))
+      }
+    _ -> state
   }
 }
 
@@ -3343,7 +3744,12 @@ fn finish_idle_work(
       }
     StartSummary(checkpoint, instructions, out, ack) ->
       case children_busy || occupied(state) {
-        True -> answer(state, ack, Error("session must be idle to rewind"))
+        True ->
+          answer(
+            state,
+            ack,
+            Error(refusal.Busy("session must be idle to rewind")),
+          )
         False ->
           // A summary needs the composition, not a kernel.
           case
@@ -3359,11 +3765,17 @@ fn finish_idle_work(
       }
     RewindHistory(archive_id, checkpoint, summary, expected_last, reply) ->
       case children_busy || occupied(state) {
-        True -> answer(state, reply, Error("session must be idle to rewind"))
+        True ->
+          answer(
+            state,
+            reply,
+            Error(refusal.Busy("session must be idle to rewind")),
+          )
         False ->
           case
             history.rewind(
               runtime.ledger(state.host),
+              runtime.followers(state.host),
               state.info.id,
               archive_id,
               checkpoint,
@@ -3403,7 +3815,6 @@ fn occupied(state: State) -> Bool {
   || state.shell_worker != None
   || state.booting != None
   || uses_kernel_transition(state)
-  || state.steering != []
   || jobs > 0
 }
 
@@ -3443,12 +3854,12 @@ fn restart_another(
   to: String,
   caller: command.Caller,
 ) -> Result(json.Json, String) {
-  use address <- result.try(family.resolve(db, id, to))
+  use address <- result.try(families.resolve(storage.host(db), id, to))
   let by = case caller {
     command.UserCall -> Ok(None)
     command.ModelCall ->
-      case family.owns(db, id, address.session) {
-        True -> Ok(Some(family.name_of(db, id)))
+      case families.owns(storage.host(db), id, address.session) {
+        True -> Ok(Some(families.name_of(storage.host(db), id)))
         False ->
           Error(
             "you can only restart the kernels of your own children or peers",
@@ -3456,7 +3867,7 @@ fn restart_another(
       }
   }
   use by <- result.try(by)
-  case agents.call(agents.RestartKernel(address.session, by)) {
+  case session_control.call(agents.RestartKernel(address.session, by)) {
     Ok(agents.RestartedKernel(report)) -> Ok(report)
     Ok(_) -> Error("kernel restart answered unexpectedly")
     Error(reason) -> Error(reason)
@@ -3475,26 +3886,40 @@ fn command_op(
   home: String,
   id: String,
   op: command.StateOp,
-) -> Result(json.Json, String) {
+) -> Result(json.Json, command.StateError) {
   case op {
     command.ModelGet ->
       Ok(selection_json(actor.call(session, 5000, ReadSelection)))
     command.ModelSelect(model, provider, effort) ->
-      actor.call(session, 5000, ChangeModel(model, provider, effort, True, _))
+      actor.call(session, 5000, ChangeModel(model, provider, effort, _))
       |> result.map(selection_json)
-    command.EffortGet -> actor.call(session, 5000, ReadEffort)
+      |> result.map_error(command.Other)
+    command.EffortGet ->
+      actor.call(session, 5000, ReadEffort)
+      |> result.map_error(command.Other)
     command.EffortSelect(level) ->
       actor.call(session, 5000, ChangeEffort(level, _))
-    command.NameGet -> actor.call(session, 5000, ReadName)
-    command.NameSelect(name) -> actor.call(session, 5000, ChangeName(name, _))
-    command.NameSuggest(name) -> actor.call(session, 5000, SuggestName(name, _))
-    command.CompactAtGet -> read_compact_at(session)
+      |> result.map_error(command.Other)
+    command.NameGet ->
+      actor.call(session, 5000, ReadName)
+      |> result.map_error(command.Other)
+    command.NameSelect(name) ->
+      actor.call(session, 5000, ChangeName(name, _))
+      |> result.map_error(command.Other)
+    command.NameSuggest(name) ->
+      actor.call(session, 5000, SuggestName(name, _))
+      |> result.map_error(command.Other)
+    command.CompactAtGet ->
+      read_compact_at(session)
+      |> result.map_error(command.Other)
     command.CompactAtSet(tokens) ->
       actor.call(session, 5000, ChangeCompactAt(tokens, _))
+      |> result.map_error(command.Other)
     command.ContextSummary -> Ok(context(session))
     // Switching strategy reloads the session's extensions first.
     command.Compact(strategy) ->
       compact_session(session, strategy)
+      |> result.map_error(refusal.explain)
       |> result.map(fn(report) {
         json.object([
           #("state", json.string(report.state)),
@@ -3508,6 +3933,7 @@ fn command_op(
           ),
         ])
       })
+      |> result.map_error(command.Other)
     command.Refresh ->
       reload(session)
       |> result.map(fn(reloaded) {
@@ -3516,39 +3942,74 @@ fn command_op(
           #("warnings", json.array(reloaded.warnings, json.string)),
         ])
       })
+      |> result.map_error(command.Other)
     // Catalog fetches read no session state, so they stay off the actor.
     command.ReloadCatalogs ->
-      runtime.reload_catalogs(host, id) |> result.map(catalogs_json)
-    command.Accounts -> oauth.account_overview(home, runtime.logins(host))
-    command.ContextPage(section, page) -> context_page(session, section, page)
-    // Only a user invocation submits a turn, so this admission is the person
-    // acting again: it clears a workspace block instead of waiting for one.
-    command.Submit(display, text, client) ->
-      submitted_turn(
-        session,
-        Submission(display, text, client, turn.Chat, [], None, None, None, []),
+      runtime.reload_catalogs(host, id)
+      |> result.map(catalogs_json)
+      |> result.map_error(command.Other)
+    command.Accounts ->
+      auth_accounts.account_overview(
+        home,
+        runtime.logins(host),
+        runtime.key_environment(host),
       )
-    command.Note(origin, display, text) ->
-      submitted(
-        session,
+      |> result.map_error(command.Other)
+    command.ContextPage(section, page) ->
+      context_page(session, section, page)
+      |> result.map_error(command.Other)
+    // Only a user invocation submits a turn, so this post is the person acting
+    // again: it clears a workspace block instead of waiting for one.
+    command.Submit(display, text, client) ->
+      inbox.post(
+        runtime.ledger(host),
+        id,
+        "command",
         Submission(
           display,
           text,
-          "",
-          turn.Note(origin),
+          client,
+          turn.Chat,
+          [],
+          Some(mail.new_id()),
+          None,
+          None,
           [],
           None,
-          None,
-          None,
-          [],
         ),
-        "queued",
       )
+      |> result.map(fn(_) { process.send(session, UserTurnQueued) })
+      |> result.replace(json.object([#("submitted", json.bool(True))]))
+      |> result.map_error(command.Other)
+    command.QueueRead(limit, project) ->
+      inbox.items(runtime.ledger(host), id, limit)
+      |> result.map(fn(read) { project(read.0, read.1) })
+      |> result.map_error(command.Other)
+    command.QueueDrop(ids) ->
+      drop_queued(session, ids)
+      |> result.map(fn(dropped) {
+        json.object([#("dropped", json.array(dropped, json.string))])
+      })
+      |> result.map_error(command.Other)
+    command.QueueArrange(ids) ->
+      arrange_queue(session, ids)
+      |> result.replace(json.object([#("arranged", json.bool(True))]))
+      |> result.map_error(command.Other)
+    command.QuietTurn ->
+      actor_call.try_call(session, 15_000, QuietTurn)
+      |> result.replace_error("the session did not answer")
+      |> result.flatten
+      |> result.replace(json.object([#("quiet", json.bool(True))]))
+      |> result.map_error(command.Other)
     command.KernelReport ->
       capture(session)
+      |> result.map_error(refusal.explain)
       |> result.map(fn(captured) {
         json.object([
-          #("state", json.string(captured.kernel.state)),
+          #(
+            "state",
+            json.string(runtime_state.kernel_state_name(captured.kernel.state)),
+          ),
           #(
             "instance_id",
             json.nullable(captured.kernel.instance_id, json.string),
@@ -3560,8 +4021,10 @@ fn command_op(
           ),
         ])
       })
+      |> result.map_error(command.Other)
     command.KernelUpgrade ->
       upgrade_kernel(session)
+      |> result.map_error(refusal.explain)
       |> result.map(fn(report) {
         json.object([
           #("state", json.string(report.state)),
@@ -3569,49 +4032,32 @@ fn command_op(
           #("failure", json.nullable(report.failure, json.string)),
         ])
       })
+      |> result.map_error(command.Other)
     command.KernelRestart ->
-      restart_kernel(session, None) |> result.map(kernel_restart_json)
+      restart_kernel(session, None)
+      |> result.map(kernel_restart_json)
+      |> result.map_error(command.Other)
     command.KernelRestartOf(to, caller) ->
       restart_another(runtime.ledger(host), id, to, caller)
+      |> result.map_error(command.Other)
     command.KernelJobs(project) ->
       capture(session)
+      |> result.map_error(refusal.explain)
       |> result.try(fn(captured) {
         case captured.kernel.running_jobs {
           Some(jobs) -> Ok(project(jobs, captured.kernel.live_job_count))
           None -> Error("kernel job observation unavailable")
         }
       })
+      |> result.map_error(command.Other)
     command.KernelStopJob(id) ->
       actor.call(session, 5000, StopJob(id, _))
       |> result.map(fn(_) { json.object([#("stopped", json.bool(True))]) })
     command.KernelRead(read) ->
       actor_call.try_call(session, 5000, ReadKernel)
-      |> result.replace_error("session unavailable")
+      |> result.replace_error(command.SessionUnavailable)
       |> result.try(read)
   }
-}
-
-/// One command-routed submission: admitted like any other, reported as
-/// `{"<key>": true}` when it lands.
-fn submitted(
-  session: Session,
-  submission: Submission,
-  key: String,
-) -> Result(json.Json, String) {
-  actor.call(session, 10_000, Submit(submission, _))
-  |> result.map_error(submission_error)
-  |> result.replace(json.object([#(key, json.bool(True))]))
-}
-
-/// One command-routed person's turn: admitted like any other submission, and
-/// reported as `{"submitted": true}` when it lands.
-fn submitted_turn(
-  session: Session,
-  submission: Submission,
-) -> Result(json.Json, String) {
-  actor.call(session, 10_000, SubmitUserTurn(submission, _))
-  |> result.map_error(submission_error)
-  |> result.replace(json.object([#("submitted", json.bool(True))]))
 }
 
 /// `{"reloaded": [catalog, ..], "failed": {catalog: error, ..}}`.
@@ -3641,9 +4087,6 @@ fn selection_json(selection: ModelSelection) -> json.Json {
     #("effort", json.nullable(selection.effort, json.string)),
   ])
 }
-
-@external(erlang, "albedo_daemon", "directory")
-fn directory(path: String) -> Bool
 
 /// A turn needs a kernel in the workspace: a local folder that still exists,
 /// or, when a kernel must boot, a host albedo can reach. A host still being
@@ -3688,63 +4131,94 @@ fn check_workspace_ready_values(
         }
       }
     _ ->
-      case directory(cwd) {
+      case lifecycle.directory(cwd) {
         True -> Ok(Nil)
         False -> Error(WorkspaceMissing(cwd))
       }
   }
 }
 
-@external(erlang, "albedo_session", "kill")
-fn kill(pid: process.Pid) -> Nil
+fn kill(pid: process.Pid) -> Nil {
+  process.kill(pid)
+}
 
-@external(erlang, "albedo_inspect", "label")
-fn label(kind: String, id: String) -> Nil
+fn collect() -> Nil {
+  let _ = garbage_collect()
+  Nil
+}
 
-@external(erlang, "albedo_session", "collect")
-fn collect() -> Nil
+/// Marks the actor active. One timer follows a burst: messages only mark it
+/// dirty and never add timers. The flags live in the process dictionary, so
+/// marking costs no state update on every message.
+fn activity(subject: Subject(Message), message: Message) -> Nil {
+  let _ = put_flag(AlbedoSessionDirty, True)
+  case get_flag(AlbedoSessionCollecting) == dynamic.bool(True) {
+    True -> Nil
+    False -> {
+      let _ = put_flag(AlbedoSessionCollecting, True)
+      later(subject, message)
+    }
+  }
+}
 
-@external(erlang, "albedo_session", "activity")
-fn activity(subject: Subject(Message), message: Message) -> Nil
+/// The burst timer fired. Wait for another quiet period when messages arrived
+/// since. Otherwise hibernate, which collects the heap.
+fn quiet(subject: Subject(Message), message: Message) -> Nil {
+  case erase_flag(AlbedoSessionDirty) == dynamic.bool(True) {
+    True -> later(subject, message)
+    False -> {
+      let _ = erase_flag(AlbedoSessionCollecting)
+      let _ = hibernate()
+      Nil
+    }
+  }
+}
 
-@external(erlang, "albedo_session", "quiet")
-fn quiet(subject: Subject(Message), message: Message) -> Nil
+fn later(subject: Subject(Message), message: Message) -> Nil {
+  let _ = albedo_clock.send_after(subject, 100, message)
+  Nil
+}
 
-@external(erlang, "albedo_wakes", "register")
-fn wakes_register(
-  session: String,
-  submit: fn(String, String, String) -> run.Wake,
-) -> Nil
+/// The session actor's process dictionary keys.
+type Flag {
+  AlbedoSessionDirty
+  AlbedoSessionCollecting
+}
 
-@external(erlang, "albedo_wakes", "forget")
-fn wakes_forget(session: String) -> Nil
+@external(erlang, "erlang", "put")
+fn put_flag(key: Flag, value: Bool) -> Dynamic
 
-@external(erlang, "albedo_commands", "register")
-fn commands_register(
-  session: String,
-  state_op: fn(command.StateOp) -> Result(json.Json, String),
-) -> Nil
+@external(erlang, "erlang", "get")
+fn get_flag(key: Flag) -> Dynamic
 
-@external(erlang, "albedo_commands", "forget")
-fn commands_forget(session: String) -> Nil
+@external(erlang, "erlang", "erase")
+fn erase_flag(key: Flag) -> Dynamic
 
-@external(erlang, "albedo_mailbox", "register")
-fn mailbox_register(
-  session: String,
-  admit: fn(mail.Letter) -> Result(Bool, String),
-) -> Nil
+@external(erlang, "erlang", "hibernate")
+fn hibernate() -> Dynamic
 
-@external(erlang, "albedo_mailbox", "forget")
-fn mailbox_forget(session: String) -> Nil
+@external(erlang, "erlang", "garbage_collect")
+fn garbage_collect() -> Bool
 
-@external(erlang, "albedo_sessions", "register")
-fn live_register(session: String, subject: Session) -> Nil
+/// Live session actors by id. A session registers itself when it starts and is
+/// forgotten when it closes, so a registry that restarts after a crash adopts
+/// the sessions still running instead of starting a second actor for one.
+/// The table is `albedo_sessions`.
+fn live_sessions() -> Registry(String, Session) {
+  registry.new(atom.create("albedo_sessions"))
+}
 
-@external(erlang, "albedo_sessions", "forget")
-fn live_forget(session: String) -> Nil
+fn live_register(session: String, subject: Session) -> Nil {
+  registry.register(live_sessions(), session, subject)
+}
 
-@external(erlang, "albedo_sessions", "find")
-fn live_find(session: String) -> Result(Session, Nil)
+fn live_forget(session: String) -> Nil {
+  registry.forget(live_sessions(), session)
+}
+
+fn live_find(session: String) -> Result(Session, Nil) {
+  registry.lookup(live_sessions(), session)
+}
 
 fn owner_alive(session: Session) -> Bool {
   case process.subject_owner(session) {
@@ -3765,15 +4239,29 @@ pub fn live(id: String) -> Option(Session) {
   }
 }
 
-@external(erlang, "albedo_session", "discard")
-fn discard(path: String) -> Nil
+/// Delete a kernel state file and the saved job book (`.jobs.json`,
+/// robot-docs/kernel.md) that goes with it.
+fn discard(path: String) -> Nil {
+  let _ = delete_file(path)
+  let _ = delete_file(path <> ".jobs.json")
+  Nil
+}
+
+@external(erlang, "file", "delete")
+fn delete_file(path: String) -> Dynamic
 
 fn prepare_submission(
   state: State,
 ) -> Result(#(State, runtime.Prepared, extension.Upstream), SubmissionError) {
   use _ <- result.try(
     editor_ready(state)
-    |> result.map_error(Rejected),
+    |> result.map_error(fn(error) {
+      Rejected(case error {
+        refusal.OverlayReattachRequired | refusal.OverlayReloadFailed ->
+          refusal.failure(error).code
+        _ -> refusal.explain(error)
+      })
+    }),
   )
   use #(state, client) <- result.try(
     session_provider.configured_client(state) |> result.map_error(Rejected),
@@ -3864,7 +4352,7 @@ fn prepared_opened(
 fn acquire_kernel(
   state: State,
   id: String,
-  reply: Subject(Result(#(runtime.Session, Option(String)), String)),
+  reply: Subject(Result(runtime.Session, String)),
 ) -> actor.Next(State, Message) {
   let state = session_state.State(..state, rest_token: state.rest_token + 1)
   case turn.live(state.activity, id) && !state.closing {
@@ -3886,7 +4374,7 @@ fn acquire_kernel(
 fn acquire_parked(
   state: State,
   id: String,
-  reply: Subject(Result(#(runtime.Session, Option(String)), String)),
+  reply: Subject(Result(runtime.Session, String)),
 ) -> actor.Next(State, Message) {
   case kernel_or_park(state, AcquireKernel(id, reply)) {
     Error(state) -> actor.continue(state)
@@ -3903,13 +4391,9 @@ fn acquire_parked(
 fn hand_kernel(
   state: State,
   kernel: runtime.Session,
-  reply: Subject(Result(#(runtime.Session, Option(String)), String)),
+  reply: Subject(Result(runtime.Session, String)),
 ) -> actor.Next(State, Message) {
-  answer(
-    session_state.State(..state, notice: None, history: None),
-    reply,
-    Ok(#(kernel, state.notice)),
-  )
+  answer(session_state.State(..state, history: None), reply, Ok(kernel))
 }
 
 const acquire_refused = "the turn ended before its python kernel was ready"
@@ -3926,7 +4410,8 @@ fn arm_rest(state: State, id: String) -> State {
   case state.kernel {
     Some(_) -> {
       let token = state.rest_token + 1
-      let _ = clock.send_after(state.self, rest_ms, RestKernel(id, token))
+      let _ =
+        albedo_clock.send_after(state.self, rest_ms, RestKernel(id, token))
       session_state.State(..state, rest_token: token)
     }
     None -> state
@@ -3935,7 +4420,7 @@ fn arm_rest(state: State, id: String) -> State {
 
 /// Checks a turn's kernel again while its model wait lasts.
 fn rest_later(self: Subject(Message), id: String, token: Int) -> Nil {
-  let _ = clock.send_after(self, 1000, RestKernel(id, token))
+  let _ = albedo_clock.send_after(self, 1000, RestKernel(id, token))
   Nil
 }
 
@@ -3967,6 +4452,7 @@ fn refuse_acquires(state: State) -> State {
     ..state,
     booting: option.map(state.booting, fn(boot) { #(boot.0, refuse(boot.1)) }),
     releasing: option.map(state.releasing, refuse),
+    checkpointing: option.map(state.checkpointing, refuse),
   )
   |> withdraw_unused_boot
 }
@@ -3982,23 +4468,6 @@ fn kernel_or_park(state: State, work: Message) -> Result(State, State) {
         #(state, Some(_)) -> Ok(state)
         #(state, None) -> Error(park(state, work))
       }
-  }
-}
-
-/// The kernel's notice (variables restored or lost) rides on the newest
-/// input this turn commits, where the model reads it. It is committed with it,
-/// so later requests repeat the prefix this one sent; a chat bubble shows the
-/// submission's own display text.
-fn with_notice(
-  accepted: List(types.Input),
-  notice: Option(String),
-) -> List(types.Input) {
-  case notice, list.reverse(accepted) {
-    Some(notice), [types.User(text), ..rest] ->
-      list.reverse([types.User(text <> notice), ..rest])
-    Some(notice), [types.UserImage(text, image), ..rest] ->
-      list.reverse([types.UserImage(text <> notice, image), ..rest])
-    _, _ -> accepted
   }
 }
 
@@ -4019,7 +4488,7 @@ fn uses_kernel(state: State) -> Bool {
 }
 
 fn uses_kernel_transition(state: State) -> Bool {
-  replacing_kernel(state) || state.closing
+  replacing_kernel(state) || state.closing || state.checkpointing != None
 }
 
 /// Whether a release or workspace reset is replacing the kernel. Each ends by
@@ -4036,16 +4505,27 @@ fn busy(state: State) -> Bool {
 
 /// Keep `work` for when the kernel is ready, asking for one if nobody has.
 fn park(state: State, work: Message) -> State {
-  case state.releasing {
+  case state.checkpointing {
     Some(parked) ->
       session_state.State(
         ..state,
-        releasing: Some(case list.contains(parked, work) {
+        checkpointing: Some(case list.contains(parked, work) {
           True -> parked
           False -> list.append(parked, [work])
         }),
       )
-    None -> park_workspace(state, work)
+    None ->
+      case state.releasing {
+        Some(parked) ->
+          session_state.State(
+            ..state,
+            releasing: Some(case list.contains(parked, work) {
+              True -> parked
+              False -> list.append(parked, [work])
+            }),
+          )
+        None -> park_workspace(state, work)
+      }
   }
 }
 
@@ -4233,7 +4713,7 @@ fn boot_failed(
           session_state.State(..state, activity: turn.Resting)
           |> session_state.emit(view.error(why))
         Compact(_, reply) -> {
-          process.send(reply, Error(why))
+          process.send(reply, Error(refusal.Unavailable(why)))
           state
         }
         AcquireKernel(_, reply) -> {
@@ -4241,16 +4721,20 @@ fn boot_failed(
           state
         }
         UpgradeKernel(reply) -> {
-          process.send(reply, Error(why))
+          process.send(reply, Error(refusal.Unavailable(why)))
           state
         }
         // Nothing booted, so the restart has only saved variables to drop.
-        RestartKernel(_, _) -> {
+        RestartKernel(_, _) | CloseAgent(_) -> {
           process.send(state.self, work)
           state
         }
         StartSummary(_, _, _, ack) -> {
-          process.send(ack, Error(why))
+          process.send(ack, Error(refusal.Unavailable(why)))
+          state
+        }
+        AskSideQuestion(_, _, reply) -> {
+          process.send(reply, Error(side_question.NoContext(why)))
           state
         }
         _ -> state
@@ -4275,51 +4759,69 @@ fn run_parked(state: State, parked: List(Message)) -> State {
   })
 }
 
+/// What waits in the inbox could not start a turn: its people's inputs say
+/// why, and the session tries again in 15 s.
 fn failed_queued(state: State, error: String) -> State {
-  let _ = clock.send_after(state.self, 15_000, StartQueued)
-  blocked_queued(state, error, Some(clock.monotonic_ms() + 15_000))
+  let _ = albedo_clock.send_after(state.self, 15_000, StartQueued)
+  blocked_queued(state, error, Some(albedo_clock.monotonic_ms() + 15_000))
 }
 
+/// Blocks what waits in the inbox. Without `retry_at` it waits for the person
+/// to act again or for a workspace move instead of retrying on a timer.
 fn blocked_queued(state: State, error: String, retry_at: Option(Int)) -> State {
-  let _ =
-    operations.block(
-      runtime.ledger(state.host),
-      turn.operations(state.steering),
-      error,
-    )
+  let state = session_state.State(..state, active_submissions: [])
+  let waiting =
+    queued(state)
+    |> result.map(list.map(_, fn(row: turn.Queued) { row.id }))
+    |> result.unwrap([])
+  let _ = operations.block(runtime.ledger(state.host), waiting, error)
   session_state.emit(
     session_state.State(
       ..state,
       blocked_until: option.unwrap(retry_at, 0),
       kernel_blocked: retry_at == None,
+      blocking: Some(error),
     ),
     view.error("waiting inputs are blocked: " <> error),
   )
-  |> session_submission.refresh_ids(turn.operations(state.steering))
-  |> fn(state) { session_state.State(..state, active_submissions: []) }
+  |> session_submission.refresh_ids(waiting)
 }
 
-/// A session that ends still owing replies sends each requester its last words,
-/// marked unreviewed. Letters already queued here mean it is not done yet.
+/// A session that ends still owing replies sends each requester the last words
+/// of the turn that ended, marked unreviewed. Letters already queued here mean
+/// it is not done yet.
 fn answer_parent(
   state: State,
-  outcome: Result(Nil, String),
-) -> #(State, Option(fn() -> List(Result(mail.Letter, String)))) {
+  run_id: String,
+  outcome: Result(Nil, loop.Failure),
+) -> #(State, Option(fn() -> List(Result(mail_value.Letter, String)))) {
   let db = runtime.ledger(state.host)
-  let owed = case turn.starts_turn(state.steering) {
+  let owed = case queue_starts(state) {
     True -> []
     False -> mail.owed_requesters(db, state.info.id) |> result.unwrap([])
   }
   case owed {
     [] -> #(state, None)
     requesters -> {
-      let #(state, words) = last_words(state)
-      let body = case outcome, words {
-        Ok(_), Some(text) -> text
-        Ok(_), None -> "(finished without writing anything)"
-        Error(error), _ -> child_failure.format(error, words)
+      let #(state, words) = last_words(state, run_id)
+      let #(session, name) = #(
+        state.info.id,
+        families.name_of(storage.host(db), state.info.id),
+      )
+      let #(kind, body) = case outcome, words {
+        Ok(_), Some(text) -> #(mail_value.Answer(unreviewed: True), text)
+        Ok(_), None -> #(
+          mail_value.Answer(unreviewed: True),
+          "(finished without writing anything)",
+        )
+        Error(failure), _ -> {
+          let reason = child_failure.reason(failure)
+          #(
+            mail_value.Stopped(name, reason),
+            child_failure.format(reason, words),
+          )
+        }
       }
-      let #(session, name) = #(state.info.id, family.name_of(db, state.info.id))
       #(
         state,
         Some(fn() {
@@ -4330,7 +4832,7 @@ fn answer_parent(
               requester,
               Some(session),
               name,
-              mail.Answer(unreviewed: True),
+              kind,
               body,
             )
           })
@@ -4340,14 +4842,15 @@ fn answer_parent(
   }
 }
 
-/// Hands each posted answer to its requester, or says why it was not posted.
-fn answered(state: State, posted: List(Result(mail.Letter, String))) -> State {
+/// Says why an answer to a requester was not posted; one that was reaches its
+/// requester once it commits.
+fn answered(
+  state: State,
+  posted: List(Result(mail_value.Letter, String)),
+) -> State {
   list.fold(posted, state, fn(state, posted) {
     case posted {
-      Ok(letter) -> {
-        let _ = process.spawn_unlinked(fn() { mail.deliver(letter) })
-        state
-      }
+      Ok(_) -> state
       Error(error) ->
         session_state.emit(
           state,
@@ -4357,71 +4860,22 @@ fn answered(state: State, posted: List(Result(mail.Letter, String))) -> State {
   })
 }
 
-/// The newest assistant text in this session's transcript.
-fn last_words(state: State) -> #(State, Option(String)) {
+/// The newest assistant text `run_id` wrote.
+fn last_words(state: State, run_id: String) -> #(State, Option(String)) {
   #(
     state,
-    conversation.last_assistant_text(runtime.ledger(state.host), state.info.id)
+    conversation.last_assistant_text(
+      runtime.ledger(state.host),
+      state.info.id,
+      run_id,
+    )
       |> result.unwrap(None),
   )
 }
 
 /// Whether this session's durable family member has been closed.
 fn family_closed(state: State) -> Result(Bool, String) {
-  family.closed(runtime.ledger(state.host), state.info.id)
-}
-
-/// Whether a queued submission includes a durable agent letter.
-fn waiting_mail(submissions: List(Submission)) -> Bool {
-  list.any(submissions, fn(submission) {
-    case submission.source {
-      turn.Mail(..) -> True
-      _ -> False
-    }
-  })
-}
-
-/// Drop queued work after close, before a parked kernel can start it.
-fn cancel_closed_waiting(state: State) -> State {
-  case operations.cancel(runtime.ledger(state.host), state.info.id) {
-    Error(error) -> session_state.emit(state, view.error(error))
-    Ok(_) -> {
-      let ids = turn.operations(state.steering)
-      session_state.State(..state, steering: [], active_submissions: [])
-      |> session_submission.refresh_ids(ids)
-      |> session_state.announce
-    }
-  }
-}
-
-/// Whether a submission starts a run, waits in the queue, or is refused.
-fn admit(
-  state: State,
-  submission: Submission,
-  reply: Subject(Result(Bool, SubmissionError)),
-) -> actor.Next(State, Message) {
-  // Anything a client submits counts as attention.
-  let state = stirred(state)
-  case state.moved {
-    // Whoever sent it decides what a refusal means (`registry` notes it once).
-    Some(detail) -> answer(state, reply, Error(Moved(detail)))
-    None -> {
-      let closed = case submission.source {
-        turn.Mail(..) -> family_closed(state)
-        _ -> Ok(False)
-      }
-      case closed {
-        Ok(True) -> answer(state, reply, Error(Rejected("session is closed")))
-        Error(error) -> answer(state, reply, Error(Rejected(error)))
-        Ok(False) ->
-          case refused_image(state, submission) {
-            #(state, Some(reason)) ->
-              answer(state, reply, Error(Rejected(reason)))
-            #(state, None) -> admit_within_limits(state, submission, reply)
-          }
-      }
-    }
-  }
+  families.closed(storage.host(runtime.ledger(state.host)), state.info.id)
 }
 
 /// Why the session's provider would refuse one of the submission's images,
@@ -4448,115 +4902,22 @@ fn refused_image(
   }
 }
 
-fn park_submission(
-  state: State,
-  submission: Submission,
-  reply: Subject(Result(Bool, SubmissionError)),
-) -> actor.Next(State, Message) {
-  let state =
-    session_state.State(
-      ..state,
-      steering: list.append(state.steering, [submission]),
-    )
-  answer(
-    case turn_or_park(state, StartQueued) {
-      Error(state) -> state
-      Ok(state) -> start_queued(state)
-    },
-    reply,
-    Ok(False),
-  )
-}
-
-fn cached_workspace_error(state: State) -> Option(SubmissionError) {
-  case location.parse(state.info.cwd) {
-    Ok(location.Remote(..) as at) ->
-      case location.ssh_target(at) {
-        Ok(target) ->
-          case ssh.known(target) {
-            Error(ssh.Warming) -> None
-            Error(failure) -> Some(Rejected(ssh.describe(target, failure)))
-            Ok(_) -> None
-          }
-        Error(_) -> None
-      }
-    _ -> None
-  }
-}
-
-/// How long an idle parent waits for more of its children to report failure.
-const failure_hold_ms = 400
-
-fn admit_within_limits(
-  state: State,
-  submission: Submission,
-  reply: Subject(Result(Bool, SubmissionError)),
-) -> actor.Next(State, Message) {
-  let failed_child = result.is_ok(session_submission.failed_child(submission))
-  case turn.admit(state.activity, submission, list.length(state.steering)) {
-    turn.Reject(turn.Busy) -> answer(state, reply, Error(Busy))
-    turn.Reject(turn.Oversized) ->
-      answer(
-        state,
-        reply,
-        Error(Rejected("prompt or activation exceeds its bounded size")),
-      )
-    turn.Queue ->
-      answer(
-        session_state.State(
-          ..state,
-          steering: list.append(state.steering, [submission]),
-        ),
-        reply,
-        Ok(True),
-      )
-    // Children that fail together land in one turn: the first waits briefly
-    // so its siblings join it.
-    turn.Start if failed_child -> {
-      let _ = clock.send_after(state.self, failure_hold_ms, StartQueued)
-      answer(
-        session_state.State(
-          ..state,
-          steering: list.append(state.steering, [submission]),
-          holding_failure: True,
-        )
-          |> session_state.announce,
-        reply,
-        Ok(True),
-      )
-    }
-    turn.Start ->
-      case turn_ready(state) {
-        // It starts once the kernel boots, not behind another turn, so to
-        // the caller it is not queued; the actor keeps answering meanwhile.
-        #(state, False) ->
-          case workspace_probe_target(state) {
-            Some(_) ->
-              case cached_workspace_error(state) {
-                Some(error) -> answer(state, reply, Error(error))
-                None -> park_submission(state, submission, reply)
-              }
-            None ->
-              case check_workspace_ready(state) {
-                Error(error) -> answer(state, reply, Error(error))
-                Ok(Nil) -> park_submission(state, submission, reply)
-              }
-          }
-        #(state, True) -> start_now(state, submission, reply)
-      }
-  }
-}
-
+/// The resumed turn reads the restart notice first, ahead of everything that
+/// waited in the inbox.
 fn resume(state: State) -> State {
   case
-    prepare_turn_pipeline(state, list.append([restart_note], state.steering))
+    inbox.post_first(
+      runtime.ledger(state.host),
+      state.info.id,
+      "daemon",
+      restart_note(),
+    )
   {
-    Error(#(state, err)) ->
-      failed_queued(
-        session_state.State(..state, activity: turn.Resting),
-        submission_error(err),
-      )
-    Ok(#(state, opening)) -> start_turn(state, opening)
+    Error(error) ->
+      failed_queued(session_state.State(..state, activity: turn.Resting), error)
+    Ok(_) ->
+      session_state.State(..state, activity: turn.Resting)
+      |> open_queued(turn.opening)
   }
 }
 
@@ -4580,18 +4941,18 @@ fn elide_compacted_images(state: State) -> State {
 pub fn compact_session(
   session: Session,
   strategy: Option(String),
-) -> Result(turn.CompactionReport, String) {
+) -> Result(turn.CompactionReport, Refusal) {
   actor_call.try_call(session, 185_000, Compact(strategy, _))
-  |> result.replace_error(
+  |> result.replace_error(refusal.Unavailable(
     "compaction response unavailable; inspect session context",
-  )
+  ))
   |> result.flatten
 }
 
 fn compact(
   state: State,
   strategy: Option(String),
-  reply: Subject(Result(turn.CompactionReport, String)),
+  reply: Subject(Result(turn.CompactionReport, Refusal)),
 ) -> actor.Next(State, Message) {
   // The switch keeps its state even when compaction then fails: the runtime
   // already runs the new extension set.
@@ -4625,7 +4986,7 @@ fn compact(
       None -> Error("no compaction strategy is enabled")
     })
     use state <- result.try(session_history.ensure_history(state))
-    use history <- result.try(projected_inputs(state))
+    use history <- result.try(projected_entries(state))
     use _ <- result.try(case history {
       [] -> Error("no conversation history to compact")
       _ -> Ok(Nil)
@@ -4717,10 +5078,13 @@ fn select_strategy(
                   )
                   state
                   |> session_state.invalidate(
-                    "settings",
+                    view.StaleSettings,
                     base <> "?view=configuration",
                   )
-                  |> session_state.invalidate("catalog", base <> "/catalog")
+                  |> session_state.invalidate(
+                    view.StaleCatalog,
+                    base <> "/catalog",
+                  )
                 }
               }
               #(state, result.replace(outcome, Nil))
@@ -4768,15 +5132,11 @@ fn prepare_turn_pipeline(
       )
     None -> []
   }
-  // What stays queued waits for this turn to end: an ACP prompt starts a
-  // turn of its own.
-  let #(submissions, waiting) = turn.next_batch(submissions)
   let accepted =
     list.append(
       list.map(recovered, fn(result) { result.0 }),
       session_submission.inputs(submissions),
     )
-    |> with_notice(state.notice)
   let run_id = mail.new_id()
   let #(ledger, session, provider, cwd) = #(
     runtime.ledger(state.host),
@@ -4799,22 +5159,22 @@ fn prepare_turn_pipeline(
       ledger,
       session,
       accepted,
-      conversation.Model,
+      session_info.Model,
       provider,
       letters,
       commits,
       shells,
+      session_submission.kinds(submissions, list.length(recovered)),
       run_id,
       cwd,
       outcomes,
     )
   }
-  // The inputs leave the queue now; the turn's commit, which the worker
-  // waits for, puts them back if it fails.
+  // The turn holds its rows now; they leave the inbox with the commit the
+  // worker waits for, and stay there if it fails.
   let state =
     session_state.State(
       ..state,
-      steering: waiting,
       active_submissions: submissions,
       blocked_until: 0,
       kernel_blocked: False,
@@ -4877,24 +5237,18 @@ fn opened(
         Some(run) -> turn.Running(turn.open(run, boundary.upper))
         None -> state.activity
       }
-      session_state.State(..state, activity: activity, notice: None)
+      session_state.State(..state, activity: activity)
+      |> session_namespace.notice_read(submissions)
       |> session_history.remember_committed(accepted, timestamp, boundary)
       |> session_submission.emit(submissions, timestamp)
+      |> session_state.queue_changed
       |> session_state.announce
     }
     Error(error), Some(run) -> {
       process.demonitor_process(run.monitor)
       kill(run.pid)
       bus.running(state.info.id, False)
-      session_state.State(
-        ..state,
-        activity: turn.Resting,
-        steering: list.append(
-          list.filter(submissions, fn(submission) { submission != restart_note }),
-          state.steering,
-        ),
-        active_submissions: [],
-      )
+      session_state.State(..state, activity: turn.Resting)
       |> failed_queued(error)
       |> session_state.announce
     }
@@ -4902,41 +5256,46 @@ fn opened(
   }
 }
 
-fn editor_ready(state: State) -> Result(Nil, String) {
+fn editor_ready(state: State) -> Result(Nil, Refusal) {
   use <- bool.guard(!state.acp, Ok(Nil))
   let ledger = runtime.ledger(state.host)
-  use selected <- result.try(selection.enabled(
-    ledger,
-    runtime.installed(state.host),
-    runtime.base_defaults(state.host),
-    state.info.id,
-  ))
+  use selected <- result.try(
+    selection.enabled(
+      ledger,
+      runtime.installed(state.host),
+      runtime.base_defaults(state.host),
+      state.info.id,
+    )
+    |> refusal.storage,
+  )
   let enabled = list.any(selected, fn(item) { item.name == "editor-mcp" })
   use <- bool.guard(!enabled, Ok(Nil))
   use _ <- result.try(acp_session.ready(ledger, state.info.id, enabled))
-  use marker <- result.try(conversation.acp_marker(ledger, state.info.id))
+  use marker <- result.try(
+    stored_history.acp_marker(storage.host(ledger), state.info.id)
+    |> refusal.storage,
+  )
   acp_session.resolve_overlay(marker, state.info.id, enabled)
   |> result.replace(Nil)
 }
 
-fn start_now(
-  state: State,
-  submission: Submission,
-  reply: Subject(Result(Bool, SubmissionError)),
-) -> actor.Next(State, Message) {
-  // Notes queued while idle ride along ahead of this message.
-  case prepare_turn_pipeline(state, list.append(state.steering, [submission])) {
-    Error(#(state, err)) -> answer(state, reply, Error(err))
-    Ok(#(state, opening)) ->
-      answer(start_turn(state, opening), reply, Ok(False))
+fn turn_state(
+  run: turn.Run,
+  outcome: Result(Nil, String),
+) -> operations.TurnState {
+  case run.cancelled, outcome {
+    True, _ -> operations.Interrupted
+    _, Error(_) -> operations.Failed
+    _, Ok(_) -> operations.Completed
   }
 }
 
 fn finish_run(
   state: State,
   run: turn.Run,
-  outcome: Result(Nil, String),
+  failure: Result(Nil, loop.Failure),
 ) -> actor.Next(State, Message) {
+  let outcome = result.map_error(failure, loop.failure_message)
   case run.work {
     // A background call holds the session like a compaction run does, but
     // commits nothing and never reaches the transcript.
@@ -4951,16 +5310,17 @@ fn finish_run(
         ),
       )
     turn.Summary(_, _, reply) -> summary_finish(state, run, reply, outcome)
-    _ -> finish_turn(state, run, outcome)
+    _ -> finish_turn(state, run, failure)
   }
 }
 
 fn finish_turn(
   state: State,
   run: turn.Run,
-  outcome: Result(Nil, String),
+  failure: Result(Nil, loop.Failure),
 ) -> actor.Next(State, Message) {
   use <- bool.guard(state.finishing, actor.continue(state))
+  let outcome = result.map_error(failure, loop.failure_message)
   process.demonitor_process(run.monitor)
   // A session closing for deletion keeps nothing of the turn.
   let state = case run.work, run.cancelled, outcome {
@@ -4977,11 +5337,7 @@ fn finish_turn(
       state.info.id,
       run.id,
       turn.final_stage(run, outcome),
-      case run.cancelled, outcome {
-        True, _ -> "interrupted"
-        _, Error(_) -> "failed"
-        _, Ok(_) -> "completed"
-      },
+      turn_state(run, outcome),
     )
   // The run holds the session until its end is durable, so nothing starts
   // behind a turn the store still calls running.
@@ -4992,7 +5348,7 @@ fn finish_turn(
       // Its requesters' answers are posted before the session reads idle, so
       // whoever waits on it sees them once it does.
       let #(state, answers) = case run.work, run.cancelled, persisted {
-        turn.Turn(..), False, Ok(_) -> answer_parent(state, outcome)
+        turn.Turn(..), False, Ok(_) -> answer_parent(state, run.id, failure)
         _, _, _ -> #(state, None)
       }
       case answers {
@@ -5028,9 +5384,6 @@ fn finished_turn(
     |> follow_up
   let #(state, _) = session_switch.apply_pending(state)
   bus.running(state.info.id, False)
-  // A webhook or wake refused while this run held the session can
-  // be admitted now.
-  mail.waiting()
   let state =
     session_state.State(
       ..state,
@@ -5043,28 +5396,37 @@ fn finished_turn(
     _, _, _, Error(error) ->
       session_state.emit(
         state,
-        view.Failure(Some(run.id), "turn_persistence_failed", error),
+        view.Failure(Some(run.id), view.TurnPersistenceFailed, error),
       )
     _, True, _, Ok(_) -> state
     _, _, Error(error), _ ->
       session_state.emit(
         state,
-        view.Failure(Some(run.id), "turn_failed", error),
+        view.Failure(Some(run.id), view.TurnFailed, error),
       )
     // Compaction makes no provider request, so the footer's last real
     // usage is stale, and the estimate of the strategy replaces it. The total
     // cost of the session is not a measurement of a call, so it stays.
     turn.Compaction(..), _, Ok(_), Ok(_) -> {
-      case context_snapshot.estimate(state.context) {
-        Some(tokens) -> {
+      case context_snapshot.request_size(state.context) {
+        Some(total) -> {
           let metadata =
             usage.Metadata(
               state.info.model,
               usage.now(),
-              Some(usage.Tokens(tokens, 0, None, None, None, None, None)),
+              Some(usage.Tokens(
+                size.total_tokens(total),
+                0,
+                None,
+                None,
+                None,
+                None,
+                None,
+              )),
               None,
               None,
               None,
+              Some(total),
             )
           session_state.emit(
             session_state.State(..state, latest_usage: Some(metadata)),
@@ -5124,11 +5486,7 @@ fn finished_turn(
       |> session_submission.refresh_ids(ids)
       |> session_state.emit(view.TurnCompleted(
         run.id,
-        case run.cancelled, outcome {
-          True, _ -> "interrupted"
-          _, Error(_) -> "failed"
-          _, Ok(_) -> "completed"
-        },
+        turn_state(run, outcome),
         ids,
       ))
     }
@@ -5156,22 +5514,31 @@ fn when_release_allowed(state: State, answer: fn(Bool) -> Nil) -> Nil {
 /// agents holds none.
 const idle_release_ms = 120_000
 
-/// Releases a resting session's kernel once it goes `idle_release_ms`
-/// without a turn, cell or job, or at once when live kernels are near the
-/// memory budget; a client watching the session holds none. Runs when a turn
-/// ends and when the kernel reports changed facts (a job ended), each run
-/// restarting the wait; `begin_release` rechecks every condition.
+/// How long a resting session waits after settling before checkpointing its
+/// Python namespace in the background.
+const checkpoint_idle_ms = 2000
+
+/// Arms both a background namespace checkpoint after `checkpoint_idle_ms` and
+/// an idle release after `idle_release_ms` (or at once under memory pressure)
+/// when the kernel is resting with no live work.
 fn request_resting_release(state: State) -> State {
   case
     state.kernel,
     turn.running(state.activity),
     state.releasing == None
+    && state.checkpointing == None
     && option.map(state.kernel, runtime.live_work) == Some(Ok(0))
   {
     Some(_), None, True -> {
       let token = state.rest_token + 1
       let self = state.self
-      let _ = clock.send_after(self, idle_release_ms, IdleKernel(token))
+      let _ =
+        albedo_clock.send_after(
+          self,
+          checkpoint_idle_ms,
+          CheckpointKernel(token),
+        )
+      let _ = albedo_clock.send_after(self, idle_release_ms, IdleKernel(token))
       when_release_allowed(state, fn(available) {
         case available {
           True -> process.send(self, ReleaseResting)
@@ -5198,7 +5565,7 @@ fn salvage(
       Error(error) ->
         session_state.emit(
           state,
-          view.Failure(Some(run_id), "salvage_failed", error),
+          view.Failure(Some(run_id), view.SalvageFailed, error),
         )
     }
   })
@@ -5255,9 +5622,6 @@ fn background_finish(
     |> follow_up
     |> session_state.announce
   let #(state, _) = session_switch.apply_pending(state)
-  // A webhook or wake refused while the call held the session can be
-  // admitted now.
-  mail.waiting()
   actor.continue(start_queued(state))
 }
 
@@ -5290,7 +5654,6 @@ fn summary_finish(
     |> follow_up
     |> session_state.announce
   let #(state, _) = session_switch.apply_pending(state)
-  mail.waiting()
   actor.continue(start_queued(state))
 }
 
@@ -5301,34 +5664,40 @@ fn start_summary(
   checkpoint: Int,
   instructions: Option(String),
   out: Subject(Result(#(String, Int), String)),
-  ack: Subject(Result(Nil, String)),
+  ack: Subject(Result(Nil, Refusal)),
 ) -> actor.Next(State, Message) {
   let prepared = {
     use #(state, kernel, client) <- result.try(
-      prepare_submission(state) |> result.map_error(submission_error),
+      prepare_submission(state)
+      |> result.map_error(fn(error) {
+        refusal.Unavailable(submission_error(error))
+      }),
     )
-    use sources <- result.try(conversation.load_sources(
-      runtime.ledger(state.host),
-      state.info.id,
-    ))
+    use sources <- result.try(
+      conversation.load_sources(runtime.ledger(state.host), state.info.id)
+      |> refusal.storage,
+    )
     let tail = list.filter(sources, fn(row) { row.source.seq >= checkpoint })
     use last <- result.try(case tail {
       [first, ..] if first.source.seq == checkpoint ->
         case transcript.row_class(first.entry.input) {
           "user" ->
             Ok(list.fold(tail, checkpoint, fn(_, row) { row.source.seq }))
-          _ -> Error("checkpoint not found")
+          _ -> Error(refusal.CheckpointNotFound)
         }
-      _ -> Error("checkpoint not found")
+      _ -> Error(refusal.CheckpointNotFound)
     })
     use inputs <- result.try(
       list.map(tail, fn(row) { row.entry })
       |> session_history.tag_unknown_provider(state.info.provider)
       |> list.reverse
       |> Some
-      |> session_history.projected_for(state.info.provider, state.info.protocol)
+      |> session_history.projected_entries(
+        state.info.provider,
+        state.info.protocol,
+      )
       |> result.map_error(fn(error) {
-        "cannot prepare model history: " <> error
+        refusal.Unavailable("cannot prepare model history: " <> error)
       }),
     )
     Ok(#(state, kernel, client, inputs, last))
@@ -5511,7 +5880,7 @@ fn awaited_observer(state: State) -> fn() -> Bool {
 /// ends in a report: a turn, or a job its idle session waits on. A child
 /// between turns waiting on its build is still working for its parent.
 fn children_working(host: runtime.Runtime, id: String) -> Bool {
-  case family.children(runtime.ledger(host), id) {
+  case families.children(storage.host(runtime.ledger(host)), id) {
     Ok(children) ->
       list.any(children, fn(child) {
         !child.closed
@@ -5526,7 +5895,17 @@ fn children_working(host: runtime.Runtime, id: String) -> Bool {
 }
 
 fn start_queued(state: State) -> State {
-  let state = flush_shell(session_state.State(..state, holding_failure: False))
+  use <- bool.lazy_guard(
+    state.pending_agent_close != None
+      && turn.running(state.activity) == None
+      && !state.finishing,
+    fn() {
+      let _ = option.map(state.pending_agent_close, process.send(state.self, _))
+      session_state.State(..state, pending_agent_close: None)
+    },
+  )
+  let state =
+    flush_attached(session_state.State(..state, holding_failure: False))
   case turn.running(state.activity) {
     Some(_) -> state
     None ->
@@ -5534,7 +5913,7 @@ fn start_queued(state: State) -> State {
         state.kernel_blocked
         || session_state.retry_pending(
           state.blocked_until,
-          clock.monotonic_ms(),
+          albedo_clock.monotonic_ms(),
         )
       {
         True -> state
@@ -5544,18 +5923,6 @@ fn start_queued(state: State) -> State {
 }
 
 fn start_waiting(state: State) -> State {
-  case waiting_mail(state.steering) {
-    False -> start_waiting_open(state)
-    True ->
-      case family_closed(state) {
-        Ok(True) -> cancel_closed_waiting(state)
-        Ok(False) -> start_waiting_open(state)
-        Error(error) -> session_state.emit(state, view.error(error))
-      }
-  }
-}
-
-fn start_waiting_open(state: State) -> State {
   case state.booting {
     Some(_) -> start_waiting_in_workspace(state)
     None ->
@@ -5572,7 +5939,7 @@ fn start_waiting_in_workspace(state: State) -> State {
   // matching, so parking behind a False `starts_turn` started a swap whose
   // arriving kernel was then dropped with no notice, killing the old kernel
   // and the wakes it still owed.
-  case turn.starts_turn(state.steering) {
+  case queue_starts(state) {
     False -> state
     True ->
       // Remote readiness can wait for SSH. Probe outside the actor so status,
@@ -5661,30 +6028,24 @@ fn workspace_ready(
 fn start_in_workspace(state: State) -> State {
   case turn_or_park(state, StartQueued) {
     Error(state) -> state
-    Ok(state) ->
-      case prepare_turn_pipeline(state, state.steering) {
-        Error(#(state, err)) -> failed_queued(state, submission_error(err))
-        Ok(#(state, opening)) -> start_turn(state, opening)
-      }
+    Ok(state) -> open_queued(state, turn.opening)
   }
 }
 
-/// Deliver one job wake as an ordinary submission. Runs in the kernel's route
-/// process, so it waits with its own deadline instead of `actor.call`, whose
-/// timeout would crash the route: an owner too occupied to answer is busy and
-/// the kernel retries; only a stopped owner is unavailable.
-fn wake(session: Session, submission: Submission) -> run.Wake {
-  case owner_alive(session) {
-    False -> run.Unavailable("session stopped")
-    True -> {
-      let reply = process.new_subject()
-      process.send(session, Submit(submission, reply))
-      case process.receive(reply, 10_000) {
-        Ok(Ok(_)) -> run.Delivered
-        Ok(Error(Busy)) | Error(Nil) -> run.Busy
-        Ok(Error(error)) -> run.Unavailable(submission_error(error))
+/// Starts a turn with the rows `pick` chooses from the inbox; with none, the
+/// session rests.
+fn open_queued(
+  state: State,
+  pick: fn(List(turn.Queued)) -> List(String),
+) -> State {
+  case take_queued(state, pick) {
+    Error(error) -> failed_queued(state, error)
+    Ok([]) -> state
+    Ok(batch) ->
+      case prepare_turn_pipeline(state, batch) {
+        Error(#(state, err)) -> failed_queued(state, submission_error(err))
+        Ok(#(state, opening)) -> start_turn(state, opening)
       }
-    }
   }
 }
 
@@ -5764,8 +6125,8 @@ fn run_messages() -> session_run.Messages(Message) {
   )
 }
 
-fn projected_inputs(state: State) -> Result(List(types.Input), String) {
-  session_history.projected_for(
+fn projected_entries(state: State) -> Result(List(transcript.Entry), String) {
+  session_history.projected_entries(
     state.history,
     state.info.provider,
     state.info.protocol,
@@ -5796,9 +6157,9 @@ fn workspace_changed(state: State) -> State {
     False,
   )
   state
-  |> session_state.invalidate("session", "/sessions/" <> state.info.id)
+  |> session_state.invalidate(view.StaleSession, "/sessions/" <> state.info.id)
   |> session_state.invalidate(
-    "settings",
+    view.StaleSettings,
     "/sessions/" <> state.info.id <> "?view=configuration",
   )
 }
@@ -5863,9 +6224,11 @@ fn workspace_reset(
           kernel: None,
           released: None,
           prepared: None,
-          notice: Some(session_namespace.lost_notice),
           context: session_state.unprepared(),
-        ),
+        )
+          |> session_namespace.set_notice(
+            Some(session_state.KernelNotice(session_namespace.lost_notice, True)),
+          ),
         pending,
         True,
       )
@@ -5886,7 +6249,7 @@ fn workspace_reset(
           }
           StartQueued -> failed_queued(state, error)
           Compact(_, reply) -> {
-            process.send(reply, Error(error))
+            process.send(reply, Error(refusal.Unavailable(error)))
             state
           }
           _ -> {
@@ -5912,15 +6275,20 @@ fn finish_workspace(
   case applied {
     False -> Ok(state)
     True -> {
+      // Inputs a missing folder blocked try the new one now, not when
+      // their 15 s retry comes round.
+      case queue_starts(state) {
+        False -> Nil
+        True -> process.send(state.self, StartQueued)
+      }
       let state =
         session_state.State(
           ..state,
-          info: conversation.Info(..state.info, cwd: pending.desired),
+          info: session_info.Info(..state.info, cwd: pending.desired),
           blocked_until: 0,
           kernel_blocked: False,
         )
         |> workspace_changed
-      process.send(state.self, StartQueued)
       Ok(case reset_namespace {
         False -> state
         True ->
@@ -5939,9 +6307,9 @@ fn finish_workspace(
 /// Whether a message must bypass normal turn and workspace-move settlement.
 fn read_only(message: Message) -> Bool {
   case message {
-    AskSideQuestion(..)
-    | SideQuestionFinished(..)
+    SideQuestionFinished(..)
     | CancelSideQuestion(..)
+    | DismissSideQuestion(..)
     | ClaimSideContinuation(..)
     | SettleSideContinuation(..)
     | CollectQuiet
@@ -5949,7 +6317,7 @@ fn read_only(message: Message) -> Bool {
     | ShellChanged(_, _)
     | StopShell(_, _)
     | StartShell(_, _, _)
-    | FlushShell
+    | FlushAttached
     | ReadCapture(_)
     | CaptureIn(_, _)
     | Released(..)
@@ -5968,6 +6336,7 @@ fn read_only(message: Message) -> Bool {
     | ReadName(_)
     | Read(_, _)
     | ReadContext(_)
+    | QuietTurn(_)
     | Idle(_) -> True
     _ -> False
   }
@@ -5997,7 +6366,7 @@ pub fn admit_durable(
   worker: Session,
   operation: operations.Request,
   submission: Submission,
-) -> Result(operations.Receipt, String) {
+) -> Result(operations.Receipt, Refusal) {
   let committed = process.new_subject()
   actor.call(worker, 15_000, AdmitOperation(operation, submission, committed, _))
   |> admitted(worker, committed)
@@ -6008,7 +6377,7 @@ pub fn admit_acp(
   operation: operations.Request,
   submission: Submission,
   digest: acp.Digest,
-) -> Result(operations.Receipt, String) {
+) -> Result(operations.Receipt, Refusal) {
   let committed = process.new_subject()
   actor.call(worker, 15_000, AdmitACP(
     operation,
@@ -6022,7 +6391,7 @@ pub fn admit_acp(
 
 /// What the session decided about an input before any write.
 pub opaque type Admission {
-  Decided(Result(operations.Receipt, String))
+  Decided(Result(operations.Receipt, Refusal))
   /// The receipt arrives on the caller's subject once this store commits it.
   Committing(store.Store)
 }
@@ -6030,14 +6399,14 @@ pub opaque type Admission {
 fn admitted(
   admission: Admission,
   worker: Session,
-  committed: Subject(Result(operations.Receipt, String)),
-) -> Result(operations.Receipt, String) {
+  committed: Subject(Result(operations.Receipt, Refusal)),
+) -> Result(operations.Receipt, Refusal) {
   case admission {
     Decided(result) -> result
     Committing(ledger) -> {
       let assert Ok(owner) = process.subject_owner(worker)
       store.await_delivery(ledger, committed, owner)
-      |> result.replace_error("admission_interrupted")
+      |> result.replace_error(refusal.AdmissionInterrupted)
       |> result.flatten
     }
   }
@@ -6066,10 +6435,11 @@ pub fn continuation(client: String, operation_id: String) -> Submission {
     client,
     turn.Continue,
     [],
-    None,
+    Some(operation_id),
     Some(operation_id),
     None,
     [],
+    None,
   )
 }
 
@@ -6077,7 +6447,7 @@ fn admit_operation(
   state: State,
   operation: operations.Request,
   submission: Submission,
-  committed: Subject(Result(operations.Receipt, String)),
+  committed: Subject(Result(operations.Receipt, Refusal)),
   reply: Subject(Admission),
 ) -> actor.Next(State, Message) {
   let db = runtime.ledger(state.host)
@@ -6086,7 +6456,6 @@ fn admit_operation(
     Ok(Some(receipt)) -> answer(state, reply, Decided(Ok(receipt)))
     Ok(None) -> {
       let #(state, image_error) = refused_image(state, submission)
-      let queued = list.length(state.steering) + state.admitting
       // Preparation saved the files for a local workspace; the actor orders
       // this check after any workspace change that won the race.
       let remote_files =
@@ -6098,32 +6467,14 @@ fn admit_operation(
       let refusal = case
         remote_files,
         image_error,
-        turn.admit(state.activity, submission, queued)
+        turn.admit(state.activity, submission)
       {
         True, _, _ ->
-          Some(operations.Rejection(
-            400,
-            "attachment_workspace_unsupported",
-            "file attachments require a local workspace",
+          Some(session_creation.rejection(
+            refusal.AttachmentWorkspaceUnsupported,
           ))
         _, Some(reason), _ ->
           Some(operations.Rejection(409, "image_rejected", reason))
-        _, _, turn.Reject(turn.Busy) -> {
-          case turn.admit(turn.Resting, submission, queued) {
-            turn.Reject(turn.Busy) ->
-              Some(operations.Rejection(
-                429,
-                "queue_full",
-                "the session input queue is full",
-              ))
-            _ ->
-              Some(operations.Rejection(
-                409,
-                "session_busy",
-                "the session cannot admit this input while busy",
-              ))
-          }
-        }
         _, _, turn.Reject(turn.Oversized) ->
           Some(operations.Rejection(
             413,
@@ -6142,10 +6493,17 @@ fn admit_operation(
         }
         None -> {
           let self = state.self
+          let session = state.info.id
           operations.admit_pending_then(
             db,
             operation,
-            session_submission.encode(submission),
+            fn(db) {
+              case inbox.insert(db, session, "you", submission) {
+                Ok(True) -> Ok(Nil)
+                Ok(False) -> Error(refusal.QueueFull)
+                Error(error) -> Error(refusal.Unavailable(error))
+              }
+            },
             202,
             "",
             fn(result) {
@@ -6166,27 +6524,23 @@ fn admit_operation(
   }
 }
 
-/// A committed admission joins the queue unless a cancellation that ran after
-/// its commit (an interrupt, a close) already took it off the store's.
+/// A committed admission waits in the inbox unless a cancellation that ran
+/// after its commit (an interrupt, a close) already dropped it there.
 fn admission_committed(
   state: State,
   submission: Submission,
-  result: Result(operations.Receipt, String),
-  committed: Subject(Result(operations.Receipt, String)),
+  result: Result(operations.Receipt, Refusal),
+  committed: Subject(Result(operations.Receipt, Refusal)),
 ) -> actor.Next(State, Message) {
   let state = session_state.State(..state, admitting: state.admitting - 1)
   let state = case result {
     Error(_) -> state
     Ok(receipt) -> {
       let id = receipt.operation.id
-      let held =
-        list.any(
-          list.append(state.steering, state.active_submissions),
-          fn(queued) { queued.operation_id == Some(id) },
-        )
+      let held = turn.holds_letter(state.active_submissions, id)
       case operations.input_outcome(runtime.ledger(state.host), id), held {
         Ok(Some(outcome)), False
-          if outcome.receipt.delivery == Some("pending")
+          if outcome.receipt.delivery == Some(operations.Awaiting)
         -> {
           let state =
             session_naming.maybe_start(
@@ -6196,18 +6550,15 @@ fn admission_committed(
               TitleFinished,
             )
           process.send(state.self, StartQueued)
-          session_state.State(
-            ..state,
-            kernel_blocked: case submission.source {
-              turn.Chat | turn.Continue -> False
-              _ -> state.kernel_blocked
-            },
-            steering: list.append(state.steering, [submission]),
-          )
+          session_state.State(..state, kernel_blocked: case submission.source {
+            turn.Chat | turn.Continue -> False
+            _ -> state.kernel_blocked
+          })
           |> session_state.emit(view.Input(
             outcome,
             Some(session_submission.display(submission)),
           ))
+          |> session_state.queue_changed
           |> session_state.announce
         }
         _, _ -> state
@@ -6232,25 +6583,26 @@ fn answer_captures(state: State) -> State {
 
 fn interrupt_waiting(
   state: State,
+  cancelled: List(String),
   reply: Subject(Bool),
 ) -> actor.Next(State, Message) {
-  let #(state, stopped) = stop_waiting(state)
+  let #(state, stopped) = stop_waiting(state, cancelled)
   answer(state, reply, stopped)
 }
 
-/// Cancels the running turn, or the one waiting for the kernel, and drops
-/// what was queued behind it; the Bool says whether there was any.
-fn stop_waiting(state: State) -> #(State, Bool) {
-  let waiting = state.steering != [] || waiting_turn(state)
+/// Cancels the running turn, or the one waiting for the kernel to start
+/// what waits in the inbox; the Bool says whether there was any. The caller
+/// already cancelled a person's waiting inputs (`cancelled`); every other
+/// row stays in the inbox and can start a later turn.
+fn stop_waiting(state: State, cancelled: List(String)) -> #(State, Bool) {
+  let waiting = cancelled != [] || waiting_turn(state) || queue_starts(state)
+  let state = session_submission.refresh_ids(state, cancelled)
   case interruptible_run(state), waiting {
     None, True -> {
-      let state =
-        clear_tool_progress(state)
-        |> session_submission.refresh_ids(turn.operations(state.steering))
+      let state = clear_tool_progress(state)
       #(
         session_state.State(
           ..state,
-          steering: [],
           // A finishing run still reports its inputs when its end lands.
           active_submissions: case state.finishing {
             True -> state.active_submissions
@@ -6269,6 +6621,7 @@ fn stop_waiting(state: State) -> #(State, Bool) {
           }),
         )
           |> withdraw_unused_boot
+          |> session_state.queue_changed
           |> session_state.announce,
         True,
       )
@@ -6276,15 +6629,15 @@ fn stop_waiting(state: State) -> #(State, Bool) {
     None, False -> #(state, False)
     Some(run), _ -> {
       interrupt_kernel(state)
-      let _ = clock.send_after(state.self, 2500, Abort(run.id))
+      let _ = albedo_clock.send_after(state.self, 2500, Abort(run.id))
       #(
         session_state.State(
           ..clear_tool_progress(refuse_acquires(state)),
-          steering: [],
           blocked_until: 0,
           kernel_blocked: False,
           activity: cancel_turn(state),
         )
+          |> session_state.queue_changed
           |> session_state.announce,
         True,
       )
@@ -6301,8 +6654,8 @@ fn withdraw_unused_boot(state: State) -> State {
 }
 
 fn withdraw_empty_queue_boot(state: State) -> State {
-  case state.steering, turn.running(state.activity) {
-    [], None ->
+  case queue_starts(state), turn.running(state.activity) {
+    False, None ->
       session_state.State(
         ..state,
         booting: option.map(state.booting, fn(boot) {
@@ -6364,8 +6717,9 @@ fn clear_tool_progress(state: State) -> State {
   }
 }
 
-@external(erlang, "albedo_session", "new_generation")
-fn new_generation() -> String
+fn new_generation() -> String {
+  crypto.strong_random_bytes(16) |> bit_array.base64_url_encode(False)
+}
 
 fn release_answer(
   state: State,
@@ -6415,7 +6769,7 @@ fn release_kernel(
         self,
         Released(
           kernel,
-          protect.guarded(fn() {
+          albedo_protect.guarded(fn() {
             session_namespace.save_state(home, id, kernel)
           }),
           reply,
@@ -6468,37 +6822,235 @@ fn forget_recomputed_context(state: State) -> State {
   }
 }
 
+/// The rows waiting in this session's inbox that its running turn has not
+/// taken, as the queue's rules see them. A closed agent's letters and job
+/// notices are left out: it reads none of them.
+fn queued(state: State) -> Result(List(turn.Queued), String) {
+  inbox.waiting(
+    runtime.ledger(state.host),
+    state.info.id,
+    turn.letters(state.active_submissions),
+    family_closed(state) == Ok(True),
+  )
+  |> result.map(
+    list.take_while(_, fn(row) { !dict.has_key(state.held, row.id) }),
+  )
+}
+
+/// Someone stored or withdrew a row in this session's inbox: clients read the
+/// queue again, and a resting session starts a turn when a waiting row starts
+/// one. A session that moved away leaves its rows to the dispatcher, which
+/// settles them. Children that fail together land in one turn: a resting
+/// parent waits briefly after a failure letter so its siblings' join it.
+fn inbox_changed(state: State) -> State {
+  let state = session_state.queue_changed(state)
+  case state.moved, state.holding_failure, turn.running(state.activity) {
+    Some(_), _, _ -> {
+      mail.waiting()
+      flush(state, turn.left_behind)
+    }
+    None, True, _ -> state
+    None, False, None ->
+      case failure_waits(state) {
+        True -> {
+          let _ =
+            albedo_clock.send_after(state.self, failure_hold_ms, StartQueued)
+          session_state.State(..state, holding_failure: True)
+          |> session_state.announce
+        }
+        False -> start_queued(state)
+      }
+    None, False, Some(_) -> start_queued(state)
+  }
+}
+
+/// How long an idle parent waits for more of its children to report failure.
+const failure_hold_ms = 400
+
+/// Whether a child's failure letter waits in the inbox.
+fn failure_waits(state: State) -> Bool {
+  queued(state)
+  |> result.unwrap([])
+  |> list.any(fn(row) {
+    case row.kind {
+      mail_value.Stopped(..) -> True
+      _ -> False
+    }
+  })
+}
+
+/// Whether a row waiting in the inbox starts a turn.
+fn queue_starts(state: State) -> Bool {
+  queued(state) |> result.map(turn.starts_turn) |> result.unwrap(False)
+}
+
+/// The waiting rows `pick` chooses, as submissions, in queue order.
+fn take_queued(
+  state: State,
+  pick: fn(List(turn.Queued)) -> List(String),
+) -> Result(List(Submission), String) {
+  use queued <- result.try(queued(state))
+  inbox.take(runtime.ledger(state.host), state.info.id, pick(queued))
+}
+
+/// Rows waiting in the inbox that this session never took are dropped there
+/// too; those its running turn took are not. A dropped row with a receipt is
+/// cancelled, and its clients hear so.
+fn drop_queued_in(
+  state: State,
+  ids: List(String),
+) -> #(State, Result(List(String), String)) {
+  let ledger = runtime.ledger(state.host)
+  let taken = turn.letters(state.active_submissions)
+  let dropped = {
+    use waiting <- result.try(mail.still_waiting(
+      ledger,
+      state.info.id,
+      list.filter(ids, fn(id) { !list.contains(taken, id) }),
+    ))
+    use _ <- result.try(operations.cancel_inputs(ledger, state.info.id, waiting))
+    use _ <- result.map(
+      store.query(ledger, mail.drop_in(_, state.info.id, waiting)),
+    )
+    waiting
+  }
+  case dropped {
+    Error(error) -> #(state, Error(error))
+    Ok(dropped) -> #(
+      state
+        |> session_submission.refresh_ids(dropped)
+        |> withdraw_empty_queue_boot
+        |> session_state.queue_changed
+        |> session_state.announce,
+      Ok(dropped),
+    )
+  }
+}
+
+/// How long a hold on a person's waiting message lasts unless they ask again.
+pub const hold_ms = 30_000
+
+fn hold_input_in(state: State, id: String) -> #(State, Result(Nil, Refusal)) {
+  case waiting_message(state, id) {
+    Error(reason) -> #(state, Error(reason))
+    Ok(Nil) -> {
+      let _ =
+        mail.hold(
+          runtime.ledger(state.host),
+          state.info.id,
+          id,
+          albedo_clock.system_ms() + albedo_clock.delay_ms(hold_ms),
+        )
+      let deadline = albedo_clock.monotonic_ms() + hold_ms
+      let _ =
+        albedo_clock.send_after(state.self, hold_ms, HoldLapsed(id, deadline))
+      #(
+        session_state.State(
+          ..state,
+          held: dict.insert(state.held, id, deadline),
+        )
+          |> session_state.queue_changed,
+        Ok(Nil),
+      )
+    }
+  }
+}
+
+fn release_input_in(state: State, id: String) -> State {
+  let _ = mail.release_hold(runtime.ledger(state.host), state.info.id, id)
+  session_state.State(..state, held: dict.delete(state.held, id))
+  |> inbox_changed
+}
+
+fn edit_input_in(
+  state: State,
+  submission: Submission,
+) -> #(State, Result(Nil, Refusal)) {
+  let id = option.unwrap(submission.submission_id, "")
+  let edited = {
+    use _ <- result.try(waiting_message(state, id))
+    use replaced <- result.try(
+      inbox.replace(runtime.ledger(state.host), state.info.id, submission)
+      |> refusal.storage,
+    )
+    case replaced {
+      True -> Ok(Nil)
+      False -> Error(refusal.InputNotWaiting)
+    }
+  }
+  case edited {
+    // A hold the edit could not use stays until it is released or lapses.
+    Error(refusal.InputNotWaiting) | Error(refusal.InputNotEditable) | Ok(_) -> #(
+      release_input_in(state, id),
+      edited,
+    )
+    Error(_) -> #(state, edited)
+  }
+}
+
+/// Whether `id` is a person's typed message still waiting in this session's
+/// inbox, one its running turn has not taken.
+fn waiting_message(state: State, id: String) -> Result(Nil, Refusal) {
+  use rows <- result.try(
+    inbox.waiting(
+      runtime.ledger(state.host),
+      state.info.id,
+      turn.letters(state.active_submissions),
+      False,
+    )
+    |> refusal.storage,
+  )
+  case list.find(rows, fn(row) { row.id == id }) {
+    Ok(turn.Queued(kind: mail_value.Input(mail_value.Typed), ..)) -> Ok(Nil)
+    Ok(_) -> Error(refusal.InputNotEditable)
+    Error(_) -> Error(refusal.InputNotWaiting)
+  }
+}
+
+/// The inbox orders the queue; the session reads it in that order.
+fn arrange_queue_in(
+  state: State,
+  ids: List(String),
+) -> #(State, Result(Nil, String)) {
+  let ledger = runtime.ledger(state.host)
+  case store.query(ledger, mail.arrange_in(_, state.info.id, ids)) {
+    Error(error) -> #(state, Error(error))
+    Ok(_) -> #(session_state.queue_changed(state), Ok(Nil))
+  }
+}
+
 fn cancel_input_in(
   state: State,
   id: String,
-  reply: Subject(Result(InputCancellation, String)),
+  reply: Subject(Result(InputCancellation, Refusal)),
 ) -> State {
-  let #(selected, remaining) =
-    list.partition(state.steering, fn(submission) {
-      submission.operation_id == Some(id)
-    })
-  case list.length(remaining) != list.length(state.steering) {
-    True ->
-      case
-        operations.cancel_inputs(
-          runtime.ledger(state.host),
-          state.info.id,
-          turn.operations(selected),
-        )
-      {
+  let ledger = runtime.ledger(state.host)
+  let taken = turn.letters(state.active_submissions)
+  let waiting = case list.contains(taken, id) {
+    True -> Ok([])
+    False -> mail.still_waiting(ledger, state.info.id, [id])
+  }
+  case waiting {
+    Error(error) -> {
+      process.send(reply, Error(refusal.Unavailable(error)))
+      state
+    }
+    Ok([_, ..]) ->
+      case operations.cancel_inputs(ledger, state.info.id, [id]) {
         Error(error) -> {
-          process.send(reply, Error(error))
+          process.send(reply, Error(refusal.Unavailable(error)))
           state
         }
         Ok(_) -> {
           process.send(reply, Ok(Cancelled))
-          session_state.State(..state, steering: remaining)
+          state
           |> session_submission.refresh_ids([id])
           |> withdraw_empty_queue_boot
+          |> session_state.queue_changed
           |> session_state.announce
         }
       }
-    False ->
+    Ok([]) ->
       case interruptible_run(state), state.active_submissions {
         // The turn's opening commit is still on the writer: once it lands,
         // the input is the open turn's or back in the queue, so decide then.
@@ -6511,7 +7063,7 @@ fn cancel_input_in(
           })
         Some(run), [submission] if submission.operation_id == Some(id) -> {
           interrupt_kernel(state)
-          let _ = clock.send_after(state.self, 2500, Abort(run.id))
+          let _ = albedo_clock.send_after(state.self, 2500, Abort(run.id))
           process.send(reply, Ok(InterruptRequested))
           session_state.State(..state, activity: cancel_turn(state))
           |> session_state.announce
@@ -6538,9 +7090,9 @@ fn cancel_input_in(
   }
 }
 
-pub fn generate_title(session: Session) -> Result(Nil, String) {
+pub fn generate_title(session: Session) -> Result(Nil, Refusal) {
   actor_call.try_call(session, 5000, GenerateTitle)
-  |> result.replace_error("session unavailable")
+  |> result.replace_error(refusal.Unavailable("session unavailable"))
   |> result.flatten
 }
 
@@ -6558,6 +7110,15 @@ pub fn cancel_side_question(
   id: String,
 ) -> Result(side_question.Exchange, side_question.Refusal) {
   actor_call.try_call(worker, 5000, CancelSideQuestion(id, _))
+  |> result.unwrap(Error(side_question.Unavailable))
+}
+
+pub fn dismiss_side_question(
+  worker: Session,
+  id: String,
+  dismissed: Bool,
+) -> Result(side_question.Exchange, side_question.Refusal) {
+  actor_call.try_call(worker, 5000, DismissSideQuestion(id, dismissed, _))
   |> result.unwrap(Error(side_question.Unavailable))
 }
 
@@ -6582,11 +7143,18 @@ pub fn settle_side_continuation(
 fn publish_side(state: State, exchange: side_question.Exchange) -> State {
   case state.side_question == Some(exchange) {
     True -> state
-    False ->
+    False -> {
+      let _ =
+        session_side_question.save(
+          runtime.ledger(state.host),
+          state.info.id,
+          exchange,
+        )
       session_state.emit(
         session_state.State(..state, side_question: Some(exchange)),
         view.SideQuestion(exchange),
       )
+    }
   }
 }
 
@@ -6651,13 +7219,36 @@ fn ask_side(
     Ok(side_question.Admitted) ->
       case session_state.composition(state) {
         None ->
-          answer(
-            state,
-            reply,
-            Error(side_question.NoContext(
-              "send a message first to prepare conversation context",
-            )),
-          )
+          case
+            stored_history.snapshot(
+              storage.host(runtime.ledger(state.host)),
+              state.info.id,
+            )
+          {
+            Ok(transcript.Snapshot(upper: upper, ..)) if upper > 0 ->
+              case
+                option.is_none(state.booting) && !uses_kernel_transition(state)
+              {
+                True ->
+                  actor.continue(request_composition(
+                    state,
+                    AskSideQuestion(id, question, reply),
+                  ))
+                False ->
+                  actor.continue(park(
+                    state,
+                    AskSideQuestion(id, question, reply),
+                  ))
+              }
+            _ ->
+              answer(
+                state,
+                reply,
+                Error(side_question.NoContext(
+                  "send a message first to prepare conversation context",
+                )),
+              )
+          }
         Some(prepared) -> {
           let capture =
             session_side_question.Capture(
@@ -6679,6 +7270,7 @@ fn ask_side(
               id,
               question,
               usage.now(),
+              False,
               side_question.Running(worker, stop),
             )
           answer(publish_side(state, exchange), reply, Ok(exchange))

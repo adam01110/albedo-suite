@@ -1,9 +1,10 @@
 //// Native stream observations. The session owner assigns sequence numbers and
 //// serializes each envelope once; workers never construct public JSON events.
 
-import albedo/text_scalars
+import albedo/harness/runtime/state as runtime_state
+import albedo_bytes/scalars
+import albedo_model/size
 
-import albedo/daemon/http_api
 import albedo/daemon/http_history
 import albedo/daemon/mail
 import albedo/daemon/operations
@@ -11,14 +12,17 @@ import albedo/daemon/session_activity
 import albedo/daemon/shell_commands
 import albedo/daemon/side_question
 import albedo/daemon/tool_progress as progress
-import albedo/daemon/transcript
 import albedo/daemon/usage
 import albedo/harness/compaction
 import albedo/harness/extension/selection
-import albedo/harness/extensions/python/kernel as python
-import albedo/harness/page
-import albedo/openai_api/cost
-import albedo/openai_api/types
+import albedo/harness/kernel as python
+import albedo/harness/sdk/http_api as sdk_http_api
+import albedo/harness/sdk/kernel as sdk_kernel
+import albedo/harness/sdk/page
+import albedo/harness/sdk/transcript
+import albedo_clock
+import albedo_model as types
+import albedo_model/cost
 import gleam/dynamic/decode
 import gleam/int
 import gleam/json
@@ -32,11 +36,11 @@ pub type KernelFacts {
   KernelFacts(
     instance_id: Option(String),
     build: Option(String),
-    state: String,
+    state: runtime_state.KernelState,
     stage: Option(String),
     stale: Option(python.Stale),
     live_job_count: Option(Int),
-    running_jobs: Option(List(python.Job)),
+    running_jobs: Option(List(sdk_kernel.Job)),
   )
 }
 
@@ -87,14 +91,18 @@ pub type Event {
     replaces_live_ids: List(String),
     replaces_all_live: Bool,
   )
-  TurnCompleted(run_id: String, state: String, input_ids: List(String))
+  TurnCompleted(
+    run_id: String,
+    state: operations.TurnState,
+    input_ids: List(String),
+  )
   Compacted(
     observation: Option(compaction.Observation),
     evicted: Int,
     summary: String,
   )
-  Failure(run_id: Option(String), code: String, message: String)
-  Invalidate(kind: String, url: String)
+  Failure(run_id: Option(String), code: FailureCode, message: String)
+  Invalidate(kind: InvalidateKind, url: String)
   /// The kernel's job facts changed; published only when they did.
   Kernel(KernelFacts)
   /// The loaded extensions' sidebar values changed; published only when they did.
@@ -104,8 +112,48 @@ pub type Event {
   ProviderStarted
 }
 
+/// Why the session reports a failure outside a request.
+pub type FailureCode {
+  SessionError
+  TurnPersistenceFailed
+  TurnFailed
+  SalvageFailed
+  HistoryPublicationFailed
+  ToolPublicationFailed
+}
+
+fn failure_code_name(code: FailureCode) -> String {
+  case code {
+    SessionError -> "session_error"
+    TurnPersistenceFailed -> "turn_persistence_failed"
+    TurnFailed -> "turn_failed"
+    SalvageFailed -> "salvage_failed"
+    HistoryPublicationFailed -> "history_publication_failed"
+    ToolPublicationFailed -> "tool_publication_failed"
+  }
+}
+
+/// Which resource a client should read again.
+pub type InvalidateKind {
+  StaleSession
+  StaleContext
+  StaleSettings
+  StaleCatalog
+  StaleExtension
+}
+
+fn invalidate_kind_name(kind: InvalidateKind) -> String {
+  case kind {
+    StaleSession -> "session"
+    StaleContext -> "context"
+    StaleSettings -> "settings"
+    StaleCatalog -> "catalog"
+    StaleExtension -> "extension"
+  }
+}
+
 pub fn error(message: String) -> Event {
-  Failure(None, "session_error", message)
+  Failure(None, SessionError, message)
 }
 
 pub fn note(origin: String, text: String) -> Event {
@@ -191,8 +239,8 @@ pub fn encode(session: String, sequence: Int, event: Event) -> json.Json {
       "note",
       json.object([
         #("entry_id", json.string(id)),
-        #("origin", json.string(http_api.scalar_prefix(origin, 256))),
-        #("text", json.string(http_api.scalar_prefix(text, 262_144))),
+        #("origin", json.string(sdk_http_api.scalar_prefix(origin, 256))),
+        #("text", json.string(sdk_http_api.scalar_prefix(text, 262_144))),
         #("mail", json.nullable(letter, fn(value) { value })),
       ]),
     )
@@ -201,7 +249,7 @@ pub fn encode(session: String, sequence: Int, event: Event) -> json.Json {
       json.object([
         #("run_id", json.string(run_id)),
         #("attempt", json.int(attempt)),
-        #("reason", http_api.reason("provider_retry", reason)),
+        #("reason", sdk_http_api.reason("provider_retry", reason)),
         #("delay_ms", json.int(delay_ms)),
       ]),
     )
@@ -222,7 +270,7 @@ pub fn encode(session: String, sequence: Int, event: Event) -> json.Json {
       "turn_completed",
       json.object([
         #("run_id", json.string(run_id)),
-        #("state", json.string(state)),
+        #("state", json.string(operations.turn_state_name(state))),
         #("input_ids", json.array(list.take(ids, 200), json.string)),
         #("input_count", json.int(list.length(ids))),
         #("truncated", json.bool(list.length(ids) > 200)),
@@ -241,20 +289,23 @@ pub fn encode(session: String, sequence: Int, event: Event) -> json.Json {
         #("before_tokens", json.null()),
         #("after_tokens", json.null()),
         #("evicted_entries", json.int(evicted)),
-        #("summary", json.string(http_api.scalar_prefix(summary, 32_768))),
+        #("summary", json.string(sdk_http_api.scalar_prefix(summary, 32_768))),
       ]),
     )
     Failure(run_id, code, message) -> #(
       "error",
       json.object([
         #("run_id", json.nullable(run_id, json.string)),
-        #("code", json.string(http_api.scalar_prefix(code, 100))),
-        #("message", json.string(http_api.scalar_prefix(message, 4096))),
+        #("code", json.string(failure_code_name(code))),
+        #("message", json.string(sdk_http_api.scalar_prefix(message, 4096))),
       ]),
     )
     Invalidate(kind, url) -> #(
       "invalidate",
-      json.object([#("kind", json.string(kind)), #("url", json.string(url))]),
+      json.object([
+        #("kind", json.string(invalidate_kind_name(kind))),
+        #("url", json.string(url)),
+      ]),
     )
     Kernel(facts) -> #("kernel", json.object([#("kernel", kernel(facts))]))
     Glances(values) -> #(
@@ -304,11 +355,11 @@ fn tool(
     False -> json.null()
   }
   let result = json.string(output)
-  let result_bytes = http_api.encoded_size(result)
+  let result_bytes = sdk_http_api.encoded_size(result)
   let size =
-    http_api.encoded_size(arguments)
+    sdk_http_api.encoded_size(arguments)
     + result_bytes
-    + { option.map(trace, http_api.encoded_size) |> option.unwrap(0) }
+    + { option.map(trace, sdk_http_api.encoded_size) |> option.unwrap(0) }
   // ACP snapshots have their own bounded allowance; a one-line edit should
   // not force clients to fetch the same result again from history.
   let snapshot_bytes = option.map(trace, snapshot_size) |> option.unwrap(0)
@@ -395,7 +446,7 @@ fn tool(
 fn snapshot_size(trace: json.Json) -> Int {
   let text_size =
     decode.map(decode.optional(decode.string), fn(text) {
-      json.nullable(text, json.string) |> http_api.encoded_size
+      json.nullable(text, json.string) |> sdk_http_api.encoded_size
     })
   let change = {
     use old <- decode.optional_field("old_text", 0, text_size)
@@ -416,22 +467,22 @@ pub fn kernel(facts: KernelFacts) -> json.Json {
   let reasons = case facts.stale {
     None -> []
     Some(python.Bundle) -> [
-      http_api.reason("bundle", "kernel bundle differs from the daemon"),
+      sdk_http_api.reason("bundle", "kernel bundle differs from the daemon"),
     ]
     Some(python.Modules) -> [
-      http_api.reason(
+      sdk_http_api.reason(
         "modules",
         "kernel modules differ from the session selection",
       ),
     ]
     Some(python.Protocol) -> [
-      http_api.reason("protocol", "kernel protocol differs from the daemon"),
+      sdk_http_api.reason("protocol", "kernel protocol differs from the daemon"),
     ]
   }
   json.object([
     #("instance_id", json.nullable(facts.instance_id, json.string)),
     #("build", json.nullable(facts.build, json.string)),
-    #("state", json.string(facts.state)),
+    #("state", json.string(runtime_state.kernel_state_name(facts.state))),
     #("stage", json.nullable(facts.stage, json.string)),
     #("stale", json.bool(facts.stale != None)),
     #("staleness_reasons", json.preprocessed_array(reasons)),
@@ -439,7 +490,7 @@ pub fn kernel(facts: KernelFacts) -> json.Json {
     #(
       "running_jobs",
       json.nullable(facts.running_jobs, fn(jobs) {
-        json.array(jobs, python.job_json)
+        json.array(jobs, sdk_kernel.job_json)
       }),
     ),
   ])
@@ -461,9 +512,9 @@ pub fn glance(value: selection.Glance) -> json.Json {
 fn glance_row(row: page.Row) -> json.Json {
   json.object([
     #("id", json.string(row.id)),
-    #("text", json.string(http_api.scalar_prefix(row.text, 256))),
+    #("text", json.string(sdk_http_api.scalar_prefix(row.text, 256))),
     #("badge", json.string(row.badge)),
-    #("detail", json.string(http_api.scalar_prefix(row.detail, 256))),
+    #("detail", json.string(sdk_http_api.scalar_prefix(row.detail, 256))),
     #("resource", json.null()),
     #(
       "tone",
@@ -479,12 +530,15 @@ fn glance_row(row: page.Row) -> json.Json {
 
 pub fn status(value: session_activity.Status) -> json.Json {
   json.object([
-    #("phase", json.string(value.phase)),
+    #("phase", json.string(session_activity.phase_name(value.phase))),
     #("run_id", json.nullable(value.run_id, json.string)),
     #("interrupt_requested", json.bool(value.interrupt_requested)),
     #(
       "blocking_reason",
-      json.nullable(value.blocking_reason, http_api.reason("inputs_blocked", _)),
+      json.nullable(value.blocking_reason, sdk_http_api.reason(
+        "inputs_blocked",
+        _,
+      )),
     ),
     #(
       "compaction",
@@ -494,6 +548,7 @@ pub fn status(value: session_activity.Status) -> json.Json {
           #("stage", json.string(compaction.progress_stage(progress.stage))),
           #("completed", json.int(progress.completed)),
           #("total", json.nullable(progress.total, json.int)),
+          #("active", json.int(progress.active)),
           #("started_at", timestamp(progress.started_at)),
         ])
       }),
@@ -503,7 +558,7 @@ pub fn status(value: session_activity.Status) -> json.Json {
 
 pub fn activity(value: session_activity.Projection) -> json.Json {
   let encoded = activity_value(value)
-  case http_api.encoded_size(encoded) <= 16_384 {
+  case sdk_http_api.encoded_size(encoded) <= 16_384 {
     True -> encoded
     False ->
       case value.lines {
@@ -513,11 +568,11 @@ pub fn activity(value: session_activity.Projection) -> json.Json {
             session_activity.Projection(..value, lines: case first.text {
               "" -> rest
               text -> {
-                let count = text_scalars.length(text)
+                let count = scalars.length(text)
                 [
                   session_activity.Line(
                     first.kind,
-                    text_scalars.drop(text, int.max(1, count / 2)),
+                    scalars.drop(text, int.max(1, count / 2)),
                   ),
                   ..rest
                 ]
@@ -534,7 +589,7 @@ fn activity_value(value: session_activity.Projection) -> json.Json {
       "lines",
       json.array(value.lines, fn(line) {
         json.object([
-          #("kind", json.string(line.kind)),
+          #("kind", json.string(session_activity.line_kind_name(line.kind))),
           #("text", json.string(line.text)),
         ])
       }),
@@ -557,7 +612,10 @@ fn activity_value(value: session_activity.Projection) -> json.Json {
       json.nullable(value.latest_input, fn(input) {
         json.object([
           #("input_id", json.string(input.id)),
-          #("source", json.string(input.source)),
+          #(
+            "source",
+            json.string(session_activity.input_source_name(input.source)),
+          ),
           #("bytes", json.int(input.bytes)),
         ])
       }),
@@ -579,7 +637,7 @@ pub fn progress(value: progress.Snapshot) -> json.Json {
     #("call_id", json.string(value.call_id)),
     #("tool_call_id", json.nullable(value.tool_call_id, json.string)),
     #("name", json.string(value.name)),
-    #("phase", json.string(value.phase)),
+    #("phase", json.string(progress.phase_name(value.phase))),
     #("intent", json.string("unknown")),
     #("title", json.nullable(value.title, json.string)),
   ]
@@ -600,10 +658,10 @@ pub fn progress(value: progress.Snapshot) -> json.Json {
 
 pub fn input(value: operations.InputOutcome) -> json.Json {
   let receipt = value.receipt
-  let admitted = receipt.status == "accepted"
+  let admitted = receipt.status == operations.Accepted
   let problem =
     json.nullable(receipt.rejection, fn(rejection) {
-      http_api.problem(http_api.Failure(
+      sdk_http_api.problem(sdk_http_api.Failure(
         rejection.status,
         rejection.code,
         rejection.detail,
@@ -612,14 +670,8 @@ pub fn input(value: operations.InputOutcome) -> json.Json {
   json.object([
     #("id", json.string(receipt.operation.id)),
     #("session_id", json.string(receipt.operation.target)),
-    #(
-      "kind",
-      json.string(case receipt.operation.kind {
-        "user" -> "message"
-        other -> other
-      }),
-    ),
-    #("admission", json.string(receipt.status)),
+    #("kind", json.string(operations.kind_name(receipt.operation.kind))),
+    #("admission", json.string(operations.status_name(receipt.status))),
     #("http_status", json.int(receipt.http_status)),
     #("problem", problem),
     #("accepted_at", case admitted {
@@ -630,10 +682,18 @@ pub fn input(value: operations.InputOutcome) -> json.Json {
       True -> json.int(value.acceptance_order)
       False -> json.null()
     }),
-    #("delivery", json.nullable(receipt.delivery, json.string)),
+    #(
+      "delivery",
+      json.nullable(receipt.delivery, fn(delivery) {
+        json.string(operations.delivery_name(delivery))
+      }),
+    ),
     #(
       "blocking_reason",
-      json.nullable(receipt.blocking_reason, http_api.reason("input_blocked", _)),
+      json.nullable(receipt.blocking_reason, sdk_http_api.reason(
+        "input_blocked",
+        _,
+      )),
     ),
     #("transcript_position", json.nullable(receipt.committed_seq, json.int)),
     #(
@@ -641,7 +701,7 @@ pub fn input(value: operations.InputOutcome) -> json.Json {
       json.nullable(value.turn, fn(turn) {
         json.object([
           #("id", json.string(turn.id)),
-          #("state", json.string(turn.state)),
+          #("state", json.string(operations.turn_state_name(turn.state))),
           #("started_at", timestamp(turn.started_at)),
           #("ended_at", json.nullable(turn.ended_at, timestamp)),
           #("outcome", json.null()),
@@ -738,6 +798,13 @@ fn usage_fields(
       "tokens_per_second",
       json.nullable(option.then(metadata, usage.tokens_per_second), json.float),
     ),
+    #(
+      "size",
+      json.nullable(
+        option.then(metadata, fn(value) { value.size }),
+        size.total_json,
+      ),
+    ),
     #("cache_miss_tokens", json.nullable(missed, json.int)),
     #("cache_drift_tokens", json.nullable(drifted, json.int)),
     #("spent", cost(spent)),
@@ -757,7 +824,7 @@ fn usage_fields(
 }
 
 fn timestamp(value: Int) -> json.Json {
-  json.string(http_api.timestamp(value))
+  json.string(albedo_clock.format_rfc3339(value))
 }
 
 /// Advance bounded live activity from native values, without parsing an
@@ -771,23 +838,25 @@ pub fn observe(
   case event {
     Status(value) ->
       case value.phase {
-        "preparing" ->
+        session_activity.Preparing ->
           session_activity.Projection(..projection, streamed_answer: False)
         _ -> projection
       }
-    Text(_, _, text) -> session_activity.output(projection, "assistant", text)
+    Text(_, _, text) ->
+      session_activity.output(projection, session_activity.AssistantLine, text)
     Thinking(_, _, text, _) ->
-      session_activity.output(projection, "thinking", text)
+      session_activity.output(projection, session_activity.ThinkingLine, text)
     Input(outcome, Some(display)) ->
       case outcome.receipt.delivery {
-        Some("committed") ->
+        Some(operations.Committed) ->
           session_activity.input(
             projection,
             outcome.receipt.operation.id,
             case display.source {
-              "chat" | "continue" -> "chat"
-              "mail" -> "agent"
-              _ -> "system"
+              operations.DisplayChat | operations.DisplayContinue ->
+                session_activity.Chat
+              operations.DisplayMail -> session_activity.Agent
+              _ -> session_activity.System
             },
             display.text,
           )
@@ -808,12 +877,17 @@ pub fn observe(
         "assistant" -> projection
         "user" ->
           case entry.input_id {
-            None -> session_activity.append(projection, "input", text)
+            None ->
+              session_activity.append(
+                projection,
+                session_activity.InputLine,
+                text,
+              )
             Some(_) -> projection
           }
         "thinking" -> projection
         "note" | "compaction" | "image_fit" ->
-          session_activity.append(projection, "note", text)
+          session_activity.append(projection, session_activity.NoteLine, text)
         _ -> projection
       }
     }
@@ -824,15 +898,17 @@ pub fn observe(
           decode.field("output", decode.string, decode.success),
         )
         |> result.unwrap(output)
-      session_activity.append(projection, "tool", text)
+      session_activity.append(projection, session_activity.ToolLine, text)
     }
     Note(_, "agent", text, None) ->
       session_activity.Projection(
         ..projection,
-        latest_progress: Some(http_api.scalar_prefix(text, 512)),
+        latest_progress: Some(sdk_http_api.scalar_prefix(text, 512)),
       )
-    Note(_, _, text, _) -> session_activity.append(projection, "note", text)
-    Failure(_, _, text) -> session_activity.append(projection, "error", text)
+    Note(_, _, text, _) ->
+      session_activity.append(projection, session_activity.NoteLine, text)
+    Failure(_, _, text) ->
+      session_activity.append(projection, session_activity.ErrorLine, text)
     _ -> projection
   }
 }

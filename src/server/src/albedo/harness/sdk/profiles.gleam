@@ -1,16 +1,43 @@
-import albedo/openai_api/types
+//// Provider profile decoding, validation, and named reads shared by the daemon
+//// and provider extensions. The settings store owns persistence and locking.
+
+import albedo/harness/sdk/credential_store
+import albedo/harness/sdk/settings_store
+import albedo_model as types
 import gleam/dict.{type Dict}
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
+import gleam/erlang/atom
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import gleam/uri
 
-const not_configured = "provider is not configured; run /login"
+/// Why a provider profile could not be read.
+pub type Failure {
+  /// No provider configuration is saved.
+  NotConfigured
+  /// The saved configuration or profile cannot be used.
+  InvalidConfig
+  /// The active profile is missing.
+  ActiveMissing
+  /// The profile a session names is missing or unusable.
+  SessionMissing
+  /// The profile is saved but disabled in the providers menu.
+  Disabled
+}
 
-const invalid_config = "provider configuration is invalid; run /login"
+/// The sentence shown to the person, which tells them to sign in.
+pub fn explain(failure: Failure) -> String {
+  case failure {
+    NotConfigured -> "provider is not configured; run /login"
+    InvalidConfig -> "provider configuration is invalid; run /login"
+    ActiveMissing -> "active provider is not configured; run /login"
+    SessionMissing -> "session provider is not configured; run /login"
+    Disabled -> "provider is disabled; re-enable it in the providers menu"
+  }
+}
 
 pub type Provider {
   Provider(
@@ -31,29 +58,41 @@ pub type Provider {
 type Configuration {
   Configuration(
     active: String,
-    providers: Dict(String, Result(Provider, String)),
+    providers: Dict(String, Result(Provider, Failure)),
   )
 }
 
-pub fn active(home: String) -> Result(Provider, String) {
+/// Read the active provider profile. Missing configuration, a missing active
+/// profile, or malformed required fields return an error directing the user
+/// to sign in. This does not resolve or renew credentials.
+pub fn active(home: String) -> Result(Provider, Failure) {
   use config <- result.try(load(home))
   configured(config, config.active)
 }
 
-pub fn named(home: String, name: String) -> Result(Provider, String) {
+/// Read one named profile. Missing or unusable entries return a session
+/// provider error and disabled ones say so. Configuration read failures
+/// retain their own diagnostic.
+pub fn named(home: String, name: String) -> Result(Provider, Failure) {
   use config <- result.try(load(home))
   configured(config, name)
+  |> result.map_error(fn(failure) {
+    case failure {
+      Disabled -> Disabled
+      _ -> SessionMissing
+    }
+  })
 }
 
 /// Every valid saved profile, by name.
-pub fn providers(home: String) -> Result(List(Provider), String) {
+pub fn providers(home: String) -> Result(List(Provider), Failure) {
   profiles(home) |> result.map(result.values)
 }
 
 /// Every saved profile by name: usable, or the profile name and why not.
 pub fn profiles(
   home: String,
-) -> Result(List(Result(Provider, #(String, String))), String) {
+) -> Result(List(Result(Provider, #(String, Failure))), Failure) {
   use config <- result.map(load(home))
   config.providers
   |> dict.keys
@@ -64,7 +103,9 @@ pub fn profiles(
 }
 
 // A migrated flat config remains "default" even if login selected a new provider.
-pub fn legacy(home: String) -> Result(Provider, String) {
+/// Read the default profile when present, otherwise the active profile.
+/// This preserves the meaning of sessions created with a legacy flat config.
+pub fn legacy(home: String) -> Result(Provider, Failure) {
   use config <- result.try(load(home))
   case dict.has_key(config.providers, "default") {
     True -> configured(config, "default")
@@ -72,10 +113,13 @@ pub fn legacy(home: String) -> Result(Provider, String) {
   }
 }
 
-fn configured(config: Configuration, name: String) -> Result(Provider, String) {
+fn configured(
+  config: Configuration,
+  name: String,
+) -> Result(Provider, Failure) {
   use provider <- result.try(
     dict.get(config.providers, name)
-    |> result.replace_error("active provider is not configured; run /login"),
+    |> result.replace_error(ActiveMissing),
   )
   use provider <- result.try(provider)
   case
@@ -83,23 +127,23 @@ fn configured(config: Configuration, name: String) -> Result(Provider, String) {
     || string.trim(provider.extension) == ""
     || string.trim(provider.model) == ""
   {
-    True -> Error(invalid_config)
+    True -> Error(InvalidConfig)
     False -> Ok(Provider(..provider, name: name))
   }
 }
 
-fn load(home: String) -> Result(Configuration, String) {
+fn load(home: String) -> Result(Configuration, Failure) {
   use raw <- result.try(
     read_config(home)
     |> result.map_error(fn(error) {
       case error {
-        Missing -> not_configured
-        Invalid -> invalid_config
+        Missing -> NotConfigured
+        Invalid -> InvalidConfig
       }
     }),
   )
   decode.run(raw, configuration_decoder())
-  |> result.replace_error(invalid_config)
+  |> result.replace_error(InvalidConfig)
 }
 
 fn configuration_decoder() -> decode.Decoder(Configuration) {
@@ -114,19 +158,19 @@ fn named_decoder() -> decode.Decoder(Configuration) {
       decode.string,
       decode.dynamic
         |> decode.map(fn(value) {
+          // A missing `enabled` means enabled; a disabled profile stays saved.
           use enabled <- result.try(
             decode.run(value, {
               use enabled <- decode.optional_field("enabled", True, decode.bool)
               decode.success(enabled)
             })
-            |> result.replace_error(invalid_config),
+            |> result.replace_error(InvalidConfig),
           )
           case enabled {
-            False ->
-              Error("provider is disabled; re-enable it in the providers menu")
+            False -> Error(Disabled)
             True ->
               decode.run(value, provider_decoder())
-              |> result.replace_error(invalid_config)
+              |> result.replace_error(InvalidConfig)
           }
         }),
     ),
@@ -201,10 +245,10 @@ pub fn settings(
 ) -> Result(a, String) {
   use providers <- result.try(raw_providers(home))
   use value <- result.try(
-    dict.get(providers, name) |> result.replace_error(not_configured),
+    dict.get(providers, name) |> result.replace_error(explain(NotConfigured)),
   )
   decode.run(value, decoder)
-  |> result.replace_error(invalid_config)
+  |> result.replace_error(explain(InvalidConfig))
 }
 
 /// `settings` for every saved profile from one read of the file, by name;
@@ -225,38 +269,78 @@ fn raw_providers(home: String) -> Result(Dict(String, Dynamic), String) {
   use raw <- result.try(
     read_config(home)
     |> result.map_error(fn(error) {
-      case error {
-        Missing -> not_configured
-        Invalid -> invalid_config
-      }
+      explain(case error {
+        Missing -> NotConfigured
+        Invalid -> InvalidConfig
+      })
     }),
   )
   use root <- result.try(
     decode.run(raw, decode.dict(decode.string, decode.dynamic))
-    |> result.replace_error(invalid_config),
+    |> result.replace_error(explain(InvalidConfig)),
   )
   case dict.get(root, "providers") {
     Ok(providers) ->
       decode.run(providers, decode.dict(decode.string, decode.dynamic))
-      |> result.replace_error(invalid_config)
+      |> result.replace_error(explain(InvalidConfig))
     Error(_) -> Ok(dict.from_list([#("default", raw)]))
   }
 }
 
-@external(erlang, "albedo_settings", "write_default")
+/// Validate saved configuration, select an existing profile, and update its
+/// default model under the settings lock. Unrelated fields survive.
+/// The caller is responsible for choosing a model supported by that profile.
 pub fn select_default(
   home: String,
   provider: String,
   model: String,
-) -> Result(Nil, String)
+) -> Result(Nil, String) {
+  use <- settings_store.with_lock(home)
+  use <- settings_store.guarded
+  use config <- result.try(
+    validate_saved_config(settings_store.read_dynamic(home, "config.json")),
+  )
+  let profiles = settings_store.object("providers", config)
+  let assert Ok(selected) = dict.get(profiles, provider)
+  let assert Ok(selected) =
+    decode.run(selected, decode.dict(decode.string, decode.dynamic))
+  let selected =
+    dict.insert(selected, "model", settings_store.to_dynamic(model))
+  let config =
+    config
+    |> dict.insert("active", settings_store.to_dynamic(provider))
+    |> dict.insert(
+      "providers",
+      settings_store.to_dynamic(dict.insert(
+        profiles,
+        provider,
+        settings_store.to_dynamic(selected),
+      )),
+    )
+  settings_store.commit_group(
+    home,
+    dict.from_list([#("config.json", settings_store.to_dynamic(config))]),
+  )
+  Ok(Nil)
+}
 
 type ConfigFile {
   Missing
   Invalid
 }
 
-@external(erlang, "albedo_daemon", "read_config")
-fn read_config(home: String) -> Result(Dynamic, ConfigFile)
+/// Saved config.json for profile reads: invalid when it does not parse,
+/// missing otherwise.
+fn read_config(home: String) -> Result(Dynamic, ConfigFile) {
+  case credential_store.config(home) {
+    Ok(config) -> Ok(credential_store.to_dynamic(config))
+    Error(reason) ->
+      case reason == atom.create("invalid") {
+        True -> Error(Invalid)
+        False -> Error(Missing)
+      }
+  }
+}
 
 /// Validate profiles at the daemon boundary without reporting secret values.
 pub fn validate_profile(
@@ -344,6 +428,9 @@ pub fn named_config(config: Dynamic) -> Result(Dict(String, Dynamic), String) {
   }
 }
 
+/// Validate one saved profile and return its normalized supported fields.
+/// This projection trims model and endpoint text and drops unrelated fields.
+/// It is not an overlay that preserves unknown configuration keys.
 pub fn normalize_profile(
   name: String,
   saved: Dynamic,
@@ -379,6 +466,9 @@ pub fn normalize_profile(
   }
 }
 
+/// Convert a legacy flat configuration to named profiles and validate every
+/// profile. Return the named raw document, retaining unrelated fields.
+/// Invalid profiles return a diagnostic without credential values.
 pub fn validate_saved_config(
   config: Dynamic,
 ) -> Result(Dict(String, Dynamic), String) {
@@ -396,8 +486,19 @@ pub fn validate_saved_config(
   Ok(named)
 }
 
+/// The extension of a saved profile with no `extension` field. Profiles saved
+/// before the field existed were OpenAI-compatible profiles. Read a profile's
+/// extension with this default rather than naming the extension again.
+pub fn default_extension() -> String {
+  "openai"
+}
+
 fn saved_profile_decoder() -> decode.Decoder(SavedProfile) {
-  use extension <- decode.optional_field("extension", "openai", decode.string)
+  use extension <- decode.optional_field(
+    "extension",
+    default_extension(),
+    decode.string,
+  )
   use endpoint <- decode.optional_field("baseUrl", "", decode.string)
   use model <- decode.field("model", decode.string)
   use protocol <- decode.field("protocol", types.protocol_decoder())
@@ -488,7 +589,7 @@ pub fn valid_api_key(key: String) -> Bool {
 
 fn valid_endpoint(endpoint: String, extension: String) -> Bool {
   case endpoint {
-    "" -> extension != "openai"
+    "" -> extension != "openai" && extension != "anthropic-api"
     _ -> {
       // uri.parse lowercases the scheme; saved profiles require its original
       // spelling to be http or https, as the previous validator did.

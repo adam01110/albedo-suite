@@ -6,10 +6,10 @@
 //// what payload a frame carries, when a body is its stream, and whether its
 //// reducer may settle a turn before the body ends.
 
-import albedo/clock
 import albedo/openai_api/stream
-import albedo/openai_api/transport
-import albedo/openai_api/types
+import albedo_clock
+import albedo_http
+import albedo_model as types
 import gleam/bit_array
 import gleam/int
 import gleam/list
@@ -29,15 +29,25 @@ pub type Exchange {
     timeout_ms: Int,
     first_event_timeout_ms: Option(Int),
     max_event_bytes: Int,
+    /// How this provider's failure response reads: its status and body, once.
+    refusal: fn(Int, String) -> types.Error,
   )
+}
+
+/// How an exchange reaches its server: the connection options, which carry
+/// the route and the trusted roots, and a cap every budget is held to. The
+/// caller builds it in the process that sends, since a route is the calling
+/// process's own.
+pub type Transport {
+  Transport(options: albedo_http.Options, budget_cap: Option(Int))
 }
 
 /// What a response whose body is not this wire's stream means.
 pub type Body {
   /// Feed the body to the reducer as frames.
   Pump
-  /// Read the body and report it as the HTTP error its status carries.
-  HttpError
+  /// Read the body as the provider's failure, as its status says.
+  FailureBody
   /// Refuse with this message instead of reading the body.
   Refuse(String)
 }
@@ -68,24 +78,33 @@ pub type Wire(parser, frame) {
 
 pub fn exchange(
   exchange: Exchange,
+  transport: Transport,
   wire: Wire(parser, frame),
   reducer: stream.Reducer,
   on_event: fn(types.Event) -> types.Control,
 ) -> Result(types.Turn, types.Error) {
-  exchange_with_status(exchange, wire, reducer, on_event, fn(status, _) {
-    status
-  })
+  exchange_with_status(
+    exchange,
+    transport,
+    wire,
+    reducer,
+    on_event,
+    fn(status, _) { status },
+  )
 }
 
+/// `exchange`, with the response status as `response_status` reads it from
+/// the status and headers, before any other handling sees it.
 pub fn exchange_with_status(
   exchange: Exchange,
+  transport: Transport,
   wire: Wire(parser, frame),
   reducer: stream.Reducer,
   on_event: fn(types.Event) -> types.Control,
   response_status: fn(Int, List(#(String, String))) -> Int,
 ) -> Result(types.Turn, types.Error) {
-  let exchange = capped(exchange, transport.budget_cap())
-  let sent = clock.monotonic_ms()
+  let exchange = capped(exchange, transport.budget_cap)
+  let sent = albedo_clock.monotonic_ms()
   let wait =
     Wait(
       exchange.timeout_ms,
@@ -94,7 +113,8 @@ pub fn exchange_with_status(
       }),
     )
   use connection <- result.try(
-    transport.open(
+    albedo_http.open(
+      transport.options,
       exchange.url,
       exchange.headers,
       exchange.body,
@@ -109,14 +129,17 @@ pub fn exchange_with_status(
   use <- with_connection(connection, wire.discard_on_error)
   use first <- result.try(receive(connection, wait, types.AwaitingHeaders))
   case first {
-    transport.Headers(status, headers, final) -> {
+    albedo_http.Headers(status, headers, final) -> {
       let status = response_status(status, headers)
       use _ <- result.try(notify([types.Responded(status)], on_event))
+      let failed = fn() {
+        http_error(connection, wait, exchange.refusal, status, final, [], 0)
+      }
       case status >= 200 && status < 300 {
-        False -> http_error(connection, wait, status, final, [], 0)
+        False -> failed()
         True ->
           case wire.body(headers) {
-            HttpError -> http_error(connection, wait, status, final, [], 0)
+            FailureBody -> failed()
             Refuse(message) -> Error(types.InvalidEvent(message))
             Pump ->
               case final {
@@ -141,7 +164,7 @@ pub fn exchange_with_status(
 }
 
 fn pump(
-  connection: transport.Connection,
+  connection: albedo_http.Connection,
   wait: Wait,
   phase: types.TimeoutPhase,
   parser: parser,
@@ -152,8 +175,8 @@ fn pump(
 ) -> Result(types.Turn, types.Error) {
   use message <- result.try(receive(connection, wait, phase))
   case message {
-    transport.Data(bytes, final) -> {
-      let now = clock.monotonic_ms()
+    albedo_http.Data(bytes, final) -> {
+      let now = albedo_clock.monotonic_ms()
       use #(parser, frames) <- result.try(wire.feed(parser, bytes))
       let phase = case frames {
         [] -> phase
@@ -239,21 +262,21 @@ fn settle(
 }
 
 fn with_connection(
-  connection: transport.Connection,
+  connection: albedo_http.Connection,
   discard_on_error: Bool,
   run: fn() -> value,
 ) -> value {
   case discard_on_error {
-    True -> transport.with_connection_discard_errors(connection, run)
-    False -> transport.with_connection(connection, run)
+    True -> albedo_http.with_connection_discard_errors(connection, run)
+    False -> albedo_http.with_connection(connection, run)
   }
 }
 
-/// `exchange` with every budget held to `cap` ms, when `cap` is positive.
-fn capped(exchange: Exchange, cap: Int) -> Exchange {
-  case cap > 0 {
-    False -> exchange
-    True ->
+/// `exchange` with every budget held to `cap` ms, when there is a cap.
+fn capped(exchange: Exchange, cap: Option(Int)) -> Exchange {
+  case cap {
+    None -> exchange
+    Some(cap) ->
       Exchange(
         ..exchange,
         timeout_ms: int.min(exchange.timeout_ms, cap),
@@ -310,42 +333,43 @@ type Wait {
 /// one runs, else within the idle budget until the first event. Once events
 /// flow, a body chunk waits while the connection is alive.
 fn receive(
-  connection: transport.Connection,
+  connection: albedo_http.Connection,
   wait: Wait,
   phase: types.TimeoutPhase,
-) -> Result(transport.Message, types.Error) {
+) -> Result(albedo_http.Message, types.Error) {
   case wait.first_event, phase {
     Some(#(deadline, total)), types.AwaitingHeaders
     | Some(#(deadline, total)), types.AwaitingFirstEvent
     ->
-      transport.receive_until(connection, deadline)
+      albedo_http.receive_until(connection, deadline)
       |> result.map_error(transport_error(_, phase, total))
     _, types.Streaming ->
-      transport.receive(connection)
+      albedo_http.receive(connection)
       |> result.map_error(transport_error(_, phase, wait.idle_ms))
     _, _ ->
-      transport.receive_within(connection, wait.idle_ms)
+      albedo_http.receive_within(connection, wait.idle_ms)
       |> result.map_error(transport_error(_, phase, wait.idle_ms))
   }
 }
 
 fn transport_error(
-  error: transport.Error,
+  error: albedo_http.Error,
   phase: types.TimeoutPhase,
   waited_ms: Int,
 ) -> types.Error {
   case error {
-    transport.InvalidUrl -> types.InvalidRequest("invalid HTTP endpoint")
-    transport.InvalidHeaders -> types.InvalidRequest("invalid HTTP headers")
-    transport.RequestRefused(message) -> types.InvalidRequest(message)
-    transport.TransportError(message) -> types.ConnectionError(message)
-    transport.TimedOut -> types.Timeout(phase, waited_ms)
+    albedo_http.InvalidUrl -> types.InvalidRequest("invalid HTTP endpoint")
+    albedo_http.InvalidHeaders -> types.InvalidRequest("invalid HTTP headers")
+    albedo_http.RequestRefused(message) -> types.InvalidRequest(message)
+    albedo_http.TransportError(message) -> types.ConnectionError(message)
+    albedo_http.TimedOut -> types.Timeout(phase, waited_ms)
   }
 }
 
 fn http_error(
-  connection: transport.Connection,
+  connection: albedo_http.Connection,
   wait: Wait,
+  refusal: fn(Int, String) -> types.Error,
   status: Int,
   final: Bool,
   chunks: List(BitArray),
@@ -359,7 +383,7 @@ fn http_error(
         |> bit_array.concat
         |> bit_array.to_string
         |> result.unwrap("<non-UTF-8 response body>")
-      Error(types.HttpError(status, body))
+      Error(refusal(status, body))
     }
     False -> {
       use message <- result.try(receive(
@@ -368,7 +392,7 @@ fn http_error(
         types.AwaitingFirstEvent,
       ))
       case message {
-        transport.Data(bytes, final) -> {
+        albedo_http.Data(bytes, final) -> {
           let remaining = max_error_bytes - size
           let bytes = case bit_array.byte_size(bytes) > remaining {
             True -> bit_array.slice(bytes, 0, remaining) |> result.unwrap(<<>>)
@@ -377,13 +401,14 @@ fn http_error(
           http_error(
             connection,
             wait,
+            refusal,
             status,
             final,
             [bytes, ..chunks],
             size + bit_array.byte_size(bytes),
           )
         }
-        _ -> Error(types.HttpError(status, "unexpected response framing"))
+        _ -> Error(refusal(status, "unexpected response framing"))
       }
     }
   }
@@ -393,13 +418,14 @@ fn http_error(
 /// it before the connection is pooled (or discarded, if any step failed).
 pub fn with_body(
   exchange: Exchange,
+  transport: Transport,
   limit: Int,
   discard_on_error: Bool,
   on_event: fn(types.Event) -> types.Control,
   run: fn(String) -> Result(a, types.Error),
 ) -> Result(a, types.Error) {
-  let exchange = capped(exchange, transport.budget_cap())
-  let sent = clock.monotonic_ms()
+  let exchange = capped(exchange, transport.budget_cap)
+  let sent = albedo_clock.monotonic_ms()
   let wait =
     Wait(
       exchange.timeout_ms,
@@ -408,7 +434,8 @@ pub fn with_body(
       }),
     )
   use connection <- result.try(
-    transport.open(
+    albedo_http.open(
+      transport.options,
       exchange.url,
       exchange.headers,
       exchange.body,
@@ -423,10 +450,11 @@ pub fn with_body(
   use <- with_connection(connection, discard_on_error)
   use first <- result.try(receive(connection, wait, types.AwaitingHeaders))
   case first {
-    transport.Headers(status, _, final) -> {
+    albedo_http.Headers(status, _, final) -> {
       use _ <- result.try(notify([types.Responded(status)], on_event))
       case status >= 200 && status < 300 {
-        False -> http_error(connection, wait, status, final, [], 0)
+        False ->
+          http_error(connection, wait, exchange.refusal, status, final, [], 0)
         True -> {
           use bytes <- result.try(collect(
             connection,
@@ -452,7 +480,7 @@ pub fn with_body(
 }
 
 fn collect(
-  connection: transport.Connection,
+  connection: albedo_http.Connection,
   wait: Wait,
   phase: types.TimeoutPhase,
   final: Bool,
@@ -465,7 +493,7 @@ fn collect(
     False -> {
       use message <- result.try(receive(connection, wait, phase))
       case message {
-        transport.Data(bytes, final) -> {
+        albedo_http.Data(bytes, final) -> {
           let size = size + bit_array.byte_size(bytes)
           case size > limit {
             True -> Error(types.EventTooLarge)

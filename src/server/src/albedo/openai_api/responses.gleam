@@ -1,7 +1,8 @@
-import albedo/openai_api/cost
-import albedo/openai_api/fields
-import albedo/openai_api/replay
-import albedo/openai_api/types
+import albedo_json/fields
+import albedo_model as types
+import albedo_model/cost
+import albedo_model/refusal
+import albedo_model/replay
 import gleam/dict.{type Dict}
 import gleam/dynamic
 import gleam/dynamic/decode
@@ -413,36 +414,36 @@ fn incomplete(
 }
 
 fn failed(value: dynamic.Dynamic) -> Result(a, types.Error) {
-  provider_failure(
-    value,
-    decode.at(["response", "error", "message"], decode.string),
-    "response.failed",
-  )
+  let response =
+    decode.run(value, decode.at(["response"], decode.dynamic))
+    |> result.unwrap(value)
+  provider_failure(response, "response.failed")
 }
 
-/// An `error` event carries its message at the top, as the Responses stream
+/// An `error` event carries its fields at the top, as the Responses stream
 /// documents, or nested under `error` the way an error body nests it.
 fn provider_error(value: dynamic.Dynamic) -> Result(a, types.Error) {
-  let decoder =
-    decode.one_of(decode.at(["message"], decode.string), or: [
-      decode.at(["error", "message"], decode.string),
-      decode.at(["error"], decode.string),
+  provider_failure(value, "error")
+}
+
+/// An event of an unknown shape is reported by its decode error rather than
+/// its raw payload.
+fn provider_failure(
+  error: dynamic.Dynamic,
+  context: String,
+) -> Result(a, types.Error) {
+  // Codex may name its failure only as a bare string or a code; neither shape,
+  // nor an unknown one, has its raw payload dumped.
+  let fallback =
+    decode.one_of(decode.at(["error"], decode.string), or: [
       decode.at(["error", "code"], decode.string),
       decode.at(["code"], decode.string),
     ])
-  provider_failure(value, decoder, "error")
-}
-
-fn provider_failure(
-  value: dynamic.Dynamic,
-  decoder: decode.Decoder(String),
-  context: String,
-) -> Result(a, types.Error) {
-  let message = case decode.run(value, decoder) {
+  let fallback = case decode.run(error, fallback) {
     Ok(message) -> message
-    Error(error) -> "malformed " <> context <> ": " <> string.inspect(error)
+    Error(errors) -> "malformed " <> context <> ": " <> string.inspect(errors)
   }
-  Error(types.ProviderError(message))
+  Error(refusal.openai_event(error, fallback))
 }
 
 fn response_decoder(incomplete: Bool) -> decode.Decoder(Response) {

@@ -40,8 +40,9 @@ nix fmt
 ```
 
 The checks exercise Home Manager options, source checksums, package contents,
-Python formatter, LSP and MCP bindings, RTK routing and FFF search,
-native MCP lifecycle, and the shell helpers.
+Python formatter, LSP and MCP bindings, RTK routing and FFF search, and the
+shell helpers. The server build's check phase also runs the suite Gleam tests,
+including the lazy MCP manager lifecycle, catalog prices and memory index.
 The files under `src/` keep upstream formatting and are excluded from the suite's
 treefmt run.
 
@@ -75,10 +76,10 @@ Use `--case <name>` for focused work; omit it for the full upstream-update run.
 Tests use fake providers, temporary homes and local servers. They do not
 activate your configuration, read your credentials or contact live providers.
 The runner waits for kernel reattachment before testing a forced upgrade. It
-also adapts native harness, kernel-detach, cache-miss, image-limit and repetition
-text extraction to the
-suite's typed Responses content parts, preserving their assertions. These six
-upstream fixtures are checksum-guarded and require review when changed. Skill
+also adapts native harness, history-content, kernel-detach, image-limit and
+repetition text extraction to the suite's typed Responses content parts,
+preserving their assertions. These upstream fixtures are checksum-guarded and
+require review when changed. Skill
 discovery uses upstream's native catalog filter.
 
 Additional supervised RTK/FFF tests run in the flake Python check.

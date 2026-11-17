@@ -1,13 +1,14 @@
 import albedo/anthropic_api/stream as messages
 import albedo/gemini_api/stream as gemini
-import albedo/harness/extensions/opencode_go/wire as portable
+import albedo/harness/sdk/network_context
+import albedo/harness/sdk/opencode_gateway as portable
 import albedo/openai_api
 import albedo/openai_api/chat
-import albedo/openai_api/cost
-import albedo/openai_api/sse
 import albedo/openai_api/stream
 import albedo/openai_api/stream_http
-import albedo/openai_api/types
+import albedo_model as types
+import albedo_model/cost
+import albedo_sse as sse
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -42,7 +43,10 @@ fn step(
   ),
   types.Error,
 ) {
-  use event <- result.try(unwrap(line) |> result.map_error(types.ProviderError))
+  use event <- result.try(
+    unwrap(line)
+    |> result.map_error(types.Refused(types.Failed, None, _)),
+  )
   case event {
     "" -> Ok(#(state, [], None))
     "stream_ended" ->
@@ -71,6 +75,7 @@ pub fn exchange(
 ) -> Result(types.Turn, types.Error) {
   stream_http.exchange_with_status(
     openai_api.to_pump(exchange),
+    network_context.transport(),
     stream_http.Wire(
       start: sse.new_ndjson,
       feed: fn(parser, bytes) {

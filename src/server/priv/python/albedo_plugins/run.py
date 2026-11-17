@@ -10,12 +10,12 @@ parents stay with it: ssh's ControlPersist master daemonizes out of the job
 but leaves its ProxyCommand in the group, and ending that ends the master.
 
 A job that finishes with its result unread wakes the session: the kernel tells
-the host, the host submits a user turn naming the job, and the model never has
-to poll or await. Reading the result (tail, poll, await, output.read) or
-stopping the job withdraws the wake; an await cut short by an interrupt or a
-deadline read nothing, so it leaves the wake owed. A busy session is retried
-until it goes idle, so a notice can never overtake the read that satisfies it. Jobs
-still owed when the retry lands share one notice, and so one turn.
+the host, the host stores a notice naming the job in the session's inbox, and
+the model never has to poll or await. The notice waits there for a running
+turn to end. Reading the result (tail, poll, await, output.read) or stopping
+the job withdraws it (`albedo_notices`); an await cut short by an interrupt or
+a deadline read nothing, so it leaves the wake owed. Jobs that finish together
+share one notice, and notices waiting together start one turn.
 """
 
 from __future__ import annotations
@@ -37,6 +37,7 @@ from albedo_api import (
 )
 import albedo_capture
 import albedo_direnv
+import albedo_notices
 import albedo_proc
 import albedo_rtk
 import albedo_shell
@@ -63,8 +64,9 @@ preview_limit: int  # internal file searches use the kernel preview budget
 jobs: dict[str, Job] = {}  # every handle the session can address
 active: dict[str, Job] = {}  # unfinished work: the bounded resource
 retained: OrderedDict[str, Job] = OrderedDict()  # finished handles, completion order
-owed: dict[str, Job] = {}  # finished with results unread, in completion order
+owed: dict[str, Job] = {}  # finished with results unread, not yet announced
 announcer: asyncio.Task[None] | None = None
+notices = albedo_notices.Notices("jobs")
 send: Send
 host: Host | None = None
 watch_output: Callable[[str, Callable[[], None]], None] | None = None
@@ -80,7 +82,7 @@ SHUTDOWN_KILL = 1.0
 NICENESS = 10
 # macOS runs utility-QoS work below the interface, so a busy swarm yields.
 TASKPOLICY = shutil.which("taskpolicy") if sys.platform == "darwin" else None
-NOTICE_RETRY = 2.0  # seconds between wake attempts while the session runs
+NOTICE_RETRY = 2.0  # seconds before announcing again to a host not ready yet
 NOTICE_COMMAND_CAP = 200  # command characters a wake notice carries
 
 
@@ -466,6 +468,7 @@ class Job(JobOutput):
                     "leader": self.group.leader,
                     "command": self.pipeline[:4096],
                     "service": self.service,
+                    **({"cell": self.cell} if self.cell is not None else {}),
                 }
             )
         return self.group
@@ -553,6 +556,7 @@ class Job(JobOutput):
         try:
             await asyncio.shield(self.task)
             self._awaited = True
+            notices.poke()
         except (KeyboardInterrupt, asyncio.CancelledError):
             if self.traced and not self.task.done():
                 print(
@@ -624,6 +628,8 @@ class Job(JobOutput):
             if scanned < self.capture.seen and scanned > previous:
                 continue
             if finished:
+                # The caller learns the job ended, with its last lines: read.
+                self._read = True
                 raise JobFailed(self, self._plain_tail(), waiting=pattern)
             if loop.time() >= deadline:
                 raise TimeoutError(
@@ -654,6 +660,9 @@ class Job(JobOutput):
         """Queue the finished job's wake unless its result reached someone."""
         if host is not None and self._unreported:
             owe(self)
+
+    def _satisfied(self) -> None:
+        notices.poke()
 
     def _facts(self) -> dict[str, object]:
         """What a wake notice says about this job."""
@@ -980,6 +989,8 @@ def job_record(job: Job) -> dict[str, object]:
         "exit_code": job.exit_code,
         "timed_out": job.timed_out,
         "service": job.service,
+        "kind": "command",
+        "parent_id": job.cell,
         "started_at": int(begun),
         "ended_at": None if job.duration is None else int(begun + job.duration * 1000),
         "bytes": job.capture.seen,
@@ -1033,31 +1044,48 @@ def owe(job: Job) -> None:
 
 
 async def _announce() -> None:
-    """Wake the session for every owed result, retrying while it runs.
+    """Post a notice for every owed result to the session's inbox.
 
-    A busy session answers with a refusal rather than queueing, so the notice
-    retries until the run ends, naming whatever is still owed then; a read or
-    await in the meantime retires that job, which is also the creating-cell
-    barrier: a cell that will await its own job suppresses the wake before any
-    turn can start.
+    Jobs owed together share one notice, which waits there for a running turn
+    to end; `notices` withdraws it once every job it names was read. A read or
+    await before it is stored retires that job, which is also the
+    creating-cell barrier: a cell that will await its own job suppresses the
+    wake before any turn can start.
     """
     while True:
         for job in [job for job in owed.values() if not job._unreported]:
             del owed[job.id]
-        notify = host
-        if not owed or notify is None:
+        if not owed or host is None:
             return
         batch = list(owed.values())
-        try:
-            await notify("jobs.completed", notice([job._facts() for job in batch]))
-        except Exception as error:
-            if getattr(error, "code", "") in ("busy", "unknown"):
-                await asyncio.sleep(NOTICE_RETRY)
-                continue
-            for job in batch:
-                job.capture.write(f"\n[completion notice not delivered: {error}]\n")
+        posted: str | None = albedo_notices.key()
+        while True:
+            notify = host
+            if notify is None:
+                return
+            try:
+                await notify(
+                    "jobs.completed",
+                    {"key": posted, **notice([job._facts() for job in batch])},
+                )
+                break
+            except Exception as error:
+                # The daemon may have stored it before the call broke off; the
+                # same key stores it once.
+                if getattr(error, "code", "") == "unknown":
+                    await asyncio.sleep(NOTICE_RETRY)
+                    continue
+                for job in batch:
+                    job.capture.write(f"\n[completion notice not delivered: {error}]\n")
+                posted = None
+                break
         for job in batch:
             owed.pop(job.id, None)
+        notices.watch(
+            notify,
+            posted,
+            lambda batch=batch: not any(job._unreported for job in batch),
+        )
 
 
 # A job on a remote.connect() host lives in that kernel's `jobs`, not the
@@ -1075,7 +1103,7 @@ def _name(job: dict[str, object]) -> str:
 
 def notice(facts: list[dict[str, object]]) -> dict[str, object]:
     """The wake turn's display text, model text, and the facts behind both."""
-    advice = " if nothing else is needed, reply briefly and stay idle.</system-note>"
+    advice = f" {albedo_notices.IDLE}</system-note>"
     if len(facts) == 1:
         [job] = facts
         reading = (
@@ -1266,8 +1294,8 @@ def setup(api: PythonApi) -> dict[str, object]:
         job = jobs.get(job_id)
         if job is None:
             return None
-        await job.stop()
-        return {"ok": True}
+        ending = await job.stop()
+        return {"ok": True} if ending.gone else {"ok": False, "error": ending.report()}
 
     jobs, active, retained = {}, {}, OrderedDict()
     api.background_handle(Job)

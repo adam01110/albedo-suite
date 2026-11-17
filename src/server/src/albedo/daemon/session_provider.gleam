@@ -1,15 +1,17 @@
 //// Provider selection, reasoning effort, and on-demand upstream binding.
 
-import albedo/daemon/configuration
+import albedo/harness/sdk/session_info
+
 import albedo/daemon/conversation
+import albedo/daemon/refusal.{type Refusal}
 import albedo/daemon/session_configuration
 import albedo/daemon/session_history
 import albedo/daemon/session_state
-import albedo/harness/extension
 import albedo/harness/extension/selection
-import albedo/harness/extensions/bedrock/reasoning
 import albedo/harness/runtime
-import albedo/openai_api/types as albedo_types
+import albedo/harness/sdk/extension
+import albedo/harness/sdk/profiles as configuration
+import albedo_model as albedo_types
 import gleam/dict
 import gleam/dynamic/decode
 import gleam/int
@@ -24,7 +26,10 @@ pub fn configured_client(
 ) -> Result(#(session_state.State(message), extension.Upstream), String) {
   use provider <- result.try(case state.info.provider {
     "" -> {
-      use provider <- result.try(configuration.legacy(state.home))
+      use provider <- result.try(
+        configuration.legacy(state.home)
+        |> result.map_error(configuration.explain),
+      )
       use _ <- result.try(conversation.assign_session_provider(
         runtime.ledger(state.host),
         state.info.id,
@@ -32,7 +37,9 @@ pub fn configured_client(
       ))
       Ok(provider)
     }
-    name -> configuration.named(state.home, name)
+    name ->
+      configuration.named(state.home, name)
+      |> result.map_error(configuration.explain)
   })
   let state = case state.info.provider {
     "" ->
@@ -42,22 +49,25 @@ pub fn configured_client(
           _,
           provider.name,
         )),
-        info: conversation.Info(..state.info, provider: provider.name),
+        info: session_info.Info(..state.info, provider: provider.name),
       )
     _ -> state
   }
-  use client <- result.try(runtime.upstream(
-    state.host,
-    state.info.id,
-    state.home,
-    provider.name,
-    provider.extension,
-    state.info.model,
-    state.info.protocol,
-    state.info.effort,
-    state.info.fast,
-    state.info.cyber_access,
-  ))
+  use client <- result.try(
+    runtime.upstream(
+      state.host,
+      state.info.id,
+      state.home,
+      provider.name,
+      provider.extension,
+      state.info.model,
+      state.info.protocol,
+      state.info.effort,
+      state.info.fast,
+      state.info.cyber_access,
+    )
+    |> result.map_error(runtime.upstream_error_text),
+  )
   Ok(#(state, client))
 }
 
@@ -102,60 +112,30 @@ pub fn model_efforts(
   home: String,
   provider: String,
   model: String,
-) -> List(String) {
-  case profile_effort_override(home, provider, model) {
-    option.Some(efforts) -> efforts
-    option.None -> {
-      let endpoint = profile_endpoint(home, provider)
-      runtime.model_efforts(
-        host,
-        profile_extension(home, provider),
-        model,
-        endpoint,
-      )
-    }
-  }
+) -> List(albedo_types.Effort) {
+  runtime.profile_efforts(
+    host,
+    home,
+    provider,
+    profile_extension(home, provider),
+    model,
+  )
 }
 
-/// The extension a saved profile uses; profiles predating the field are openai.
+/// The extension a saved profile uses, with `configuration.default_extension` for
+/// profiles saved before the field existed.
 fn profile_extension(home: String, provider: String) -> String {
   configuration.settings(
     home,
     provider,
-    decode.optional_field("extension", "openai", decode.string, decode.success),
+    decode.optional_field(
+      "extension",
+      configuration.default_extension(),
+      decode.string,
+      decode.success,
+    ),
   )
-  |> result.unwrap("openai")
-}
-
-/// Only a saved Bedrock Converse profile has these verified wire controls.
-/// `Some([])` deliberately suppresses generic guesses for unknown models.
-/// Messages profiles and provider-only catalog queries retain their behavior.
-pub fn profile_effort_override(
-  home: String,
-  provider: String,
-  model: String,
-) -> option.Option(List(String)) {
-  case profile_extension(home, provider) {
-    "bedrock" -> {
-      let api =
-        configuration.settings(
-          home,
-          provider,
-          decode.optional_field(
-            "api",
-            "messages",
-            decode.string,
-            decode.success,
-          ),
-        )
-      case api, configuration.named(home, provider) {
-        Ok("converse"), Ok(_) -> option.Some(reasoning.efforts(model))
-        Ok("messages"), Ok(_) -> option.None
-        _, _ -> option.Some([])
-      }
-    }
-    _ -> option.None
-  }
+  |> result.unwrap(configuration.default_extension())
 }
 
 /// Read only provider/account/model capability; this never prepares a kernel or sends inference.
@@ -167,7 +147,7 @@ pub fn fast_mode(
   effort: option.Option(String),
 ) -> extension.FastMode {
   case configuration.named(state.home, provider) {
-    Error(reason) -> extension.FastUnknown(reason)
+    Error(failure) -> extension.FastUnknown(configuration.explain(failure))
     Ok(profile) ->
       runtime.fast_mode(
         state.host,
@@ -244,29 +224,81 @@ pub fn read_effort(
 ) -> Result(json.Json, String) {
   let efforts =
     model_efforts(state.host, state.home, state.info.provider, state.info.model)
-  case efforts {
-    [] ->
-      Error(
-        "model " <> state.info.model <> " does not support reasoning effort",
+  let current = state.info.effort
+  use effective <- result.try(
+    runtime.resolve_effort(
+      state.host,
+      state.home,
+      state.info.provider,
+      profile_extension(state.home, state.info.provider),
+      state.info.model,
+      current,
+    )
+    |> result.map_error(runtime.effort_error_text),
+  )
+  use default <- result.try(
+    runtime.resolve_effort(
+      state.host,
+      state.home,
+      state.info.provider,
+      profile_extension(state.home, state.info.provider),
+      state.info.model,
+      option.Some("default"),
+    )
+    |> result.map_error(runtime.effort_error_text),
+  )
+  let configured =
+    configuration.named(state.home, state.info.provider)
+    |> result.map(fn(p) { p.effort })
+    |> result.unwrap(option.None)
+  let source = case current, configured {
+    option.Some("inherit"), option.Some(level)
+      if level != "default" && level != "inherit"
+    -> "profile"
+    option.Some("inherit"), _ | option.Some("default"), _ -> {
+      let endpoint = profile_endpoint(state.home, state.info.provider)
+      runtime.global(state.host)
+      |> result.unwrap([])
+      |> extension.provider_model_info(
+        profile_extension(state.home, state.info.provider),
+        state.info.model,
+        endpoint,
       )
-    _ -> {
-      let current = state.info.effort
-      let available = string.join(efforts, ", ")
-      let message = case current {
-        option.Some(level) ->
-          "reasoning effort is " <> level <> " (available: " <> available <> ")"
-        option.None ->
-          "reasoning effort is not set (available: " <> available <> ")"
-      }
-      Ok(
-        json.object([
-          #("effort", json.nullable(current, json.string)),
-          #("available", json.array(efforts, json.string)),
-          #("message", json.string(message)),
-        ]),
-      )
+      |> option.map(fn(info) { info.default_effort_source })
+      |> option.unwrap("provider")
     }
+    option.None, _ -> "legacy"
+    _, _ -> "session"
   }
+  let names = list.map(efforts, albedo_types.effort_name)
+  let available = string.join(names, ", ")
+  let choice = case current {
+    option.Some("inherit") -> "automatic"
+    option.Some("default") -> "model default"
+    option.Some(level) -> level
+    option.None -> "unset (legacy)"
+  }
+  let message =
+    "reasoning effort is "
+    <> choice
+    <> ": "
+    <> option.map(effective, albedo_types.effort_name)
+    |> option.unwrap("provider decides")
+    <> " (source: "
+    <> source
+    <> "; available: "
+    <> available
+    <> ")"
+  Ok(
+    json.object([
+      #("effort", json.nullable(current, json.string)),
+      #("available", json.array(names, json.string)),
+      #("default_effort", json.nullable(default, effort_json)),
+      #("effective_effort", json.nullable(effective, effort_json)),
+      #("source", json.string(source)),
+      #("message", json.string(message)),
+    ]),
+  )
 }
 
 pub fn read_compact_at(
@@ -337,19 +369,53 @@ pub fn read_compact_at(
   )
 }
 
-/// Keep a supported current level, then a supported profile default, then the
-/// model default. Explicitly requested levels are validated by the caller.
-pub fn resolve_effort(
-  efforts: List(String),
-  current: option.Option(String),
-  configured: option.Option(String),
-) -> option.Option(String) {
-  case
-    [current, configured]
-    |> list.filter_map(option.to_result(_, Nil))
-    |> list.find(list.contains(efforts, _))
-  {
-    Ok(level) -> option.Some(level)
-    Error(_) -> extension.default_effort(efforts)
+/// Whether `level`, as a session or profile saves it, names one of `efforts`.
+pub fn lists_effort(efforts: List(albedo_types.Effort), level: String) -> Bool {
+  albedo_types.parse_effort(level)
+  |> result.map(list.contains(efforts, _))
+  == Ok(True)
+}
+
+fn effort_json(effort: albedo_types.Effort) -> json.Json {
+  json.string(albedo_types.effort_name(effort))
+}
+
+/// Validate intent using the same resolution used at the provider boundary.
+pub fn validate_effort(
+  host: runtime.Runtime,
+  home: String,
+  provider: String,
+  model: String,
+  choice: option.Option(String),
+) -> Result(Nil, Refusal) {
+  use resolved <- result.try(
+    runtime.resolve_effort(
+      host,
+      home,
+      provider,
+      profile_extension(home, provider),
+      model,
+      choice,
+    )
+    |> result.map_error(fn(error) {
+      case error {
+        runtime.SavedEffortUnsupported -> refusal.SavedEffortUnsupported
+        runtime.EffortUnknown(_) ->
+          refusal.Unavailable(runtime.effort_error_text(error))
+        runtime.EffortProfile(failure) -> refusal.ProviderUnconfigured(failure)
+      }
+    }),
+  )
+  case choice, resolved {
+    option.Some("inherit"), _ | option.Some("default"), _ -> Ok(Nil)
+    _, option.None -> Ok(Nil)
+    _, option.Some(level) ->
+      case list.contains(model_efforts(host, home, provider, model), level) {
+        True -> Ok(Nil)
+        False ->
+          Error(refusal.Unavailable(
+            "unsupported reasoning effort: " <> albedo_types.effort_name(level),
+          ))
+      }
   }
 }

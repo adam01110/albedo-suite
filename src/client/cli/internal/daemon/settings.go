@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
 	"net/http"
+	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"albedo/cli/internal/config"
@@ -69,7 +72,7 @@ func GetSettings(ctx context.Context, conn *Connection) (Settings, error) {
 			result.Capabilities.Global["mcp"][name] = preference
 		}
 	}
-	result.UI = UIPreferences{DismissedNotices: wire.UI.DismissedNotices, WebAllow: wire.UI.WebAllow, ProxyAllow: wire.UI.ProxyAllow, Thinking: wire.UI.Thinking, Tools: wire.UI.Tools, ETag: wire.GroupResources.UI.ETag}
+	result.UI = uiPreferences(wire.UI, wire.GroupResources.UI.ETag)
 	for _, etag := range result.ETags {
 		if etag == "" {
 			return Settings{}, fieldError("settings group validator")
@@ -251,7 +254,7 @@ func SaveMCP(ctx context.Context, conn *Connection, session string, request MCPU
 			"cwd": optionalText(server.CWD), "url": optionalText(server.URL),
 			"environment": nonNilMap(server.Env), "headers": nonNilMap(server.Headers),
 			"bearer_token_env_var": optionalText(server.BearerTokenEnvVar),
-			"enabled_tools":        nonNil(server.EnabledTools), "disabled_tools": nonNil(server.DisabledTools),
+			"enabled_tools":        nullIfEmpty(server.EnabledTools), "disabled_tools": nonNil(server.DisabledTools),
 			"secrets": secrets,
 		}
 		if server.StartupTimeoutMs != 0 {
@@ -298,6 +301,15 @@ func nonNil[T any](s []T) []T {
 	}
 	return s
 }
+
+// nullIfEmpty is the wire value for an optional allowlist: null means no
+// allowlist, while an empty list would allow nothing.
+func nullIfEmpty[T any](s []T) []T {
+	if len(s) == 0 {
+		return nil
+	}
+	return s
+}
 func nonNilMap[K comparable, V any](m map[K]V) map[K]V {
 	if m == nil {
 		return map[K]V{}
@@ -324,6 +336,40 @@ func PatchUI(ctx context.Context, conn *Connection, patch UIPreferencesPatch) (U
 	var change protocol.UISettingsChange
 	err := patchSettingsGroup(ctx, conn, "ui", patch.ETag, patch, &change)
 	return UIPreferences{Thinking: change.Resource.Value.Thinking, Tools: change.Resource.Value.Tools, ETag: change.Resource.ETag}, err
+}
+
+// DismissNotice adds id to the shared dismissed notices and returns the ui
+// preferences the daemon saved. A list another client changed first is read
+// again, so neither dismissal is lost.
+func DismissNotice(ctx context.Context, conn *Connection, id string) (UIPreferences, error) {
+	for attempt := 0; ; attempt++ {
+		var wire protocol.UISettings
+		var etag string
+		err := executeRead(ctx, conn, operation{Name: "read ui settings", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+			return protocol.NewGetSettingsRequest(base, &protocol.GetSettingsParams{Group: new("ui")})
+		}, Validator: &etag, Policy: readRecovery}, func(data []byte) error {
+			return decodeRequired(data, &wire)
+		})
+		if err != nil {
+			return UIPreferences{}, err
+		}
+		if slices.Contains(wire.DismissedNotices, id) {
+			return uiPreferences(wire, etag), nil
+		}
+		var change protocol.UISettingsChange
+		err = patchSettingsGroup(ctx, conn, "ui", etag, map[string]any{"dismissed_notices": append(slices.Clip(wire.DismissedNotices), id)}, &change)
+		if apiErr, stale := errors.AsType[*APIError](err); stale && apiErr.StatusCode == http.StatusPreconditionFailed && attempt == 0 {
+			continue
+		}
+		if err != nil {
+			return UIPreferences{}, err
+		}
+		return uiPreferences(change.Resource.Value, change.Resource.ETag), nil
+	}
+}
+
+func uiPreferences(wire protocol.UISettings, etag string) UIPreferences {
+	return UIPreferences{DismissedNotices: wire.DismissedNotices, WebAllow: wire.WebAllow, ProxyAllow: wire.ProxyAllow, Thinking: wire.Thinking, Tools: wire.Tools, ETag: etag}
 }
 
 // PatchSessionUI pins or archives one session. Session lists carry no ETag,
@@ -371,20 +417,27 @@ func RecordOpen(ctx context.Context, conn *Connection, session string) (UIPrefer
 }
 
 // SettingKind is how a declared setting's value reads: a whole number, text
-// of at most SettingTextLimit bytes, or a limit, which is a whole number or
-// SettingNoLimit.
+// of at most SettingTextLimit bytes, a limit, which is a whole number or
+// SettingNoLimit, a map of names to text, or choices, a map of rows to
+// options.
 type SettingKind string
 
 const (
 	SettingInteger SettingKind = "integer"
 	SettingText    SettingKind = "text"
 	SettingLimit   SettingKind = "limit"
+	SettingMap     SettingKind = "map"
+	SettingChoices SettingKind = "choices"
 
 	// SettingTextLimit is the most bytes a text setting holds; the daemon
 	// refuses more.
 	SettingTextLimit = 4096
 	// SettingNoLimit is the value a limit takes when it has no cap.
 	SettingNoLimit = -1
+	// SettingMapEntries is the most names a map setting holds, and
+	// SettingMapKeyLimit the most bytes in one name.
+	SettingMapEntries  = 64
+	SettingMapKeyLimit = 64
 )
 
 // SettingCategory is the part of /config a declared section belongs to.
@@ -399,34 +452,47 @@ const (
 )
 
 // SettingValue is a declared setting's value as its kind reads it: a whole
-// number or text, never both. Nothing set means nothing is saved, so the
-// setting's default applies.
+// number, text or a map, only one of them. Nothing set means nothing is
+// saved, so the setting's default applies.
 type SettingValue struct {
 	Number *int64
 	Text   *string
+	Map    map[string]string
 }
 
 // Set reports whether a value is there.
-func (v SettingValue) Set() bool { return v.Number != nil || v.Text != nil }
+func (v SettingValue) Set() bool { return v.Number != nil || v.Text != nil || v.Map != nil }
 
-// String renders the value, or "" when nothing is set.
+// String renders the value, a map as name=value pairs by name, or "" when
+// nothing is set.
 func (v SettingValue) String() string {
 	switch {
 	case v.Number != nil:
 		return strconv.FormatInt(*v.Number, 10)
 	case v.Text != nil:
 		return *v.Text
+	case v.Map != nil:
+		pairs := make([]string, 0, len(v.Map))
+		for _, name := range slices.Sorted(maps.Keys(v.Map)) {
+			pairs = append(pairs, name+"="+v.Map[name])
+		}
+		return strings.Join(pairs, ", ")
 	}
 	return ""
 }
 
 // ExtensionSetting is one declared setting, with the value it has saved, if
-// any. Minimum and Maximum bound an integer or limit setting.
+// any. Minimum and Maximum bound an integer or limit setting. A choices
+// setting saves one of Options, or a name in the section's OptionsFrom map,
+// for each of Rows it sets.
 type ExtensionSetting struct {
 	Key, Label, Description string
 	Minimum, Maximum        *int64
 	Kind                    SettingKind
 	Default, Saved          SettingValue
+	Rows                    []protocol.DeclaredSettingRow
+	Options                 []string
+	OptionsFrom             string
 }
 
 // ExtensionSettingsSection is one declared section of the extension_settings
@@ -502,7 +568,7 @@ func declaredSettings(wire protocol.DeclaredSettings) ([]ExtensionSettingsSectio
 		fields := make([]ExtensionSetting, 0, len(section.Fields))
 		for _, field := range section.Fields {
 			kind := SettingKind(field.Kind)
-			if kind != SettingInteger && kind != SettingText && kind != SettingLimit {
+			if kind != SettingInteger && kind != SettingText && kind != SettingLimit && kind != SettingMap && kind != SettingChoices {
 				return nil, fmtField(field.Key, fieldError("kind"))
 			}
 			declared, err := declaredValue(kind, field.Default)
@@ -513,7 +579,7 @@ func declaredSettings(wire protocol.DeclaredSettings) ([]ExtensionSettingsSectio
 			if err != nil {
 				return nil, fmtField(field.Key+" value", err)
 			}
-			fields = append(fields, ExtensionSetting{Key: field.Key, Label: field.Label, Description: field.Description, Minimum: field.Minimum, Maximum: field.Maximum, Kind: kind, Default: declared, Saved: saved})
+			fields = append(fields, ExtensionSetting{Key: field.Key, Label: field.Label, Description: field.Description, Minimum: field.Minimum, Maximum: field.Maximum, Kind: kind, Default: declared, Saved: saved, Rows: field.Rows, Options: field.Options, OptionsFrom: value(field.OptionsFrom)})
 		}
 		sections = append(sections, ExtensionSettingsSection{Name: string(section.Name), Label: section.Label, Category: category, Description: section.Description, Problem: value(section.Problem), Fields: fields})
 	}
@@ -525,6 +591,13 @@ func declaredSettings(wire protocol.DeclaredSettings) ([]ExtensionSettingsSectio
 func declaredValue(kind SettingKind, raw json.RawMessage) (SettingValue, error) {
 	if len(raw) == 0 || string(raw) == "null" {
 		return SettingValue{}, nil
+	}
+	if kind == SettingMap || kind == SettingChoices {
+		var pairs map[string]string
+		if err := json.Unmarshal(raw, &pairs); err != nil {
+			return SettingValue{}, err
+		}
+		return SettingValue{Map: pairs}, nil
 	}
 	if kind == SettingText {
 		var text string

@@ -96,8 +96,9 @@ before retrying.
 ## Tests and configuration validation
 
 `test/lazy_mcp_python_test.py` checks the Python API with a fake host.
-`test/fixtures/native/lazy_mcp_native_tests.erl` checks native state and lifecycle
-with stub modules. `test/lazy_mcp_test.py` uses the packaged daemon and local
+`test/suite_lazy_mcp_test.gleam` checks the manager's state and lifecycle
+(`src/server/src/albedo/harness/extensions/mcp/lazy.gleam`) against upstream's
+fake stdio server. `test/lazy_mcp_test.py` uses the packaged daemon and local
 stdio fixtures.
 
 `scripts/test-e2e.py` prepares the cases and fixtures and runs them with the

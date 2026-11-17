@@ -119,6 +119,7 @@ func (m LoginModel) acceptProfileName() (LoginModel, tea.Cmd) {
 // Every other provider keeps its key in the profile itself.
 var keyAccountExtensions = map[string]bool{
 	"openai":         true,
+	"anthropic-api":  true,
 	"opencode-go":    true,
 	"perplexity":     true,
 	"mistral":        true,
@@ -140,7 +141,7 @@ func (m LoginModel) credentialAccounts() []daemon.Account {
 			// A key saved with no endpoint (a Mistral sign-in) uses the profile's.
 			return a.Endpoint == nil || *a.Endpoint != "" && *a.Endpoint != m.Draft.BaseURL
 		}
-		return m.Provider == "openai"
+		return m.Provider == "openai" || m.Provider == "anthropic-api"
 	})
 }
 

@@ -203,7 +203,7 @@ func (m SessionViewer) hints() []hint {
 		if _, ok := m.Highlighted(); !ok {
 			return []hint{{"esc", "back"}}
 		}
-		return []hint{{"↑↓", "move"}, {"enter", "open"}, {"ctrl+d", "delete"}, {"ctrl+r", "rename"}, {"ctrl+a", "restore"}, {"esc", "back"}}
+		return []hint{{"↑↓", "move"}, {"enter", "open"}, {"ctrl+x", "delete"}, {"ctrl+r", "rename"}, {"ctrl+a", "restore"}, {"esc", "back"}}
 	}
 	esc := "quit"
 	if m.HasActive {

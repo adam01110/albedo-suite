@@ -18,12 +18,17 @@ func (m *AppModel) handleSessionResults(msg tea.Msg) (tea.Cmd, bool) {
 			return nil, true
 		}
 		m.refreshingSession = false
+		previousModel, previousProfile := m.Chat.Model, m.Chat.Provider
 		m.applySessionFacts(msg)
+		var name tea.Cmd
+		if m.Chat.Model != previousModel || m.Chat.Provider != previousProfile {
+			name = m.Chat.modelNameCmd()
+		}
 		if m.sessionRefreshPending {
 			m.sessionRefreshPending = false
-			return m.refreshSessionFactsCmd(), true
+			return tea.Batch(name, m.refreshSessionFactsCmd()), true
 		}
-		return nil, true
+		return name, true
 
 	case SessionPreviewMsg:
 		if msg.Err == nil && msg.Preview.Session != nil {

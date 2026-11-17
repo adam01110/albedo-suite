@@ -9,22 +9,24 @@ from urllib.error import HTTPError
 from harness import Albedo, Provider, exclusive, operation_id, python, text
 
 
-def image_bytes():
+def image_bytes(pixels=b"\x00\xff\x00\x00\x00\xff\x00"):
     def chunk(kind, data):
         return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
-    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 2, 1, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(b"\x00\xff\x00\x00\x00\xff\x00")) + chunk(b"IEND", b"")
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 2, 1, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(pixels)) + chunk(b"IEND", b"")
 
 
 @exclusive
 class ToolImagesTests(unittest.TestCase):
     def test_live_multiple_images_replay_and_missing_resource(self):
-        data = image_bytes()
-        encoded = base64.b64encode(data).decode()
+        # Upstream refuses to attach the same bytes twice in one cell.
+        shown = [image_bytes(), image_bytes(b"\x00\x00\xff\x00\xff\x00\x00")]
+        data = shown[0]
+        first, second = (base64.b64encode(image).decode() for image in shown)
         pending = [True]
 
         def script(_request):
             if pending and pending.pop():
-                return python(f"import base64\ndata = base64.b64decode({encoded!r})\nshow_image(data)\nshow_image(data)")
+                return python(f"import base64\nshow_image(base64.b64decode({first!r}))\nshow_image(base64.b64decode({second!r}))")
             return text("I see both images")
 
         provider = Provider(script)
@@ -42,13 +44,13 @@ class ToolImagesTests(unittest.TestCase):
             images = [part["image"] for part in result["content"] if part["kind"] == "image"]
             self.assertEqual(live[-1]["entry_id"], result["id"])
             self.assertEqual(live[-1]["images"], images)
-            for image in images:
-                self.assertEqual(image["original_bytes"], len(data))
+            for image, expected in zip(images, shown, strict=True):
+                self.assertEqual(image["original_bytes"], len(expected))
                 self.assertEqual((image["width"], image["height"]), (2, 1))
                 self.assertNotIn("data", image)
                 with app.api(image["reference"]["url"]) as response:
                     self.assertEqual(response.headers["Content-Type"], "image/png")
-                    self.assertEqual(response.read(), data)
+                    self.assertEqual(response.read(), expected)
             with self.assertRaises(HTTPError) as failure:
                 app.api(images[0]["reference"]["url"].replace("image-0", "image-99"))
             self.assertEqual(failure.exception.code, 404)

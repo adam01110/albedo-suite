@@ -23,9 +23,9 @@ read(_, _) ->
 fetch(Id, Access) ->
     Headers = [{<<"authorization">>, <<Id/binary, " ", Access/binary>>},
         {<<"accept">>, <<"application/json">>}, {<<"accept-encoding">>, <<"identity">>}],
-    case albedo_openai_transport:open(<<"GET">>, ?URL, Headers, <<>>, ?TIMEOUT) of
+    case albedo_zed_auth:open(<<"GET">>, ?URL, Headers, <<>>, ?TIMEOUT) of
         {ok, Connection} ->
-            albedo_openai_transport:with_connection_discard_errors(Connection, fun() ->
+            albedo_http:with_connection_discard_errors(Connection, fun() ->
                 status(Connection, erlang:monotonic_time(millisecond) + ?TIMEOUT)
             end);
         _ -> {error, <<"Could not reach the Zed account service">>}
@@ -33,14 +33,14 @@ fetch(Id, Access) ->
 
 %% Any status is answered as itself; only a 200 has a body worth reading.
 status(Connection, Deadline) ->
-    case albedo_openai_transport:receive_until(Connection, Deadline) of
+    case albedo_http:receive_until(Connection, Deadline) of
         {ok, {headers, 200, _, _}} -> body(Connection, Deadline, [], 0);
         {ok, {headers, Status, _, _}} -> {ok, {Status, <<>>}};
         _ -> {error, <<"Invalid Zed account response">>}
     end.
 
 body(Connection, Deadline, Acc, Size) ->
-    case albedo_openai_transport:receive_until(Connection, Deadline) of
+    case albedo_http:receive_until(Connection, Deadline) of
         {ok, {data, Bytes, Final}} when Size + byte_size(Bytes) =< ?CAP ->
             case Final of
                 false -> body(Connection, Deadline, [Bytes | Acc], Size + byte_size(Bytes));

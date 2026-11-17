@@ -332,7 +332,11 @@ class ZedE2ETests(unittest.TestCase):
         body = request["provider_request"]
         self.assertEqual(body["model"], "models/gemini-3.1-pro-preview")
         self.assertEqual(body["contents"][0]["role"], "user")
-        self.assertEqual(body["contents"][0]["parts"][0]["text"], "reply")
+        # Upstream stamps each user turn with its UTC time.
+        self.assertRegex(
+            body["contents"][0]["parts"][0]["text"],
+            r"^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\]\nreply$",
+        )
         self.assertEqual(
             body["generationConfig"]["thinkingConfig"]["thinkingLevel"], "HIGH"
         )

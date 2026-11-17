@@ -131,6 +131,13 @@ type ChatWindowMsg struct {
 	Generation int64
 }
 
+type chatModelNameMsg struct {
+	Err                                               error
+	SessionID, Profile, Model, Label                  string
+	DefaultEffort, DefaultEffortSource, ProfileEffort string
+	Generation                                        int64
+}
+
 // ChatCacheFadeMsg arrives when Usage's cached count reaches its next step.
 type ChatCacheFadeMsg struct {
 	Usage      *daemon.Usage
