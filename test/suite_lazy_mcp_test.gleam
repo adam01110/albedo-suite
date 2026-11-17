@@ -4,8 +4,10 @@
 //// death. Replaces the suite's former Erlang native tests.
 
 import albedo/harness/extensions/mcp/lazy
+import albedo/harness/extensions/mcp/loads
 import albedo/harness/host_install
 import albedo/harness/sdk/extension
+import albedo/harness/sdk/page
 import albedo/harness/sdk/storage
 import albedo/harness/sdk/store
 import gleam/dynamic.{type Dynamic}
@@ -34,6 +36,14 @@ pub fn main() -> Nil {
       "CREATE TABLE session_selection(session TEXT,kind TEXT,preference_key TEXT,enabled INTEGER)",
     )
   let scope = storage.host(ledger)
+  let assert Ok(Nil) =
+    storage.query(scope, fn(db) {
+      storage.exec(
+        db,
+        "CREATE TABLE sessions(id TEXT PRIMARY KEY);INSERT INTO sessions(id) VALUES('session');",
+      )
+    })
+  let assert Ok(Nil) = loads.initialise(scope)
   descriptions_are_validated(scope)
   startup_contacts_nothing_and_loads_once(home, scope)
   idle_cleanup_reconnects_and_refuses_drift(home, scope)
@@ -41,7 +51,7 @@ pub fn main() -> Nil {
   store.close(ledger)
   let _ = del_dir_r(home)
   io.println(
-    "Lazy MCP: validation, startup, adoption, single load, no replay, unload, idle, drift, dropped transport and owner death passed",
+    "Lazy MCP: validation, startup, adoption, single load, no replay, unload, sidebar, idle, drift, dropped transport and owner death passed",
   )
 }
 
@@ -140,6 +150,7 @@ fn startup_contacts_nothing_and_loads_once(
     |> list.unique
   let assert [Ok(definitions)] = loaded
   assert seen(control, "initialize") == 1
+  assert sidebar(scope) == [#("a", "loaded", page.Active)]
   let assert Ok([tool]) =
     json.parse(definitions, decode.list(decode.at(["name"], decode.string)))
   assert state(source) == [#("a", True, True), #("b", False, False)]
@@ -154,11 +165,13 @@ fn startup_contacts_nothing_and_loads_once(
 
   // Unload discards the catalogue; a new load starts a new client.
   let assert Ok(Nil) = lazy.unload(source, "a")
+  assert sidebar(scope) == [#("a", "unloaded", page.Plain)]
   let assert Error(_) = lazy.call(source, tool, "{\"message\":\"hi\"}")
   assert seen(control, "tools/call") == 2
   assert state(source) == [#("a", False, False), #("b", False, False)]
   let assert Ok(_) = lazy.load(source, "a")
   assert seen(control, "initialize") == 2
+  assert sidebar(scope) == [#("a", "loaded", page.Active)]
 
   // An unexpected transport death needs an explicit unload and load.
   let pid = server_pid(control)
@@ -188,6 +201,8 @@ fn idle_cleanup_reconnects_and_refuses_drift(
   let control = home <> "/idle"
   let _ = make_dir(control)
   let runtime = mcp_owner_support.start_runtime()
+  // A new manager starts empty, so earlier loads are history.
+  assert sidebar(scope) == [#("a", "loaded", page.Active)]
   let assert Ok(#(manager, _)) =
     lazy.prepare(
       config([#("a", server(Ok(control), "", True))], 300),
@@ -197,6 +212,7 @@ fn idle_cleanup_reconnects_and_refuses_drift(
     )
   let assert Ok(Nil) =
     mcp_owner_support.on_runtime(runtime, fn() { lazy.adopt(manager) })
+  assert sidebar(scope) == [#("a", "unloaded", page.Plain)]
   let source = lazy.Managed(manager)
   let assert Ok(definitions) = lazy.load(source, "a")
   let assert Ok([tool]) =
@@ -293,6 +309,13 @@ fn config(servers: List(#(String, json.Json)), idle: Int) -> String {
     #("idleTimeoutMs", json.int(idle)),
   ])
   |> json.to_string
+}
+
+/// The session's sidebar rows: name, badge and tone.
+fn sidebar(scope: storage.Storage) -> List(#(String, String, page.Tone)) {
+  let assert Ok(glance) = loads.sidebar(scope, "session", "")
+  assert glance.title == "mcp"
+  list.map(glance.rows, fn(row) { #(row.text, row.badge, row.tone) })
 }
 
 /// Each configured server's name, loaded and connected flags.

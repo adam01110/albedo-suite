@@ -68,6 +68,12 @@ changes the catalogue, that first use is refused before dispatch; read the new
 schemas explicitly before calling again. Unexpected transport death reports
 `connected = false` and requires unload/load, rather than hidden reconnection.
 
+The chat sidebar lists the session's MCP servers in a `mcp` glance under
+`skills`, in the order they were first loaded: loaded servers are active, and
+servers unloaded since, or loaded before a session reload, stay listed as
+unloaded. Rows persist with the session (table `mcp_loads`) and move with it.
+Eager mode records nothing.
+
 Set the timeout to zero to disable cleanup. Without Home Manager, configure
 `mcp.idleTimeoutMs` in `extensions.json`; it defaults to zero. The timeout is
 lazy-mode-only and accepts integer milliseconds from zero to 3600000.

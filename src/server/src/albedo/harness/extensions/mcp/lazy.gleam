@@ -10,6 +10,7 @@ import albedo/harness/extensions/mcp/client
 import albedo/harness/extensions/mcp/connection
 import albedo/harness/extensions/mcp/dispatch
 import albedo/harness/extensions/mcp/endpoint.{type Endpoint}
+import albedo/harness/extensions/mcp/loads
 import albedo/harness/extensions/mcp/owned
 import albedo/harness/extensions/mcp/secrets
 import albedo/harness/extensions/mcp/servers
@@ -81,6 +82,8 @@ type State {
     loaded: Dict(String, Loaded),
     idle_ms: Int,
     requests: Subject(Request),
+    /// Notes a load or unload for the session's sidebar.
+    noted: fn(String, Bool) -> Nil,
   )
 }
 
@@ -171,12 +174,18 @@ fn prepare_guarded(
   )
   let eligible = list.reverse(eligible)
   let configured = dict.from_list(eligible)
+  // The sidebar is history only: a failed write never fails the session.
+  let _ = loads.reset(scope, session)
+  let noted = fn(name, loaded) {
+    let _ = loads.record(scope, session, name, loaded)
+    Nil
+  }
   use #(manager, requests) <- result.try(
     owned.start(
       owner,
       fn() {
         let requests = process.new_subject()
-        Ok(#(State(configured, dict.new(), idle_ms, requests), requests))
+        Ok(#(State(configured, dict.new(), idle_ms, requests, noted), requests))
       },
       serve,
       close_all,
@@ -468,6 +477,7 @@ fn execute(
             True -> Nil
             False -> endpoint.close(server.endpoint)
           }
+          state.noted(name, False)
           #(Ok("null"), State(..state, loaded: dict.delete(state.loaded, name)))
         }
       }
@@ -560,13 +570,19 @@ fn connect(
           endpoint.close(server)
           #(Error("MCP catalogue is too large or ambiguous"), state)
         }
-        True, Ok(before) if before.operations != found -> #(
-          Error(
-            "MCP catalogue changed after reconnect; inspect mcp.load/server schemas before calling. No operation was dispatched.",
-          ),
-          next,
-        )
-        True, _ -> #(Ok(catalogue.definitions(found)), next)
+        True, Ok(before) if before.operations != found -> {
+          state.noted(name, True)
+          #(
+            Error(
+              "MCP catalogue changed after reconnect; inspect mcp.load/server schemas before calling. No operation was dispatched.",
+            ),
+            next,
+          )
+        }
+        True, _ -> {
+          state.noted(name, True)
+          #(Ok(catalogue.definitions(found)), next)
+        }
       }
     }
   }

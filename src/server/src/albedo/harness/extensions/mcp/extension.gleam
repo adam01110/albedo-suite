@@ -2,6 +2,7 @@
 
 import albedo/harness/extensions/mcp/bundle.{type Bundle}
 import albedo/harness/extensions/mcp/lazy
+import albedo/harness/extensions/mcp/loads
 import albedo/harness/extensions/mcp/servers
 import albedo/harness/extensions/mcp/sign_in
 import albedo/harness/extensions/mcp/transfer
@@ -197,7 +198,10 @@ pub fn configured_extension() -> extension.Extension {
     "Model Context Protocol servers with session-owned connections",
     [],
     [
-      extension.TransferPlugin(transfer.adapter()),
+      extension.TransferPlugin(loads.transferred(transfer.adapter())),
+      // Directly after the skills glance, which the registry places earlier.
+      extension.GlancePlugin(loads.sidebar, loads.resource_url),
+      extension.CleanPlugin(loads.forget),
       extension.SettingsPlugin(settings.declaration(config_section())),
       extension.LoginResolverPlugin(sign_in.resolve, sign_in.keep),
       extension.McpServersPlugin(extension.McpServers(
@@ -336,20 +340,23 @@ fn encode_editor(servers: List(editor_mcp.McpServer)) -> String {
   |> json.to_string
 }
 
-/// The table the configured MCP extension keeps. The editor extension
+/// The tables the configured MCP extension keeps. The editor extension
 /// shares the directory and keeps nothing.
-pub const tables = ["mcp_catalogues"]
+pub const tables = ["mcp_catalogues", "mcp_loads"]
 
 /// The last catalogue each server answered, under the fingerprint of the
 /// setup it answered for. A session opening reads it instead of waiting on
 /// the server; one row per server name, so it never outgrows the config.
 fn initialise_catalogues(scope: storage.Storage) -> Result(Nil, String) {
-  storage.query(scope, fn(db) {
-    storage.exec(
-      db,
-      "CREATE TABLE IF NOT EXISTS mcp_catalogues(server TEXT PRIMARY KEY,fingerprint TEXT NOT NULL,catalogue BLOB NOT NULL);",
-    )
-  })
+  use Nil <- result.try(
+    storage.query(scope, fn(db) {
+      storage.exec(
+        db,
+        "CREATE TABLE IF NOT EXISTS mcp_catalogues(server TEXT PRIMARY KEY,fingerprint TEXT NOT NULL,catalogue BLOB NOT NULL);",
+      )
+    }),
+  )
+  loads.initialise(scope)
 }
 
 fn saved_catalogue(
