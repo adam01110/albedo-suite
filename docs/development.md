@@ -265,8 +265,17 @@ unchanged. Conflicts, missing baselines, upstream deletions/possible renames,
 file/directory collisions, symlinks, executable mode changes and changed binary
 files require manual review. Renames are deliberately reported as deletions or
 type changes, not guessed by similarity. No conflict markers are written.
-All plans must resolve before any source, checksum or pin is written; write
-errors roll back. No files outside the existing overlay are copied into `src`.
+By default all plans must resolve before any source, checksum or pin is written;
+write errors roll back. No files outside the existing overlay are copied into
+`src`.
+
+With `--apply-conflicts`, an update whose only unresolved items are text
+conflicts is applied in full: clean merges, NUR lock, pin and both manifests
+are written, and each conflicted replacement receives `git merge-file --diff3`
+markers labelled `suite`, `old-upstream` and `new-upstream`. Resolve the markers
+in place; `scripts/validate-upstream.sh` refuses to build while any remain in
+`src` or `test`. Missing baselines, deletions, renames, collisions, symlinks,
+mode and binary changes still write nothing.
 
 The manifests are generated from pristine candidate bytes. The existing
 `sourceFiles` inventory continues to list the server overlay (including its
@@ -285,18 +294,54 @@ require manual changes rather than an automatically successful update.
 
 The default report is `/tmp/albedo-upstream-update.json`; choose another location
 with `--report /absolute/path/report.json` outside the checkout. Exit status is
-0 for updated/no-change, 2 for unresolved merges, and 1 for operational errors.
-The report lists old/candidate NUR and Albedo identities, automatically merged
-paths and unresolved reasons. Reproduce a conflict with its exact candidate NUR
-SHA, obtain both source paths with the `source_expr` expression in the script,
-and compare the reported path in the old source, suite and candidate. Resolve in
-a separate human branch, update pristine manifests and run the full checks.
+0 for updated/no-change, 2 for unresolved merges or written conflicts, and 1 for
+operational errors. The report lists old/candidate NUR and Albedo identities and
+their realized `oldSource`/`candidateSource` store paths, automatically merged
+paths, unresolved reasons, `conflicts`, `noDelta` and `upstreamChanges` counts.
+`noDelta` names replacements whose merged bytes equal the candidate upstream
+file: retire them (delete the replacement and its baseline line) unless a test
+documents why they stay. The sibling `<report>-review/` directory holds each
+conflict's diff3 merge and `upstream-changes.txt`, one `A`, `R` or `M` line per
+upstream path changed between the pins, for changelog and retirement review.
 
 After a successful local update, run `bash scripts/validate-upstream.sh`. This
-runs updater fixtures, formatting verification, both builds, all flake checks,
-and the complete isolated E2E case set using the candidate package's actual
-`server.src` and built output. It sets Erlang's explicit CA bundle as required by
-the existing checks. No live providers or personal credentials are used.
+rejects leftover conflict markers, then runs updater fixtures, formatting
+verification, both builds, all flake checks, and the isolated E2E case set using
+the candidate package's actual `server.src` and built output. Cases that a flake
+check already ran against the same package (`--case` in `nix/modules/checks.nix`)
+are skipped. Extra arguments go to `scripts/test-e2e.py`, for example
+`--case usage_test.py` to repeat one case. It sets Erlang's explicit CA bundle as
+required by the existing checks. No live providers or personal credentials are
+used.
+
+`scripts/test-e2e.py` passes all selected cases to one upstream `run.py`
+invocation, so they share daemon boots and its duration-ordered scheduler
+(`-j`/`-x` set its shared and exclusive lanes; upstream defaults otherwise).
+Failed tests are rerun once, serially; a pass there is printed as `FLAKY` and
+the run succeeds. `--no-retry` keeps the first result.
+
+Two helpers shorten the merge loop. `scripts/regen-api.sh` reruns upstream's
+`cli/tools/apigen` on the pinned source with the suite's
+`src/server/docs/openapi.yaml` and copies the generated `api.gen.go`,
+`digest.gen.go` and `api_digest.gleam` back into the overlay, so merge only the
+contract and regenerate the rest. `scripts/overlay-tree.sh server|client [dir]`
+runs the package's own unpack, patch (checksum guard and overlay copy),
+configure and build phases once in `/tmp/albedo-overlay-<component>`, leaving a
+tree with vendored dependencies even when the build fails. After edits,
+`scripts/overlay-tree.sh sync <component> [dir]` recopies the overlay, and
+`<dir>/shell gleam build` or `<dir>/shell go build ./...` compiles incrementally
+in the build environment. Overlay files that still hold conflict markers are
+compiled as pristine upstream, so several people can fix their own files
+before every conflict is resolved. The client shell does not depend on a built
+server. `python3 scripts/update-upstream.py --sync-manifests` then rewrites both
+checksum manifests and the server inventory for the current overlay from the
+pinned pristine source, after porting into a newly replaced upstream file or
+retiring one.
+
+Suite-wide license files and the `source/suite` link live in a symlink wrapper
+around each component (`passthru.unwrapped` is the build). Components are built
+against unwrapped dependencies, so editing docs, tests, scripts or Nix outside a
+component's own inputs rebuilds only the wrappers, not render, server or client.
 
 ### Publication boundary
 

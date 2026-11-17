@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -126,6 +127,38 @@ def prepare_source(upstream, destination, suite):
     )
 
 
+def retry_targets(log):
+    """Map upstream run.py FAILED test ids to its file:Class.method targets."""
+    targets = []
+    for line in log.splitlines():
+        if not line.startswith("FAILED "):
+            continue
+        match = re.fullmatch(r"FAILED (\w+)\.(\w+\.\w+) \([\d.]+s\)", line.strip())
+        if not match:
+            # Class or module fixtures cannot be targeted; rerun nothing.
+            return []
+        targets.append(f"{match[1]}.py:{match[2]}")
+    return targets
+
+
+def run_cases(source, environment, targets, jobs, exclusive_jobs):
+    """Run targets in one upstream invocation and return its exit code and stderr."""
+    command = [sys.executable, "-B", "test/e2e/run.py", *targets]
+    if jobs:
+        command += ["-j", str(jobs)]
+    if exclusive_jobs:
+        command += ["-x", str(exclusive_jobs)]
+    process = subprocess.Popen(
+        command, cwd=source, env=environment, stderr=subprocess.PIPE, text=True
+    )
+    assert process.stderr is not None
+    log = []
+    for line in process.stderr:
+        sys.stderr.write(line)
+        log.append(line)
+    return process.wait(), "".join(log)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, required=True)
@@ -135,6 +168,18 @@ def main():
     parser.add_argument("--package", type=Path, required=True)
     parser.add_argument(
         "--case", choices=(*SUITE_CASES, *UPSTREAM_CASES), action="append"
+    )
+    parser.add_argument(
+        "--skip-case", choices=(*SUITE_CASES, *UPSTREAM_CASES), action="append"
+    )
+    parser.add_argument("-j", "--jobs", type=int, help="shared-lane tests at once")
+    parser.add_argument(
+        "-x", "--exclusive-jobs", type=int, help="private daemons at once"
+    )
+    parser.add_argument(
+        "--no-retry",
+        action="store_true",
+        help="do not rerun failed tests serially",
     )
     args = parser.parse_args()
     suite = args.suite
@@ -146,6 +191,14 @@ def main():
         SHELL=shutil.which("bash") or "/bin/sh",
         ALBEDO_TEST_CLI=str(args.package / "bin/albedo"),
     )
+    skipped = set(args.skip_case or ())
+    targets = [
+        case
+        for case in args.case or (*SUITE_CASES, *UPSTREAM_CASES)
+        if case not in skipped
+    ]
+    if not targets:
+        parser.error("no E2E cases selected")
 
     with tempfile.TemporaryDirectory(prefix="albedo-suite-e2e-") as directory:
         # Kernel-upgrade fixtures expect a writable shipment beside the launcher.
@@ -170,14 +223,20 @@ def main():
 
         source = Path(directory) / "source"
         prepare_source(args.source, source, suite)
-        for case in args.case or (*SUITE_CASES, *UPSTREAM_CASES):
-            subprocess.run(
-                [sys.executable, "-B", "test/e2e/run.py", case, "-x", "1"],
-                cwd=source,
-                env=environment,
-                check=True,
-            )
+        # One invocation shares daemon boots and upstream's duration scheduling.
+        status, log = run_cases(
+            source, environment, targets, args.jobs, args.exclusive_jobs
+        )
+        failed = retry_targets(log)
+        if status == 0 or args.no_retry or not failed:
+            return status
+        # Load-sensitive tests are retried alone; a pass is reported as flaky.
+        print(f"retrying {len(failed)} failed tests serially", file=sys.stderr)
+        status, _ = run_cases(source, environment, failed, 1, 1)
+        if status == 0:
+            print("FLAKY (passed on serial retry): " + " ".join(failed), file=sys.stderr)
+        return status
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

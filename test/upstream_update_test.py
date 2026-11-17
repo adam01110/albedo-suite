@@ -189,7 +189,101 @@ class UpdateTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             u.check_lock(self.lock, other)
 
-    def execute(self, candidate_identity=None):
+    def test_conflict_details_and_no_delta(self):
+        conflicted = self.replacement()
+        self.replacement(ours=b"new\n", name="adopted")
+        self.replacement(ours=b"base\n", theirs=b"base\n", name="pristine")
+        details = {}
+        _, _, unresolved = u.merge_overlay(self.suite, self.old, self.new, details)
+        self.assertEqual(len(unresolved), 1)
+        marked = details["conflicts"][conflicted]
+        self.assertIn(b"<<<<<<< suite", marked)
+        self.assertIn(b"||||||| old-upstream", marked)
+        self.assertIn(b">>>>>>> new-upstream", marked)
+        self.assertEqual(details["noDelta"], ["server/adopted", "server/pristine"])
+
+    def test_sync_manifests_hashes_pristine_files_for_the_overlay(self):
+        self.write(self.new, "ported.gleam", b"pristine\n")
+        self.write(self.suite / "src/server", "ported.gleam", b"suite edit\n")
+        self.write(self.suite / "src/server", "suite_only.gleam", b"suite\n")
+        self.write(self.suite / "src/client", "cli/x.go", b"suite\n")
+        self.write(self.new, "cli/x.go", b"pristine go\n")
+        (self.suite / "upstream/pin.json").write_text(json.dumps(self.identities[1]))
+        with patch.object(u, "source", return_value=(self.identities[1], self.new)):
+            self.assertEqual(u.sync_manifests(self.suite), 0)
+        server = (self.suite / "upstream/server.sha256").read_text()
+        expected = hashlib.sha256(b"pristine\n").hexdigest()
+        self.assertEqual(server, f"{expected}  ported.gleam\n")
+        self.assertIn("  cli/x.go\n", (self.suite / "upstream/client.sha256").read_text())
+        pin = json.loads((self.suite / "upstream/pin.json").read_text())
+        self.assertEqual(pin["sourceFiles"], ["ported.gleam", "suite_only.gleam"])
+
+    def test_rename_hints_follow_rare_identifiers_across_languages(self):
+        base = self.write(self.old, "legacy.erl", b"lazy_catalogue_entry(X) -> discover_operations(X).")
+        self.write(self.new, "ported.gleam", b"fn lazy_catalogue_entry(x) { discover_operations(x) }")
+        self.write(self.new, "other.gleam", b"fn unrelated_function() { 1 }")
+        hints = u.rename_hints([("server/legacy.erl", base)], self.new)
+        self.assertEqual(hints["server/legacy.erl"][0], [1.0, "ported.gleam"])
+
+    def test_upstream_changes_list_added_removed_modified(self):
+        self.write(self.old, "same", b"x")
+        self.write(self.new, "same", b"x")
+        self.write(self.old, "gone", b"x")
+        self.write(self.new, "added", b"x")
+        self.write(self.old, "edited", b"x")
+        self.write(self.new, "edited", b"y")
+        self.assertEqual(
+            u.upstream_changes(self.old, self.new),
+            {"added": ["added"], "removed": ["gone"], "modified": ["edited"]},
+        )
+
+    def test_apply_conflicts_writes_markers_pin_and_review(self):
+        p = self.replacement()
+        clean = self.replacement(ours=b"base\n", name="clean")
+        result, report = self.execute(apply_conflicts=True)
+        self.assertEqual(result, 2)
+        self.assertEqual(report["status"], "conflicts-written")
+        self.assertIn(b"<<<<<<< suite", p.read_bytes())
+        self.assertEqual(clean.read_bytes(), b"new\n")
+        self.assertEqual(
+            json.loads((self.suite / "upstream/pin.json").read_text())["rev"], "b" * 40
+        )
+        review = Path(report["review"])
+        self.assertIn(b"<<<<<<< suite", (review / "src/server/file").read_bytes())
+        self.assertEqual(report["conflicts"], ["src/server/file"])
+
+    def test_apply_conflicts_sets_aside_vanished_and_colliding_files(self):
+        gone = self.replacement(ours=b"base\nsuite delta\n")
+        (self.new / "file").rename(self.new / "renamed")
+        addition = self.write(self.suite / "src/client", "added.go", b"suite\n")
+        self.write(self.new, "added.go", b"upstream\n")
+        kept = self.replacement(ours=b"base\n", name="kept")
+        result, report = self.execute(apply_conflicts=True)
+        self.assertEqual((result, report["status"]), (2, "conflicts-written"))
+        self.assertFalse(gone.exists())
+        self.assertFalse(addition.exists())
+        self.assertEqual(kept.read_bytes(), b"new\n")
+        self.assertEqual(
+            sorted(report["setAside"]), ["src/client/added.go", "src/server/file"]
+        )
+        review = Path(report["review"]) / "set-aside"
+        patch = (review / "src/server/file.patch").read_text()
+        self.assertIn("+suite delta", patch)
+        self.assertEqual((review / "src/server/file").read_bytes(), b"base\nsuite delta\n")
+        pin = json.loads((self.suite / "upstream/pin.json").read_text())
+        self.assertEqual(pin["sourceFiles"], ["kept"])
+        manifest = (self.suite / "upstream/server.sha256").read_text()
+        self.assertNotIn("  file\n", manifest)
+
+    def test_apply_conflicts_still_refuses_non_text_review(self):
+        self.replacement()
+        (self.new / "file").chmod(0o755)
+        before = {p: p.read_bytes() for p in self.suite.rglob("*") if p.is_file()}
+        result, report = self.execute(apply_conflicts=True)
+        self.assertEqual((result, report["status"]), (2, "review-required"))
+        self.assertEqual(before, {p: p.read_bytes() for p in before})
+
+    def execute(self, candidate_identity=None, apply_conflicts=False):
         report = self.root / "report.json"
 
         def fake_run(*args, cwd=None):
@@ -215,7 +309,7 @@ class UpdateTests(unittest.TestCase):
             ),
             patch.object(u, "run", side_effect=fake_run),
         ):
-            result = u.update(self.suite, None, report)
+            result = u.update(self.suite, None, report, apply_conflicts)
         return result, json.loads(report.read_text())
 
     def test_transaction_conflict_preserves_pin_lock_and_other_clean_files(self):
@@ -293,9 +387,10 @@ class UpdateTests(unittest.TestCase):
             return original(path, data)
 
         with patch.object(Path, "write_bytes", fail_once), self.assertRaises(OSError):
-            u.apply({p: b"after", q: b"after"})
+            u.apply({p: None, q: b"after", self.suite / "three": b"new"})
         self.assertEqual(p.read_bytes(), b"before")
         self.assertEqual(q.read_bytes(), b"before")
+        self.assertFalse((self.suite / "three").exists())
 
 
 if __name__ == "__main__":

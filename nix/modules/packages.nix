@@ -19,6 +19,7 @@
       # keep-sorted start
       callPackage
       runCommand
+      symlinkJoin
       # keep-sorted end
       ;
 
@@ -37,19 +38,16 @@
       # keep-sorted end
     ];
 
-    withSuiteNotices = package:
+    license = import ../albedo-license.nix {inherit (pkgs) lib;};
+
+    # Dependency notices need the build tree; suite-wide files stay out of it.
+    withDependencyNotices = package:
       package.overrideAttrs (old: {
-        meta = (old.meta or {}) // {license = import ../albedo-license.nix {inherit (pkgs) lib;};};
+        meta = (old.meta or {}) // {inherit license;};
         postInstall =
           (old.postInstall or "")
           + ''
             doc="$out/share/doc/albedo-suite"
-            mkdir -p "$doc/source"
-            cp ${../../LICENSE} "$doc/LICENSE"
-            cp ${../../THIRD_PARTY_NOTICES.md} "$doc/THIRD_PARTY_NOTICES.md"
-            cp -r --no-preserve=mode ${../../LICENSES} "$doc/LICENSES"
-            cp ${../../docs/package-sources.md} "$doc/SOURCE.md"
-            cp ${albedo-git.src}/native/render/fonts/JetBrainsMono-OFL.txt "$doc/LICENSES/JetBrainsMono-OFL.txt"
             mkdir -p "$doc/dependency-notices"
             for dependencies in build/packages vendor cli/vendor "''${cargoDeps-}"; do
               if [ -d "$dependencies" ]; then
@@ -62,10 +60,36 @@
                 )
               fi
             done
-            ln -s ${self.outPath} "$doc/source/suite"
-            ln -s ${albedo-git.src} "$doc/source/upstream"
           '';
       });
+
+    # Whole-suite notices and the source link sit in a symlink wrapper, so
+    # editing docs, tests or Nix outside a component's inputs reuses its build.
+    withSuiteNotices = package: let
+      unwrapped = withDependencyNotices package;
+    in
+      symlinkJoin {
+        inherit (unwrapped) name;
+        paths = [unwrapped];
+        postBuild = ''
+          doc="$out/share/doc/albedo-suite"
+          mkdir -p "$doc/source" "$doc/LICENSES"
+          cp ${../../LICENSE} "$doc/LICENSE"
+          cp ${../../THIRD_PARTY_NOTICES.md} "$doc/THIRD_PARTY_NOTICES.md"
+          cp -r --no-preserve=mode ${../../LICENSES}/. "$doc/LICENSES"
+          cp ${../../docs/package-sources.md} "$doc/SOURCE.md"
+          cp ${albedo-git.src}/native/render/fonts/JetBrainsMono-OFL.txt "$doc/LICENSES/JetBrainsMono-OFL.txt"
+          ln -s ${self.outPath} "$doc/source/suite"
+          ln -s ${albedo-git.src} "$doc/source/upstream"
+        '';
+        passthru =
+          (unwrapped.passthru or {})
+          // {
+            inherit unwrapped;
+            inherit (unwrapped) src version;
+          };
+        meta = unwrapped.meta // {inherit license;};
+      };
 
     withServerSources = package:
       withSuiteNotices (package.overrideAttrs (old: {
@@ -173,7 +197,8 @@
       assert albedo-git.src.outputHash == pin.narHash;
         (albedo-git.override {
           callPackage = path: args: let
-            package = callPackage path args;
+            # Builds depend on unwrapped components, never on suite notices.
+            package = callPackage path (builtins.mapAttrs (_: arg: arg.unwrapped or arg) args);
             name = baseNameOf path;
           in
             if name == "server.nix"
@@ -186,7 +211,7 @@
             then withPortableUsageCore package
             else package;
         }).overrideAttrs (old: {
-          meta = (old.meta or {}) // {license = import ../albedo-license.nix {inherit (pkgs) lib;};};
+          meta = (old.meta or {}) // {inherit license;};
         });
   in {
     packages = {

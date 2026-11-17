@@ -101,6 +101,18 @@ history onto an unrelated upstream repository.
    retired suite behavior, commands and results, and any untested platform or
    blocked check. A package build is not an activation.
 
+Steps 3, 4 and 6 are mechanised: in a fresh described change, run
+`python3 scripts/update-upstream.py --apply-conflicts`, run
+`scripts/regen-api.sh` once the contract merges, resolve the remaining diff3
+markers and port set-aside files (compile them in a `scripts/overlay-tree.sh`
+tree rather than full package builds), review the report's `noDelta`
+retirement candidates and the `upstream-changes.txt` list beside it, run
+`python3 scripts/update-upstream.py --sync-manifests`, then
+`bash scripts/validate-upstream.sh`. Merges split cleanly by area (providers,
+daemon, quota, harness extensions, client) for parallel owners. The judgement
+in steps 2, 4, 5 and 7 still applies to every conflict and changed API; see
+[automated updates](development.md#automated-sparse-upstream-updates).
+
 ## Verification and handoff
 
 For source or upstream updates, run from the suite root:

@@ -125,8 +125,8 @@
         touch $out
       '';
 
-    checks.package-layout = assert pkgs.lib.hasInfix "--no-preserve=mode" runtime.server.postPatch;
-    assert pkgs.lib.hasInfix "--no-preserve=mode" runtime.client.postPatch;
+    checks.package-layout = assert pkgs.lib.hasInfix "--no-preserve=mode" runtime.server.unwrapped.postPatch;
+    assert pkgs.lib.hasInfix "--no-preserve=mode" runtime.client.unwrapped.postPatch;
     assert !(suitePackages ? albedo-web);
     assert !(runtime ? web);
     assert !(suitePackages.albedo-patched ? web);

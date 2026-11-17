@@ -103,6 +103,22 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(filename, "python_test.py")
             self.assertTrue(test_name.startswith("PythonToolsTests.test_"))
 
+    def test_failed_tests_map_to_upstream_targets(self):
+        log = (
+            "ok     zed_e2e_test.ZedTests.test_login (1.0s)\n"
+            "FAILED python_test.PythonToolsTests.test_chdir_moves_run_and_files (2.5s)\n"
+            "FAILED mcp_http_test.McpHttpTests.test_identity_future (10.0s)\n"
+        )
+        self.assertEqual(
+            runner.retry_targets(log),
+            [
+                "python_test.py:PythonToolsTests.test_chdir_moves_run_and_files",
+                "mcp_http_test.py:McpHttpTests.test_identity_future",
+            ],
+        )
+        fixture = "FAILED setUpClass (mcp_test.McpTests) (0.1s)\n"
+        self.assertEqual(runner.retry_targets(log + fixture), [])
+
     def test_changed_pin_fixture_is_not_silently_patched(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "kernel_upgrade_test.py"
