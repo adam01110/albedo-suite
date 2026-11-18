@@ -40,6 +40,7 @@
       servers.fixture = {
         command = "/bin/fixture";
         description = "Load for fixture documentation.";
+        idleTimeoutMs = 0;
         secretFiles.API_KEY = "/run/user/12345/albedo-secret";
       };
     };
@@ -65,6 +66,10 @@
   invalidEnvironmentName = mkHome {
     enable = true;
     environment."BAD-NAME" = "x";
+  };
+  defaultIdleServer = mkHome {
+    enable = true;
+    mcp.servers.plain.command = "/bin/fixture";
   };
   nixPathSecret = mkHome {
     enable = true;
@@ -147,6 +152,14 @@ in
     testMcpIdleCleanupDefaultsToOneMinute = {
       expr = minimal.config.programs.albedo.mcp.idleTimeoutMs;
       expected = 60000;
+    };
+
+    testMcpServerIdleTimeoutIsOptional = {
+      expr =
+        configured.config.programs.albedo.mcp.servers.fixture.idleTimeoutMs
+        == 0
+        && defaultIdleServer.config.programs.albedo.mcp.servers.plain.idleTimeoutMs == null;
+      expected = true;
     };
 
     testMinimalConfigurationIsValid = {

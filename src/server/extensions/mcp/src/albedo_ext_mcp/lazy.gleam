@@ -1,7 +1,8 @@
 //// Lazy MCP sessions (albedo-suite): preparation publishes only eligible
 //// server names and their configured descriptions. A manager process owns
 //// every client, starting one only when the agent loads or calls its server,
-//// and runs loads, calls and unloads one at a time. See docs/lazy-mcp.md.
+//// runs loads and calls one at a time, and closes each server's transport
+//// after its own idle timeout. See docs/lazy-mcp.md.
 
 import albedo_clock
 import albedo_ext_mcp/bundle.{type Bundle}
@@ -62,7 +63,6 @@ type Action {
   Servers
   Definitions
   Load(name: String)
-  Unload(name: String)
   Call(advertised: String, arguments: String)
 }
 
@@ -72,6 +72,8 @@ type Loaded {
     operations: List(Operation),
     last_used: Int,
     idle: Bool,
+    /// This server's idle timeout; zero never closes it.
+    idle_ms: Int,
   )
 }
 
@@ -79,9 +81,10 @@ type State {
   State(
     configured: Dict(String, Dynamic),
     loaded: Dict(String, Loaded),
+    /// The idle timeout of servers that set none.
     idle_ms: Int,
     requests: Subject(Request),
-    /// Notes a load or unload for the session's sidebar.
+    /// Notes a load for the session's sidebar.
     noted: fn(String, Bool) -> Nil,
   )
 }
@@ -101,6 +104,25 @@ pub fn description(config: Dynamic) -> Result(String, Nil) {
         False -> Error(Nil)
       }
     Error(_) -> Error(Nil)
+  }
+}
+
+/// A server's idle timeout: its own `idleTimeoutMs`, else `default`; an
+/// integer outside zero to `max_idle_ms` is invalid.
+pub fn idle_timeout(config: Dynamic, default: Int) -> Result(Int, Nil) {
+  case
+    decode.run(
+      config,
+      decode.optional_field(
+        "idleTimeoutMs",
+        default,
+        decode.int,
+        decode.success,
+      ),
+    )
+  {
+    Ok(idle_ms) if idle_ms >= 0 && idle_ms <= max_idle_ms -> Ok(idle_ms)
+    _ -> Error(Nil)
   }
 }
 
@@ -147,6 +169,10 @@ fn prepare_guarded(
         Some(server),
         dynamic.properties([]),
       ))
+      use _ <- result.try(
+        idle_timeout(server, idle_ms)
+        |> result.replace_error(invalid_configuration),
+      )
       description(server) |> result.replace_error(invalid_configuration)
     }),
   )
@@ -290,14 +316,6 @@ pub fn load(source: Source, name: String) -> Result(String, String) {
   }
 }
 
-/// Closes `name`'s client and discards its catalogue.
-pub fn unload(source: Source, name: String) -> Result(Nil, String) {
-  case source {
-    Managed(lazy) -> request(lazy, Unload(name)) |> result.replace(Nil)
-    Eager(_) -> Error("MCP lazy loading is not enabled")
-  }
-}
-
 /// Calls one advertised operation with `arguments`, a JSON object's text.
 pub fn call(
   source: Source,
@@ -343,8 +361,8 @@ type Event {
 }
 
 /// Serializes state transitions, including concurrent loads of the same
-/// server; calls are serialized too, so unload cannot race a dispatched
-/// operation. Ends with the runtime or a stop.
+/// server; calls are serialized too, so idle cleanup cannot race a
+/// dispatched operation. Ends with the runtime or a stop.
 fn serve(state: State, lifetime: owned.Lifetime) -> Nil {
   let state = expire_idle(state)
   let selector =
@@ -392,41 +410,37 @@ fn close_all(state: State) -> Nil {
   })
 }
 
+/// Whether `server` has a timeout and has been unused for it.
+fn expired(server: Loaded, now: Int) -> Bool {
+  !server.idle && server.idle_ms > 0 && now - server.last_used >= server.idle_ms
+}
+
 /// Idle cleanup closes the transport and keeps its schemas; only a new
 /// explicit use reconnects.
 fn expire_idle(state: State) -> State {
-  case state.idle_ms {
-    0 -> state
-    idle_ms -> {
-      let now = now()
-      let loaded =
-        dict.map_values(state.loaded, fn(_, server) {
-          case !server.idle && now - server.last_used >= idle_ms {
-            True -> {
-              endpoint.close(server.endpoint)
-              Loaded(..server, idle: True)
-            }
-            False -> server
-          }
-        })
-      State(..state, loaded:)
-    }
-  }
+  let now = now()
+  let loaded =
+    dict.map_values(state.loaded, fn(_, server) {
+      case expired(server, now) {
+        True -> {
+          endpoint.close(server.endpoint)
+          Loaded(..server, idle: True)
+        }
+        False -> server
+      }
+    })
+  State(..state, loaded:)
 }
 
 /// Milliseconds until the next connected server falls idle, or None when
 /// nothing can.
 fn idle_wait(state: State) -> option.Option(Int) {
-  case state.idle_ms {
-    0 -> None
-    idle_ms ->
-      dict.values(state.loaded)
-      |> list.filter(fn(server) { !server.idle })
-      |> list.map(fn(server) { server.last_used + idle_ms })
-      |> list.reduce(int.min)
-      |> option.from_result
-      |> option.map(fn(deadline) { int.max(0, deadline - now()) })
-  }
+  dict.values(state.loaded)
+  |> list.filter(fn(server) { !server.idle && server.idle_ms > 0 })
+  |> list.map(fn(server) { server.last_used + server.idle_ms })
+  |> list.reduce(int.min)
+  |> option.from_result
+  |> option.map(fn(deadline) { int.max(0, deadline - now()) })
 }
 
 fn touch(action: Action, state: State) -> State {
@@ -470,25 +484,12 @@ fn execute(
   case action {
     Servers -> #(Ok(server_list(state)), state)
     Definitions -> #(Ok(catalogue.definitions(operations(state))), state)
-    Load(name) -> load_server(name, state)
-    Unload(name) ->
-      case dict.has_key(state.configured, name), dict.get(state.loaded, name) {
-        False, _ -> #(Error(unavailable_server), state)
-        True, Error(Nil) -> #(Ok("null"), state)
-        True, Ok(server) -> {
-          case server.idle {
-            True -> Nil
-            False -> endpoint.close(server.endpoint)
-          }
-          state.noted(name, False)
-          #(Ok("null"), State(..state, loaded: dict.delete(state.loaded, name)))
-        }
-      }
+    Load(name) -> load_server(name, state, True)
     Call(advertised, arguments) ->
       case catalogue.find(operations(state), advertised) {
         Error(Nil) -> #(Error("MCP operation is unavailable"), state)
         Ok(operation) ->
-          case load_server(operation.server, state) {
+          case load_server(operation.server, state, False) {
             #(Error(reason), next) -> #(Error(reason), next)
             #(Ok(_), next) -> #(
               call_loaded(next, advertised, arguments, owner),
@@ -515,16 +516,23 @@ fn server_list(state: State) -> String {
   |> json.to_string
 }
 
-fn load_server(name: String, state: State) -> #(Result(String, String), State) {
+/// Idle servers reconnect on any use; a dropped one only on an explicit
+/// load (`redial`), so no call reaches a fresh server unannounced.
+fn load_server(
+  name: String,
+  state: State,
+  redial: Bool,
+) -> #(Result(String, String), State) {
   case dict.get(state.configured, name), dict.get(state.loaded, name) {
     Error(Nil), _ -> #(Error(unavailable_server), state)
     Ok(config), Ok(Loaded(idle: True, ..)) -> connect(name, config, state)
-    Ok(_), Ok(server) ->
-      case connected(server) {
-        True -> #(Ok(catalogue.definitions(server.operations)), state)
-        False -> #(
+    Ok(config), Ok(server) ->
+      case connected(server), redial {
+        True, _ -> #(Ok(catalogue.definitions(server.operations)), state)
+        False, True -> connect(name, config, state)
+        False, False -> #(
           Error(
-            "MCP connection dropped; unload and load it before retrying. Inspect effects of earlier calls.",
+            "MCP connection dropped and the server's state is lost; await mcp.load(server) reconnects it. Inspect effects of earlier calls before retrying.",
           ),
           state,
         )
@@ -565,7 +573,14 @@ fn connect(
           loaded: dict.insert(
             state.loaded,
             name,
-            Loaded(server, found, now(), False),
+            Loaded(
+              server,
+              found,
+              now(),
+              False,
+              idle_timeout(config, state.idle_ms)
+                |> result.unwrap(state.idle_ms),
+            ),
           ),
         )
       case catalogue.valid(operations(next)), dict.get(state.loaded, name) {

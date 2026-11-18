@@ -42,12 +42,15 @@
       secrets = server.secretFiles;
     };
   in
-    recursiveUpdate server.extraSettings {
-      inherit (server) description;
-      args = ["${launchConfig}"];
-      command = lib.getExe suitePackages.albedo-mcp-launcher;
-      type = "stdio";
-    };
+    recursiveUpdate server.extraSettings ({
+        inherit (server) description;
+        args = ["${launchConfig}"];
+        command = lib.getExe suitePackages.albedo-mcp-launcher;
+        type = "stdio";
+      }
+      // lib.optionalAttrs (server.idleTimeoutMs != null) {
+        inherit (server) idleTimeoutMs;
+      });
 
   extensionSettings = recursiveUpdate cfg.settings {
     enabled = {

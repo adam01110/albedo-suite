@@ -1,5 +1,5 @@
 //// Lazy MCP lifecycle against the fake stdio server: preparation contacts
-//// nothing, loads start one client, calls are never replayed, unload,
+//// nothing, loads start one client, calls are never replayed, per-server
 //// idle cleanup, catalogue drift, dropped transports, adoption and owner
 //// death.
 
@@ -48,7 +48,7 @@ pub fn main() -> Nil {
   store.close(ledger)
   let _ = del_dir_r(home)
   io.println(
-    "Lazy MCP: validation, startup, adoption, single load, no replay, unload, sidebar, idle, drift, dropped transport and owner death passed",
+    "Lazy MCP: validation, startup, adoption, single load, no replay, sidebar, per-server idle, drift, dropped transport and owner death passed",
   )
 }
 
@@ -58,6 +58,14 @@ fn descriptions_are_validated(scope: storage.Storage) -> Nil {
   list.each(["null", "42", "\"" <> string.repeat("x", 1025) <> "\""], fn(bad) {
     let config =
       "{\"retryMs\":30000,\"servers\":{\"a\":{\"type\":\"http\",\"url\":\"https://example.invalid/mcp\",\"description\":"
+      <> bad
+      <> "}}}"
+    let assert Error(_) =
+      lazy.prepare(config, preferences, scope, "session", owner)
+  })
+  list.each(["-1", "3600001", "1.5", "\"60\""], fn(bad) {
+    let config =
+      "{\"retryMs\":30000,\"servers\":{\"a\":{\"type\":\"http\",\"url\":\"https://example.invalid/mcp\",\"idleTimeoutMs\":"
       <> bad
       <> "}}}"
     let assert Error(_) =
@@ -163,26 +171,23 @@ fn startup_contacts_nothing_and_loads_once(
   assert seen(control, "tools/call") == 2
   assert seen(control, "initialize") == 1
 
-  // Unload discards the catalogue; a new load starts a new client.
-  let assert Ok(Nil) = lazy.unload(source, "a")
-  assert sidebar(scope) == [#("a", "unloaded", page.Plain)]
-  let assert Error(_) = lazy.call(source, tool, "{\"message\":\"hi\"}")
-  assert seen(control, "tools/call") == 2
-  assert state(source) == [#("a", False, False), #("b", False, False)]
+  // A loaded server's repeated load reuses its client.
   let assert Ok(_) = lazy.load(source, "a")
-  assert seen(control, "initialize") == 2
-  assert sidebar(scope) == [#("a", "loaded", page.Active)]
+  assert seen(control, "initialize") == 1
 
-  // An unexpected transport death needs an explicit unload and load.
+  // A dropped transport refuses calls unrun; an explicit load redials.
   let pid = server_pid(control)
   kill(pid)
   await_dead(pid, 50)
   assert state(source) == [#("a", True, False), #("b", False, False)]
-  let assert Error(dropped) = lazy.load(source, "a")
-  assert string.contains(dropped, "unload and load")
-  let assert Ok(Nil) = lazy.unload(source, "a")
+  let assert Error(dropped) = lazy.call(source, tool, "{\"message\":\"hi\"}")
+  assert string.contains(dropped, "mcp.load")
+  assert seen(control, "tools/call") == 2
+  assert seen(control, "initialize") == 1
   let assert Ok(_) = lazy.load(source, "a")
-  assert seen(control, "initialize") == 3
+  assert seen(control, "initialize") == 2
+  assert state(source) == [#("a", True, True), #("b", False, False)]
+  assert sidebar(scope) == [#("a", "loaded", page.Active)]
 
   // Close ends the manager and its client.
   let pid = server_pid(control)
@@ -200,12 +205,20 @@ fn idle_cleanup_reconnects_and_refuses_drift(
 ) -> Nil {
   let control = home <> "/idle"
   let _ = make_dir(control)
+  let kept = home <> "/kept"
+  let _ = make_dir(kept)
   let runtime = mcp_owner_support.start_runtime()
   // A new manager starts empty, so earlier loads are history.
   assert sidebar(scope) == [#("a", "loaded", page.Active)]
   let assert Ok(#(manager, _)) =
     lazy.prepare(
-      config([#("a", server(Ok(control), "", True))], 300),
+      config(
+        [
+          #("a", server(Ok(control), "", True)),
+          #("kept", idle_server(Ok(kept), 0)),
+        ],
+        300,
+      ),
       preferences,
       scope,
       "session",
@@ -215,13 +228,16 @@ fn idle_cleanup_reconnects_and_refuses_drift(
     mcp_owner_support.on_runtime(runtime, fn() { lazy.adopt(manager) })
   assert sidebar(scope) == [#("a", "unloaded", page.Plain)]
   let source = lazy.Managed(manager)
+  let assert Ok(_) = lazy.load(source, "kept")
   let assert Ok(definitions) = lazy.load(source, "a")
   let assert Ok([tool]) =
     json.parse(definitions, decode.list(decode.at(["name"], decode.string)))
   let pid = server_pid(control)
   await_dead(pid, 100)
-  // Idle cleanup keeps the schemas; an explicit call reconnects.
-  assert state(source) == [#("a", True, False)]
+  // Idle cleanup keeps the schemas; an explicit call reconnects. A server
+  // whose own timeout is zero stays connected past the section's timeout.
+  assert state(source) == [#("a", True, False), #("kept", True, True)]
+  assert alive(server_pid(kept))
   let assert Ok(_) = lazy.call(source, tool, "{\"message\":\"again\"}")
   assert seen(control, "initialize") == 2
   // A catalogue that changed while idle refuses the first call unrun.
@@ -287,6 +303,21 @@ fn server(
   description: String,
   enabled: Bool,
 ) -> json.Json {
+  fixture(control, [
+    #("description", json.string(description)),
+    #("enabled", json.bool(enabled)),
+  ])
+}
+
+/// A fixture server with its own idle timeout.
+fn idle_server(control: Result(String, Nil), idle: Int) -> json.Json {
+  fixture(control, [#("idleTimeoutMs", json.int(idle))])
+}
+
+fn fixture(
+  control: Result(String, Nil),
+  fields: List(#(String, json.Json)),
+) -> json.Json {
   let #(python, script) = fake_server()
   let env = case control {
     Ok(dir) -> [#("FAKE_MCP_CONTROL", json.string(dir))]
@@ -297,10 +328,9 @@ fn server(
     #("command", json.string(python)),
     #("args", json.array([script], json.string)),
     #("env", json.object(env)),
-    #("description", json.string(description)),
-    #("enabled", json.bool(enabled)),
     #("startupTimeoutMs", json.int(5000)),
     #("callTimeoutMs", json.int(5000)),
+    ..fields
   ])
 }
 

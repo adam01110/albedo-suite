@@ -85,6 +85,7 @@ expression. Each server also accepts:
 | `environment` | `{}` | Public environment variables |
 | `secretFiles` | `{}` | Environment variable names mapped to runtime secret paths |
 | `runtimeInputs` | `[]` | Packages added to the server's PATH |
+| `idleTimeoutMs` | `null` | Lazy idle timeout for this server; `null` uses `mcp.idleTimeoutMs`, `0` never closes it |
 | `extraSettings` | `{}` | Additional upstream server fields |
 
 **Secret paths must be strings, not Nix paths.** Never use `builtins.readFile`
@@ -92,8 +93,8 @@ on a credential or copy one into `/nix/store`. The launcher reads these files
 only when the server starts. Secret variables override public environment
 values.
 
-Lazy mode defaults to true. [Lazy MCP](lazy-mcp.md) explains how to discover,
-load and unload servers.
+Lazy mode defaults to true. [Lazy MCP](lazy-mcp.md) explains how to discover
+and load servers and when they close.
 
 ## Formatting
 

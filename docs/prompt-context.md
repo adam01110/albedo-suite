@@ -60,7 +60,7 @@ activate a package automatically.
 
 Lazy MCP startup context includes only eligible server names and user-configured
 `description` metadata. No connection, credential lookup or remote tool-catalog
-fetch is needed to choose a server. Loading and unloading keep this context
+fetch is needed to choose a server. Loading and idle cleanup keep this context
 snapshot unchanged; schemas remain explicit tool results. See [lazy MCP](lazy-mcp.md)
 for configuration and reload behavior.
 

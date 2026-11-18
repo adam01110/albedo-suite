@@ -34,7 +34,7 @@ in {
     idleTimeoutMs = mkOption {
       type = types.ints.between 0 3600000;
       default = 60000;
-      description = "Lazy MCP transport idle timeout in milliseconds; zero disables cleanup. Schemas remain loaded.";
+      description = "Default lazy MCP transport idle timeout in milliseconds; zero disables cleanup. Schemas remain loaded. A server's idleTimeoutMs overrides it.";
     };
     servers = mkOption {
       default = {};
@@ -49,6 +49,11 @@ in {
             type = types.addCheck types.str (value: builtins.stringLength value <= 1024);
             default = "";
             description = "Short purpose and when-to-load guidance, up to 1024 UTF-8 bytes. Included in lazy session context without connecting; public, not a secret.";
+          };
+          idleTimeoutMs = mkOption {
+            type = types.nullOr (types.ints.between 0 3600000);
+            default = null;
+            description = "This server's lazy idle timeout in milliseconds; null uses mcp.idleTimeoutMs and zero keeps a stateful server connected until the session ends or reloads.";
           };
           args = mkOption {
             type = types.listOf types.str;

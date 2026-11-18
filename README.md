@@ -24,7 +24,7 @@ providers, skills and SOPS declarations stay in Infra.
 
 | Component | Behavior |
 | --- | --- |
-| [Lazy MCP](docs/lazy-mcp.md) | Connect to a server when explicitly requested, rather than at session startup, and list loaded and unloaded servers in the sidebar under skills. |
+| [Lazy MCP](docs/lazy-mcp.md) | Connect to a server when explicitly requested, rather than at session startup, close each one after its own idle timeout, and list loaded servers in the sidebar under skills. |
 | [Explicit file checks](docs/formatter.md) | Format tracked files and collect diagnostics in one `files.check()` call. |
 | [Local LSP](docs/lsp.md) | Start a language server on an explicit diagnostics or navigation call. |
 | [Monitor snapshots](docs/monitor.md) | Export running-agent status and cached connected-account quotas without starting the daemon. |

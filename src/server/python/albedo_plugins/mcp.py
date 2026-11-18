@@ -124,10 +124,6 @@ class Mcp:
             list[Record], _record(await self._host("mcp.load", {"server": server}))
         )
 
-    async def unload(self, server: str) -> None:
-        """Stop one server and discard its session catalogue."""
-        await self._host("mcp.unload", {"server": server})
-
     async def tools(self, server: str | None = None) -> list[Record]:
         """Every operation (name, server, kind, tool, description), or one server's."""
         operations = (
@@ -179,11 +175,19 @@ class Mcp:
             for _, item in ranked[: max(limit, 0)]
         ]
 
+    async def _discover(self, name: str) -> list[Operation]:
+        """The operations `name` means, loading its server only when they are
+        not yet known, so an idle or dropped server is not redialled just to
+        resolve a name."""
+        found = _named(await self._operations(), name)
+        if not found and "/" in name:
+            await self.load(name.split("/", 1)[0])
+            found = _named(await self._operations(), name)
+        return found
+
     async def describe(self, name: str) -> Record:
         """One operation with its `parameters` schema; name as for call()."""
-        if "/" in name:
-            await self.load(name.split("/", 1)[0])
-        found = _named(await self._operations(), name)
+        found = await self._discover(name)
         if not found:
             raise LookupError(f"unknown MCP operation {name!r}; mcp.tools() lists them")
         return Record(found[0])
@@ -194,7 +198,7 @@ class Mcp:
         """Call one operation by advertised name or `server/tool`; keyword
         arguments join `arguments`."""
         if "/" in name:
-            await self.load(name.split("/", 1)[0])
+            await self._discover(name)
         merged = {**(arguments or {}), **kwargs}
 
         async def call(given: dict[str, object]) -> Record:

@@ -85,8 +85,10 @@ class LazyMcpTests(unittest.TestCase):
             route, {"selection": value}, method="PATCH", headers={"If-Match": etag}
         ).close()
 
-    def idle_timeout(self, milliseconds):
+    def idle_timeout(self, milliseconds, **servers):
         self.settings["mcp"]["idleTimeoutMs"] = milliseconds
+        for name, value in servers.items():
+            self.settings["mcp"]["servers"][name]["idleTimeoutMs"] = value
         self.app.write_extensions(self.settings)
         self.reload()
 
@@ -157,17 +159,18 @@ assert await mcp.tools() == []
 """)
         self.assertFalse(list(self.markers.glob("*/pid-*")))
 
-    def test_load_unload_and_reload_are_explicit(self):
+    def test_load_and_reload_are_explicit(self):
         self.turn("assert await mcp.load('fake')")
         self.assertEqual(len(self.starts("fake")), 1)
         self.assertFalse(self.starts("other"))
         old = self.starts("fake")
+        self.turn("assert not hasattr(mcp, 'unload')")
+        self.reload()
+        self.stopped(old)
         self.turn("""
-await mcp.unload('fake')
 assert await mcp.tools() == []
 assert all(not s.loaded for s in await mcp.servers())
 """)
-        self.stopped(old)
         self.turn("assert await mcp.tools('fake')")
         self.assertEqual(len(self.starts("fake")), 2)
         self.assertFalse(self.starts("other"))
@@ -229,15 +232,18 @@ assert await mcp.tools() == []
         (self.markers / "broken" / "delay").unlink()
         self.turn("assert await mcp.load('broken')")
         self.assertEqual(len(self.starts("broken")), 2)
-        self.idle_timeout(200)
+        self.idle_timeout(200, other=0)
         self.turn("""
 import asyncio
 await mcp.load('fake')
+await mcp.load('other')
 await asyncio.sleep(0.4)
-fake = next(s for s in await mcp.servers() if s.name == 'fake')
-assert fake.loaded and not fake.connected
+state = {s.name: s for s in await mcp.servers()}
+assert state['fake'].loaded and not state['fake'].connected
+assert state['other'].loaded and state['other'].connected
 """)
         self.stopped(self.starts("fake"))
+        self.assertTrue(all(alive(int(p.name[4:])) for p in self.starts("other")))
 
     def test_eager_default_is_unchanged(self):
         self.turn()

@@ -43,9 +43,6 @@ class LazyMcpPythonTests(unittest.IsolatedAsyncioTestCase):
         if method == "mcp.load":
             self.loaded = True
             return [self.operation]
-        if method == "mcp.unload":
-            self.loaded = False
-            return None
         if method == "mcp.call":
             return {"isError": False, "content": [{"type": "text", "text": "echoed"}]}
         if method == "editor_mcp.list":
@@ -86,10 +83,15 @@ class LazyMcpPythonTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(("mcp.load", {"server": "docs"}), self.calls)
         self.assertFalse(result.isError)
 
-    async def test_unload_and_unknown_name(self):
+    async def test_known_operations_are_not_reloaded(self):
         await self.mcp.load("docs")
-        await self.mcp.unload("docs")
-        self.assertEqual(await self.mcp.tools(), [])
+        self.calls.clear()
+        await self.mcp.describe("docs/echo")
+        await self.mcp.call("docs/echo", message="hi")
+        self.assertNotIn("mcp.load", [m for m, _ in self.calls])
+
+    async def test_no_unload_and_unknown_name(self):
+        self.assertFalse(hasattr(self.mcp, "unload"))
         with self.assertRaises(LookupError):
             await self.mcp.describe("unknown_advertised_name")
 
@@ -124,8 +126,6 @@ class Catalogue:
             return [
                 item for item in self.operations if item["server"] == args["server"]
             ]
-        if method == "mcp.unload":
-            return None
         if method == "mcp.call":
             for item in self.operations:
                 if args["name"] in (item["name"], f"{item['server']}/{item['tool']}"):
