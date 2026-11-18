@@ -122,6 +122,12 @@ func (m *AppModel) newChatModel(session *daemon.Session) ChatModel {
 	chat.artifactConn = m.Conn
 	chat.openBrowser = m.openBrowser
 	chat.termsFor = m.termsFor
+	chat.notifyTitle = func() string {
+		if m.ActiveSession != nil && m.ActiveSession.ID == session.ID {
+			return m.ActiveSession.Title
+		}
+		return session.Title
+	}
 	if pending, ok := m.pendingBySession[session.ID]; ok {
 		chat.pendingUsers = slices.Clone(pending.users)
 		chat.pendingContinuations = maps.Clone(pending.continuations)

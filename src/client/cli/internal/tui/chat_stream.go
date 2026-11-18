@@ -181,6 +181,13 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 			m.appendSettledEntry(entry)
 		}
 	}
+	// Only a live ending notifies; a user message closing a stale turn does not.
+	switch evt.Type {
+	case daemon.EventTurnCompleted, daemon.EventError, daemon.EventInterrupted:
+		if !evt.Replayed {
+			m.queueTurnNotification(entries)
+		}
+	}
 
 	switch evt.Type {
 	case daemon.EventReset:

@@ -34,6 +34,7 @@ providers, skills and SOPS declarations stay in Infra.
 | CLI resume | `albedo resume` without an ID reopens the newest non-archived session in the current directory. |
 | [Vim editing](docs/vim.md) | Modal composer motions and edits, with the current mode in the footer. |
 | [TUI activity](docs/activity-sidebar.md) | Show passive current and recent tool activity below background jobs. |
+| [Turn notifications](docs/turn-notifications.md) | Raise a desktop notification through the terminal when a turn ends while it is unfocused. |
 | [Inline redraw](docs/development.md#terminal-ux) | Keep the inline TUI from stacking stale header rows when the terminal narrows. |
 | [Image previews](docs/tool-images.md) | Display attachments and tool-returned images in supported terminals. |
 | [Prompt context](docs/prompt-context.md) | Keep startup references compact and retrieve full API docs explicitly. |

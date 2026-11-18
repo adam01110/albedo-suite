@@ -102,8 +102,8 @@ type ChatModel struct {
 	activityRemainder PageRow
 	// activityTools counts tool calls in loaded history and live work.
 	activityTools int
-	eventChan         chan streamDelivery
-	streamStopped     bool
+	eventChan     chan streamDelivery
+	streamStopped bool
 	// Images and Pastes are what was pasted into the composer as markers.
 	Images promptImages
 	Pastes promptPastes
@@ -251,6 +251,11 @@ type ChatModel struct {
 	// blurred is set while the terminal reports it is unfocused, where a face
 	// nobody sees is not worth a frame.
 	blurred bool
+	// notifyMode, notifyTitle and notifyPending drive turn notifications; see
+	// chat_notify.go. notifyTitle names the session when one is sent.
+	notifyMode    notifyMode
+	notifyTitle   func() string
+	notifyPending string
 	// rebuilding defers trimming until a re-render has placed the reading position.
 	rebuilding bool
 
@@ -319,6 +324,7 @@ func NewChatModel(session *daemon.Session, client *daemon.ChatClient) ChatModel 
 		moved:        session.Moved,
 		movePending:  session.MovePending,
 		client:       client,
+		notifyMode:   turnNotifyMode(),
 		History:      bh,
 		Renderer:     TranscriptRenderer{Workspace: session.Workspace, highlights: &highlightCache{}},
 		Viewport:     vp,
@@ -443,16 +449,18 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 				m.observeActivity(daemon.StreamEvent{Type: daemon.EventTurnCompleted})
 				m.clearAction()
 				if m.transcript.turn != nil && m.transcript.turn.begun() {
-					for _, entry := range m.transcript.closeTurn(false) {
+					ends := m.transcript.closeTurn(false)
+					for _, entry := range ends {
 						m.appendSettledEntry(entry)
 					}
+					m.queueTurnNotification(ends)
 				}
 				m.refreshViewportContent()
 			}
 			m.reconcileStopped()
 		}
 		home := m.hostHomeCmd()
-		return m, tea.Batch(m.startAnimation(), m.statusPollCmd(), home)
+		return m, tea.Batch(m.startAnimation(), m.statusPollCmd(), home, m.takeTurnNotification())
 
 	case ChatDirenvMsg:
 		return m, m.direnvAnswered(msg)
@@ -513,7 +521,7 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 				}
 			}
 		}
-		reconcile = append(reconcile, m.waitForNextEvent(), m.startAnimation(), window, fade, draw, shellRefresh)
+		reconcile = append(reconcile, m.waitForNextEvent(), m.startAnimation(), window, fade, draw, shellRefresh, m.takeTurnNotification())
 		return m, tea.Batch(reconcile...)
 
 	case ChatLiveDrawMsg:
