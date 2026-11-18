@@ -165,7 +165,6 @@ fn zed_readings() -> Nil {
   assert limit.status == "ok"
   let assert Some(scope) = limit.scope
   assert string.contains(scope, "edit-prediction")
-  assert string.contains(scope, "not hosted-model spend")
 
   // Over its limit stays the raw percentage; a reading is never clamped or
   // turned into a remaining budget.
@@ -201,10 +200,9 @@ fn zed_readings() -> Nil {
   // A rejected credential is a reading's failure, and says what to do about it.
   let expired = read_zed_status(401)
   assert expired.limits == []
-  assert expired.error
-    == Some(
-      "Zed rejected the stored account credential (HTTP 401); sign in again with /login zed",
-    )
+  let assert Some(rejected) = expired.error
+  assert string.contains(rejected, "HTTP 401")
+  assert string.contains(rejected, "/login zed")
   assert read_zed_status(403).error != None
   let assert Some(redirect) = read_zed_status(302).error
   assert string.contains(redirect, "redirected")

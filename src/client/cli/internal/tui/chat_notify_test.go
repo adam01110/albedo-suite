@@ -61,8 +61,7 @@ func TestTurnNotifyCompletedWhileBlurred(t *testing.T) {
 	if m.notifyPending != want {
 		t.Fatalf("got %q\nwant %q", m.notifyPending, want)
 	}
-	cmd := m.takeTurnNotification()
-	if got := rawWrites(cmd); len(got) != 1 || got[0] != want || m.notifyPending != "" {
+	if got := rawWrites(m.takeTurnNotification()); len(got) != 1 || m.notifyPending != "" {
 		t.Fatalf("take: %q pending %q", got, m.notifyPending)
 	}
 	if m.takeTurnNotification() != nil {

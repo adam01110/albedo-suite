@@ -1,7 +1,9 @@
 import albedo/harness/extensions/opencode_go/routing
+import albedo/harness/extensions/opencode_go/wire
+import albedo_env
 import gleam/io
+import gleam/option
 import gleeunit/should
-import harness/rotation_test
 
 const metadata_catalog =
   "{\"opencode-go\":{\"name\":\"OpenCode Go\",\"npm\":\"@ai-sdk/openai-compatible\",\"models\":{\"catalog-inherit\":{},\"catalog-openai\":{\"provider\":{\"npm\":\"@ai-sdk/openai\"}},\"catalog-anthropic\":{\"provider\":{\"npm\":\"@ai-sdk/anthropic\"}},\"catalog-google\":{\"provider\":{\"npm\":\"@ai-sdk/google\"}},\"catalog-unknown\":{\"provider\":{\"npm\":\"unknown-sdk\"}}}}}"
@@ -36,12 +38,29 @@ fn catalog_route_test() -> Nil {
   cleanup(bare_root)
 }
 
+/// `wire.route` maps catalog metadata to its route and keeps the documented
+/// family routing for a model the catalog does not name.
+fn wire_route_test() -> Nil {
+  let #(root, _, home) = fixture()
+  let _ = write(home, "models.json", metadata_catalog)
+  let previous = albedo_env.lookup("ALBEDO_HOME")
+  albedo_env.set("ALBEDO_HOME", home)
+  wire.route("catalog-inherit") |> should.equal(wire.ChatRoute)
+  wire.route("catalog-openai") |> should.equal(wire.ResponsesRoute)
+  wire.route("catalog-anthropic") |> should.equal(wire.MessagesRoute)
+  wire.route("catalog-google") |> should.equal(wire.GeminiRoute)
+  wire.route("gpt-5.7-unlisted") |> should.equal(wire.ResponsesRoute)
+  wire.route("claude-5-unlisted") |> should.equal(wire.MessagesRoute)
+  wire.route("gemini-5-unlisted") |> should.equal(wire.GeminiRoute)
+  case previous {
+    option.Some(previous) -> albedo_env.set("ALBEDO_HOME", previous)
+    option.None -> albedo_env.unset("ALBEDO_HOME")
+  }
+  cleanup(root)
+}
+
 pub fn main() -> Nil {
-  rotation_test.opencode_go_rotates_and_sends_session_header_test()
-  rotation_test.opencode_go_oauth_account_sends_org_header_test()
-  rotation_test.opencode_go_dispatches_each_model_family_to_its_wire_route_test()
   catalog_route_test()
-  io.println(
-    "Native OpenCode Go rotation, OAuth, catalog routes and wire routes: 4 cases passed",
-  )
+  wire_route_test()
+  io.println("OpenCode Go catalog and wire routes passed")
 }

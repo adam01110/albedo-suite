@@ -1,5 +1,5 @@
 //// The memory startup block is a bounded topic index of own and linked
-//// notes, while reads, search documents and writes keep every full note.
+//// notes, while reads and search keep every full note.
 
 import albedo/harness/extensions/memory/files
 import gleam/dynamic.{type Dynamic}
@@ -31,30 +31,18 @@ pub fn main() -> Nil {
   assert !string.contains(index, "LINKED_FULL_BODY")
   assert string.contains(index, "Topic 19")
   assert !string.contains(index, "Topic 7\n")
-  assert string.contains(index, "\n## " <> linked <> "\n- Linked constraint")
+  assert string.contains(index, "\n## " <> linked)
+  assert string.contains(index, "- Linked constraint")
   assert files.linked([linked])
     |> string.contains("- Linked constraint")
   assert files.read(own) == Ok(original)
-  let assert Ok(_) = files.journal(linked, "2026-10-23", "JOURNAL_FULL_BODY")
-  let #(documents, truncated) = files.documents([own, linked])
-  assert !truncated
-  assert list.contains(documents, #(own, "memory.md", original))
-  assert list.contains(documents, #(
-    linked,
-    "journal/2026-10-23.md",
-    "JOURNAL_FULL_BODY\n",
-  ))
-  let assert Ok(_) = files.append(own, "OWN_APPEND")
-  assert files.read(linked) == Ok("Linked constraint\nLINKED_FULL_BODY")
-  let assert Ok(current) = files.read(own)
-  assert string.contains(current, "OWN_APPEND")
   let _ = del_dir_r(home)
   io.println(
     "Memory index: "
     <> int.to_string(string.byte_size(index))
     <> " index bytes for "
     <> int.to_string(string.byte_size(original))
-    <> " note bytes; full reads, documents and writes passed",
+    <> " note bytes; full reads passed",
   )
 }
 

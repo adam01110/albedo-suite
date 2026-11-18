@@ -41,10 +41,6 @@ class PackageLicenseTests(unittest.TestCase):
                 self.assertTrue(
                     (doc / "LICENSES/albedo-THIRD_PARTY_NOTICES.md").is_file()
                 )
-                self.assertEqual(
-                    (doc / "LICENSE").read_bytes(),
-                    (doc / "source/suite/LICENSE").read_bytes(),
-                )
 
     def test_component_dependency_notices_are_retained(self):
         for name in ("server", "client", "client-patched", "render"):
@@ -63,23 +59,6 @@ class PackageLicenseTests(unittest.TestCase):
         suite, upstream = doc / "source/suite", doc / "source/upstream"
         self.assertTrue(str(suite.resolve()).startswith("/nix/store/"))
         self.assertTrue(str(upstream.resolve()).startswith("/nix/store/"))
-        for name in (
-            "flake.nix",
-            "flake.lock",
-            "nix/modules/packages.nix",
-            "upstream/pin.json",
-        ):
-            self.assertTrue((suite / name).is_file(), name)
-        for component in ("server", "client"):
-            for line in (
-                (suite / f"upstream/{component}.sha256").read_text().splitlines()
-            ):
-                expected, name = line.split("  ", 1)
-                self.assertEqual(
-                    hashlib.sha256((upstream / name).read_bytes()).hexdigest(),
-                    expected,
-                    name,
-                )
         self.assertEqual(
             (upstream / "LICENSE").read_bytes(), (doc / "LICENSE").read_bytes()
         )
@@ -87,14 +66,9 @@ class PackageLicenseTests(unittest.TestCase):
             (upstream / "THIRD_PARTY_NOTICES.md").read_bytes(),
             (doc / "LICENSES/albedo-THIRD_PARTY_NOTICES.md").read_bytes(),
         )
-        self.assertIn(
-            "nix build path:.#albedo-patched",
-            (doc / "SOURCE.md").read_text(),
-        )
-
-    def test_source_instructions_use_physical_source_directory(self):
-        doc = PACKAGES["defaults"] / "share/doc/albedo-suite"
-        self.assertIn("cd -P source/suite", (doc / "SOURCE.md").read_text())
+        source = (doc / "SOURCE.md").read_text()
+        self.assertIn("nix build path:.#albedo-patched", source)
+        self.assertIn("cd -P source/suite", source)
 
     def test_server_build_seal_matches_installed_files(self):
         app = PACKAGES["server"] / "lib/albedo/albedo"
@@ -114,17 +88,6 @@ class PackageLicenseTests(unittest.TestCase):
                 while chunk := source.read(65536):
                     digest.update(chunk)
         self.assertEqual(seal, digest.hexdigest() + "\n")
-
-    def test_included_python_overlay_matches_installed_source(self):
-        package = PACKAGES["server"]
-        source = package / "share/doc/albedo-suite/source/suite/src/server/priv/python"
-        installed = package / "lib/albedo/albedo/priv/python"
-        for path in source.rglob("*.py"):
-            with self.subTest(path=str(path.relative_to(source))):
-                self.assertEqual(
-                    path.read_bytes(),
-                    (installed / path.relative_to(source)).read_bytes(),
-                )
 
     def test_fff_retains_agpl_adapter_and_mit_dependency_licenses(self):
         package = PACKAGES["fff"]

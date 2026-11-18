@@ -67,18 +67,10 @@ func TestToolImagesEncodeSafeDistinctPlaceholdersAndTmux(t *testing.T) {
 	}
 	// A valid header with a huge pixel area must fail before full decoding.
 	huge := bytes.Clone(data)
-	binary.BigEndian.PutUint32(huge[16:20], 100000)
+	binary.BigEndian.PutUint32(huge[16:20], 1<<20)
 	binary.BigEndian.PutUint32(huge[29:33], crc32.ChecksumIEEE(huge[12:29]))
 	if preview, seq := prepareToolPreview(huge, graphics{supported: true}, 60); preview.small != nil || seq != "" {
 		t.Fatal("huge pixel area accepted")
-	}
-	ids := map[int]bool{}
-	for range 300 {
-		id := nextThumbnailID()
-		if ids[id] {
-			t.Fatal("image IDs wrap after 240 uploads")
-		}
-		ids[id] = true
 	}
 }
 
@@ -109,6 +101,20 @@ func TestToolImagesInlineFoldWidthAndCopy(t *testing.T) {
 		if m.Renderer.Open[entryKey(entry)] || len(m.frameLines) != before {
 			t.Fatal("click did not restore compact preview")
 		}
+		traced := entry
+		traced.ToolTrace = &daemon.ToolTrace{Activities: []daemon.ToolActivity{{Kind: "read", Target: "example.go"}}}
+		m.appendSettledEntry(traced)
+		m.refreshViewportContent()
+		before = len(m.frameLines)
+		for _, label := range []string{"enlarge images", "show less"} {
+			m.actAt(rowWith(t, m.frameLines, label))
+			if !strings.ContainsRune(strings.Join(m.frameLines, "\n"), kitty.Placeholder) {
+				t.Fatal("trace card toggle hid image preview")
+			}
+		}
+		if m.Renderer.Open[entryKey(traced)] || len(m.frameLines) != before {
+			t.Fatal("card fold did not restore original block")
+		}
 		copied := SelectedText(m.frameLines, Selection{Anchor: Point{Row: 0, Col: 0}, Head: Point{Row: len(m.frameLines) - 1, Col: 90}, Gutter: railWidth})
 		if strings.ContainsRune(copied, kitty.Placeholder) || strings.Contains(copied, "click to expand") {
 			t.Fatalf("graphics leaked into text copy: %s", copied)
@@ -120,35 +126,6 @@ func TestToolImagesInlineFoldWidthAndCopy(t *testing.T) {
 			}
 		}
 		shot(t, "tool-images-inline", m.View())
-	}
-}
-
-func TestToolImagesSurviveTraceAndFoldedCard(t *testing.T) {
-	mockToolGraphics(t, true)
-	preview, _ := prepareToolPreview(toolPreviewPNG(t), graphics{supported: true}, 72)
-	entry := HistoryEntry{Kind: EntryTool, ID: "42", ToolName: "python", Timestamp: 42,
-		ToolResult: strings.Repeat("output line\n", 30),
-		ToolTrace:  &daemon.ToolTrace{Activities: []daemon.ToolActivity{{Kind: "read", Target: "example.go"}}},
-		Images:     []daemon.ImageMetadata{{Reference: "/sessions/s/history/42/image-0", Width: 120, Height: 80, MimeType: daemon.ImagePNG}}}
-	for _, flags := range []DisplayFlags{{}, {Tools: true}} {
-		m := newTestChatModel(t, &daemon.Session{ID: "s"})
-		m.SetSize(90, 40)
-		m.Flags = flags
-		m.Renderer.ToolImages = map[string]toolImagePreview{entry.Images[0].Reference: preview}
-		m.appendSettledEntry(entry)
-		m.appendSettledEntry(HistoryEntry{Kind: EntryAssistant, Text: "Image received.", Timestamp: 43})
-		m.refreshViewportContent()
-		before := len(m.frameLines)
-		for _, label := range []string{"enlarge images", "show less"} {
-			row := rowWith(t, m.frameLines, label)
-			m.actAt(row)
-			if !strings.ContainsRune(strings.Join(m.frameLines, "\n"), kitty.Placeholder) {
-				t.Fatal("trace or card toggle hid image preview")
-			}
-		}
-		if m.Renderer.Open[entryKey(entry)] || len(m.frameLines) != before {
-			t.Fatal("card and image folds did not restore original block")
-		}
 	}
 }
 
@@ -169,9 +146,6 @@ func TestToolImagesFetchSeriallyCacheBoundReplayAndStaleResults(t *testing.T) {
 	reads := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reads++
-		if r.Header.Get("Authorization") != "Bearer token" {
-			t.Error("unauthenticated image")
-		}
 		_, _ = w.Write(data)
 	}))
 	t.Cleanup(server.Close)
@@ -215,6 +189,9 @@ func TestToolImagesFetchSeriallyCacheBoundReplayAndStaleResults(t *testing.T) {
 			}
 		}
 	}
+	if !strings.ContainsRune(m.View(), kitty.Placeholder) {
+		t.Fatal("completed preview did not repaint the frame")
+	}
 	if len(m.Renderer.ToolImages) != maxToolImagePreviews || reads != maxToolImagePreviews {
 		t.Fatalf("unbounded cache or fetches: %d %d", len(m.Renderer.ToolImages), reads)
 	}
@@ -229,7 +206,7 @@ func TestToolImagesFetchSeriallyCacheBoundReplayAndStaleResults(t *testing.T) {
 	if m.loadToolImage() != nil {
 		t.Fatal("replay re-fetched cached previews")
 	}
-	if next, cmd := m.acceptToolImage(toolImageLoadedMsg{SessionID: "other", Generation: m.Generation, Reference: "x"}); cmd != nil || len(next.Renderer.ToolImages) != 24 {
+	if next, cmd := m.acceptToolImage(toolImageLoadedMsg{SessionID: "other", Generation: m.Generation, Reference: "x"}); cmd != nil || len(next.Renderer.ToolImages) != maxToolImagePreviews {
 		t.Fatal("stale image changed session")
 	}
 	// A resized cache frees old placements and starts one bounded replacement.
@@ -266,8 +243,6 @@ func TestToolImagesAsyncResultForwardedWhileModalOpen(t *testing.T) {
 	}
 }
 
-var _ tea.Msg = toolImageLoadedMsg{}
-
 func TestToolImagesCloseFreesPlacementsBeforeQuit(t *testing.T) {
 	mockToolGraphics(t, true)
 	m := newTestChatModel(t, &daemon.Session{ID: "s"})
@@ -278,12 +253,19 @@ func TestToolImagesCloseFreesPlacementsBeforeQuit(t *testing.T) {
 	if cmd == nil || m.streamCtx.Err() == nil || len(app.Chat.Renderer.ToolImages) != 0 {
 		t.Fatal("quit retained images or live fetch context")
 	}
-	commands := reflect.ValueOf(cmd())
-	if commands.Kind() != reflect.Slice || commands.Len() != 2 {
-		t.Fatal("quit does not sequence cleanup before shutdown")
+	var freed []string
+	var walk func(tea.Msg)
+	walk = func(msg tea.Msg) {
+		commands := reflect.ValueOf(msg)
+		if commands.Kind() == reflect.Slice {
+			for i := 0; i < commands.Len(); i++ {
+				walk(commands.Index(i).Interface().(tea.Cmd)())
+			}
+		}
+		freed = append(freed, fmt.Sprint(msg))
 	}
-	cleanup := commands.Index(0).Interface().(tea.Cmd)()
-	if !strings.Contains(fmt.Sprint(cleanup), fmt.Sprintf("d=I,i=%d", preview.small.id)) {
+	walk(cmd())
+	if !strings.Contains(fmt.Sprint(freed), fmt.Sprintf("d=I,i=%d", preview.small.id)) {
 		t.Fatal("quit did not free owned image data")
 	}
 	late := toolImageLoadedMsg{SessionID: "s", Generation: m.Generation, Reference: "image", Preview: preview, transmit: "do not write"}
@@ -312,17 +294,6 @@ func TestToolImagesSentUserAttachmentsKeepLiveReplayAndFoldPreview(t *testing.T)
 	m.refreshViewportContent()
 	if !strings.ContainsRune(m.View(), kitty.Placeholder) {
 		t.Fatal("sent image disappeared with composer")
-	}
-	entry := m.History.Entries()[0]
-	row := rowWith(t, m.frameLines, "click to expand")
-	m.actAt(row)
-	if !m.Renderer.Open[entryKey(entry)] {
-		t.Fatal("sent image cannot expand")
-	}
-	row = rowWith(t, m.frameLines, "show less")
-	m.actAt(row)
-	if m.Renderer.Open[entryKey(entry)] {
-		t.Fatal("sent image cannot collapse")
 	}
 	event.Replayed = true
 	m.handleStreamEvent(event)

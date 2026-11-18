@@ -125,7 +125,7 @@ no single-account or label-similarity guess is made. API-key-only provider profi
 outside native account inventory are not listed. Revisit this adapter when
 upstream exposes the quota identity directly in its public account API.
 
-The suite builds the quota core with Zig's baseline CPU target rather than the
+Upstream builds the quota core with Zig's baseline CPU target rather than the
 build host's native instruction set. This prevents cached builds from crashing
 with an illegal instruction on machines without the builder's CPU features
 (for example AVX-512). A failed poll replaces the current account report with an

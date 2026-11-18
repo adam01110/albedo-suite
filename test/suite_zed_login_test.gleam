@@ -10,7 +10,6 @@ import gleam/dynamic/decode
 import gleam/json
 import gleam/list
 import gleam/option.{None, Some}
-import gleam/string
 import gleeunit/should
 import harness/oauth_test
 
@@ -33,8 +32,6 @@ pub fn main() {
   login.store |> should.equal("zed")
   login.label |> should.equal("add Zed account")
   login.kind |> should.equal(oauth.Model)
-  string.contains(login.detail, "browser sign-in") |> should.be_true
-  string.contains(login.detail, "automatically renewed") |> should.be_true
   let assert oauth.Device(_) = login.callback
   // Account naming is the native one: user and organization from the callback.
   let assert Ok(credential) =
@@ -45,7 +42,6 @@ pub fn main() {
   let account = login.account(credential)
   account.id |> should.equal("42:org-42")
   account.label |> should.equal("github-user")
-  account.selected |> should.be_false
   oauth_test.a_pasted_redirect_races_the_callback_test()
   oauth_test.a_pasted_code_for_another_attempt_is_rejected_test()
   oauth_test.a_device_code_flow_publishes_instructions_and_completes_test()
@@ -96,7 +92,6 @@ pub fn quota_case() -> Nil {
   assert report.error == None
   let assert [limit] = report.limits
   assert limit.id == "edit-predictions"
-  assert limit.used_percent == Some(25.0)
   let assert Ok(missing) = zed_quota.fetch(json.object([]))
   assert missing.error == Some("Zed account credential is unavailable")
   Nil

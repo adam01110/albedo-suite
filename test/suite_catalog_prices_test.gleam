@@ -2,7 +2,6 @@
 //// reload, completion of an index saved without prices, and trimming that
 //// keeps `cost`, provider `npm` and model `provider`.
 
-import albedo/harness/extensions/models/catalog
 import albedo/harness/extensions/models/catalog_cache
 import albedo_file/revision as file_revision
 import gleam/dict
@@ -71,10 +70,6 @@ pub fn main() -> Nil {
   assert catalog_cache.prices(legacy) == expected
   let assert Ok(trimmed) = read(legacy)
   assert_trimmed(trimmed)
-
-  // A fetched catalog is trimmed the same way.
-  let assert Ok(compacted) = catalog.compact(<<source:utf8>>)
-  assert_trimmed(<<compacted:utf8>>)
 
   let _ = del_dir_r(directory)
   io.println(

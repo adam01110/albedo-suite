@@ -79,7 +79,6 @@ func TestZoxideMoveIsolation(t *testing.T) {
 func TestZoxidePicker(t *testing.T) {
 	m := NewFolderPicker(&fakeFolders{}, daemon.Session{Workspace: "/current"}, nil)
 	defer m.Close()
-	m.sessionsLoading = false
 	m, _ = m.Update(zoxideFoldersMsg{Gen: m.sessionsGeneration, Paths: []string{"/second", "/third", "/second", "/current"}})
 	var paths []string
 	for _, row := range m.rows {

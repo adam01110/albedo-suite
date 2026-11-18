@@ -53,21 +53,16 @@ class RemoteStagingTests(unittest.TestCase):
                 root = Path(directory)
                 target = root / "bundle with spaces"
                 data = self.archive(mode)
+                # One publisher wins the rename; the losers must not fail.
+                with ThreadPoolExecutor(max_workers=4) as pool:
+                    results = list(pool.map(lambda _: self.stage(target, data), range(4)))
+                for result in results:
+                    self.assertEqual(result.returncode, 0, result.stderr.decode())
+                self.assert_complete(root, target)
                 for _ in range(2):
                     result = self.stage(target, data)
                     self.assertEqual(result.returncode, 0, result.stderr.decode())
                     self.assert_complete(root, target)
-
-    def test_concurrent_readonly_stages_publish_one_complete_bundle(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            target = root / "bundle"
-            data = self.archive(0o555)
-            with ThreadPoolExecutor(max_workers=4) as pool:
-                results = list(pool.map(lambda _: self.stage(target, data), range(4)))
-            for result in results:
-                self.assertEqual(result.returncode, 0, result.stderr.decode())
-            self.assert_complete(root, target)
 
     def test_existing_incomplete_bundle_is_not_accepted(self):
         with tempfile.TemporaryDirectory() as directory:

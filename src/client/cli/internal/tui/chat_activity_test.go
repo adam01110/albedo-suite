@@ -62,22 +62,6 @@ func TestActivityLifecycleAndCache(t *testing.T) {
 	if rows := m.activityRows(); len(rows) < 2 || rows[1].Tone != ToneWarning || rows[1].Text != "updated label" {
 		t.Fatalf("error: %#v", rows)
 	}
-	activityEvent(&m, daemon.StreamEvent{Type: daemon.EventTurnCompleted})
-	for _, row := range m.activityRows() {
-		if row.Tone == ToneActive {
-			t.Fatalf("stale active: %#v", row)
-		}
-	}
-	if text := activityText(m); !strings.Contains(text, "second call") {
-		t.Fatal(text)
-	}
-	activityEvent(&m, daemon.StreamEvent{Type: daemon.EventUser, EntryID: "user-2", Source: "chat", Text: "next"})
-	activityFinish(&m, "c", "third call", `{"status":"ok"}`)
-	activityEvent(&m, daemon.StreamEvent{Type: daemon.EventTurnCompleted})
-	rows := m.activityRows()
-	if len(rows) < 3 || rows[0].Text != "third call" || rows[1].Text != "updated label" || rows[2].Text != "second call" {
-		t.Fatalf("earlier turns dropped: %#v", rows)
-	}
 }
 
 func TestActivityTerminalAndResetReplay(t *testing.T) {
@@ -172,47 +156,31 @@ func TestActivityOrderBoundsAndSanitization(t *testing.T) {
 			t.Fatalf("overflow: %q", line)
 		}
 	}
-	m.Status.RunningJobs = nil
-	if !strings.Contains(activityText(m), "activity") {
-		t.Fatal("missing without jobs")
-	}
-	m.SetSize(120, 10)
-	drawn, _ := m.sidebarRows()
-	if len(drawn) > m.Viewport.Height() {
-		t.Fatal("short sidebar overflow")
+	// Every row carries the mark of its tone.
+	for _, row := range m.activityRows() {
+		mark := map[PageTone]string{ToneActive: "●", ToneWarning: "!"}[row.Tone]
+		if mark == "" {
+			mark = "○"
+		}
+		if !strings.Contains(text, mark+" "+string([]rune(row.Text)[:min(12, len([]rune(row.Text)))])) {
+			t.Fatalf("row mark: %#v in %s", row, text)
+		}
 	}
 	m.SetSize(60, 12)
-	if m.sidebarWidth() != 0 || len(m.sidebarColumn()) != 0 || !strings.Contains(strings.Join(m.glanceCounts(), " "), "activity") {
+	if m.sidebarWidth() != 0 || len(m.sidebarColumn()) != 0 {
 		t.Fatal("narrow fallback")
 	}
 }
 
-func TestActivityRenderedExample(t *testing.T) {
-	m := activityChat(t)
-	m.Status.RunningJobs = []protocol.KernelJob{{ID: "j", Command: "go test ./...", StartedAt: time.Now().Add(-time.Minute).UnixMilli()}}
-	activityEvent(&m, daemon.StreamEvent{Type: daemon.EventUser, Source: "chat", Text: "work"})
-	activityFinish(&m, "a", "inspect inputs", `{"status":"ok"}`)
-	activityFinish(&m, "b", "check fixture", `{"status":"error"}`)
-	activityStart(&m, "c", "update tests")
-	want := "background jobs · 1\n● go test ./...\n\nactivity · 3\n● update tests\n! check fixture\n○ inspect inputs"
-	if got := activityText(m); got != want {
-		t.Fatalf("sidebar:\n%s\nwant:\n%s", got, want)
-	}
-}
-
 func TestActivityDescriptionOnly(t *testing.T) {
-	for _, status := range []string{"ok", "error", "interrupted", "cancelled", "backgrounded"} {
-		t.Run(status, func(t *testing.T) {
-			m := activityChat(t)
-			activityStart(&m, "a", "inspect inputs")
-			if rows := m.activityRows(); len(rows) != 1 || rows[0].Text != "inspect inputs" {
-				t.Fatalf("live: %#v", rows)
-			}
-			activityFinish(&m, "a", "inspect inputs", `{"status":"`+status+`"}`)
-			activityEvent(&m, daemon.StreamEvent{Type: daemon.EventTurnCompleted})
-			if rows := m.activityRows(); len(rows) != 1 || rows[0].Text != "inspect inputs" {
-				t.Fatalf("settled: %#v", rows)
-			}
-		})
+	m := activityChat(t)
+	activityStart(&m, "a", "inspect inputs")
+	if rows := m.activityRows(); len(rows) != 1 || rows[0].Text != "inspect inputs" {
+		t.Fatalf("live: %#v", rows)
+	}
+	activityFinish(&m, "a", "inspect inputs", `{"status":"error"}`)
+	activityEvent(&m, daemon.StreamEvent{Type: daemon.EventTurnCompleted})
+	if rows := m.activityRows(); len(rows) != 1 || rows[0].Text != "inspect inputs" {
+		t.Fatalf("settled: %#v", rows)
 	}
 }

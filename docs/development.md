@@ -153,8 +153,8 @@ no longer refuses the whole request (`Invalid schema for function 'python': ...
 properties`). `test/suite_zed_test.gleam` pins both the rules and the traversal.
 
 OpenCode Go's Responses route shares this encoder and gets the same typed items.
-The server package runs `test/suite_zed_test.gleam`, which asserts every family's
-`provider_request` field by field and fails when an input item or a message
+The server package runs `test/suite_zed_test.gleam`, which asserts the Responses
+family's `provider_request` field by field and fails when an input item or a message
 content part loses its discriminator. Remove this source replacement, its
 baseline checksum and its inventory entry when upstream emits typed items.
 

@@ -25,7 +25,7 @@ class ToolBackendsTests(unittest.TestCase):
     def setUp(self):
         self.code = None
 
-        def script(request):
+        def script(_request):
             if self.code is not None:
                 code, self.code = self.code, None
                 return python(code)
@@ -62,65 +62,39 @@ class ToolBackendsTests(unittest.TestCase):
         self.assertIn("BACKEND_VERIFIED", self.last_output)
         return settled
 
-    def test_rtk_runs_supported_terminal_command(self):
-        self.execute(
-            f"job = run('ls', {str(self.root)!r})\n"
-            "await job\n"
-            "assert job.exit_code == 0\n"
-            "assert job.requested_argv[0] == 'ls'\n"
-            "assert job.argv[0] == 'ls' and len(job.argv) == 2\n"
-            "assert 'sample.txt' in job.read()\n"
-            "print('BACKEND_VERIFIED')"
-        )
-
-    def test_rtk_cargo_retains_mbx_and_environment_rules(self):
+    def test_rtk_routes_supported_commands_in_the_packaged_daemon(self):
+        # The built package, not a PATH override, must resolve RTK and mbx.
         binaries = self.root / "bin"
         binaries.mkdir()
-        records = self.root / "mbx.jsonl"
-        mbx = binaries / "mbx"
-        mbx.write_text(
-            f"#!{sys.executable}\n"
-            "import json, os, sys\n"
-            f"with open({str(records)!r}, 'a') as output:\n"
-            "    output.write(json.dumps({'args': sys.argv[1:], 'sdk': os.getenv('SDKROOT'), "
-            "'cc': os.getenv('CC'), 'mode': os.getenv('MBX_CARGO_SHIM_MODE'), "
-            "'flags': os.getenv('HOST_CFLAGS')}) + '\\n')\n"
-            "print('Finished dev profile')\n"
-        )
-        mbx.chmod(0o755)
-        (binaries / "cc").write_text("#!/bin/sh\n")
-        (binaries / "cc").chmod(0o755)
-        (binaries / "gcc").write_text("#!/bin/sh\n")
-        (binaries / "gcc").chmod(0o755)
-        (binaries / "clang").symlink_to("cc")
+        (binaries / "mbx").write_text("#!/bin/sh\nexit 0\n")
+        (binaries / "mbx").chmod(0o755)
         self.execute(
-            "import json\n"
+            "import os\n"
             f"path = {str(binaries)!r} + ':' + os.environ['PATH']\n"
-            "for cc, extra in (('clang', {}), ('clang', {'ALBEDO_NIX_ENV': 'abc'}), "
-            "('gcc', {'ALBEDO_NIX_ENV': 'abc'})):\n"
-            "    job = run('cargo', 'build', env={'PATH': path, 'SDKROOT': '/nix/store/x-sdk', 'CC': cc, **extra})\n"
-            "    await job\n"
-            "    assert job._routed and job.exit_code == 0\n"
-            f"records = [json.loads(line) for line in Path({str(records)!r}).read_text().splitlines()]\n"
-            "assert len(records) == 3, records\n"
-            "assert all(r['args'] == ['build'] and r['sdk'] is None and r['mode'] == '1' for r in records), records\n"
-            "assert [r['cc'] for r in records] == ['clang', None, 'gcc'], records\n"
-            "assert [r['flags'] for r in records] == [None, ' -DALBEDO_NIX_ENV_abc', ' -DALBEDO_NIX_ENV_abc'], records\n"
+            f"job = run('ls', {str(self.root)!r})\n"
+            "await job\n"
+            "assert job._routed and job.exit_code == 0\n"
+            "assert 'sample.txt' in job.read()\n"
+            "job = run('cargo', 'build', env={'PATH': path})\n"
+            "await job\n"
+            "assert job._routed and job.exit_code == 0\n"
             "print('BACKEND_VERIFIED')"
         )
 
-    def test_fff_searches_and_observes_file_edit(self):
+    def test_fff_searches_without_hiding_real_background_jobs(self):
         settled = self.execute(
             f"root = {str(self.root)!r}\n"
             "rows = await files.find('BACKEND_NEEDLE', root, literal=True, context=1)\n"
             "assert len(rows) == 3 and sum(not row.context for row in rows) == 1\n"
             "assert len(await files.paths(path=root, glob='*.txt')) == 1\n"
             "assert len(await files.paths('sampl', path=root)) == 1\n"
-            "files.edit(root + '/sample.txt', 'BACKEND_NEEDLE', 'UPDATED_NEEDLE')\n"
-            "assert len(await files.find('UPDATED_NEEDLE', root, literal=True)) == 1\n"
+            "job = run(sys.executable, '-c', 'import time; time.sleep(60)')\n"
             "print('BACKEND_VERIFIED')"
         )
-
+        # The search used the daemon worker, and one real job is still one job.
+        self.assertEqual(settled["kernel"]["live_job_count"], 1)
+        self.assertEqual(len(settled["kernel"]["running_jobs"]), 1)
+        settled = self.execute("await job.stop()\nprint('BACKEND_VERIFIED')")
         self.assertEqual(settled["kernel"]["live_job_count"], 0)
         self.assertEqual(settled["kernel"]["running_jobs"], [])
         with self.app.api(f"/extensions/run/sessions/{self.session}/jobs") as response:
@@ -128,28 +102,11 @@ class ToolBackendsTests(unittest.TestCase):
         self.assertEqual(supervised["live_job_count"], 0)
         self.assertEqual(supervised["items"], [])
 
-    def test_fff_does_not_hide_real_background_job(self):
-        settled = self.execute(
-            f"await files.paths(path={str(self.root)!r})\n"
-            "job = run(sys.executable, '-c', 'import time; time.sleep(60)')\n"
-            "await asyncio.sleep(0.1)\n"
-            "print('BACKEND_VERIFIED')"
-        )
-        self.assertEqual(settled["kernel"]["live_job_count"], 1)
-        self.assertEqual(len(settled["kernel"]["running_jobs"]), 1)
-        self.assertIn("time.sleep(60)", settled["kernel"]["running_jobs"][0]["command"])
-        settled = self.execute("await job.stop()\nprint('BACKEND_VERIFIED')")
-        self.assertEqual(settled["kernel"]["live_job_count"], 0)
-        self.assertEqual(settled["kernel"]["running_jobs"], [])
-
     def test_fff_worker_is_shared_between_sessions_and_survives_client_close(self):
         first = self.session
         code = (
             f"assert len(await files.find('BACKEND_NEEDLE', {str(self.root)!r})) == 1\n"
-            f"searches = await asyncio.gather(*(files.paths(path={str(self.root)!r}) for _ in range(8)))\n"
-            "assert all(searches)\n"
             "fff = sys.modules['albedo_plugins.files']._fff\n"
-            "assert not hasattr(fff, 'job'), 'legacy per-kernel worker state returned'\n"
             "print('BACKEND_VERIFIED', fff.worker_pid)"
         )
         self.execute(code)

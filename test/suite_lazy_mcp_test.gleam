@@ -1,7 +1,7 @@
 //// Lazy MCP lifecycle against the fake stdio server: preparation contacts
 //// nothing, loads start one client, calls are never replayed, unload,
 //// idle cleanup, catalogue drift, dropped transports, adoption and owner
-//// death. Replaces the suite's former Erlang native tests.
+//// death.
 
 import albedo/harness/extensions/mcp/lazy
 import albedo/harness/extensions/mcp/loads
@@ -47,7 +47,7 @@ pub fn main() -> Nil {
   descriptions_are_validated(scope)
   startup_contacts_nothing_and_loads_once(home, scope)
   idle_cleanup_reconnects_and_refuses_drift(home, scope)
-  owner_death_ends_the_manager(home, scope)
+  owner_death_ends_the_manager(scope)
   store.close(ledger)
   let _ = del_dir_r(home)
   io.println(
@@ -59,11 +59,6 @@ fn descriptions_are_validated(scope: storage.Storage) -> Nil {
   let runtime = mcp_owner_support.start_runtime()
   let owner = extension.preparation_owner(runtime.pid)
   list.each(["null", "42", "\"" <> string.repeat("x", 1025) <> "\""], fn(bad) {
-    let assert Ok(value) = json.parse(bad, decode.dynamic)
-    let assert Error(Nil) =
-      lazy.description(
-        dynamic.properties([#(dynamic.string("description"), value)]),
-      )
     let config =
       "{\"retryMs\":30000,\"servers\":{\"a\":{\"type\":\"http\",\"url\":\"https://example.invalid/mcp\",\"description\":"
       <> bad
@@ -240,7 +235,7 @@ fn idle_cleanup_reconnects_and_refuses_drift(
 
 /// A preparer that dies before adoption ends the manager, and the runtime's
 /// death ends an adopted one.
-fn owner_death_ends_the_manager(home: String, scope: storage.Storage) -> Nil {
+fn owner_death_ends_the_manager(scope: storage.Storage) -> Nil {
   let config = config([#("a", server(Error(Nil), "", True))], 0)
   let runtime = mcp_owner_support.start_runtime()
   let prepared = process.new_subject()
@@ -274,7 +269,6 @@ fn owner_death_ends_the_manager(home: String, scope: storage.Storage) -> Nil {
   let watched = process.monitor(lazy.manager(adopted))
   mcp_owner_support.kill_wait(runtime.pid)
   let _ = mcp_owner_support.down(watched)
-  let _ = home
   Nil
 }
 

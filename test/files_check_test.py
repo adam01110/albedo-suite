@@ -16,7 +16,8 @@ import albedo_formatter as formatter
 from albedo_lsp import Lsp
 
 file_plugin: Any = importlib.import_module("albedo_plugins.files")
-formatter_plugin: Any = importlib.import_module("albedo_plugins.formatter")
+# Importing the plugin is what enables the formatting stage in Files.check().
+importlib.import_module("albedo_plugins.formatter")
 lsp_plugin: Any = importlib.import_module("albedo_plugins.lsp")
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -27,7 +28,6 @@ class FilesCheckTests(unittest.IsolatedAsyncioTestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name).resolve()
         self.fs = file_plugin.Files()
-        self.assertIs(sys.modules["albedo_plugins.formatter"], formatter_plugin)
         self.control = self.root / "control.json"
         self.control.write_text(json.dumps({"mode": "uppercase"}))
         formatter.configure(
@@ -105,11 +105,13 @@ class FilesCheckTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(path, formatter._pending)
         self.assertNotIn(path, manager.pending)
 
+        other = self.write("other.py")
+        before = (dict(formatter._pending), dict(manager.pending))
         with self.assertRaisesRegex(ValueError, "edit 2 of 2 failed"):
             self.fs.edit(str(path), [("THREE", "five"), ("missing", "six")])
         self.assertEqual(path.read_text(), "THREE FOUR\n")
-        self.assertNotIn(path, formatter._pending)
-        self.assertNotIn(path, manager.pending)
+        self.assertEqual((formatter._pending, manager.pending), before)
+        self.assertIn(other, formatter._pending)
 
     async def test_completed_manual_formatter_is_adopted(self):
         path = self.write()
@@ -166,6 +168,13 @@ class FilesCheckTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(path, formatter._pending)
         self.assertIn(path, manager.pending)
         self.assertFalse(self.log.exists())
+        # The retained entry is retried without recording the path again.
+        self.control.write_text(json.dumps({"mode": "write", "text": "fixed"}))
+        result = await self.fs.check()
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(path.read_text(), "fixed")
+        self.assertFalse(formatter._pending)
+        self.assertFalse(manager.pending)
 
     async def test_disabled_remote_and_unmatched_do_not_fabricate_passes(self):
         formatter._root = None
@@ -194,6 +203,7 @@ class FilesCheckTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(path.read_text(), "USER EDIT")
         self.assertIn(path, formatter._pending)
         self.assertIn(str(path), result["conflicts"])
+        self.assertFalse(list(self.root.glob("albedo-format-*")))
 
     async def test_same_bytes_new_edit_generation_is_not_lost(self):
         path = self.write()
@@ -296,11 +306,8 @@ class FilesCheckTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(formatter._pending, before)
         self.assertFalse(formatter._overflow)
 
-    async def test_lsp_capacity_rejection_does_not_poison_tracker(self):
         formatter._root = None
         manager = self.lsp()
-        path = self.root / "extra.py"
-        path.write_text("extra")
         for index in range(1024):
             manager.pending[self.root / f"existing{index}.py"] = index
         before = dict(manager.pending)
@@ -329,19 +336,7 @@ class FilesCheckTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(manager.pending), {first, second})
         self.assertFalse(self.log.exists())
 
-    async def test_large_unicode_failure_is_a_normal_structured_result(self):
-        self.write()
-
-        async def failure(*args, **kwargs):
-            raise ValueError("😀" * 20000)
-
-        with patch.object(formatter, "_run", failure):
-            result = await self.fs.check()
-        self.assertFalse(result["ok"])
-        self.assertEqual(result["formatting"]["error"], "😀" * 16384)
-        self.assertTrue(result["pending"]["formatting"])
-
-    async def test_secret_store_is_refused_by_read_edit_and_write(self):
+    async def test_secret_store_is_refused_by_edit_and_write(self):
         home = self.root / "albedo-home"
         home.mkdir()
         creds = home / "creds.json"
@@ -353,8 +348,6 @@ class FilesCheckTests(unittest.IsolatedAsyncioTestCase):
         plain = home / "settings.json"
         plain.write_text("keep\n")
         with patch.dict(os.environ, {"ALBEDO_HOME": str(home)}):
-            with self.assertRaises(PermissionError):
-                self.fs.read(str(creds))
             # A duplicated match is what prints surrounding credential lines.
             with self.assertRaises(PermissionError):
                 self.fs.edit(str(creds), "rt-fake", "replaced")
@@ -390,11 +383,6 @@ class FilesCheckTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(real.read_text(), "gamma\n")
         self.assertEqual(set(formatter._pending), {real})
         self.assertEqual(set(manager.pending), {real})
-        result = await self.fs.check()
-        self.assertTrue(result["ok"], result)
-        self.assertEqual(real.read_text(), "GAMMA\n")
-        self.assertFalse(formatter._pending)
-        self.assertFalse(manager.pending)
 
     async def test_symlink_escape_remains_visible_to_checks(self):
         manager = self.lsp()

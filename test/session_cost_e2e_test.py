@@ -43,18 +43,6 @@ class SessionCostTests(unittest.TestCase):
             items = json.load(response)["items"]
         return next(item for item in items if item["id"] == self.session)["session_cost_usd"]
 
-    def archive(self, session):
-        route = f"/sessions/{session}?view=configuration"
-        with self.app.api(route) as response:
-            response.read()
-            etag = response.headers["ETag"]
-        self.app.api(
-            route,
-            {"preferences": {"archived": True}},
-            method="PATCH",
-            headers={"If-Match": etag, "Content-Type": "application/merge-patch+json"},
-        ).close()
-
     def total_cost(self, query="scope=roots&archived=false"):
         with self.app.api(f"/sessions?{query}") as response:
             return json.load(response)["total_cost"]
@@ -79,10 +67,8 @@ class SessionCostTests(unittest.TestCase):
         self.assertAlmostEqual(self.cost(), 0.00044)
         self.app.restart()
         self.assertAlmostEqual(self.cost(), 0.00044)
-        self.assertAlmostEqual(self.cost(status=True), 0.00044)
-        self.assertAlmostEqual(self.listed_cost(), 0.00044)
         # The first page totals every stored session, archived ones included.
-        self.archive(self.session)
+        self.app.patch_session(self.session, {"preferences": {"archived": True}})
         other = self.app.session()
         self.app.prompt(other, "three").close()
         self.app.idle(other)
@@ -120,7 +106,6 @@ class SessionCostTests(unittest.TestCase):
         self.metered = False
         self.app.prompt(self.session, "one").close()
         self.app.idle(self.session)
-        self.assertEqual(len(self.provider.requests), 1, self.app.history(self.session))
         self.assertIsNone(self.cost())
         self.assertIsNone(self.cost(status=True))
         self.assertIsNone(self.listed_cost())

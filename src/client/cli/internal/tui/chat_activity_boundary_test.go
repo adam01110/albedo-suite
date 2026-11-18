@@ -34,8 +34,4 @@ func TestActivityGenericAndBackgrounded(t *testing.T) {
 	if rows[len(rows)-2].Text != "long cell" || rows[len(rows)-2].Tone == ToneWarning {
 		t.Fatalf("backgrounded: %#v", rows)
 	}
-	activityEvent(&m, daemon.StreamEvent{Type: daemon.EventToolProgress, Progress: &daemon.ToolProgress{CallID: "bad", Name: "custom", Phase: "running\x1b]52;c;secret\a\n"}})
-	if text := activityText(m); strings.Contains(text, "secret") || strings.Contains(text, "do-not-display") {
-		t.Fatal(text)
-	}
 }

@@ -120,13 +120,6 @@ class UpdateTests(unittest.TestCase):
         )
         self.assertEqual(p.read_bytes(), b"suite\ntwo\nthree\nfour\nfive\n")
 
-    def test_overlapping_conflict_never_writes(self):
-        p = self.replacement()
-        writes, _, conflicts = self.plan()
-        self.assertTrue(conflicts)
-        self.assertNotIn(p, writes)
-        self.assertEqual(p.read_bytes(), b"suite\n")
-
     def test_upstream_only_changes_remain_sparse(self):
         p = self.replacement(ours=b"base\n")
         self.write(self.new, "unrelated", b"new upstream file")
@@ -167,6 +160,10 @@ class UpdateTests(unittest.TestCase):
         self.replacement()
         (self.new / "file").rename(self.new / "renamed")
         self.assertIn("deletion, rename", self.plan()[2][0])
+        (self.new / "renamed").rename(self.new / "file")
+        (self.new / "file").unlink()
+        (self.new / "file").symlink_to(self.old / "file")
+        self.assertIn("type change", self.plan()[2][0])
 
     def test_binary_and_mode_changes_require_review(self):
         self.replacement(base=b"base\0", theirs=b"new\0")
@@ -174,14 +171,10 @@ class UpdateTests(unittest.TestCase):
         (self.new / "file").chmod(0o755)
         self.assertIn("mode change", self.plan()[2][0])
 
-    def test_bad_baseline_and_symlink_fail_closed(self):
+    def test_bad_baseline_fails_closed(self):
         self.replacement()
         (self.old / "file").write_bytes(b"wrong")
         self.assertIn("baseline mismatch", self.plan()[2][0])
-        (self.new / "file").unlink()
-        (self.new / "file").symlink_to(self.old / "file")
-        (self.old / "file").write_bytes(b"base\n")
-        self.assertIn("type change", self.plan()[2][0])
 
     def test_lock_rejects_unrelated_updates(self):
         other = json.loads(json.dumps(self.lock))
@@ -194,8 +187,9 @@ class UpdateTests(unittest.TestCase):
         self.replacement(ours=b"new\n", name="adopted")
         self.replacement(ours=b"base\n", theirs=b"base\n", name="pristine")
         details = {}
-        _, _, unresolved = u.merge_overlay(self.suite, self.old, self.new, details)
+        writes, _, unresolved = u.merge_overlay(self.suite, self.old, self.new, details)
         self.assertEqual(len(unresolved), 1)
+        self.assertNotIn(conflicted, writes)
         marked = details["conflicts"][conflicted]
         self.assertIn(b"<<<<<<< suite", marked)
         self.assertIn(b"||||||| old-upstream", marked)
@@ -330,7 +324,9 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(pin["sourceFiles"], ["file"])
         self.identities[0] = self.identities[1]
         before = (self.suite / "flake.lock").read_bytes()
-        self.assertEqual(self.execute()[1]["status"], "no-change")
+        result, report = self.execute()
+        self.assertEqual(result, 0)
+        self.assertEqual(report["status"], "no-change")
         self.assertEqual((self.suite / "flake.lock").read_bytes(), before)
 
     def test_clean_jj_checkout_updates_without_copying_metadata(self):
@@ -339,13 +335,6 @@ class UpdateTests(unittest.TestCase):
         self.replacement(ours=b"base\n")
         self.assertEqual(self.execute()[1]["status"], "updated")
         self.assertTrue((self.suite / ".jj" / "metadata").exists())
-
-    def test_noop_does_not_advance_nur(self):
-        before = (self.suite / "flake.lock").read_bytes()
-        result, report = self.execute(self.identities[0])
-        self.assertEqual(result, 0)
-        self.assertEqual(report["status"], "no-change")
-        self.assertEqual((self.suite / "flake.lock").read_bytes(), before)
 
     def test_report_cannot_overwrite_checkout(self):
         report = self.suite / "flake.lock"

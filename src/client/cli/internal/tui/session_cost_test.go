@@ -10,20 +10,18 @@ import (
 )
 
 func TestVimFooterSessionCost(t *testing.T) {
-	for _, provider := range []string{"openai", "claude", "codex", "zed", "custom"} {
-		for _, width := range []int{40, 60, 80, 120} {
-			m := newTestChatModel(t, &daemon.Session{ID: "s", Provider: provider})
-			m.SetSize(width, 24)
-			prompt, cached, cost := 396000, 392000, 1.234
-			m.Usage = &daemon.Usage{Model: "old-model", PromptTokens: &prompt, CachedPromptTokens: &cached, SessionCostUSD: &cost}
-			m.Model = "new-model"
-			footer := ansi.Strip(m.renderFooter())
-			if !strings.Contains(footer, "$1.23") || ansi.StringWidth(footer) > m.chatWidth() {
-				t.Fatalf("provider=%s width=%d footer=%q", provider, width, footer)
-			}
-			if strings.Index(footer, "$") < strings.Index(footer, "—/—") {
-				t.Fatal(footer)
-			}
+	for _, width := range []int{40, 60, 80, 120} {
+		m := newTestChatModel(t, &daemon.Session{ID: "s", Provider: "openai"})
+		m.SetSize(width, 24)
+		prompt, cached, cost := 396000, 392000, 1.234
+		m.Usage = &daemon.Usage{Model: "old-model", PromptTokens: &prompt, CachedPromptTokens: &cached, SessionCostUSD: &cost}
+		m.Model = "new-model"
+		footer := ansi.Strip(m.renderFooter())
+		if !strings.Contains(footer, "$1.23") || ansi.StringWidth(footer) > m.chatWidth() {
+			t.Fatalf("width=%d footer=%q", width, footer)
+		}
+		if strings.Index(footer, "$") < strings.Index(footer, "—/—") {
+			t.Fatal(footer)
 		}
 	}
 }

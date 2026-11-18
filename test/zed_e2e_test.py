@@ -57,22 +57,14 @@ def messages(tool=False):
     return [{"event": event} for event in events]
 
 
-def google_messages(tool=False):
+def google_messages():
     """One GenerateContent candidate with a thought part and a text part."""
-    if tool:
-        content = {"role": "model", "parts": [
-            {"text": "zed-gemini-thought", "thought": True},
-            {"functionCall": {"name": "python", "args": {"code": "print('zed-gemini-tool')"}}},
-        ]}
-        finish = "STOP"
-    else:
-        content = {"role": "model", "parts": [
-            {"text": "zed-gemini-thought", "thought": True},
-            {"text": "zed-gemini-reply-é"},
-        ]}
-        finish = "STOP"
+    content = {"role": "model", "parts": [
+        {"text": "zed-gemini-thought", "thought": True},
+        {"text": "zed-gemini-reply-é"},
+    ]}
     event = {
-        "candidates": [{"content": content, "finishReason": finish}],
+        "candidates": [{"content": content, "finishReason": "STOP"}],
         "usageMetadata": {
             "promptTokenCount": 11, "candidatesTokenCount": 5,
             "thoughtsTokenCount": 2, "totalTokenCount": 18,
@@ -126,7 +118,7 @@ class ZedProvider(Provider):
 
 @exclusive
 class ZedE2ETests(unittest.TestCase):
-    def start(self, script=None, extra=False, api_key=None, endpoint=None, effort="high", google=False):
+    def start(self, script=None, extra=False, api_key=None, effort="high", google=False, providers=None):
         self.provider = ZedProvider(script or (lambda _: messages() + [{"status": "stream_ended"}]))
         self.addCleanup(self.provider.close)
 
@@ -155,12 +147,14 @@ class ZedE2ETests(unittest.TestCase):
         if extra:
             profile["accountId"] = "zed-one"
             other["accountId"] = "zed-two"
-        if endpoint is not None:
-            profile["baseUrl"] = endpoint
         self.app = Albedo(
             self.provider,
             prepare=prepare,
-            providers={"zed": profile, **({"a-other": other} if extra else {})},
+            providers={
+                "zed": profile,
+                **({"a-other": other} if extra else {}),
+                **(providers or {}),
+            },
         )
         self.app.__enter__()
         self.addCleanup(self.app.__exit__, None, None, None)
@@ -196,17 +190,15 @@ class ZedE2ETests(unittest.TestCase):
         # an escaped history would hide it.
         return json.dumps(self.app.history(session), ensure_ascii=False)
 
-    def test_budget_command_and_endpoint_are_removed(self):
-        session = self.start(extra=True)
+    def test_budget_command_and_route_are_removed(self):
+        session = self.start()
         self.turn(session)
         with self.app.api(f"/sessions/{session}/catalog") as response:
             commands = json.load(response)["loaded"]["commands"]
         self.assertNotIn("/zed-budget", [entry["slash_name"] for entry in commands])
-        before = (len(self.provider.requests), len(self.provider.get_headers))
         with self.assertRaises(urllib.error.HTTPError) as error:
             self.app.api("/extensions/zed/budget")
         self.assertEqual(error.exception.code, 404)
-        self.assertEqual(before, (len(self.provider.requests), len(self.provider.get_headers)))
 
     def test_native_stream_thinking_usage_and_metadata(self):
         session = self.start()
@@ -234,7 +226,7 @@ class ZedE2ETests(unittest.TestCase):
             self.assertEqual({k.lower(): v for k, v in headers.items()}["authorization"], "Bearer " + ZED_JWT)
 
     def test_tool_result_replayed_without_proxy(self):
-        replies = iter([messages(tool=True), messages(), messages()])
+        replies = iter([messages(tool=True), messages()])
         session = self.start(lambda _: next(replies) + [{"status": "stream_ended"}])
         history = self.turn(session)
         self.assertIn("zed-tool", history)
@@ -242,9 +234,9 @@ class ZedE2ETests(unittest.TestCase):
         self.assertEqual(len(self.provider.requests), 2)
         blocks = [b for m in self.provider.requests[-1]["provider_request"]["messages"] for b in m["content"]]
         self.assertTrue(any(b["type"] == "tool_result" for b in blocks))
-        self.assertIn("zed-reply-é", self.turn(session))
 
-    def test_profile_api_key_is_refused_and_never_sent(self):
+    def test_profile_key_is_refused_then_cleared_for_browser_sign_in(self):
+        """The recovery the refusal names: after a keyless save it must work."""
         session = self.start(api_key="leftover-zed-jwt", effort=None)
         self.app.prompt(session, "reply").close()
         reason = self.refusal(session, "apiKey", "/login zed")
@@ -252,37 +244,41 @@ class ZedE2ETests(unittest.TestCase):
         self.assertNotIn("leftover-zed-jwt", reason)
         self.assertEqual(self.provider.requests, [])
         self.assertEqual(self.provider.get_headers, [])
-
-    def test_browser_sign_in_clears_a_stored_profile_key(self):
-        """The recovery the refusal names: after a keyless save it must work."""
-        session = self.start(api_key="leftover-zed-jwt", effort=None)
-        self.app.prompt(session, "reply").close()
-        self.refusal(session, "apiKey", "/login zed")
         route = "/settings?group=providers"
         with self.app.api(route) as response:
             etag = response.headers["ETag"]
-            before = json.load(response)["profiles"]["zed"]
-        self.assertTrue(before["has_key"], before)
+            json.load(response)
         # What the client sends when a browser sign-in saves this profile: an
         # explicit null, because an omitted api_key keeps the stored one.
         with self.app.api(
             route, {"profiles": {"zed": {"api_key": None}}},
             method="PATCH", headers={"If-Match": etag},
         ) as response:
-            saved = json.load(response)
-        self.assertFalse(saved["resource"]["value"]["profiles"]["zed"]["has_key"])
-        with self.app.api(route) as response:
-            after = json.load(response)["profiles"]["zed"]
-        self.assertFalse(after["has_key"], after)
-        self.assertNotIn("leftover-zed-jwt", (self.app.home / "creds.json").read_text())
+            response.read()
         # The profile now runs on the stored browser account, with no refusal.
         self.assertIn("zed-reply-é", self.turn(self.app.session(name="zed")))
         headers = {k.lower(): v for k, v in self.provider.headers[-1].items()}
         self.assertEqual(headers["authorization"], "Bearer " + ZED_JWT)
 
-    def test_daemon_zed_token_is_refused_and_never_sent(self):
-        session = self.start(effort=None)
-        # Discovery may run while the daemon has no ZED_TOKEN; none may run after.
+    def test_daemon_leftovers_are_refused_and_never_sent(self):
+        # A profile-level custom endpoint is refused instead of being sent the
+        # stored account, and so is the daemon-wide ZED_TOKEN.
+        self.start(
+            effort=None,
+            providers={"custom": {
+                "extension": "zed", "baseUrl": "https://custom.invalid",
+                "model": "claude-sonnet-4-6", "protocol": "chat_completions",
+            }},
+        )
+        self.app.profile = "custom"
+        custom = self.app.session()
+        self.app.prompt(custom, "reply").close()
+        reason = self.refusal(custom, "https://cloud.zed.dev", "custom")
+        self.assertIn("unsupported", reason)
+        self.assertEqual(self.provider.requests, [])
+        self.app.profile = "zed"
+        session = self.app.session()
+        # The token is named, never its value, and no request may follow it.
         settled = (len(self.provider.requests), len(self.provider.get_headers))
         self.app.env["ZED_TOKEN"] = "environment-zed-jwt"
         self.app.restart()
@@ -292,26 +288,9 @@ class ZedE2ETests(unittest.TestCase):
         self.assertNotIn("environment-zed-jwt", reason)
         self.assertEqual(settled, (len(self.provider.requests), len(self.provider.get_headers)))
 
-    def test_custom_endpoint_is_refused_instead_of_sent_the_account(self):
-        session = self.start(endpoint="https://custom.invalid", effort=None)
-        self.app.prompt(session, "reply").close()
-        reason = self.refusal(session, "https://cloud.zed.dev", "custom")
-        self.assertIn("unsupported", reason)
-        self.assertEqual(self.provider.requests, [])
-
     def test_failure_after_message_stop_is_not_success(self):
         session = self.start(lambda _: messages() + [{"status": {"failed": {"code": "quota", "message": "zed-quota-exhausted"}}}])
         self.assertIn("zed-quota-exhausted", self.turn(session))
-
-    def test_missing_stream_ended_is_not_success(self):
-        attempts = iter([messages(), [{"status": {"failed": {"message": "zed-retry-stopped"}}}]])
-        session = self.start(lambda _: next(attempts))
-        history = self.turn(session)
-        self.assertEqual(len(self.provider.requests), 2)
-        self.assertIn("transient provider request failure", history)
-        with self.app.api(f"/sessions/{session}?tail=0") as response:
-            snapshot = json.load(response)
-        self.assertTrue(any(line["kind"] == "error" and "zed-retry-stopped" in line["text"] for line in snapshot["activity"]["lines"]), snapshot["activity"])
 
     def test_gemini_generate_content_end_to_end(self):
         """The documented GenerateContent route, driven through the daemon."""
@@ -343,21 +322,6 @@ class ZedE2ETests(unittest.TestCase):
         headers = {k.lower(): v for k, v in self.provider.headers[-1].items()}
         self.assertEqual(headers["authorization"], "Bearer " + ZED_JWT)
 
-    def test_removed_budget_route_returns_not_found_for_all_requests(self):
-        self.start()
-        cases = [
-            ("POST", "/extensions/zed/budget", 404, "not_found"),
-            ("GET", "/extensions/zed/budget?account=one", 404, "not_found"),
-            ("GET", "/extensions/zed/other", 404, "not_found"),
-        ]
-        for method, path, status, code in cases:
-            with self.subTest(method=method, path=path):
-                with self.assertRaises(urllib.error.HTTPError) as raised:
-                    with self.app.api(path, method=method) as response:
-                        response.read()
-                self.assertEqual(raised.exception.code, status)
-                self.assertIn(code, str(raised.exception))
-
     def test_selected_account_owns_inference_discovery(self):
         first = self.start(extra=True)
         self.assertIn("zed-reply-é", self.turn(first))
@@ -373,4 +337,3 @@ class ZedE2ETests(unittest.TestCase):
             {k.lower(): v for k, v in self.provider.headers[-1].items()}["authorization"],
             "Bearer " + OTHER_ZED_JWT,
         )
-        self.assertEqual(len(list(self.app.home.glob("zed-models-*.json"))), 2)

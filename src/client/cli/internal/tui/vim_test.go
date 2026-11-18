@@ -75,7 +75,7 @@ func TestVimOperators(t *testing.T) {
 	}{
 		{[]string{"d", "w"}, "two three", true},
 		{[]string{"d", "2", "w"}, "three", true},
-		{[]string{"c", "w"}, " two three", false},
+		{[]string{"c", "w", "z"}, "z two three", false},
 		{[]string{"d", "d"}, "", true},
 		{[]string{"2", "x"}, "e two three", true},
 		{[]string{"y", "w", "P"}, "one one two three", true},
@@ -113,30 +113,64 @@ func TestVimMultilineUnicode(t *testing.T) {
 }
 
 func TestVimFooter(t *testing.T) {
-	for _, width := range []int{40, 80, 120} {
-		m := newTestChatModel(t, &daemon.Session{ID: "s"})
-		m.SetSize(width, 24)
-		for _, normal := range []bool{false, true} {
-			m.vim.normal = normal
-			footer := ansi.Strip(m.renderFooter())
-			b, c := strings.Index(footer, m.vimMode()), strings.Index(footer, "type")
-			if !normal {
-				c = strings.Index(footer, "normal")
-			}
-			t.Logf("width=%d mode=%s footer=%q", width, m.vimMode(), footer)
-			if b < 0 || width >= 80 && c < b || width == 40 && c < 0 {
-				t.Fatalf("width %d: %q", width, footer)
-			}
-			if width == 40 && !strings.HasSuffix(footer, "—/— · cost n/a") {
-				t.Fatal(footer)
-			}
-			if width == 120 && !strings.Contains(footer, "agents") {
-				t.Fatal(footer)
-			}
-			if ansi.StringWidth(footer) > m.chatWidth() {
-				t.Fatal(footer)
+	saveBase16State(t)
+	original := DefaultStyles
+	for _, themed := range []bool{false, true} {
+		DefaultStyles = original
+		if themed {
+			_, palette := base16Fixture(t)
+			useBase16Theme(palette)
+		}
+		for _, width := range []int{8, 40, 80, 120} {
+			m := newTestChatModel(t, &daemon.Session{ID: "s"})
+			m.SetSize(width, 24)
+			for _, normal := range []bool{false, true} {
+				m.vim.normal = normal
+				style := DefaultStyles.You
+				if !normal {
+					style = DefaultStyles.Success
+				}
+				got := m.renderFooter()
+				footer := ansi.Strip(got)
+				if width >= 40 && !strings.Contains(got, style.Bold(true).Render(m.vimMode())) {
+					t.Fatalf("themed %v width %d: footer lacks the styled mode label: %q", themed, width, footer)
+				}
+				b, c := strings.Index(footer, m.vimMode()), strings.Index(footer, "type")
+				if !normal {
+					c = strings.Index(footer, "normal")
+				}
+				if b < 0 || width >= 80 && c < b || width == 40 && c < 0 {
+					t.Fatalf("themed %v width %d: %q", themed, width, footer)
+				}
+				if ansi.StringWidth(footer) > m.chatWidth() {
+					t.Fatalf("themed %v width %d overflows: %q", themed, width, footer)
+				}
 			}
 		}
+	}
+	// A shell entry swaps the hints without dropping the mode label.
+	m := newTestChatModel(t, &daemon.Session{ID: "s"})
+	m.SetSize(40, 24)
+	m.History.Append(HistoryEntry{Kind: EntryShell})
+	for _, normal := range []bool{false, true} {
+		m.vim.normal = normal
+		footer := ansi.Strip(m.renderFooter())
+		if !strings.Contains(footer, m.vimMode()) || ansi.StringWidth(footer) > m.chatWidth() {
+			t.Fatalf("shell footer: %q", footer)
+		}
+	}
+	// Expanded usage keeps the mode ahead of the shortcut hints.
+	prompt, cached, window := 396000, 392000, 1000000
+	usage := newTestChatModel(t, &daemon.Session{ID: "s"})
+	usage.SetSize(120, 24)
+	usage.Usage = &daemon.Usage{Model: "test", PromptTokens: &prompt, CachedPromptTokens: &cached}
+	usage.Model = "test"
+	usage.window = &window
+	usage.windowModel = &usage.Model
+	footer := ansi.Strip(usage.renderFooter())
+	a, b, c := strings.Index(footer, "NORMAL"), strings.Index(footer, "sessions"), strings.Index(footer, "type")
+	if !(a >= 0 && a < b && b < c) {
+		t.Fatalf("expanded usage footer: %q", footer)
 	}
 }
 
@@ -181,6 +215,14 @@ func TestVimMarkersAndLineRegister(t *testing.T) {
 	if m.TextArea.Value() != "a"+marker+"b" {
 		t.Fatal(m.TextArea.Value())
 	}
+	m.TextArea.SetValue(marker)
+	m.vimPosition(len([]rune(marker)))
+	m.syncLayout()
+	m, _ = m.Update(tea.KeyPressMsg{Code: 'w', Mod: tea.ModCtrl})
+	vimKeys(&m, "u")
+	if m.TextArea.Value() != marker {
+		t.Fatal("marker delete was not one undo step", m.TextArea.Value())
+	}
 	m.TextArea.SetValue("one\ntwo")
 	m.vimPosition(0)
 	vimKeys(&m, "y", "y", "p")
@@ -209,6 +251,11 @@ func TestVimTerminalKeysAndShortcuts(t *testing.T) {
 	if m.Flags.Diffs == before || !m.vim.normal {
 		t.Fatal("Ctrl+J did not toggle diffs while preserving composer mode")
 	}
+	// Modified keys reach the app from NORMAL mode, so image paste still works.
+	m, _ = m.Update(tea.KeyPressMsg{Code: 'v', Mod: tea.ModCtrl})
+	if m.terminalClipboard.id == "" {
+		t.Fatal("Ctrl+V did not start the clipboard probe from NORMAL mode")
+	}
 	m, _ = m.Update(tea.KeyPressMsg{Code: 'A', Text: "A", Mod: tea.ModShift})
 	if m.vim.normal || m.TextArea.Column() != 7 || m.TextArea.Value() != "one two" {
 		t.Fatal("Shift+A did not enter append mode", m.vimSnapshot())
@@ -223,27 +270,11 @@ func TestVimTerminalKeysAndShortcuts(t *testing.T) {
 	if m.TextArea.Value() != "" || len(m.vim.undo) != 0 || len(m.vim.redo) != 0 || m.vim.insert != nil {
 		t.Fatal("submission retained draft/history")
 	}
-}
-
-func TestVimFooterExpandedUsage(t *testing.T) {
-	prompt, cached, window := 396000, 392000, 1000000
-	for _, width := range []int{40, 80, 120} {
-		m := newTestChatModel(t, &daemon.Session{ID: "s"})
-		m.SetSize(width, 24)
-		m.Usage = &daemon.Usage{Model: "test", PromptTokens: &prompt, CachedPromptTokens: &cached}
-		m.Model = "test"
-		m.window = &window
-		m.windowModel = &m.Model
-		footer := ansi.Strip(m.renderFooter())
-		t.Logf("width=%d expanded=%q", width, footer)
-		if !strings.Contains(footer, "NORMAL") || ansi.StringWidth(footer) > m.chatWidth() {
-			t.Fatal(footer)
-		}
-		if width >= 80 {
-			a, b, c := strings.Index(footer, "NORMAL"), strings.Index(footer, "sessions"), strings.Index(footer, "type")
-			if !(a >= 0 && a < b && b < c) {
-				t.Fatal(footer)
-			}
-		}
+	m.TextArea.SetValue("/t")
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	vimKeys(&m, "esc", "u")
+	if m.TextArea.Value() != "" {
+		t.Fatal("menu submission retained composer history")
 	}
 }
+

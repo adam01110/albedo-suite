@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"encoding/json"
 	"slices"
 	"strings"
 	"testing"
@@ -31,13 +30,9 @@ func TestProviderAvailabilityTogglePatchesOnlyEnabledWithValidator(t *testing.T)
 			}
 			msg := cmd()
 			patch := <-patches
-			if patch.query != "group=providers" {
-				t.Fatalf("wrong conditional target: %+v", patch)
-			}
-			want := map[string]any{"profiles": map[string]any{"claude": map[string]any{"enabled": !enabled}}}
-			got, _ := json.Marshal(patch.body)
-			if string(got) != mustJSON(t, want) {
-				t.Fatalf("toggle sent %s", got)
+			profiles := patch.body["profiles"].(map[string]any)
+			if len(profiles) != 1 || profiles["claude"].(map[string]any)["enabled"] != !enabled {
+				t.Fatalf("toggle sent %s", mustJSON(t, patch.body))
 			}
 			next, _ = next.Update(msg)
 			if next.Step != StepChoose || next.Error == "" {

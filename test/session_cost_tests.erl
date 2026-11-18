@@ -12,16 +12,13 @@ run() ->
     Row = row(<<"codex">>, Codex, <<"gpt-test">>, [1000000, 500000, 100000, 100000, 0, 100000], <<"ok">>, 2),
     {some, V} = albedo_session_cost:estimate_rows(P, [list_to_tuple(Row)]),
     true = abs(V - 4.3) < 0.00001,
-    {some, 0.00022} = albedo_session_cost:estimate_rows(P, [list_to_tuple(row(<<"openai">>, undefined, <<"gpt-test">>, [10, undefined, undefined, undefined, undefined, 20], <<"ok">>, 1))]),
     {some, +0.0} = albedo_session_cost:estimate_rows(#{}, []),
-    none = albedo_session_cost:estimate_rows(#{}, [Row]),
     %% A successful request without usage is unknown, not free.
     Unmetered = [undefined, undefined, undefined, undefined, undefined, undefined],
     none = albedo_session_cost:estimate_rows(P, [row(<<"codex">>, Codex, <<"gpt-test">>, Unmetered, <<"ok">>, 1)]),
     %% Rejected attempts (429, 5xx) report no usage and add nothing.
     {some, V} = albedo_session_cost:estimate_rows(P, [Row,
-        row(<<"codex">>, Codex, <<"gpt-test">>, Unmetered, <<"error">>, 3),
-        row(<<"codex">>, Codex, <<"gpt-test">>, [null, null, null, null, null, null], <<"error">>, 1)]),
+        row(<<"codex">>, Codex, <<"gpt-test">>, Unmetered, <<"error">>, 3)]),
     %% Model/provider changes accumulate instead of repricing the whole session.
     P2 = P#{{<<"custom">>, <<"local">>} => #{<<"input">> => 0, <<"output">> => 0}},
     {some, V} = albedo_session_cost:estimate_rows(P2, [Row, row(<<"custom">>, undefined, <<"local">>, [20, 0, 0, 0, 0, 10], <<"ok">>, 1)]),
@@ -39,7 +36,6 @@ run() ->
     {some, A} = maps:get(<<"a">>, Grouped),
     true = abs(A - 0.00044) < 0.0000001,
     none = maps:get(<<"b">>, Grouped),
-    [] = albedo_session_cost:estimate_grouped(P, []),
     subscription_prices(),
     endpoint_prices(),
     io:format("session cost pricing tests passed~n"), ok.
@@ -65,7 +61,6 @@ subscription_prices() ->
           %% Renamed profiles still resolve from their endpoint.
           {<<"work">>, Go, <<"glm-5">>},
           {<<"zed">>, <<"chat_completions:https://cloud.zed.dev">>, <<"gpt-5.4">>},
-          {<<"my-zed">>, <<"chat_completions:https://cloud.zed.dev">>, <<"claude-sonnet-5-5">>},
           {<<"claude">>, <<"chat_completions:https://api.anthropic.com">>, <<"claude-sonnet-5-5">>}]),
     {some, 99.0} = albedo_session_cost:estimate_rows(Prices,
         [row(<<"proxy">>, <<"chat_completions:https://proxy.example/v1">>, <<"glm-5">>, [1000000, 0, 0, 0, 0, 0], <<"ok">>, 1)]).

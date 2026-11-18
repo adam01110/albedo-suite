@@ -2,7 +2,8 @@ package tui
 
 import "testing"
 
-func TestBoundedHistoryRevision(t *testing.T) {
+// The revision counter is what invalidates the tool-image selection cache.
+func TestToolImagesHistoryRevision(t *testing.T) {
 	h := NewBoundedHistory(1, 1024*1024)
 	changed := func(name string, mutate func()) {
 		t.Helper()

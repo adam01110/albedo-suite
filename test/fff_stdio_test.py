@@ -105,22 +105,7 @@ exports.FileFinder = { create: () => {
         self.assertFalse(error["ok"])
         self.assertIn("protocol mismatch", error["error"])
         self.send()
-        self.assertEqual(
-            self.reply()["value"]["workerPid"], first["value"]["workerPid"]
-        )
-
-    def test_legacy_socket_transport_is_rejected(self):
-        result = subprocess.run(
-            ["node", SCRIPT, str(Path(self.temp.name) / "legacy.sock"), "secret"],
-            cwd=self.temp.name,
-            env=self.env,
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("requires daemon-owned --stdio transport", result.stderr)
-        self.assertFalse((Path(self.temp.name) / "legacy.sock").exists())
+        self.assertTrue(self.reply()["ok"])
 
     def test_four_root_bound_and_eviction(self):
         for number in range(6):
@@ -129,23 +114,25 @@ exports.FileFinder = { create: () => {
         self.send(root="root-0")
         self.assertEqual(self.reply()["value"]["searched"], 4)
 
-    def test_malformed_and_oversized_requests_do_not_poison_worker(self):
-        for line, message in (("{", "JSON"), ("x" * (1048576 + 1), "1 MiB")):
-            self.stdin.write(line + "\n")
-            self.stdin.flush()
-            error = self.reply()
-            self.assertFalse(error["ok"])
-            self.assertIn(message, error["error"])
-        self.send()
-        self.assertTrue(self.reply()["ok"])
-
-    def test_oversized_response_is_explicit_and_worker_remains_usable(self):
-        self.send("oversized", limit=14000)
-        error = self.reply()
-        self.assertFalse(error["ok"])
-        self.assertIn("response exceeds 8 MiB", error["error"])
-        self.send()
-        self.assertTrue(self.reply()["ok"])
+    def test_bounds_are_explicit_and_do_not_poison_worker(self):
+        cases = (
+            ("malformed request", "{", None),
+            ("oversized request", "x" * (1048576 + 1), "1 MiB"),
+            ("oversized response", None, "response exceeds 8 MiB"),
+        )
+        for name, line, message in cases:
+            with self.subTest(name):
+                if line is None:
+                    self.send("oversized", limit=14000)
+                else:
+                    self.stdin.write(line + "\n")
+                    self.stdin.flush()
+                error = self.reply()
+                self.assertFalse(error["ok"])
+                if message:
+                    self.assertIn(message, error["error"])
+                self.send()
+                self.assertTrue(self.reply()["ok"])
 
     def test_stdin_close_ends_worker(self):
         self.send()

@@ -27,12 +27,9 @@ class RtkRoutingTests(unittest.TestCase):
         )
         if not extension.exists():
             self.skipTest("source overlay is unavailable")
-        instructions = (
-            extension.read_text()
-            .split("const instructions =", 1)[1]
-            .split("pub fn extension", 1)[0]
-        )
-        self.assertNotIn("rtk", instructions.lower())
+        _, marker, instructions = extension.read_text().partition("const instructions =")
+        self.assertTrue(marker, "run extension instructions moved")
+        self.assertNotIn("rtk", instructions.partition("pub fn extension")[0].lower())
 
     def test_supported_grammar(self):
         for argv in (
@@ -234,14 +231,10 @@ class RestoredJobTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(restored.timeout, 300)
         self.assertIsNone(restored.cell)
 
-    async def test_restored_job_pipe_reports_retention(self):
+    async def test_restored_job_pipe_and_stdin_report_retention(self):
         job = await self.restored_job()
         with self.assertRaisesRegex(ValueError, "wrote more than it retains"):
             job.pipe(sys.executable, "-c", "pass", env=dict(os.environ))
-        self.assertEqual(list(self.plugin.jobs), [job.id])
-
-    async def test_restored_job_stdin_reports_retention(self):
-        job = await self.restored_job()
         with self.assertRaisesRegex(ValueError, "wrote more than it retains"):
             self.plugin.run(
                 sys.executable, "-c", "pass", stdin=job, env=dict(os.environ)

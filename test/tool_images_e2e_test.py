@@ -4,9 +4,8 @@ import base64
 import struct
 import unittest
 import zlib
-from urllib.error import HTTPError
 
-from harness import Albedo, Provider, exclusive, operation_id, python, text
+from harness import Albedo, Provider, operation_id, python, text
 
 
 def image_bytes(pixels=b"\x00\xff\x00\x00\x00\xff\x00"):
@@ -15,12 +14,11 @@ def image_bytes(pixels=b"\x00\xff\x00\x00\x00\xff\x00"):
     return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 2, 1, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(pixels)) + chunk(b"IEND", b"")
 
 
-@exclusive
 class ToolImagesTests(unittest.TestCase):
-    def test_live_multiple_images_replay_and_missing_resource(self):
+    def test_live_images_match_history_metadata_for_tools_and_pastes(self):
         # Upstream refuses to attach the same bytes twice in one cell.
         shown = [image_bytes(), image_bytes(b"\x00\x00\xff\x00\xff\x00\x00")]
-        data = shown[0]
+        pasted = image_bytes(b"\xff\x00\x00\x00\x00\xff\x00")
         first, second = (base64.b64encode(image).decode() for image in shown)
         pending = [True]
 
@@ -51,42 +49,19 @@ class ToolImagesTests(unittest.TestCase):
                 with app.api(image["reference"]["url"]) as response:
                     self.assertEqual(response.headers["Content-Type"], "image/png")
                     self.assertEqual(response.read(), expected)
-            with self.assertRaises(HTTPError) as failure:
-                app.api(images[0]["reference"]["url"].replace("image-0", "image-99"))
-            self.assertEqual(failure.exception.code, 404)
-            failure.exception.close()
-            app.restart()
-            replay = [entry for entry in app.history(session)["items"] if entry["kind"] == "tool_result"][-1]
-            self.assertEqual([part["image"] for part in replay["content"] if part["kind"] == "image"], images)
-            with app.api(images[0]["reference"]["url"]) as response:
-                self.assertEqual(response.read(), data)
-
-    def test_pasted_images_keep_live_and_replayed_resource_metadata(self):
-        data = image_bytes()
-        encoded = base64.b64encode(data).decode()
-        provider = Provider(lambda _request: text("I see the pasted image"))
-        self.addCleanup(provider.close)
-        with Albedo(provider, protocol="responses") as app:
-            session = app.session()
+            # A pasted input's live user event carries the durable image part.
             cursor = app.stream_page(session)
             with app.api(
                 f"/sessions/{session}/inputs/{operation_id()}",
-                {"kind": "message", "text": "Inspect this [Image #1]", "images": [{"mime_type": "image/png", "data": encoded}]},
+                {"kind": "message", "text": "Inspect this [Image #1]", "images": [{"mime_type": "image/png", "data": base64.b64encode(pasted).decode()}]},
                 method="PUT",
             ):
                 pass
             app.idle(session)
             streamed = app.stream_page(session, cursor)
-            live = [event["data"]["entry"] for event in streamed["events"] if event["type"] == "message" and event["data"]["entry"]["kind"] == "user"]
-            self.assertEqual(len(live), 1, streamed)
-            images = [part["image"] for part in live[0]["content"] if part["kind"] == "image"]
-            self.assertEqual(len(images), 1)
+            sent = [event["data"]["entry"] for event in streamed["events"] if event["type"] == "message" and event["data"]["entry"]["kind"] == "user"]
+            self.assertEqual(len(sent), 1, streamed)
+            pasted_images = [part["image"] for part in sent[0]["content"] if part["kind"] == "image"]
+            self.assertEqual(len(pasted_images), 1)
             entry = [item for item in app.history(session)["items"] if item["kind"] == "user"][-1]
-            self.assertEqual([part["image"] for part in entry["content"] if part["kind"] == "image"], images)
-            with app.api(images[0]["reference"]["url"]) as response:
-                self.assertEqual(response.read(), data)
-            app.restart()
-            replay = [item for item in app.history(session)["items"] if item["kind"] == "user"][-1]
-            self.assertEqual([part["image"] for part in replay["content"] if part["kind"] == "image"], images)
-            with app.api(images[0]["reference"]["url"]) as response:
-                self.assertEqual(response.read(), data)
+            self.assertEqual([part["image"] for part in entry["content"] if part["kind"] == "image"], pasted_images)

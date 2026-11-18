@@ -31,22 +31,21 @@ class RemotePathTests(unittest.TestCase):
         os.chdir(self.previous)
         self.temp.cleanup()
 
-    def test_workspace_file_maps_to_remote_path(self):
-        self.assertEqual(
-            remote._remote_path(self.connection, str(self.workspace / "a.txt")),
-            "/srv/app/a.txt",
-        )
-
     def test_workspace_directory_maps_to_remote_cwd(self):
         self.assertEqual(
             remote._remote_path(self.connection, str(self.workspace)), "/srv/app"
         )
 
     def test_nested_directory_keeps_its_relative_shape(self):
-        self.assertEqual(
-            remote._remote_path(self.connection, str(self.workspace / "src/a/b.py")),
-            "/srv/app/src/a/b.py",
-        )
+        for relative, expected in (
+            ("a.txt", "/srv/app/a.txt"),
+            ("src/a/b.py", "/srv/app/src/a/b.py"),
+        ):
+            with self.subTest(relative=relative):
+                self.assertEqual(
+                    remote._remote_path(self.connection, str(self.workspace / relative)),
+                    expected,
+                )
 
     def test_sibling_with_prefixed_name_passes_through(self):
         sibling = self.workspace.parent / f"{self.workspace.name}2" / "b.txt"
@@ -59,18 +58,13 @@ class RemotePathTests(unittest.TestCase):
         self.assertEqual(remote._remote_path(self.connection, noisy), "/srv/app/a.txt")
 
     def test_unrelated_absolute_path_passes_through(self):
-        self.assertEqual(
-            remote._remote_path(self.connection, "/etc/hostname"), "/etc/hostname"
-        )
+        for path in ("/etc/hostname", "notes/a.txt"):
+            with self.subTest(path=path):
+                self.assertEqual(remote._remote_path(self.connection, path), path)
 
     def test_traversal_out_of_the_workspace_passes_through(self):
         escaped = str(self.workspace / ".." / "outside" / "b.txt")
         self.assertEqual(remote._remote_path(self.connection, escaped), escaped)
-
-    def test_relative_path_passes_through(self):
-        self.assertEqual(
-            remote._remote_path(self.connection, "notes/a.txt"), "notes/a.txt"
-        )
 
     def test_root_workspace_maps_nothing(self):
         os.chdir("/")

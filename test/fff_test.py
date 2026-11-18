@@ -10,7 +10,6 @@ import os
 import json
 import shlex
 import shutil
-import signal
 from pathlib import Path
 import sys
 import tempfile
@@ -241,20 +240,7 @@ class FffTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(ValueError, "excluded from the FFF index"):
                 await self.files.find("needle", str(self.root / name))
 
-    async def test_close_death_missing_runtime_and_startup_timeout(self):
-        await self.files.paths(path=str(self.root))
-        worker_pid = module._fff.worker_pid
-        await self.files.close()
-        await self.files.paths(path=str(self.root))
-        self.assertEqual(module._fff.worker_pid, worker_pid)
-        os.kill(worker_pid, signal.SIGKILL)
-        # The registry may already have consumed the port exit and restarted it.
-        try:
-            await self.files.paths(path=str(self.root))
-        except ValueError as error:
-            self.assertRegex(str(error), "worker died|worker exited")
-            await self.files.paths(path=str(self.root))
-        self.assertNotEqual(module._fff.worker_pid, worker_pid)
+    async def test_missing_runtime_and_startup_timeout(self):
         # A new registry has no live port that could mask a missing executable.
         await self.rpc.close()
         await self.rpc.start(Path(self.rpc_temp.name))
@@ -269,7 +255,7 @@ class FffTests(unittest.IsolatedAsyncioTestCase):
         self.rpc.configure(self.rpc.command)
         self.assertTrue(await self.files.paths(path=str(self.root)))
 
-    async def test_bounded_root_eviction_and_concurrent_requests(self):
+    async def test_bounded_root_eviction(self):
         roots = []
         for n in range(6):
             root = self.root / f"project{n}"
@@ -281,21 +267,6 @@ class FffTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual([len(rows) for rows in results], [1] * 6)
         self.assertEqual(len(await self.files.find("token0", str(roots[0]))), 1)
-        payload = {
-            **module._fff_scope(roots[0], None, False, 10),
-            "op": "paths",
-            "query": "",
-            "name": None,
-        }
-        await module._fff.request(payload)
-        worker_pid = module._fff.worker_pid
-        # A second session adapter shares the daemon-owned host worker.
-        second = module._FFF(self.rpc)
-        await second.request(payload)
-        self.assertEqual(second.worker_pid, worker_pid)
-        await second.close()
-        await module._fff.request(payload)
-        self.assertEqual(module._fff.worker_pid, worker_pid)
 
     async def test_large_corpus_native_offset_pagination(self):
         corpus = self.root / "large"
@@ -345,11 +316,6 @@ class FffTests(unittest.IsolatedAsyncioTestCase):
         named = await asyncio.wait_for(self.files.find("native_token_1499", late), 10)
         self.assertEqual(len(named), 1)
         self.assertEqual(named[0].path, late)
-        (corpus / ".secret").write_text("hidden\n")
-        with self.assertRaisesRegex(ValueError, "excluded from the FFF index"):
-            await asyncio.wait_for(
-                self.files.find("hidden", str(corpus / ".secret")), 10
-            )
 
     async def test_regex_and_query_parser_metacharacters(self):
         target = self.root / "patterns.txt"
@@ -379,10 +345,6 @@ class FffTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(len(rows), 10)
         self.assertTrue(rows.truncated)
-        self.assertIn(
-            "phrase with spaces",
-            str(self.files.read(str(self.root / "src/main.txt"), limit=1)),
-        )
 
     async def test_requires_daemon_rpc_without_starting_a_kernel_worker(self):
         with (

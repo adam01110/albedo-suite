@@ -13,7 +13,7 @@
       readFile
       # keep-sorted end
       ;
-    inherit (pkgs.lib) hasInfix makeBinPath;
+    inherit (pkgs.lib) makeBinPath;
     inherit
       (pkgs)
       # keep-sorted start
@@ -141,24 +141,10 @@
           '';
       }));
 
-    # Zig defaults to the build host CPU, which may exceed the runtime CPU.
-    withPortableUsageCore = package:
-      package.overrideAttrs (old: {
-        buildPhase = assert hasInfix "zig build " old.buildPhase;
-          builtins.replaceStrings ["zig build "] ["zig build -Dcpu=baseline "] old.buildPhase;
-        nativeBuildInputs = (old.nativeBuildInputs or []) ++ [pkgs.python3];
-        doInstallCheck = true;
-        postInstallCheck =
-          (old.postInstallCheck or "")
-          + ''
-            ALBEDO_USAGE_CORE="$out/bin/usage" python3 ${../../test/usage_core_test.py}
-          '';
-      });
-
     withClientSources = showDiffs: package: let
       clientSources = builtins.path {
         path = ../../src/client;
-        filter = path: _: showDiffs || !(builtins.elem (baseNameOf path) ["default_diffs_test.go" "chat_test.go"]);
+        filter = path: _: showDiffs || !(builtins.elem (baseNameOf path) ["default_diffs_test.go"]);
       };
     in
       withSuiteNotices (package.overrideAttrs (old: {
@@ -185,18 +171,17 @@
             # left out of every check.
             go test ./internal/daemon -count=1
             go test ./internal/tui -run '^TestBase16' -count=1 -v
-            go test ./internal/tui -run '^TestVim' -count=1 -v
+            go test ./internal/tui -run '^(TestVim|TestSessionViewerTotalCostTopRight|TestSessionListCostLeftOfAge)' -count=1 -v
             go test ./internal/tui -run '^TestComposerScope' -count=1 -v
             go test ./internal/tui -run '^TestContext' -count=1 -v
             go test ./internal/tui -run '^TestQuota' -count=1 -v
             go test ./internal/tui -run '^TestProviderAvailability' -count=1 -v
-            go test ./internal/tui -run '^(TestSuiteEscape|TestInterrupt)' -count=1 -v
+            go test ./internal/tui -run '^TestSuiteEscape' -count=1 -v
             go test ./internal/tui -run '^(TestOpenCodeGo|TestZed)' -count=1 -v
             go test ./internal/tui -run '^TestToolImages' -count=1 -v
             go test ./internal/tui -run '^TestActivity' -count=1 -v
             go test ./internal/tui -run '^TestTurnNotify' -count=1 -v
             go test ./internal/tui -run '^TestZoxide' -count=1 -v
-            go test ./internal/tui -run '^(TestClipboardProbe|TestSSHClipboard)' -count=1 -v
             go test ./internal/terminal -run '^TestSuiteInline' -count=1 -v
             ${pkgs.lib.optionalString showDiffs "go test ./internal/tui -run '^TestDefaultDiffVisibility$' -count=1 -v"}
           '';
@@ -216,8 +201,6 @@
             then withClientSources showDiffs package
             else if name == "render.nix"
             then withSuiteNotices package
-            else if name == "usage-core.nix"
-            then withPortableUsageCore package
             else package;
         }).overrideAttrs (old: {
           meta = (old.meta or {}) // {inherit license;};

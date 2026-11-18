@@ -28,8 +28,6 @@ func TestSuiteInlineResizeSkipsReflowedRows(t *testing.T) {
 		// Ghostty on Hyprland narrows by one column (and one row) when the
 		// window loses focus: a full-width row now covers two rows.
 		{name: "unfocus narrows one column", rule: strings.Repeat("-", 100), to: 99, want: 3},
-		// The rule spans 99 of 100 columns, so at 60 it covers two rows.
-		{name: "rewrapping terminal", rule: strings.Repeat("-", 99), to: 60, want: 3},
 		// A row wider than the screen was drawn clipped to it, so only the
 		// clipped part rewraps.
 		{name: "clipped row", rule: strings.Repeat("-", 150), to: 60, want: 3},

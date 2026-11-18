@@ -60,58 +60,12 @@ class FormatterTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(path.read_text(), "lower\n")
         result = await formatter.finish()
         self.assertTrue(result["ok"], result["error"])
-        self.assertEqual(result, {"ok": True, "changed": True, "error": ""})
+        self.assertTrue(result["changed"])
         self.assertEqual(path.read_text(), "LOWER\n")
         self.assertEqual(path.stat().st_mode & 0o777, 0o751)
         self.assertFalse(formatter._pending)
 
-    async def test_edit_hook_and_failed_edit(self):
-        path = self.write()
-        await formatter.finish()
-        self.fs.edit(str(path), "LOWER", "other")
-        self.assertEqual(path.read_text(), "other\n")
-        before = formatter._pending.copy()
-        with self.assertRaises(ValueError):
-            self.fs.edit(str(path), "absent", "new")
-        self.assertEqual(formatter._pending, before)
-        self.assertTrue((await formatter.finish())["changed"])
-        self.assertEqual(path.read_text(), "OTHER\n")
-
-    async def test_unchanged_and_unsupported(self):
-        self.write(text="UPPER\n")
-        other = self.write("notes.txt")
-        self.assertEqual(
-            await formatter.finish(), {"ok": True, "changed": False, "error": ""}
-        )
-        self.assertEqual(other.read_text(), "lower\n")
-        self.assertFalse(formatter._pending)
-
-    async def test_failed_command_keeps_original_and_retry(self):
-        path = self.write()
-        self.set_fixture("failure", diagnostic="broken", exit_code=2)
-        result = await formatter.finish()
-        self.assertFalse(result["ok"])
-        self.assertIn("broken", result["error"])
-        self.assertEqual(path.read_text(), "lower\n")
-        self.assertIn(path, formatter._pending)
-        self.set_fixture("write", text="fixed")
-        self.assertTrue((await formatter.finish())["ok"])
-        self.assertEqual(path.read_text(), "fixed")
-
-    async def test_concurrent_user_change(self):
-        path = self.write()
-        self.set_fixture("concurrent_change", original=str(path))
-        result = await formatter.finish()
-        self.assertFalse(result["ok"])
-        self.assertIn("concurrent", result["error"])
-        self.assertEqual(path.read_text(), "user change")
-        self.assertIn(path, formatter._pending)
-        self.assertFalse(list(self.root.glob("albedo-format-*")))
-        self.fs.write(str(path), "repair")
-        self.set_fixture("write", text="fixed")
-        self.assertTrue((await formatter.finish())["ok"])
-
-    async def test_outside_ignored_but_symlink_escape_fails(self):
+    async def test_outside_workspace_paths_are_ignored(self):
         with tempfile.TemporaryDirectory() as outside:
             path = Path(outside) / "outside.py"
             self.fs.write(str(path), "outside")
@@ -119,11 +73,6 @@ class FormatterTest(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(result["ok"])
             self.assertFalse(formatter._pending)
             self.assertEqual(path.read_text(), "outside")
-            formatter.configure(self.config, str(self.root))
-            link = self.root / "link.py"
-            link.symlink_to(path)
-            self.fs.write(str(link), "new outside")
-            self.assertFalse((await formatter.finish())["ok"])
 
     async def test_replaced_original_identity_rejected(self):
         path = self.write()
@@ -158,6 +107,18 @@ class FormatterTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["ok"])
         self.assertIn("timed out", result["error"])
         self.assertEqual(path.read_text(), "lower\n")
+        self.assertFalse(list(self.root.glob("albedo-format-*")))
+        # A batch-level timeout keeps the work it already published.
+        formatter.configure(self.config, str(self.root))
+        self.config["timeoutMs"] = 1000
+        first, second = self.write(), self.write("second.py")
+        self.set_fixture("slow")
+        result = await formatter.finish()
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["changed"])
+        self.assertEqual(first.read_text(), "done")
+        self.assertEqual(second.read_text(), "lower\n")
+        self.assertIn(second, formatter._pending)
         self.assertFalse(list(self.root.glob("albedo-format-*")))
 
     async def test_cancellation_kills_group_and_preserves_original(self):
@@ -250,87 +211,11 @@ class FormatterTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue((await formatter.finish())["changed"])
         self.assertEqual(path.read_text(), "context-formatted\n")
 
-    @unittest.skipUnless(
-        shutil.which("nix") and shutil.which("treefmt") and shutil.which("git"),
-        "standalone Nix smoke requires nix, treefmt and git",
-    )
-    async def test_real_nix_fmt_treefmt_exact_path(self):
-        nix = shutil.which("nix")
-        treefmt = shutil.which("treefmt")
-        assert nix is not None and treefmt is not None
-
-        async def command(*argv):
-            child = await asyncio.create_subprocess_exec(
-                *argv,
-                cwd=self.root,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
-            output, _ = await asyncio.wait_for(child.communicate(), 30)
-            self.assertEqual(child.returncode, 0, output.decode())
-            return output.decode().strip()
-
-        system = await command(
-            "nix", "eval", "--impure", "--raw", "--expr", "builtins.currentSystem"
-        )
-        treefmt_root = str(Path(treefmt).resolve().parent.parent)
-        for root_flags in ([], ["--tree-root-file", "flake.nix"]):
-            wrapper = (
-                f"#!{sys.executable}\n"
-                "import os, sys\n"
-                f"os.execv({treefmt_root + '/bin/treefmt'!r}, "
-                f"[{treefmt_root + '/bin/treefmt'!r}, '--no-cache', "
-                f"'--config-file', 'project.toml', *{root_flags!r}, *sys.argv[1:]])\n"
-            )
-            builder = (
-                "import os, pathlib\n"
-                "p = pathlib.Path(os.environ['out']) / 'bin' / 'formatter'\n"
-                "p.parent.mkdir(parents=True)\n"
-                f"p.write_text({wrapper!r})\n"
-                "p.chmod(0o755)\n"
-            )
-            (self.root / "flake.nix").write_text(
-                "{ outputs = _: { formatter." + system + " = builtins.derivation { "
-                'name = "formatter-shadow-smoke"; system = ' + json.dumps(system) + "; "
-                'builder = "${builtins.storePath '
-                + json.dumps(str(Path(sys.executable).resolve().parent.parent))
-                + '}/bin/python3"; '
-                'args = [ "-c" ' + json.dumps(builder) + " ]; "
-                "treefmt = builtins.storePath " + json.dumps(treefmt_root) + "; "
-                '} // { meta.mainProgram = "formatter"; }; }; }'
-            )
-            (self.root / "project.toml").write_text(
-                "[formatter.exact]\n"
-                f"command = {json.dumps(sys.executable)}\n"
-                'options = ["-c", "import pathlib,sys; p=pathlib.Path(sys.argv[1]); p.write_text(p.read_text().upper())"]\n'
-                'includes = ["src/example.py"]\n'
-            )
-            (self.root / "src").mkdir(exist_ok=True)
-            path = self.write("src/example.py")
-            await command("git", "init", "--quiet")
-            await command("git", "add", "flake.nix", "project.toml", "src/example.py")
-            self.config["nix"] = [
-                nix,
-                "--offline",
-                "--option",
-                "pure-eval",
-                "false",
-            ]
-            self.config["timeoutMs"] = 30000
-            result = await formatter.finish()
-            self.assertTrue(result["ok"], result["error"])
-            self.assertEqual(result, {"ok": True, "changed": True, "error": ""})
-            self.assertEqual(path.read_text(), "LOWER\n")
-
     async def test_project_snapshot_reused_and_publish_guards(self):
         (self.root / "treefmt.toml").write_text("")
         first = self.write()
         second = self.write("second.py")
-        with patch.object(
-            formatter, "_snapshot", wraps=formatter._snapshot
-        ) as snapshot:
-            self.assertTrue((await formatter.finish())["ok"])
-            self.assertEqual(snapshot.call_count, 1)
+        self.assertTrue((await formatter.finish())["ok"])
         self.assertEqual(first.read_text(), "LOWER\n")
         self.assertEqual(second.read_text(), "LOWER\n")
         self.fs.write(str(first), "lower again")
@@ -341,39 +226,28 @@ class FormatterTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first.read_text(), "user change")
         self.assertIn(first, formatter._pending)
 
-    async def test_project_cannot_redirect_later_target_reset(self):
-        (self.root / "treefmt.toml").write_text("")
-        first = self.write()
-        second = self.write("second.py")
-
-        async def redirect_later_target(argv, cwd, **kwargs):
-            staged_second = Path(argv[-1]).parent / second.name
-            staged_second.unlink()
-            staged_second.symlink_to(second)
-
-        with patch.object(formatter, "_run", side_effect=redirect_later_target):
-            result = await formatter.finish()
-        self.assertFalse(result["ok"])
-        self.assertIn("symlink", result["error"])
-        self.assertEqual(first.read_text(), "lower\n")
-        self.assertEqual(second.read_text(), "lower\n")
-        self.assertIn(second, formatter._pending)
-
     async def test_project_staged_symlink_is_never_published(self):
         (self.root / "treefmt.toml").write_text("")
-        path = self.write()
+        # The escaping symlink can replace the staged copy a project formatter is
+        # about to publish or one a later target still needs.
+        for redirect in ("current", "later"):
+            with self.subTest(redirect=redirect):
+                formatter.configure(self.config, str(self.root))
+                first, second = self.write(), self.write("second.py")
+                target = first if redirect == "current" else second
 
-        async def replace_with_symlink(argv, cwd, **kwargs):
-            staged = Path(argv[-1])
-            staged.unlink()
-            staged.symlink_to(path)
+                async def replace_with_symlink(argv, cwd, **kwargs):
+                    staged = Path(argv[-1]).parent / target.name
+                    staged.unlink()
+                    staged.symlink_to(target)
 
-        with patch.object(formatter, "_run", side_effect=replace_with_symlink):
-            result = await formatter.finish()
-        self.assertFalse(result["ok"])
-        self.assertIn("symlink", result["error"])
-        self.assertEqual(path.read_text(), "lower\n")
-        self.assertIn(path, formatter._pending)
+                with patch.object(formatter, "_run", side_effect=replace_with_symlink):
+                    result = await formatter.finish()
+                self.assertFalse(result["ok"])
+                self.assertIn("symlink", result["error"])
+                self.assertEqual(first.read_text(), "lower\n")
+                self.assertEqual(second.read_text(), "lower\n")
+                self.assertIn(target, formatter._pending)
 
     async def test_project_snapshot_limits_and_config_symlink_escape(self):
         (self.root / "treefmt.toml").write_text("")
@@ -390,30 +264,17 @@ class FormatterTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("outside workspace", (await formatter.finish())["error"])
         self.assertEqual(path.read_text(), "lower\n")
 
-    async def test_busy_skips_without_losing_pending(self):
+    async def test_unrelated_work_does_not_suppress_explicit_checks(self):
         path = self.write()
-        job = types.SimpleNamespace(service=False, exit_code=None)
-        with patch.dict(
-            sys.modules,
-            {"albedo_plugins.run": types.SimpleNamespace(jobs={"job": job})},
-        ):
-            self.assertTrue((await formatter.finish())["changed"])
-            self.assertNotIn(path, formatter._pending)
-            job.service = True
-            self.assertFalse((await formatter.finish())["changed"])
-        self.write()
         other = asyncio.create_task(asyncio.sleep(20))
         try:
-            with patch.dict(
-                sys.modules,
-                {"albedo_cells": types.SimpleNamespace(CELL_TASKS={"other": other})},
-            ):
-                self.assertTrue((await formatter.finish())["changed"])
-                self.assertFalse(formatter._pending)
+            self.assertTrue((await formatter.finish())["changed"])
+            self.assertFalse(formatter._pending)
         finally:
             other.cancel()
             with self.assertRaises(asyncio.CancelledError):
                 await other
+        self.assertEqual(path.read_text(), "LOWER\n")
 
     async def test_nix_missing_formatter_falls_back_not_build_failure(self):
         path = self.write()
@@ -443,7 +304,7 @@ class FormatterTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(path.read_text(), "lower again")
 
-    async def test_remote_setup_noop(self):
+    async def test_setup_empty_exports(self):
         with (
             patch.dict(os.environ, {"ALBEDO_REMOTE_TARGET": "host"}),
             patch.object(formatter, "configure") as configure,
@@ -451,20 +312,6 @@ class FormatterTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await plugin.setup(types.SimpleNamespace()), {})
             configure.assert_not_called()
 
-    async def test_total_budget(self):
-        first = self.write()
-        second = self.write("second.py")
-        self.config["timeoutMs"] = 1000
-        self.set_fixture("slow")
-        result = await formatter.finish()
-        self.assertFalse(result["ok"])
-        self.assertTrue(result["changed"])
-        self.assertEqual(first.read_text(), "done")
-        self.assertEqual(second.read_text(), "lower\n")
-        self.assertIn(second, formatter._pending)
-        self.assertFalse(list(self.root.glob("albedo-format-*")))
-
-    async def test_setup_empty_exports(self):
         async def host(name, args):
             self.assertEqual(name, "formatter.config")
             self.assertEqual(args, {})

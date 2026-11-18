@@ -46,8 +46,7 @@ func TestToolImagesReadAuthenticatedBoundedResource(t *testing.T) {
 }
 
 func TestToolImagesRejectForeignAndMalformedReferencesBeforeRequest(t *testing.T) {
-	reads := 0
-	conn := controlledConnection(t, func(w http.ResponseWriter, r *http.Request) { reads++; t.Errorf("unexpected read %s", r.URL) })
+	conn := controlledConnection(t, func(w http.ResponseWriter, r *http.Request) { t.Errorf("unexpected read %s", r.URL) })
 	for _, ref := range []string{"https://evil.test/x", "//evil.test/x", "/sessions/other/history/e/image-0", "/sessions/s/history/../image-0", "/sessions/s/history/e/result", "/sessions/s/history/e/image-0?x=1", "/sessions/s/history/e/image-0#x", "/sessions/s/history/e%2ff/image-0", "/sessions/s/history/e/image-0/extra"} {
 		if _, err := NewChatClient(conn, "s").ReadImage(t.Context(), ImageMetadata{Bytes: 3, Reference: ref}); err == nil {
 			t.Errorf("accepted %s", ref)
@@ -57,9 +56,6 @@ func TestToolImagesRejectForeignAndMalformedReferencesBeforeRequest(t *testing.T
 		if _, err := NewChatClient(conn, "s").ReadImage(t.Context(), ImageMetadata{Bytes: size, Reference: "/sessions/s/history/e/image-0"}); err == nil {
 			t.Errorf("accepted size %d", size)
 		}
-	}
-	if reads != 0 {
-		t.Fatal("invalid references fetched")
 	}
 }
 

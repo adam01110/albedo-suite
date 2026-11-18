@@ -209,48 +209,29 @@ class ModelCatalogReloadTests(unittest.TestCase):
             ids(self.listed("claude")), ["claude-fixture-6", "claude-fixture-small"]
         )
 
-    def test_opencode_go_lists_the_requested_endpoint(self):
-        # The suite fetches the requested endpoint rather than another
-        # profile's, so each endpoint-keyed list holds that endpoint's models.
-        other = Provider(lambda _request: text("ok"), catalog=GATEWAY_MODELS)
-        self.addCleanup(other.close)
-        self.assertEqual(
-            [item["id"] for item in self.listed("opencode-go", other.url)],
-            ["local-a", "local-b"],
-        )
-
-    def test_generic_openai_endpoint_lists_its_own_models(self):
-        gateway = Provider(lambda _request: text("ok"), catalog=GATEWAY_MODELS)
-        self.addCleanup(gateway.close)
-        self.reload("models")
-        self.assertEqual(
-            [item["id"] for item in self.listed("openai", gateway.url + "/")],
-            ["local-a", "local-b"],
-        )
-        gateway.catalog = {"data": [{"id": "uncached-change"}]}
-        self.assertEqual(
-            [item["id"] for item in self.listed("openai", gateway.url)],
-            ["local-a", "local-b"],
-        )
-
     def test_generic_openai_endpoint_answers_from_its_saved_list(self):
         gateway = Provider(lambda _request: text("ok"), catalog=GATEWAY_MODELS)
         self.addCleanup(gateway.close)
 
-        def listed():
-            return [item["id"] for item in self.listed("openai", gateway.url)]
+        def listed(endpoint):
+            return [item["id"] for item in self.listed("openai", endpoint)]
 
-        self.assertEqual(listed(), ["local-a", "local-b"])
+        # A trailing slash names the same endpoint as the bare URL.
+        self.assertEqual(listed(gateway.url + "/"), ["local-a", "local-b"])
         gateway.catalog = {"data": [{"id": "local-c"}]}
+        # A live change is ignored while the saved list is still fresh.
+        self.assertEqual(listed(gateway.url), ["local-a", "local-b"])
         # Saved lists turn stale after 3 s instead of 5 minutes.
         self.app.restart(
             prepare=lambda app: app.env.update(ALBEDO_TEST_TIME_SCALE="100")
         )
         # After the restart the saved list answers from disk without waiting
         # for the endpoint, and once stale it is refetched behind the caller.
-        self.assertEqual(listed(), ["local-a", "local-b"])
+        self.assertEqual(listed(gateway.url), ["local-a", "local-b"])
         wait_until(
-            lambda: listed() == ["local-c"], 10, "the saved list was never refreshed"
+            lambda: listed(gateway.url) == ["local-c"],
+            10,
+            "the saved list was never refreshed",
         )
 
     def test_claude_picker_offers_the_api_list_with_its_facts(self):

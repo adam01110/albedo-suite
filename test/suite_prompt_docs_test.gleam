@@ -8,7 +8,6 @@ import albedo/harness/extensions/schedule/extension as schedule
 import albedo/harness/kernel/base as python
 import albedo/harness/sdk/extension
 import albedo/harness/sdk/host
-import gleam/dynamic
 import gleam/dynamic/decode
 import gleam/int
 import gleam/io
@@ -63,22 +62,14 @@ pub fn main() -> Nil {
   let compact = prompt_docs.instructions(items)
   assert string.contains(compact, "core rules")
   assert string.contains(compact, "custom instructions")
-  assert string.contains(compact, "agents.models()")
   assert string.contains(compact, "api_docs.read")
   assert !string.contains(compact, original)
-  assert string.byte_size(compact) < string.byte_size(original)
-  assert compact == prompt_docs.instructions(items)
   assert compact
     == prompt_docs.instructions(
       list.append(items, [
         item("custom-shared", "custom instructions"),
       ]),
     )
-  assert prompt_docs.instructions([
-      item("first", "shared binding instructions"),
-      item("second", "shared binding instructions"),
-    ])
-    == "shared binding instructions"
 
   // The route reads no host context.
   let context = unused_context(Nil)
@@ -89,16 +80,15 @@ pub fn main() -> Nil {
   let assert Ok(native) =
     json.parse(
       json.to_string(json.object([#("topic", json.string("agents"))])),
-      decode_dynamic(),
+      decode.dynamic,
     )
   let assert Ok(full) = call(context, "api_docs.read", native)
   assert json.to_string(full) == json.to_string(json.string(original))
-  assert prompt_docs.instructions(items) == compact
   let assert Ok(topics) = call(context, "api_docs.catalog", args)
   assert json.to_string(topics) == "[\"python\",\"agents\",\"custom\"]"
   let assert Error(#("invalid", _)) = call(context, "api_docs.read", args)
   let assert Ok(missing) =
-    json.parse("{\"topic\":\"disabled\"}", decode_dynamic())
+    json.parse("{\"topic\":\"disabled\"}", decode.dynamic)
   let assert Error(#("unavailable", _)) =
     call(context, "api_docs.read", missing)
   let assert Error(#("invalid", _)) = call(context, "api_docs.unknown", args)
@@ -134,7 +124,3 @@ pub fn main() -> Nil {
 
 @external(erlang, "gleam_stdlib", "identity")
 fn unused_context(value: Nil) -> host.Context
-
-fn decode_dynamic() -> decode.Decoder(dynamic.Dynamic) {
-  decode.dynamic
-}

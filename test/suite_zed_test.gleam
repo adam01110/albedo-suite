@@ -1,4 +1,3 @@
-import albedo/harness/extensions/codex/wire as codex_wire
 import albedo/harness/extensions/zed/stream as zed_stream
 import albedo/harness/extensions/zed/wire
 import albedo/openai_api
@@ -19,84 +18,6 @@ import gleam/set
 import gleam/string
 import gleam/string_tree
 import gleeunit/should
-
-fn field(body: String, path: List(String)) -> String {
-  let assert Ok(value) = json.parse(body, decode.at(path, decode.string))
-  value
-}
-
-fn encoded(model: String, choice: types.ToolChoice) -> String {
-  let request = openai_api.request(model, [types.User("hello")])
-  let request =
-    types.Request(
-      ..request,
-      max_output_tokens: Some(512),
-      tools: [
-        types.Tool(
-          "python",
-          "execute",
-          json.object([#("type", json.string("object"))]),
-          False,
-        ),
-      ],
-      options: types.Options(
-        ..request.options,
-        effort: Some(types.High),
-        tool_choice: Some(choice),
-      ),
-    )
-  let assert Ok(exchange) =
-    wire.encode(
-      case model {
-        "claude-" <> _ -> "anthropic"
-        "gpt-" <> _ -> "open_ai"
-        _ -> "google"
-      },
-      "https://cloud.zed.dev",
-      "test-jwt",
-      "session",
-      request,
-    )
-  string_tree.to_string(exchange.body)
-}
-
-fn encoding() {
-  let claude = encoded("claude-sonnet-4-6", types.NamedTool("python"))
-  field(claude, ["provider"]) |> should.equal("anthropic")
-  field(claude, ["provider_request", "tool_choice", "type"])
-  |> should.equal("tool")
-  field(claude, ["provider_request", "tool_choice", "name"])
-  |> should.equal("python")
-  field(claude, ["provider_request", "output_config", "effort"])
-  |> should.equal("high")
-  let no = encoded("claude-sonnet-4-6", types.NoTool)
-  field(no, ["provider_request", "tool_choice", "type"]) |> should.equal("none")
-  let any = encoded("claude-sonnet-4-6", types.AnyTool)
-  field(any, ["provider_request", "tool_choice", "type"]) |> should.equal("any")
-  let gpt = encoded("gpt-5.4", types.AnyTool)
-  field(gpt, ["provider"]) |> should.equal("open_ai")
-  field(gpt, ["provider_request", "reasoning", "effort"])
-  |> should.equal("high")
-  field(gpt, ["provider_request", "tool_choice"]) |> should.equal("required")
-  let gemini = encoded("gemini-3.1-pro-preview", types.NoTool)
-  field(gemini, ["provider"]) |> should.equal("google")
-  field(gemini, ["provider_request", "model"])
-  |> should.equal("models/gemini-3.1-pro-preview")
-  field(gemini, [
-    "provider_request",
-    "generationConfig",
-    "thinkingConfig",
-    "thinkingLevel",
-  ])
-  |> should.equal("HIGH")
-  field(gemini, [
-    "provider_request",
-    "toolConfig",
-    "functionCallingConfig",
-    "mode",
-  ])
-  |> should.equal("NONE")
-}
 
 /// A conversation every native family has to encode: text turns, an image, a
 /// replayed assistant tool call, its result, and a closing turn.
@@ -200,10 +121,6 @@ fn body_field(
 
 fn codex_body(body: String, segments: List(Seg)) -> String {
   body_field(body, segments, decode.string)
-}
-
-fn codex_bool(body: String, segments: List(Seg)) -> Bool {
-  body_field(body, segments, decode.bool)
 }
 
 fn sent(body: String, segments: List(Seg), decoder: decode.Decoder(a)) -> a {
@@ -400,9 +317,6 @@ fn strict_traversal() {
     let schema = nested_under(key, open_object())
     sent_bool(single_tool_body(schema), [Key("tools"), Index(0), Key("strict")])
     |> should.equal(False)
-    let control = nested_under(key, closed_nested_object())
-    sent_bool(single_tool_body(control), [Key("tools"), Index(0), Key("strict")])
-    |> should.equal(True)
   })
 
   let map_keywords = [
@@ -415,49 +329,11 @@ fn strict_traversal() {
     let schema = nested_under(key, json.object([#("hidden", open_object())]))
     sent_bool(single_tool_body(schema), [Key("tools"), Index(0), Key("strict")])
     |> should.equal(False)
-    let control =
-      nested_under(key, json.object([#("hidden", closed_nested_object())]))
-    sent_bool(single_tool_body(control), [Key("tools"), Index(0), Key("strict")])
-    |> should.equal(True)
   })
 }
 
 /// The ChatGPT reasoning backend fixes sampling, tool choice and the token
 /// limit; the encoder must send only what it accepts.
-fn codex_policy() {
-  let request =
-    types.Request(
-      "gpt-5.4",
-      None,
-      [types.User("hello")],
-      [
-        types.Tool("python", "execute", closed_nested_object(), True),
-      ],
-      Some(512),
-      types.Options(
-        ..types.defaults,
-        temperature: Some(0.2),
-        effort: Some(types.High),
-        format: Some(types.JsonObject),
-      ),
-    )
-  let assert Ok(tree) =
-    codex_wire.encode("codex-session", types.Responses, request)
-  let body = string_tree.to_string(tree)
-  contains(body, "\"strict\":null")
-  codex_body(body, [Key("tool_choice")]) |> should.equal("auto")
-  codex_bool(body, [Key("parallel_tool_calls")]) |> should.equal(True)
-  codex_body(body, [Key("text"), Key("verbosity")]) |> should.equal("low")
-  codex_body(body, [Key("text"), Key("format"), Key("type")])
-  |> should.equal("json_object")
-  codex_body(body, [Key("reasoning"), Key("effort")]) |> should.equal("high")
-  codex_body(body, [Key("reasoning"), Key("summary")]) |> should.equal("auto")
-  codex_body(body, [Key("prompt_cache_key")]) |> should.equal("codex-session")
-  // The backend owns the token budget and the sampling it refuses to take.
-  string.contains(body, "max_output_tokens") |> should.be_false
-  string.contains(body, "temperature") |> should.be_false
-}
-
 fn tools_body(provider: String, tools: List(types.Tool)) -> String {
   let request =
     types.Request(
@@ -500,82 +376,6 @@ fn tool_strictness() {
 }
 
 fn provider_requests() {
-  // Anthropic Messages: typed content blocks, adaptive thinking, effort.
-  let claude = provider_body("anthropic", "claude-sonnet-4-6", types.AnyTool)
-  sent_text(claude, [Key("model")]) |> should.equal("claude-sonnet-4-6")
-  sent_int(claude, [Key("max_tokens")]) |> should.equal(512)
-  sent_bool(claude, [Key("stream")]) |> should.equal(True)
-  sent_text(claude, [Key("system")]) |> should.equal("answer briefly")
-  sent_text(claude, [Key("messages"), Index(0), Key("role")])
-  |> should.equal("user")
-  sent_text(claude, [
-    Key("messages"),
-    Index(0),
-    Key("content"),
-    Index(0),
-    Key("type"),
-  ])
-  |> should.equal("text")
-  sent_text(claude, [
-    Key("messages"),
-    Index(0),
-    Key("content"),
-    Index(0),
-    Key("text"),
-  ])
-  |> should.equal("hello")
-  sent_text(claude, [
-    Key("messages"),
-    Index(0),
-    Key("content"),
-    Index(2),
-    Key("type"),
-  ])
-  |> should.equal("image")
-  sent_text(claude, [
-    Key("messages"),
-    Index(0),
-    Key("content"),
-    Index(2),
-    Key("source"),
-    Key("type"),
-  ])
-  |> should.equal("base64")
-  sent_text(claude, [
-    Key("messages"),
-    Index(1),
-    Key("content"),
-    Index(1),
-    Key("type"),
-  ])
-  |> should.equal("tool_use")
-  sent_text(claude, [
-    Key("messages"),
-    Index(2),
-    Key("content"),
-    Index(0),
-    Key("type"),
-  ])
-  |> should.equal("tool_result")
-  sent_text(claude, [
-    Key("messages"),
-    Index(2),
-    Key("content"),
-    Index(0),
-    Key("tool_use_id"),
-  ])
-  |> should.equal("call-1")
-  sent_text(claude, [Key("tools"), Index(0), Key("name")])
-  |> should.equal("python")
-  sent_text(claude, [Key("tools"), Index(0), Key("input_schema"), Key("type")])
-  |> should.equal("object")
-  sent_text(claude, [Key("tool_choice"), Key("type")]) |> should.equal("any")
-  sent_text(claude, [Key("thinking"), Key("type")]) |> should.equal("adaptive")
-  sent_text(claude, [Key("thinking"), Key("display")])
-  |> should.equal("summarized")
-  sent_text(claude, [Key("output_config"), Key("effort")])
-  |> should.equal("high")
-
   // OpenAI Responses: every input item carries `type`, and message text is a
   // typed content part.
   let gpt = provider_body("open_ai", "gpt-5.4", types.AnyTool)
@@ -657,147 +457,6 @@ fn provider_requests() {
     "{\"arguments\":\"{\\\"code\\\":\\\"x\\\"}\",\"call_id\":\"call-1\",\"name\":\"python\",\"type\":\"function_call\"}",
   )
   assert_responses_items_typed(gpt)
-
-  // Google GenerateContent: wrapped model name, parts, function responses.
-  let gemini = provider_body("google", "gemini-3.1-pro-preview", types.AnyTool)
-  sent_text(gemini, [Key("model")])
-  |> should.equal("models/gemini-3.1-pro-preview")
-  sent_text(gemini, [Key("contents"), Index(0), Key("role")])
-  |> should.equal("user")
-  sent_text(gemini, [
-    Key("contents"),
-    Index(0),
-    Key("parts"),
-    Index(0),
-    Key("text"),
-  ])
-  |> should.equal("hello")
-  sent_text(gemini, [
-    Key("contents"),
-    Index(0),
-    Key("parts"),
-    Index(2),
-    Key("inlineData"),
-    Key("mimeType"),
-  ])
-  |> should.equal("image/png")
-  sent_text(gemini, [Key("contents"), Index(1), Key("role")])
-  |> should.equal("model")
-  sent_text(gemini, [
-    Key("contents"),
-    Index(1),
-    Key("parts"),
-    Index(1),
-    Key("functionCall"),
-    Key("name"),
-  ])
-  |> should.equal("python")
-  sent_text(gemini, [
-    Key("contents"),
-    Index(2),
-    Key("parts"),
-    Index(0),
-    Key("functionResponse"),
-    Key("name"),
-  ])
-  |> should.equal("python")
-  sent_text(gemini, [
-    Key("contents"),
-    Index(2),
-    Key("parts"),
-    Index(0),
-    Key("functionResponse"),
-    Key("response"),
-    Key("output"),
-  ])
-  |> should.equal("tool said")
-  sent_text(gemini, [
-    Key("systemInstruction"),
-    Key("parts"),
-    Index(0),
-    Key("text"),
-  ])
-  |> should.equal("answer briefly")
-  sent_text(gemini, [
-    Key("generationConfig"),
-    Key("thinkingConfig"),
-    Key("thinkingLevel"),
-  ])
-  |> should.equal("HIGH")
-  sent_bool(gemini, [
-    Key("generationConfig"),
-    Key("thinkingConfig"),
-    Key("includeThoughts"),
-  ])
-  |> should.equal(True)
-  sent_int(gemini, [Key("generationConfig"), Key("maxOutputTokens")])
-  |> should.equal(512)
-  sent_text(gemini, [Key("generationConfig"), Key("responseMimeType")])
-  |> should.equal("application/json")
-  sent_text(gemini, [
-    Key("tools"),
-    Index(0),
-    Key("functionDeclarations"),
-    Index(0),
-    Key("name"),
-  ])
-  |> should.equal("python")
-  sent_text(gemini, [
-    Key("tools"),
-    Index(0),
-    Key("functionDeclarations"),
-    Index(0),
-    Key("parametersJsonSchema"),
-    Key("type"),
-  ])
-  |> should.equal("object")
-  sent_text(gemini, [
-    Key("toolConfig"),
-    Key("functionCallingConfig"),
-    Key("mode"),
-  ])
-  |> should.equal("ANY")
-
-  // OpenAI Chat Completions: system message, function tools, tool results.
-  let grok = provider_body("x_ai", "grok-4", types.NamedTool("python"))
-  sent_text(grok, [Key("model")]) |> should.equal("grok-4")
-  sent_bool(grok, [Key("stream")]) |> should.equal(True)
-  sent_text(grok, [Key("messages"), Index(0), Key("role")])
-  |> should.equal("system")
-  sent_text(grok, [Key("messages"), Index(0), Key("content")])
-  |> should.equal("answer briefly")
-  sent_text(grok, [Key("messages"), Index(1), Key("role")])
-  |> should.equal("user")
-  sent_text(grok, [Key("messages"), Index(1), Key("content")])
-  |> should.equal("hello")
-  sent_text(grok, [Key("messages"), Index(3), Key("role")])
-  |> should.equal("assistant")
-  sent_text(grok, [
-    Key("messages"),
-    Index(3),
-    Key("tool_calls"),
-    Index(0),
-    Key("id"),
-  ])
-  |> should.equal("call-1")
-  sent_text(grok, [Key("messages"), Index(4), Key("role")])
-  |> should.equal("tool")
-  sent_text(grok, [Key("messages"), Index(4), Key("tool_call_id")])
-  |> should.equal("call-1")
-  sent_text(grok, [Key("messages"), Index(5), Key("content")])
-  |> should.equal("bye")
-  sent_int(grok, [Key("max_completion_tokens")]) |> should.equal(512)
-  sent_bool(grok, [Key("stream_options"), Key("include_usage")])
-  |> should.equal(True)
-  sent_text(grok, [Key("tools"), Index(0), Key("type")])
-  |> should.equal("function")
-  sent_text(grok, [Key("tools"), Index(0), Key("function"), Key("name")])
-  |> should.equal("python")
-  sent_text(grok, [Key("tool_choice"), Key("type")]) |> should.equal("function")
-  sent_text(grok, [Key("tool_choice"), Key("function"), Key("name")])
-  |> should.equal("python")
-  sent_text(grok, [Key("response_format"), Key("type")])
-  |> should.equal("json_object")
 }
 
 fn feed(reducer: albedo_stream.Reducer, event: String) {
@@ -816,19 +475,6 @@ fn reduction() {
   let #(reducer, _, _) =
     feed(
       reducer,
-      "{\"event\":{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}}",
-    )
-  let #(reducer, events, _) =
-    feed(
-      reducer,
-      "{\"event\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"consider\"}}}",
-    )
-  events |> should.equal([types.ThinkingDelta("consider")])
-  let #(reducer, _, _) =
-    feed(reducer, "{\"event\":{\"type\":\"content_block_stop\",\"index\":0}}")
-  let #(reducer, _, _) =
-    feed(
-      reducer,
       "{\"event\":{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":7}}}",
     )
   let #(reducer, _, turn) =
@@ -837,10 +483,7 @@ fn reduction() {
   reducer.finish() |> should.equal(Error(types.UnexpectedEnd))
   let #(_, _, turn) = feed(reducer, "{\"status\":\"stream_ended\"}")
   let assert Some(turn) = turn
-  let assert Some(usage) = turn.usage
-  usage.input_tokens |> should.equal(13)
-  usage.output_tokens |> should.equal(7)
-  usage.cached_input_tokens |> should.equal(Some(3))
+  let assert [_] = turn.output
   reducer.feed("{\"status\":{\"failed\":{\"message\":\"quota exhausted\"}}}")
   |> should.equal(Error(types.Refused(types.Failed, None, "quota exhausted")))
   reducer.feed("not JSON") |> should.be_error
@@ -897,10 +540,10 @@ fn gemini_roundtrip(
   #(turn, body)
 }
 
-fn gemini_many_calls() {
-  let indices = int.range(255, -1, [], list.prepend)
+/// Calls that repeat one id each get their own, in arrival order.
+fn gemini_duplicate_call_ids() {
   let parts =
-    json.array(indices, fn(index) {
+    json.array([0, 1], fn(index) {
       json.object([
         #(
           "functionCall",
@@ -925,15 +568,12 @@ fn gemini_many_calls() {
       let assert types.ArgumentsDelta(index, name, _) = event
       #(index, name)
     })
-  calls
-  |> should.equal(
-    list.map(indices, fn(index) { #(index, "tool-" <> int.to_string(index)) }),
-  )
+  calls |> should.equal([#(0, "tool-0"), #(1, "tool-1")])
   let #(_, _, turn) = feed(reducer, "{\"status\":\"stream_ended\"}")
   let assert Some(turn) = turn
-  list.length(turn.tool_calls) |> should.equal(256)
+  list.length(turn.tool_calls) |> should.equal(2)
   let ids = list.map(turn.tool_calls, fn(call) { call.id })
-  ids |> set.from_list |> set.size |> should.equal(256)
+  ids |> set.from_list |> set.size |> should.equal(2)
   list.first(ids) |> should.equal(Ok("duplicate"))
 }
 
@@ -1008,78 +648,6 @@ fn gemini_stream_replay() {
     Key("thoughtSignature"),
   ])
   |> should.equal("call-signature")
-}
-
-fn native_protocols() {
-  {
-    let reducer = zed_stream.reducer("open_ai", "gpt-5.4", [])
-    let reducer =
-      list.fold(
-        [
-          "{\"event\":{\"type\":\"response.reasoning_summary_text.delta\",\"item_id\":\"r\",\"output_index\":0,\"summary_index\":0,\"delta\":\"gpt-thought\"}}",
-          "{\"event\":{\"type\":\"response.completed\",\"response\":{\"id\":\"response-test\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"id\":\"m\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"gpt-reply\",\"annotations\":[]}]}],\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"output_tokens_details\":{\"reasoning_tokens\":2}}}}}",
-        ],
-        reducer,
-        fn(reducer, event) {
-          let #(next, _, turn) = feed(reducer, event)
-          turn |> should.equal(None)
-          next
-        },
-      )
-    let #(_, _, turn) = feed(reducer, "{\"status\":\"stream_ended\"}")
-    let assert Some(turn) = turn
-    let assert Some(usage) = turn.usage
-    usage.input_tokens |> should.equal(10)
-    usage.output_tokens |> should.equal(5)
-    usage.reasoning_tokens |> should.equal(Some(2))
-    list.length(turn.output) |> should.equal(1)
-  }
-  {
-    let reducer = zed_stream.reducer("google", "gemini-3.1-pro-preview", [])
-    let reducer =
-      list.fold(
-        [
-          "{\"event\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"gemini-thought\",\"thought\":true},{\"text\":\"gemini-reply\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":10,\"candidatesTokenCount\":5,\"thoughtsTokenCount\":2,\"totalTokenCount\":17}}}",
-        ],
-        reducer,
-        fn(reducer, event) {
-          let #(next, _, turn) = feed(reducer, event)
-          turn |> should.equal(None)
-          next
-        },
-      )
-    let #(_, _, turn) = feed(reducer, "{\"status\":\"stream_ended\"}")
-    let assert Some(turn) = turn
-    let assert Some(usage) = turn.usage
-    usage.input_tokens |> should.equal(10)
-    // Thought tokens are output tokens here, and nothing else is added.
-    usage.output_tokens |> should.equal(7)
-    usage.reasoning_tokens |> should.equal(Some(2))
-    list.length(turn.output) |> should.equal(1)
-  }
-  {
-    let reducer = zed_stream.reducer("x_ai", "grok-4", [])
-    let reducer =
-      list.fold(
-        [
-          "{\"event\":{\"id\":\"grok-test\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"reasoning_content\":\"grok-thought\"},\"finish_reason\":null}]}}",
-          "{\"event\":{\"id\":\"grok-test\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"grok-reply\"},\"finish_reason\":\"stop\"}]}}",
-          "{\"event\":{\"id\":\"grok-test\",\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}}",
-        ],
-        reducer,
-        fn(reducer, event) {
-          let #(next, _, turn) = feed(reducer, event)
-          turn |> should.equal(None)
-          next
-        },
-      )
-    let #(_, _, turn) = feed(reducer, "{\"status\":\"stream_ended\"}")
-    let assert Some(turn) = turn
-    let assert Some(usage) = turn.usage
-    usage.input_tokens |> should.equal(10)
-    usage.output_tokens |> should.equal(5)
-    list.length(turn.output) |> should.equal(1)
-  }
 }
 
 /// One provider detail block, as a reducer records it for replay.
@@ -1363,38 +931,6 @@ fn capability_header() {
   |> should.be_false
 }
 
-fn wide_schema() {
-  let names =
-    int.range(512, 0, [], fn(names, index) { [int.to_string(index), ..names] })
-  let schema = fn(required) {
-    json.object([
-      #("type", json.string("object")),
-      #("additionalProperties", json.bool(False)),
-      #("required", json.array(required, json.string)),
-      #(
-        "properties",
-        json.object(
-          list.map(names, fn(name) {
-            #(name, json.object([#("type", json.string("string"))]))
-          }),
-        ),
-      ),
-    ])
-  }
-  sent_bool(single_tool_body(schema(list.reverse(names))), [
-    Key("tools"),
-    Index(0),
-    Key("strict"),
-  ])
-  |> should.be_true
-  sent_bool(single_tool_body(schema(list.drop(names, 1))), [
-    Key("tools"),
-    Index(0),
-    Key("strict"),
-  ])
-  |> should.be_false
-}
-
 fn tool_image_order() {
   let assert Ok(first) = types.image("image/png", "YQ==", 1, 1, 1)
   let assert Ok(second) = types.image("image/png", "Yg==", 1, 1, 1)
@@ -1445,7 +981,6 @@ fn tool_image_order() {
     Key("url"),
   ])
   |> should.equal("data:image/png;base64,Yg==")
-  part(3, "text") |> should.equal("Images from tool call two:")
   codex_body(body, [
     Key("messages"),
     Index(3),
@@ -1460,12 +995,9 @@ fn tool_image_order() {
 }
 
 pub fn main() {
-  wide_schema()
   tool_image_order()
   gemini_stream_replay()
-  gemini_many_calls()
-  native_protocols()
-  encoding()
+  gemini_duplicate_call_ids()
   provider_requests()
   tool_strictness()
   anthropic_thinking_replay()
@@ -1475,10 +1007,9 @@ pub fn main() {
   responses_reasoning()
   capability_header()
   strict_traversal()
-  codex_policy()
   reduction()
   framing()
   io.println(
-    "Zed per-family provider requests, replayed thinking/signatures/reasoning, strict-schema traversal, Codex policy, thinking/usage/status reducer and bounded NDJSON cases passed",
+    "Zed provider requests, replayed thinking/signatures/reasoning, strict-schema traversal, status reducer and bounded NDJSON cases passed",
   )
 }

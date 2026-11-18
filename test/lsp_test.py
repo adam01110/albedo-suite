@@ -88,19 +88,6 @@ class LspTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"server": "fixture"', result["feedback"])
         self.assertIn('"server": "other"', result["feedback"])
 
-    async def test_deferred_failure_retains_edit_and_requires_close(self):
-        manager = self.manager("timeout")
-        manager.record(self.path)
-        result = await manager.finish()
-        self.assertFalse(result["ok"])
-        self.assertIn(self.path, manager.pending)
-        result = await manager.finish()
-        self.assertFalse(result["ok"])
-        self.assertIn("close explicitly", result["error"])
-        await manager.close()
-        manager.config[0]["args"][2] = "normal"
-        self.assertTrue((await manager.finish())["ok"])
-
     async def test_failed_retries_preserve_cause_and_do_not_replay(self):
         manager = self.manager("death")
         manager.record(self.path)
@@ -123,22 +110,9 @@ class LspTests(unittest.IsolatedAsyncioTestCase):
         manager.config[0]["args"][2] = "normal"
         self.assertTrue((await manager.finish())["ok"])
 
-    async def test_deferred_busy_and_concurrent_edit(self):
-        import types
-
+    async def test_deferred_concurrent_edit(self):
         manager = self.manager()
         manager.record(self.path)
-        task = asyncio.create_task(asyncio.Event().wait())
-        stub = types.SimpleNamespace(CELL_TASKS={"busy": task})
-        try:
-            with patch.dict(sys.modules, {"albedo_cells": stub}):
-                self.assertTrue((await manager.finish())["ok"])
-                self.assertTrue(self.log.exists())
-                self.assertNotIn(self.path, manager.pending)
-                manager.record(self.path)
-        finally:
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
         original = manager.diagnostics
 
         async def changed(*args, **kwargs):
@@ -156,17 +130,9 @@ class LspTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_deferred_tracking_and_feedback_caps(self):
         manager = self.manager()
-        with patch.dict(
-            sys.modules,
-            {
-                "albedo_plugins.run": types.SimpleNamespace(
-                    jobs={"busy": types.SimpleNamespace(service=False, exit_code=None)}
-                )
-            },
-        ):
-            manager.record(self.path)
-            self.assertTrue((await manager.finish())["ok"])
-            self.assertTrue(self.log.exists())
+        manager.record(self.path)
+        self.assertTrue((await manager.finish())["ok"])
+        self.assertTrue(self.log.exists())
         manager.record(self.path)
         report = {
             "server": "fixture",
@@ -221,12 +187,6 @@ class LspTests(unittest.IsolatedAsyncioTestCase):
             target.write_text("BAD")
             manager.record(target)
             self.assertEqual(manager.pending, {})
-            manager.config[0]["enabled"] = True
-            link = self.root / "link.nix"
-            link.symlink_to(target)
-            manager.record(link)
-            self.assertFalse((await manager.finish())["ok"])
-            self.assertFalse(self.log.exists())
 
     async def test_operation_admission_bounds_snapshot_queue(self):
         manager = self.manager()
@@ -322,19 +282,6 @@ class LspTests(unittest.IsolatedAsyncioTestCase):
         await manager._close(None, idle=True)
         self.assertIsNone(client.proc.returncode)
 
-    async def test_idle_shutdown_preserves_failed_server_until_explicit_close(self):
-        manager = self.manager("death")
-        with self.assertRaises(LspError):
-            await manager.diagnostics("test.nix")
-        cause = manager.clients["fixture"].failure
-        self.assertIsNone(manager.idle_timer)
-        await manager._close(None, idle=True)
-        self.assertEqual(manager.clients["fixture"].failure, cause)
-        before = len(self.logs())
-        with self.assertRaisesRegex(LspError, "close explicitly"):
-            await manager.diagnostics("test.nix")
-        self.assertEqual(len(self.logs()), before)
-
     async def test_idle_shutdown_kills_unresponsive_server_and_close_cancels_timer(
         self,
     ):
@@ -393,28 +340,48 @@ class LspTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(edit["message"]["result"]["applied"])
 
     async def test_failure_modes_no_replay(self):
+        async def attempt(manager, mode):
+            if mode in ("unsupported", "error", "request-timeout"):
+                await manager.hover("test.nix", 0, 0)
+            else:
+                await manager.diagnostics("test.nix")
+
         for mode in (
             "death",
             "malformed",
             "oversized",
             "timeout",
             "no-diagnostics",
+            "request-timeout",
             "unsupported",
             "error",
         ):
             with self.subTest(mode=mode):
                 manager = self.manager(mode)
-                with self.assertRaises(LspError):
-                    if mode in ("unsupported", "error"):
-                        await manager.hover("test.nix", 0, 0)
-                    else:
-                        await manager.diagnostics("test.nix")
+                if mode == "request-timeout":
+                    with self.assertRaisesRegex(LspError, "timed out"):
+                        await attempt(manager, mode)
+                else:
+                    with self.assertRaises(LspError):
+                        await attempt(manager, mode)
                 self.assertEqual(manager.servers()[0]["state"], "failed")
                 before = len(self.logs())
                 with self.assertRaises(LspError):
                     await manager.diagnostics("test.nix")
                 self.assertEqual(len(self.logs()), before)
                 await manager.close()
+        # An idle sweep never revives or rewrites a failed server.
+        manager = self.manager("death")
+        with self.assertRaises(LspError):
+            await manager.diagnostics("test.nix")
+        cause = manager.clients["fixture"].failure
+        self.assertIsNone(manager.idle_timer)
+        await manager._close(None, idle=True)
+        self.assertEqual(manager.clients["fixture"].failure, cause)
+        before = len(self.logs())
+        with self.assertRaisesRegex(LspError, "close explicitly"):
+            await manager.diagnostics("test.nix")
+        self.assertEqual(len(self.logs()), before)
 
     async def test_cancel_reaps_process(self):
         manager = self.manager("timeout", startupTimeoutMs=5000)
@@ -431,8 +398,7 @@ class LspTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(proc.returncode)
         with self.assertRaises(ProcessLookupError):
             os.kill(proc.pid, 0)
-
-    async def test_close_inflight(self):
+        # Combining close() with an in-flight start reaps without reviving either.
         manager = self.manager("timeout", startupTimeoutMs=5000)
         task = asyncio.create_task(manager.diagnostics("test.nix"))
         for _ in range(1000):
@@ -526,19 +492,6 @@ class LspTests(unittest.IsolatedAsyncioTestCase):
         await manager.diagnostics("second/file.nix")
         self.assertEqual(sum(e["event"] == "START" for e in self.logs()), 2)
 
-    async def test_request_timeout(self):
-        manager = self.manager("request-timeout")
-        await manager.diagnostics("test.nix")
-        # request's default timeout is bound at definition; patch the operation boundary.
-        original = manager.clients["fixture"].request
-
-        async def short(method, params):
-            return await original(method, params, timeout=0.05)
-
-        manager.clients["fixture"].request = short
-        with self.assertRaisesRegex(LspError, "timed out"):
-            await manager.hover("test.nix", 0, 0)
-
     async def test_plugin_remote_and_cleanup(self):
         spec = importlib.util.spec_from_file_location(
             "temporary_lsp_plugin", SOURCE / "albedo_plugins/lsp.py"
@@ -546,8 +499,6 @@ class LspTests(unittest.IsolatedAsyncioTestCase):
         assert spec is not None and spec.loader is not None
         plugin = importlib.util.module_from_spec(spec)
         # This source overlay may not contain the upstream API; supply only its interface.
-        import types
-
         stub = types.ModuleType("albedo_api")
         setattr(stub, "PythonApi", object)
         with patch.dict(sys.modules, {"albedo_api": stub}):

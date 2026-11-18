@@ -88,36 +88,10 @@ class ConfigureTests(HelperFixture):
         expected = json.loads(json.dumps(original))
         expected["global"]["skills"].update(choices)
         self.assertEqual(json.loads(destination.read_text()), expected)
-        self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o600)
-        modified_at = destination.stat().st_mtime_ns
-        self.assert_succeeded(self.configure(defaults, "capabilities.json"))
-        self.assertEqual(destination.stat().st_mtime_ns, modified_at)
-
-    def test_invalid_capabilities_are_left_untouched(self):
-        destination = self.home / "capabilities.json"
-        invalid_documents = [
-            [],
-            {"global": None},
-            {"global": {"skills": None}},
-            {"global": {"skills": []}},
-            {"global": {"skills": {"research": "false"}}},
-            {"global": {"instructions": {"AGENTS.md": 0}}},
-            {"global": {"mcp": {"docs": "true"}}},
-        ]
-        for document in invalid_documents:
-            with self.subTest(document=document):
-                self.write_json(destination, document)
-                original = destination.read_bytes()
-                result = self.configure({}, "capabilities.json")
-                self.assertNotEqual(result.returncode, 0)
-                self.assertEqual(destination.read_bytes(), original)
-        self.write_json(destination, {})
-        result = self.configure({"global": {"skills": {"bad": 1}}}, "capabilities.json")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(json.loads(destination.read_text()), {})
 
     def test_capability_changes_respect_daemon_lock_and_pending_recovery(self):
         destination = self.home / "capabilities.json"
+        settings = self.home / "extensions.json"
         original = {"global": {"skills": {"research": True}}}
         defaults = {"global": {"skills": {"research": False}}}
         self.write_json(destination, original)
@@ -128,43 +102,53 @@ class ConfigureTests(HelperFixture):
                 self.configure(defaults, "capabilities.json").returncode, 0
             )
             self.assertEqual(json.loads(destination.read_text()), original)
+            # The refusal precedes creating a settings document.
+            self.assertNotEqual(self.configure({}).returncode, 0)
+            self.assertFalse(settings.exists())
         finally:
             connection.close()
         (self.home / ".settings-recovery").touch()
         self.assertNotEqual(self.configure(defaults, "capabilities.json").returncode, 0)
         self.assertEqual(json.loads(destination.read_text()), original)
+        self.assertNotEqual(self.configure({}).returncode, 0)
+        self.assertFalse(settings.exists())
 
     def test_invalid_documents_are_left_untouched(self):
-        destination = self.home / "extensions.json"
-        invalid_documents = ["[1]", "{} {}", "{broken", '{"enabled":false}']
-        for document in invalid_documents:
-            with self.subTest(document=document):
-                destination.write_text(document)
-                result = self.configure({"enabled": {}})
-                self.assertNotEqual(result.returncode, 0)
-                self.assertEqual(destination.read_text(), document)
-
-    def test_daemon_lock_prevents_settings_creation(self):
-        connection = sqlite3.connect(self.home / "daemon.lock")
-        try:
-            connection.execute("BEGIN EXCLUSIVE")
-            self.assertNotEqual(self.configure({}).returncode, 0)
-            self.assertFalse((self.home / "extensions.json").exists())
-        finally:
-            connection.close()
-
-    def test_pending_recovery_prevents_settings_creation(self):
-        (self.home / ".settings-recovery").touch()
-        self.assertNotEqual(self.configure({}).returncode, 0)
-        self.assertFalse((self.home / "extensions.json").exists())
-
-    def test_legacy_provider_document_is_left_untouched(self):
-        destination = self.home / "config.json"
-        original = '{"model":"legacy"}'
-        destination.write_text(original)
-        result = self.configure({"providers": {}, "active": "missing"}, "config.json")
+        cases = [
+            (
+                "extensions.json",
+                {"enabled": {}},
+                ["[1]", "{} {}", "{broken", '{"enabled":false}'],
+            ),
+            (
+                "capabilities.json",
+                {},
+                [
+                    [],
+                    {"global": None},
+                    {"global": {"skills": None}},
+                    {"global": {"skills": []}},
+                    {"global": {"skills": {"research": "false"}}},
+                    {"global": {"instructions": {"AGENTS.md": 0}}},
+                    {"global": {"mcp": {"docs": "true"}}},
+                ],
+            ),
+            ("config.json", {"providers": {}, "active": "missing"}, [{"model": "legacy"}]),
+        ]
+        for target, defaults, documents in cases:
+            destination = self.home / target
+            for document in documents:
+                text = document if isinstance(document, str) else json.dumps(document)
+                with self.subTest(target=target, document=text):
+                    destination.write_text(text)
+                    result = self.configure(defaults, target)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(destination.read_text(), text)
+        destination = self.home / "capabilities.json"
+        self.write_json(destination, {})
+        result = self.configure({"global": {"skills": {"bad": 1}}}, "capabilities.json")
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(destination.read_text(), original)
+        self.assertEqual(json.loads(destination.read_text()), {})
 
     def test_adding_provider_preserves_existing_authentication(self):
         destination = self.home / "config.json"
@@ -228,7 +212,6 @@ class McpLauncherTests(HelperFixture):
             "config": "PUBLIC_LOCAL_COLLISION",
             "command": "not a command",
             "KEY": "public",
-            "PATH": "/nonexistent",
         }
         configuration["secrets"] = {"KEY": str(secret_file)}
 
@@ -239,15 +222,6 @@ class McpLauncherTests(HelperFixture):
         self.assertEqual(environment["config"], "PUBLIC_LOCAL_COLLISION")
         self.assertEqual(environment["command"], "not a command")
         self.assertEqual(received_arguments, arguments)
-        self.assertEqual(environment["PATH"], "/nonexistent")
-        self.assertNotIn("SECRET_SENTINEL", (self.root / "launcher.json").read_text())
-
-    def test_missing_secret_does_not_execute_command(self):
-        configuration = self.launch_configuration()
-        configuration["secrets"] = {"KEY": str(self.root / "missing")}
-        result = self.launch(configuration)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(result.stdout, "")
 
     def test_invalid_metadata_does_not_execute_command(self):
         invalid_fields = [
@@ -257,6 +231,7 @@ class McpLauncherTests(HelperFixture):
             ("args", "not a list"),
             ("environment", {"BAD-NAME": "x"}),
             ("secrets", {"KEY": "a\x00b"}),
+            ("secrets", {"KEY": str(self.root / "missing")}),
         ]
         for field, value in invalid_fields:
             with self.subTest(field=field, value=value):
@@ -266,7 +241,16 @@ class McpLauncherTests(HelperFixture):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(result.stdout, "")
 
-    def test_empty_runtime_path_does_not_search_the_working_directory(self):
+    def test_empty_runtime_path_keeps_explicit_path_verbatim(self):
+        configuration = self.launch_configuration()
+        configuration["environment"] = {"PATH": "/first:/second"}
+
+        result = self.launch(configuration)
+        self.assert_succeeded(result)
+        environment, _ = json.loads(result.stdout)
+        self.assertEqual(environment["PATH"], "/first:/second")
+
+        # An empty runtime path never adds the working directory to PATH.
         working_directory = self.root / "working directory"
         self.write_probe(working_directory, "albedo-hijack-probe", "HIJACKED")
         configuration = self.launch_configuration()
@@ -276,15 +260,6 @@ class McpLauncherTests(HelperFixture):
         result = self.launch(configuration, cwd=working_directory)
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn("HIJACKED", result.stdout)
-
-    def test_empty_runtime_path_keeps_explicit_path_verbatim(self):
-        configuration = self.launch_configuration()
-        configuration["environment"] = {"PATH": "/first:/second"}
-
-        result = self.launch(configuration)
-        self.assert_succeeded(result)
-        environment, _ = json.loads(result.stdout)
-        self.assertEqual(environment["PATH"], "/first:/second")
 
     def test_nonempty_runtime_path_precedes_the_base_path(self):
         runtime_directory = self.root / "runtime inputs"

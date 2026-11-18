@@ -6,9 +6,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"encoding/json"
 	"github.com/charmbracelet/x/ansi"
-	"net"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -52,93 +50,47 @@ func TestZedBrowserLoginAndConfirmation(t *testing.T) {
 	}
 }
 
-// The Zed extension signs in through the browser, so the chooser must not offer
-// a second Zed row that asks for an API key instead.
-func TestZedChooserOffersOnlyBrowserSignIn(t *testing.T) {
-	m := NewLoginModel(&daemon.Connection{}, "", nil)
-	t.Cleanup(func() { m.Close() })
-	m.SetSize(120, 30)
-	m.SignIns = []daemon.SignIn{{Provider: "zed", Label: "add Zed account", Kind: "model", Flows: []string{"browser"}}}
-	m.buildChoosePicker()
-	var zed []loginItem
-	for _, item := range m.ChoosePicker.items {
-		if strings.Contains(item.Label, "Zed") {
-			zed = append(zed, item)
-		}
-	}
-	if len(zed) != 1 || zed[0].ID != "signin:zed" {
-		t.Fatalf("Zed chooser rows: %+v", zed)
-	}
-	m, _ = m.Update(PickerSelectMsg{ID: "signin:zed"})
-	if m.Step != StepProfileName {
-		t.Fatalf("Zed sign-in did not ask for a profile name: %v", m.Step)
-	}
-	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if m.Step != StepOAuth || m.Provider != "zed" || m.Draft.Extension != "zed" ||
-		m.Draft.BaseURL != "https://cloud.zed.dev" || m.Draft.Protocol != "chat_completions" {
-		t.Fatalf("Zed sign-in did not start: %v %q %+v", m.Step, m.Provider, m.Draft)
-	}
-}
-
-func TestZedSavedProfileUsesExistingAccount(t *testing.T) {
-	for _, signedIn := range []bool{false, true} {
-		m := NewLoginModel(&daemon.Connection{}, "", nil)
-		t.Cleanup(func() { m.Close() })
-		m.SignIns = []daemon.SignIn{{Provider: "zed", Flows: []string{"browser"}}}
-		if signedIn {
-			m.Accounts = []daemon.Account{{ID: "account-one", Provider: "zed", Kind: "oauth"}}
-		}
-		settings := config.Settings{Extension: "zed", Model: "claude-sonnet-4-6"}
-		cmd := m.useProfile("saved-zed", settings)
-		want := StepOAuth
-		if signedIn {
-			want = StepSaving
-		}
-		if cmd == nil || m.Step != want {
-			t.Fatalf("signedIn=%v: got step %v, want %v", signedIn, m.Step, want)
-		}
-	}
-}
-
-// A saved Zed profile can still carry a key from the removed manual-JWT path.
-// /login must start browser sign-in anyway, describe the key as unused, and not
-// save it again.
-func TestZedSavedProfileSignsInWithAKey(t *testing.T) {
+// A saved Zed profile signs in through the browser whether or not an account is
+// already linked. A key it still carries from the removed manual-JWT path is
+// reported as unused and never saved again.
+func TestZedSavedProfileSignIn(t *testing.T) {
+	keyless := config.Settings{Extension: "zed", Model: "claude-sonnet-4-6"}
 	keyed := config.Settings{
 		Extension: "zed", BaseURL: "https://cloud.zed.dev", Protocol: "chat_completions",
 		Model: "claude-sonnet-4-6", APIKey: "stale-zed-jwt", HasKey: true,
 	}
-	saved := func() LoginModel {
-		m := NewLoginModel(&daemon.Connection{}, "", nil)
-		m.SetSize(120, 30)
-		m.SignIns = []daemon.SignIn{{Provider: "zed", Label: "add Zed account", Kind: "model", Flows: []string{"browser"}}}
-		m.Accounts = []daemon.Account{{ID: "account-one", Provider: "zed", Label: "github-user", Kind: "oauth"}}
-		m.Profiles = config.Profiles{Providers: map[string]config.Settings{"zed": keyed}, Active: "zed"}
-		m.buildChoosePicker()
-		return m
-	}
-
-	m := saved()
-	t.Cleanup(func() { m.Close() })
-	if detail := m.profileDetail(keyed, "zed"); strings.Contains(detail, "API key") {
-		t.Fatalf("Zed profile described as api key authenticated: %q", detail)
-	}
-	m, cmd := m.Update(PickerSelectMsg{ID: "use:zed"})
-	if cmd == nil || m.Step != StepOAuth || m.Provider != "zed" {
-		t.Fatalf("saved Zed profile did not start sign-in: %v %q", m.Step, m.Provider)
-	}
-	if m.Draft.APIKey != "" || m.Draft.HasKey {
-		t.Fatalf("Zed sign-in kept the profile's key: %+v", m.Draft)
-	}
-
-	hinted := saved()
-	t.Cleanup(func() { hinted.Close() })
-	hinted.Hint = "zed"
-	if cmd := hinted.applyHint(); cmd == nil || hinted.Step != StepOAuth || hinted.Provider != "zed" {
-		t.Fatalf("/login zed on a keyed profile did not start sign-in: %v %q", hinted.Step, hinted.Provider)
-	}
-	if hinted.Draft.APIKey != "" || hinted.Draft.HasKey {
-		t.Fatalf("/login zed kept the profile's key: %+v", hinted.Draft)
+	for _, tc := range []struct {
+		name     string
+		settings config.Settings
+		accounts []daemon.Account
+		want     LoginStep
+		detail   string
+	}{
+		{name: "keyless signed out", settings: keyless, want: StepOAuth, detail: "claude-sonnet-4-6 · zed · signed out"},
+		{name: "keyless signed in", settings: keyless, want: StepSaving, detail: "claude-sonnet-4-6 · zed",
+			accounts: []daemon.Account{{ID: "account-one", Provider: "zed", Kind: "oauth"}}},
+		{name: "stale key", settings: keyed, want: StepOAuth, detail: "claude-sonnet-4-6 · zed · stored key unused",
+			accounts: []daemon.Account{{ID: "account-one", Provider: "zed", Label: "github-user", Kind: "oauth"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewLoginModel(&daemon.Connection{}, "", nil)
+			t.Cleanup(func() { m.Close() })
+			m.SetSize(120, 30)
+			m.SignIns = []daemon.SignIn{{Provider: "zed", Label: "add Zed account", Kind: "model", Flows: []string{"browser"}}}
+			m.Accounts = tc.accounts
+			m.Profiles = config.Profiles{Providers: map[string]config.Settings{"zed": tc.settings}, Active: "zed"}
+			m.buildChoosePicker()
+			if detail := m.profileDetail(tc.settings, "zed"); detail != tc.detail {
+				t.Fatalf("profile detail %q, want %q", detail, tc.detail)
+			}
+			m, cmd := m.Update(PickerSelectMsg{ID: "use:zed"})
+			if cmd == nil || m.Step != tc.want || (tc.want == StepOAuth && m.Provider != "zed") {
+				t.Fatalf("saved Zed profile did not sign in: %v %q", m.Step, m.Provider)
+			}
+			if m.Draft.APIKey != "" || m.Draft.HasKey {
+				t.Fatalf("Zed sign-in kept the profile's key: %+v", m.Draft)
+			}
+		})
 	}
 }
 
@@ -148,7 +100,7 @@ func TestZedSavedProfileSignsInWithAKey(t *testing.T) {
 // send an explicit null or the profile keeps refusing every later turn.
 func TestZedBrowserSignInClearsAStoredKey(t *testing.T) {
 	var saved map[string]any
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	conn := commandTestConnection(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPatch || r.URL.RequestURI() != "/settings?group=providers" {
 			t.Errorf("unexpected request %s %s", r.Method, r.URL.RequestURI())
 			return
@@ -178,21 +130,19 @@ func TestZedBrowserSignInClearsAStoredKey(t *testing.T) {
 				},
 			},
 		})
-	}))
-	defer server.Close()
+	})
 
 	keyed := config.Settings{
 		Extension: "zed", BaseURL: "https://cloud.zed.dev", Protocol: "chat_completions",
 		Model: "claude-sonnet-4-6", APIKey: "stale-zed-jwt", HasKey: true,
 	}
-	conn := daemon.NewConnection(daemon.ConnectionSnapshot{Port: server.Listener.Addr().(*net.TCPAddr).Port}, nil)
-	defer conn.HTTPClient().CloseIdleConnections()
 	m := NewLoginModel(conn, "", nil)
 	defer m.Close()
 	m.SetSize(120, 30)
 	m.Profiles = config.Profiles{Providers: map[string]config.Settings{"zed": keyed}, ETag: "providers-etag"}
 	m.Name = "zed"
-	m.Draft = signedInDraft(keyed, "zed")
+	m.Draft = keyed
+	m.beginSignIn(daemon.SignIn{Provider: "zed", Flows: []string{"browser"}})
 	m.Step = StepSaving
 	cmd := m.saveProviderCmd(m.Name, m.Draft)
 	if cmd == nil {

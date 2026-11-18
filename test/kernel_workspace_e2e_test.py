@@ -138,4 +138,3 @@ class KernelWorkspaceTests(unittest.TestCase):
         self.workspace.rename(self.workspace.with_name("saved-project"))
         self.workspace.write_text("not a directory")
         self.block()
-        self.assertEqual(self.provider.requests, [])

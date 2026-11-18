@@ -9,7 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-func TestComposerBackgroundEventsDoNotSnapshot(t *testing.T) {
+func TestComposerScopeBackgroundEventsDoNotSnapshot(t *testing.T) {
 	m := newTestChatModel(t, &daemon.Session{ID: "s"})
 	m.SetSize(80, 24)
 	text := strings.Repeat("draft line\n", 100)
@@ -24,7 +24,7 @@ func TestComposerBackgroundEventsDoNotSnapshot(t *testing.T) {
 	}
 }
 
-func TestToolImageSelectionInvalidation(t *testing.T) {
+func TestToolImagesSelectionInvalidation(t *testing.T) {
 	m := newTestChatModel(t, &daemon.Session{ID: "s"})
 	m.History = NewBoundedHistory(100, 1024*1024)
 	entry := func(id int) HistoryEntry {
@@ -85,9 +85,29 @@ func TestToolImageSelectionInvalidation(t *testing.T) {
 	if len(m.selectToolImages().order) != 1 {
 		t.Fatal("retired live entry retained image")
 	}
+	// The same invalidation reached through ChatModel.Update.
+	mockToolGraphics(t, true)
+	m.loadToolImage()
+	cached := m.toolImageSelection
+	event := daemon.StreamEvent{Type: daemon.EventTool, EntryID: "42", ToolName: "python", ToolResult: "attached", Images: []daemon.ImageMetadata{{Reference: "live-image"}}}
+	m, _ = m.Update(ChatStreamEventMsg{SessionID: m.SessionID, Generation: m.Generation, Event: event})
+	if m.toolImageSelection == cached || m.toolImageSelection.wanted["live-image"].Reference == "" {
+		t.Fatal("stream event did not invalidate image selection")
+	}
+	cached = m.toolImageSelection
+	m, _ = m.Update(ChatProgressTickMsg{SessionID: m.SessionID, Generation: m.Generation})
+	if m.toolImageSelection != cached {
+		t.Fatal("animation invalidated image selection")
+	}
+	event.EntryID, event.Images[0].Reference = "1", "older-image"
+	m.loadingOlder = true
+	m, _ = m.Update(ChatOlderLoadedMsg{SessionID: m.SessionID, Generation: m.Generation, Page: &daemon.HistoryPage{Events: []daemon.StreamEvent{event}}})
+	if m.toolImageSelection == cached || m.toolImageSelection.wanted["older-image"].Reference == "" {
+		t.Fatal("loaded older page did not invalidate image selection")
+	}
 }
 
-func TestToolImagePendingCompletionAfterEvictionAndResize(t *testing.T) {
+func TestToolImagesPendingCompletionAfterEvictionAndResize(t *testing.T) {
 	mockToolGraphics(t, true)
 	for _, resize := range []bool{false, true} {
 		t.Run(fmt.Sprint(resize), func(t *testing.T) {
@@ -129,29 +149,5 @@ func TestToolImagePendingCompletionAfterEvictionAndResize(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-func TestToolImageSelectionHistoryEvents(t *testing.T) {
-	mockToolGraphics(t, true)
-	m := newTestChatModel(t, &daemon.Session{ID: "s"})
-	m.SetSize(80, 24)
-	m.loadToolImage()
-	before := m.toolImageSelection
-	event := daemon.StreamEvent{Type: daemon.EventTool, EntryID: "42", ToolName: "python", ToolResult: "attached", Images: []daemon.ImageMetadata{{Reference: "live-image"}}}
-	m, _ = m.Update(ChatStreamEventMsg{SessionID: m.SessionID, Generation: m.Generation, Event: event})
-	if m.toolImageSelection == before || m.toolImageSelection.wanted["live-image"].Reference == "" {
-		t.Fatal("stream event did not invalidate image selection")
-	}
-	before = m.toolImageSelection
-	m, _ = m.Update(ChatProgressTickMsg{SessionID: m.SessionID, Generation: m.Generation})
-	if m.toolImageSelection != before {
-		t.Fatal("animation invalidated image selection")
-	}
-	event.EntryID, event.Images[0].Reference = "1", "older-image"
-	m.loadingOlder = true
-	m, _ = m.Update(ChatOlderLoadedMsg{SessionID: m.SessionID, Generation: m.Generation, Page: &daemon.HistoryPage{Events: []daemon.StreamEvent{event}}})
-	if m.toolImageSelection == before || m.toolImageSelection.wanted["older-image"].Reference == "" {
-		t.Fatal("loaded older page did not invalidate image selection")
 	}
 }

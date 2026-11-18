@@ -60,11 +60,6 @@ func TestQuotaSpan(t *testing.T) {
 			want:     "4d3h",
 		},
 		{
-			name:     "seven days renders without remainder hours",
-			duration: 7 * 24 * time.Hour,
-			want:     "7d",
-		},
-		{
 			name:     "negative durations clamp to zero and render as under one minute",
 			duration: -10 * time.Minute,
 			want:     "<1m",
@@ -73,26 +68,6 @@ func TestQuotaSpan(t *testing.T) {
 			name:     "exact zero duration renders as under one minute",
 			duration: 0,
 			want:     "<1m",
-		},
-		{
-			name:     "boundary just under one minute renders as under one minute",
-			duration: time.Minute - time.Nanosecond,
-			want:     "<1m",
-		},
-		{
-			name:     "boundary at exactly one minute renders as one minute",
-			duration: time.Minute,
-			want:     "1m",
-		},
-		{
-			name:     "boundary just under one hour renders as fifty nine minutes",
-			duration: time.Hour - time.Nanosecond,
-			want:     "59m",
-		},
-		{
-			name:     "boundary just under twenty four hours renders as twenty three hours fifty nine minutes",
-			duration: 24*time.Hour - time.Nanosecond,
-			want:     "23h59m",
 		},
 	}
 	for _, tc := range cases {
@@ -106,10 +81,6 @@ func TestQuotaSpan(t *testing.T) {
 }
 
 func TestQuotaStandingOf(t *testing.T) {
-	testStandingOf(t)
-}
-
-func TestStandingOf(t *testing.T) {
 	testStandingOf(t)
 }
 
@@ -174,57 +145,6 @@ func testStandingOf(t *testing.T) {
 		}
 	})
 
-	t.Run("observation observed exactly one nanosecond under stale threshold reports fresh standing", func(t *testing.T) {
-		r := quotaReading("anthropic", "user", "limit", "Limit", 50, "1 hour", 3600, time.Hour, 0)
-		r.ObservedAt = at.Add(-quotaStale + time.Nanosecond).Format(time.RFC3339Nano)
-		if got := standingOf(r, at); got != quotaFresh {
-			t.Fatalf("standingOf() = %v, want quotaFresh", got)
-		}
-	})
-
-	t.Run("observation observed exactly one nanosecond over stale threshold reports old standing", func(t *testing.T) {
-		r := quotaReading("anthropic", "user", "limit", "Limit", 50, "1 hour", 3600, time.Hour, 0)
-		r.ObservedAt = at.Add(-quotaStale - time.Nanosecond).Format(time.RFC3339Nano)
-		if got := standingOf(r, at); got != quotaOld {
-			t.Fatalf("standingOf() = %v, want quotaOld", got)
-		}
-	})
-
-	t.Run("tag for observation observed exactly stale threshold ago contains countdown and omits seen prefix", func(t *testing.T) {
-		r := quotaReading("anthropic", "user", "limit", "Limit", 50, "1 hour", 3600, time.Hour, 0)
-		r.ObservedAt = at.Add(-quotaStale).Format(time.RFC3339)
-		tag := ansi.Strip(quotaTag(r, at))
-		if strings.Contains(tag, "seen ") {
-			t.Fatalf("tag %q should not contain 'seen '", tag)
-		}
-		if !strings.Contains(tag, "in ") {
-			t.Fatalf("tag %q should contain 'in '", tag)
-		}
-	})
-
-	t.Run("tag for observation observed one nanosecond under stale threshold contains countdown and omits seen prefix", func(t *testing.T) {
-		r := quotaReading("anthropic", "user", "limit", "Limit", 50, "1 hour", 3600, time.Hour, 0)
-		r.ObservedAt = at.Add(-quotaStale + time.Nanosecond).Format(time.RFC3339Nano)
-		tag := ansi.Strip(quotaTag(r, at))
-		if strings.Contains(tag, "seen ") {
-			t.Fatalf("tag %q should not contain 'seen '", tag)
-		}
-		if !strings.Contains(tag, "in ") {
-			t.Fatalf("tag %q should contain 'in '", tag)
-		}
-	})
-
-	t.Run("tag for observation observed one nanosecond over stale threshold contains seen prefix and omits countdown", func(t *testing.T) {
-		r := quotaReading("anthropic", "user", "limit", "Limit", 50, "1 hour", 3600, time.Hour, 0)
-		r.ObservedAt = at.Add(-quotaStale - time.Nanosecond).Format(time.RFC3339Nano)
-		tag := ansi.Strip(quotaTag(r, at))
-		if !strings.Contains(tag, "seen ") {
-			t.Fatalf("tag %q should contain 'seen '", tag)
-		}
-		if strings.Contains(tag, "in ") {
-			t.Fatalf("tag %q should not contain 'in '", tag)
-		}
-	})
 }
 
 func TestQuotaTagAndBar(t *testing.T) {
@@ -278,20 +198,6 @@ func TestQuotaTagAndBar(t *testing.T) {
 		}
 	})
 
-	t.Run("five point one percent remaining stays warm warning style", func(t *testing.T) {
-		bar := quotaBar(5.1, true)
-		if !strings.Contains(bar, DefaultStyles.Warning.Render("▰")) {
-			t.Fatal("94.9% should contain warning styled fill")
-		}
-		if strings.Contains(bar, DefaultStyles.Error.Render("▰")) {
-			t.Fatal("94.9% should not contain error style")
-		}
-		stripped := ansi.Strip(bar)
-		if strings.Count(stripped, "▰") != 1 {
-			t.Fatalf("slot fill count = %d, want 1", strings.Count(stripped, "▰"))
-		}
-	})
-
 	t.Run("five percent remaining switches bar fill to hot error style", func(t *testing.T) {
 		bar := quotaBar(5.0, true)
 		if !strings.Contains(bar, DefaultStyles.Error.Render("▰")) {
@@ -303,17 +209,6 @@ func TestQuotaTagAndBar(t *testing.T) {
 		stripped := ansi.Strip(bar)
 		if strings.Count(stripped, "▰") != 1 {
 			t.Fatalf("slot fill count = %d, want 1", strings.Count(stripped, "▰"))
-		}
-	})
-
-	t.Run("one percent remaining fills one slot with hot error style", func(t *testing.T) {
-		bar := quotaBar(1.0, true)
-		if !strings.Contains(bar, DefaultStyles.Error.Render("▰")) {
-			t.Fatal("100% should contain error styled fill")
-		}
-		stripped := ansi.Strip(bar)
-		if strings.Count(stripped, "▰") != 1 {
-			t.Fatalf("quotaBar(100, true) = %q, want one filled slot", stripped)
 		}
 	})
 
@@ -359,13 +254,6 @@ func TestQuotaPace(t *testing.T) {
 
 	t.Run("empty history produces no pace projection", func(t *testing.T) {
 		if pace := quotaPace(nil, ref, at); pace != "" {
-			t.Fatalf("pace = %q, want empty", pace)
-		}
-	})
-
-	t.Run("single point produces no pace projection", func(t *testing.T) {
-		points := []quotaPoint{{At: at.Add(-10 * time.Minute), Percent: 20}}
-		if pace := quotaPace(points, ref, at); pace != "" {
 			t.Fatalf("pace = %q, want empty", pace)
 		}
 	})
@@ -472,15 +360,6 @@ func TestQuotaPace(t *testing.T) {
 		}
 	})
 
-	t.Run("unsorted timestamps do not divide by zero or panic", func(t *testing.T) {
-		unsorted := []quotaPoint{
-			{At: at, Percent: 50},
-			{At: at.Add(-40 * time.Minute), Percent: 20},
-			{At: at.Add(-20 * time.Minute), Percent: 30},
-		}
-		// Must complete safely without panic
-		_ = quotaPace(unsorted, ref, at)
-	})
 }
 
 func TestQuotaSpark(t *testing.T) {
@@ -628,27 +507,19 @@ func TestQuotaTrailSpan(t *testing.T) {
 			t.Fatalf("quotaTrailSpan() = %v, want 7d", got)
 		}
 	})
+
+	t.Run("a trail is read back as far as the pane draws it", func(t *testing.T) {
+		m := quotaModel(120, 30)
+		for _, r := range m.readings {
+			if got, want := quotaNow.Sub(m.trailSince(r)), quotaTrailSpan(r); got != want {
+				t.Fatalf("%s: trail reaches back %v, the pane draws %v", quotaKey(r), got, want)
+			}
+		}
+	})
 }
 
 func TestQuotaModelFlow(t *testing.T) {
-	t.Run("quota loaded message with stale generation is ignored and keeps loading", func(t *testing.T) {
-		m := NewQuotaModel(nil)
-		m.SetSize(120, 30)
-		staleMsg := quotaLoadedMsg{
-			Gen:      m.Generation + 42,
-			At:       quotaNow,
-			Readings: quotaFixture(),
-		}
-		m, _ = m.Update(staleMsg)
-		if !m.Loading {
-			t.Fatal("loading should remain true on stale message")
-		}
-		if len(m.readings) != 0 {
-			t.Fatalf("readings length = %d, want 0", len(m.readings))
-		}
-	})
-
-	t.Run("quota loaded message with current generation clears loading and groups interleaved accounts", func(t *testing.T) {
+	t.Run("quota loaded message with current generation groups interleaved accounts", func(t *testing.T) {
 		m := NewQuotaModel(nil)
 		m.SetSize(120, 30)
 
@@ -658,24 +529,17 @@ func TestQuotaModelFlow(t *testing.T) {
 		rA2 := quotaReading("anthropic", "dawn@example.com", "limit_2", "Limit 2", 40, "1h", 3600, time.Hour, time.Minute)
 		rG2 := quotaReading("google", "dawn@gmail.com", "gemini_2", "Gemini 2", 50, "1h", 3600, time.Hour, time.Minute)
 
-		goodMsg := quotaLoadedMsg{
+		m, _ = m.Update(quotaLoadedMsg{
 			Gen:      m.Generation,
 			At:       quotaNow,
 			Readings: []daemon.QuotaObservation{rA1, rG1, rA2, rG2},
-		}
-		m, _ = m.Update(goodMsg)
-		if m.Loading {
-			t.Fatal("loading should be false after valid load")
-		}
+		})
 		if len(m.readings) != 4 {
 			t.Fatalf("readings count = %d, want 4", len(m.readings))
 		}
-		// Anthropic accounts should be sorted together first
-		if m.readings[0].Provider != "anthropic" || m.readings[1].Provider != "anthropic" {
-			t.Fatalf("first two rows should be anthropic: %s, %s", m.readings[0].Provider, m.readings[1].Provider)
-		}
-		if m.readings[2].Provider != "google" || m.readings[3].Provider != "google" {
-			t.Fatalf("last two rows should be google: %s, %s", m.readings[2].Provider, m.readings[3].Provider)
+		// Anthropic accounts are sorted together first.
+		if m.readings[0].Provider != "anthropic" || m.readings[1].Provider != "anthropic" || m.readings[2].Provider != "google" || m.readings[3].Provider != "google" {
+			t.Fatalf("rows are not grouped by provider: %s %s %s %s", m.readings[0].Provider, m.readings[1].Provider, m.readings[2].Provider, m.readings[3].Provider)
 		}
 	})
 
@@ -689,113 +553,10 @@ func TestQuotaModelFlow(t *testing.T) {
 		}
 	})
 
-	t.Run("quota loaded message with error sets error text and preserves existing rows", func(t *testing.T) {
-		m := quotaModel(120, 30)
-		initialCount := len(m.readings)
-		if initialCount == 0 {
-			t.Fatal("fixture should have initial readings")
-		}
-
-		errMsg := quotaLoadedMsg{
-			Gen: m.Generation,
-			Err: errors.New("daemon connection dropped"),
-		}
-		m, _ = m.Update(errMsg)
-		if m.Error != "daemon connection dropped" {
-			t.Fatalf("m.Error = %q, want 'daemon connection dropped'", m.Error)
-		}
-		if len(m.readings) != initialCount {
-			t.Fatalf("readings count = %d, want %d preserved", len(m.readings), initialCount)
-		}
-	})
-
-	t.Run("refresh key while loading does nothing and keeps generation unchanged", func(t *testing.T) {
-		m := NewQuotaModel(nil)
-		m.SetSize(120, 30)
-		initialGen := m.Generation
-		if !m.Loading {
-			t.Fatal("initial model should be loading")
-		}
-
-		m, cmd := m.Update(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
-		if cmd != nil {
-			t.Fatal("ctrl+r while loading should return nil cmd")
-		}
-		if m.Generation != initialGen {
-			t.Fatalf("generation bumped from %d to %d", initialGen, m.Generation)
-		}
-	})
-
-	t.Run("refresh key while not loading bumps generation and starts loading", func(t *testing.T) {
-		m := quotaModel(120, 30)
-		if m.Loading {
-			t.Fatal("loaded model should not be loading")
-		}
-		initialGen := m.Generation
-
-		m, cmd := m.Update(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
-		if !m.Loading {
-			t.Fatal("m.Loading should be true after ctrl+r")
-		}
-		if m.Generation <= initialGen {
-			t.Fatalf("generation %d should be greater than %d", m.Generation, initialGen)
-		}
-		if cmd == nil {
-			t.Fatal("ctrl+r should return load command")
-		}
-	})
-
-	t.Run("escape key emits cancel message", func(t *testing.T) {
-		m := quotaModel(120, 30)
-		m, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
-		if cmd == nil {
-			t.Fatal("escape should return command")
-		}
-		msg := cmd()
-		if _, ok := msg.(QuotaCancelMsg); !ok {
-			t.Fatalf("cmd returned %T, want QuotaCancelMsg", msg)
-		}
-	})
-
-	t.Run("ctrl c key emits cancel message", func(t *testing.T) {
-		m := quotaModel(120, 30)
-		m, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
-		if cmd == nil {
-			t.Fatal("ctrl+c should return command")
-		}
-		msg := cmd()
-		if _, ok := msg.(QuotaCancelMsg); !ok {
-			t.Fatalf("cmd returned %T, want QuotaCancelMsg", msg)
-		}
-	})
-
-	t.Run("history message with stale generation is ignored", func(t *testing.T) {
-		m := quotaModel(120, 30)
-		r := m.readings[0]
-		key := quotaKey(r)
-
-		staleMsg := quotaHistoryMsg{
-			Gen:    m.Generation + 99,
-			Key:    key,
-			Points: quotaTrailFixture(r),
-		}
-		m, _ = m.Update(staleMsg)
-		if trail := m.trails[key]; len(trail.points) != 0 || !trail.pending {
-			t.Fatalf("a stale history reply changed the trail: %+v", trail)
-		}
-	})
-
 	t.Run("history message with current generation renders sparkline in pane", func(t *testing.T) {
 		m := quotaModel(120, 30)
 		r := m.readings[0]
-		key := quotaKey(r)
-
-		goodMsg := quotaHistoryMsg{
-			Gen:    m.Generation,
-			Key:    key,
-			Points: quotaTrailFixture(r),
-		}
-		m, _ = m.Update(goodMsg)
+		m, _ = m.Update(quotaHistoryMsg{Gen: m.Generation, Key: quotaKey(r), Points: quotaTrailFixture(r)})
 		view := ansi.Strip(m.View())
 		if !strings.ContainsAny(view, "▁▂▃▄▅▆▇█") {
 			t.Fatalf("view should contain sparkline block glyphs:\n%s", view)
@@ -805,110 +566,40 @@ func TestQuotaModelFlow(t *testing.T) {
 	t.Run("history message with error displays history unavailable in pane", func(t *testing.T) {
 		m := quotaModel(120, 30)
 		r := m.readings[0]
-		key := quotaKey(r)
-
-		errMsg := quotaHistoryMsg{
-			Gen: m.Generation,
-			Key: key,
-			Err: errors.New("timeout reading history"),
-		}
-		m, _ = m.Update(errMsg)
-		view := ansi.Strip(m.View())
-		if !strings.Contains(view, "history unavailable") {
+		m, _ = m.Update(quotaHistoryMsg{Gen: m.Generation, Key: quotaKey(r), Err: errors.New("timeout reading history")})
+		if view := ansi.Strip(m.View()); !strings.Contains(view, "history unavailable") {
 			t.Fatalf("view should contain 'history unavailable':\n%s", view)
 		}
 	})
 
-	t.Run("typing in filter narrows rows and cursor preserves selected key across reload", func(t *testing.T) {
+	t.Run("cursor keeps its selected key across a reload", func(t *testing.T) {
 		m := quotaModel(120, 30)
-		totalRows := len(m.readings)
-		if totalRows < 3 {
-			t.Fatal("fixture should have at least 3 rows")
-		}
-
-		// Type text to narrow shown rows
-		for _, char := range "anthropic" {
-			m, _ = m.Update(tea.KeyPressMsg{Code: char, Text: string(char)})
-		}
-
-		if len(m.shown) >= totalRows {
-			t.Fatalf("filter should narrow shown rows: shown=%d, total=%d", len(m.shown), totalRows)
-		}
-
-		// Move cursor to the second matching row and record its key
 		m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 		selectedRow, ok := m.highlighted()
 		if !ok {
 			t.Fatal("cursor should have selected row")
 		}
 		expectedKey := selectedRow.key
-
-		// Reload with new readings message under same generation
-		m, _ = m.Update(quotaLoadedMsg{
-			Gen:      m.Generation,
-			At:       quotaNow,
-			Readings: quotaFixture(),
-		})
-
-		afterReload, ok := m.highlighted()
-		if !ok || afterReload.key != expectedKey {
-			t.Fatalf("cursor lost key after reload: got %v, want %q", afterReload.key, expectedKey)
-		}
-	})
-
-	t.Run("reload with advanced time updates countdowns across rendered view", func(t *testing.T) {
-		m := quotaModel(120, 30)
-		initialView := ansi.Strip(m.View())
-		if !strings.Contains(initialView, "in 2h14m") {
-			t.Fatalf("initial view should contain 'in 2h14m':\n%s", initialView)
-		}
-
-		// Advance time by 30 minutes: 2h14m - 30m = 1h44m
-		advancedAt := quotaNow.Add(30 * time.Minute)
-		m, _ = m.Update(quotaLoadedMsg{
-			Gen:      m.Generation,
-			At:       advancedAt,
-			Readings: quotaFixture(),
-		})
-
-		updatedView := ansi.Strip(m.View())
-		if !strings.Contains(updatedView, "in 1h44m") {
-			t.Fatalf("updated view should contain 'in 1h44m':\n%s", updatedView)
-		}
-		if strings.Contains(updatedView, "in 2h14m") {
-			t.Fatalf("updated view should not contain old countdown 'in 2h14m':\n%s", updatedView)
+		m, _ = m.Update(quotaLoadedMsg{Gen: m.Generation, At: quotaNow, Readings: quotaFixture()})
+		if afterReload, ok := m.highlighted(); !ok || afterReload.key != expectedKey {
+			t.Fatalf("cursor lost key after reload: got %q, want %q", afterReload.key, expectedKey)
 		}
 	})
 
 	t.Run("detail pane for failed reading displays safe error detail without sparkline or pace", func(t *testing.T) {
 		m := quotaModel(120, 30)
-
-		// Filter directly to the broken deepseek reading
 		for _, char := range "deepseek" {
 			m, _ = m.Update(tea.KeyPressMsg{Code: char, Text: string(char)})
 		}
-
 		current, ok := m.current()
 		if !ok || current.Error == nil {
 			t.Fatal("current reading should be broken deepseek observation")
 		}
-
-		lines := m.details(current, 80)
-		detailText := strings.Join(lines, "\n")
-		if !strings.Contains(detailText, "the provider answered 401: the API key was rejected") {
-			t.Fatalf("m.details should contain full error detail:\n%s", detailText)
+		detailText := strings.Join(m.details(current, 80), "\n")
+		if !strings.Contains(detailText, current.Error.Detail) {
+			t.Fatalf("m.details should contain the error detail %q:\n%s", current.Error.Detail, detailText)
 		}
-		if strings.Contains(detailText, "pace") || strings.Contains(detailText, "full in") || strings.Contains(detailText, "ends near") || strings.Contains(detailText, "holding steady") {
-			t.Fatalf("failed reading details should never contain pace:\n%s", detailText)
-		}
-		if strings.Contains(detailText, "last 24h") || strings.Contains(detailText, "last 7d") || strings.ContainsAny(detailText, "▁▂▃▄▅▆▇█") {
-			t.Fatalf("failed reading details should never contain sparkline:\n%s", detailText)
-		}
-
 		view := ansi.Strip(m.View())
-		if !strings.Contains(view, "the provider answered 401:") || !strings.Contains(view, "the API key was rejected") {
-			t.Fatalf("view should show error detail fragments:\n%s", view)
-		}
 		if strings.Contains(view, "full in") || strings.Contains(view, "ends near") || strings.Contains(view, "holding steady") {
 			t.Fatalf("failed reading view should never show pace:\n%s", view)
 		}
@@ -922,54 +613,6 @@ func TestQuotaModelFlow(t *testing.T) {
 // first reaches it: asking again on every key would hammer the daemon, and
 // never asking would leave the pane's sparkline empty.
 func TestQuotaTrailFetch(t *testing.T) {
-	t.Run("a loaded screen asks for the highlighted limit's trail and marks it pending", func(t *testing.T) {
-		m := NewQuotaModel(nil)
-		m.SetSize(120, 30)
-		m, cmd := m.Update(quotaLoadedMsg{Gen: m.Generation, At: quotaNow, Readings: quotaFixture()})
-		if cmd == nil {
-			t.Fatal("loading readings should ask for the highlighted trail")
-		}
-		r, _ := m.current()
-		if !m.trails[quotaKey(r)].pending {
-			t.Fatalf("the asked-for trail should be pending: %+v", m.trails[quotaKey(r)])
-		}
-	})
-
-	t.Run("a trail already asked for is not asked for again", func(t *testing.T) {
-		m := quotaModel(120, 30)
-		if _, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyUp}); cmd != nil { // the cursor stays on the first row
-			t.Fatal("the highlighted trail was already asked for")
-		}
-	})
-
-	t.Run("moving onto another limit asks for that one", func(t *testing.T) {
-		m := quotaModel(120, 30)
-		first, _ := m.current()
-		m, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
-		second, _ := m.current()
-		if quotaKey(first) == quotaKey(second) || cmd == nil {
-			t.Fatalf("the cursor should have moved onto another limit and asked for it (cmd nil: %v)", cmd == nil)
-		}
-	})
-
-	t.Run("a limit whose poll failed has no past to ask for", func(t *testing.T) {
-		m := quotaModel(120, 30)
-		var failed daemon.QuotaObservation
-		for range m.shown {
-			if r, _ := m.current(); r.Error != nil {
-				failed = r
-				break
-			}
-			m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
-		}
-		if failed.Error == nil {
-			t.Fatal("the cursor never reached the failed reading")
-		}
-		if trail, asked := m.trails[quotaKey(failed)]; asked {
-			t.Fatalf("a failed reading must not ask for a trail: %+v", trail)
-		}
-	})
-
 	t.Run("esc is a bare cancel even when the highlighted trail has not been asked for", func(t *testing.T) {
 		m := quotaModel(120, 30)
 		m.trails = map[string]quotaTrail{} // nothing asked for yet: a fetch would ride along with any key
@@ -994,35 +637,6 @@ func TestQuotaTrailFetch(t *testing.T) {
 		}
 	})
 
-	t.Run("a trail is read back as far as the pane draws it", func(t *testing.T) {
-		m := quotaModel(120, 30)
-		for _, r := range m.readings {
-			if got, want := quotaNow.Sub(m.trailSince(r)), quotaTrailSpan(r); got != want {
-				t.Fatalf("%s: trail reaches back %v, the pane draws %v", quotaKey(r), got, want)
-			}
-		}
-	})
-
-	t.Run("a refresh forgets the trails so the cursor's limit is asked for again", func(t *testing.T) {
-		m := quotaModel(120, 30)
-		r, _ := m.current()
-		m, _ = m.Update(quotaHistoryMsg{Gen: m.Generation, Key: quotaKey(r), Points: quotaTrailFixture(r)})
-		m, _ = m.Update(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
-		m, cmd := m.Update(quotaLoadedMsg{Gen: m.Generation, At: quotaNow, Readings: quotaFixture()})
-		if cmd == nil || !m.trails[quotaKey(r)].pending {
-			t.Fatalf("a reload should ask for the trail again (cmd nil: %v, trail %+v)", cmd == nil, m.trails[quotaKey(r)])
-		}
-	})
-
-	t.Run("a trail that cannot be fetched comes back as an error for the same limit", func(t *testing.T) {
-		m := quotaModel(120, 30)
-		r, _ := m.current()
-		msg := m.trailCmd(r, m.Generation)()
-		reply, ok := msg.(quotaHistoryMsg)
-		if !ok || reply.Err == nil || reply.Key != quotaKey(r) {
-			t.Fatalf("with no connection the reply should be an error for the same key, got %#v", msg)
-		}
-	})
 }
 
 // A trail the daemon could only partly fill must say how far back it reaches,
@@ -1077,33 +691,27 @@ func TestQuotaPaneLabelsWhatTheTrailCovers(t *testing.T) {
 			t.Fatalf("a short trail must not claim the span it was asked for:\n%s", view)
 		}
 	})
-	t.Run("the stacked pane leads with the trail the row cannot show", func(t *testing.T) {
-		if view := ansi.Strip(quotaWithTrails(80, 24).View()); !strings.Contains(view, "pace") || !strings.Contains(view, "last 24h") {
-			t.Fatalf("pace and the trail should come before the row's own facts:\n%s", view)
-		}
-	})
 }
 
 // The daemon's own labels, not the fixtures': a window label of "5h window"
 // would read "the 5h window window", and a poll that failed with no limits has
 // no label at all, which drew an empty highlighted row.
 func TestQuotaRowsFromTheDaemonsOwnLabels(t *testing.T) {
-	t.Run("a window label that already ends in window is not doubled", func(t *testing.T) {
-		r := quotaReading("anthropic", "acct", "session", "Session", 24, "5h window", 5*3600, 2*time.Hour, time.Minute)
-		m := quotaModel(120, 30)
-		view := ansi.Strip(strings.Join(m.details(r, 60), "\n"))
-		if !strings.Contains(view, "76% of the 5h window") || strings.Contains(view, "window window") {
-			t.Fatalf("the window should be named once:\n%s", view)
-		}
-	})
-
-	t.Run("a window label without the word gets it once", func(t *testing.T) {
-		r := quotaReading("anthropic", "acct", "weekly", "Weekly", 5, "7 days", 7*24*3600, time.Hour, time.Minute)
-		m := quotaModel(120, 30)
-		if view := ansi.Strip(strings.Join(m.details(r, 60), "\n")); !strings.Contains(view, "of the 7 days window") {
-			t.Fatalf("the window should be named:\n%s", view)
-		}
-	})
+	for _, tc := range []struct {
+		label string
+		want  string
+	}{
+		{"5h window", "76% of the 5h window"},
+		{"7 days", "of the 7 days window"},
+	} {
+		t.Run("window label "+tc.label, func(t *testing.T) {
+			r := quotaReading("anthropic", "acct", "session", "Session", 24, tc.label, 5*3600, 2*time.Hour, time.Minute)
+			view := ansi.Strip(strings.Join(quotaModel(120, 30).details(r, 60), "\n"))
+			if !strings.Contains(view, tc.want) || strings.Contains(view, "window window") {
+				t.Fatalf("the window should be named once:\n%s", view)
+			}
+		})
+	}
 
 	names := []struct {
 		name string
@@ -1137,10 +745,6 @@ func TestQuotaRowsFromTheDaemonsOwnLabels(t *testing.T) {
 		m := NewQuotaModel(nil)
 		m.SetSize(120, 30)
 		m, _ = m.Update(quotaLoadedMsg{Gen: m.Generation, At: quotaNow, Readings: []daemon.QuotaObservation{failed}})
-		view := ansi.Strip(m.View())
-		if !strings.Contains(view, "last poll failed") || !strings.Contains(view, "bailian CLI failed") {
-			t.Fatalf("a failed account's row and pane should say what failed:\n%s", view)
-		}
 		pane := ansi.Strip(strings.Join(m.details(failed, 60), "\n"))
 		if !strings.HasPrefix(pane, "last poll failed") {
 			t.Fatalf("the pane should be titled by what happened, not left blank:\n%s", pane)

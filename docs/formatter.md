@@ -78,7 +78,7 @@ Formatter commands and LSP checks each have bounded time and output budgets.
 
 `test/files_check_test.py` checks adoption, stage order, scope, cancellation,
 capacity and multi-file conflicts. `test/formatter_python_test.py` retains real
-treefmt/Nix, process cleanup and staged-publish regressions.
-`test/formatter_e2e_test.py` checks explicit failures/repair, ordinary live final
-streaming under both protocols, native Stop behavior and disabled formatting.
+treefmt, process cleanup and staged-publish regressions.
+`test/formatter_e2e_test.py` checks that an explicit `files.check()` is the only
+formatter trigger and that disabled formatting leaves the turn alone.
 Tests use isolated homes, fake providers and local fixtures, not live accounts.

@@ -10,18 +10,10 @@ import gleam/string
 pub fn main() -> Nil {
   list.each(
     [
-      #("{\"type\":\"error\",\"message\":\"capacity\"}", "capacity"),
+      // Upstream's refusal decoder reads a nested message first, and a message
+      // beats the suite's code fallback.
       #(
-        "{\"type\":\"error\",\"error\":{\"message\":\"quota exceeded\",\"code\":\"usage_limit_reached\"}}",
-        "quota exceeded",
-      ),
-      #(
-        "{\"type\":\"error\",\"message\":null,\"error\":{\"message\":\"nested\"}}",
-        "nested",
-      ),
-      // Upstream's refusal decoder reads a nested error object first.
-      #(
-        "{\"type\":\"error\",\"message\":\"flat\",\"error\":{\"message\":\"nested\"}}",
+        "{\"type\":\"error\",\"message\":\"flat\",\"error\":{\"message\":\"nested\",\"code\":\"usage_limit_reached\"}}",
         "nested",
       ),
       #(
@@ -34,8 +26,8 @@ pub fn main() -> Nil {
       ),
       #("{\"type\":\"error\",\"code\":\"server_error\"}", "server_error"),
       #(
-        "{\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"failed\"}}}",
-        "failed",
+        "{\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"server_error\"}}}",
+        "server_error",
       ),
     ],
     fn(entry) {
@@ -56,5 +48,5 @@ pub fn main() -> Nil {
       assert !string.contains(message, data)
     },
   )
-  io.println("Codex error decoding: 10 cases passed")
+  io.println("Codex error decoding passed")
 }

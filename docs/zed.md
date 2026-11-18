@@ -238,7 +238,7 @@ Tests use fake credentials and local fixtures, not the user's Zed account:
 
 | Tests | Coverage |
 | --- | --- |
-| `test/suite_zed_test.gleam` | Native request shapes, typed Responses items, strict schemas, thinking/signature replay, usage and NDJSON failures. |
+| `test/suite_zed_test.gleam` | Native request shapes, typed Responses items, strict schemas, thinking/signature replay, and NDJSON failures. |
 | `test/suite_zed_login_test.gleam` and its Erlang fixture | Loopback decryption, identity confirmation, expiry/cancel, persistence, account isolation, JWT renewal and rejected legacy credentials/origins. |
 | `test/suite_quota_test.gleam` | Numeric/unlimited edit-prediction readings, unusable payloads and rejected credentials. |
 | `test/zed_e2e_test.py` | Isolated daemon streaming, tool replay, Gemini routing, credential refusal and removal of the unsupported billing command/endpoint. |

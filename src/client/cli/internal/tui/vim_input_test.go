@@ -7,35 +7,6 @@ import (
 	"testing"
 )
 
-func TestVimInputShiftEnter(t *testing.T) {
-	m := newTestChatModel(t, &daemon.Session{ID: "s"})
-	m.SetSize(80, 24)
-	vimKeys(&m, "i", "a", "b", "c", "esc")
-	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModShift})
-	if !strings.Contains(m.TextArea.Value(), "\n") {
-		t.Fatalf("Esc Shift+Enter: want newline, got %q normal=%v", m.TextArea.Value(), m.vim.normal)
-	}
-}
-func TestVimInputCollapsedPasteUndo(t *testing.T) {
-	m := newTestChatModel(t, &daemon.Session{ID: "s"})
-	m.SetSize(80, 24)
-	m, _ = m.Update(tea.PasteMsg{Content: strings.Repeat("a", 10000)})
-	vimKeys(&m, "esc", "u")
-	if m.TextArea.Value() != "" {
-		t.Fatalf("large Paste Esc u: want empty, got %q undo=%d", m.TextArea.Value(), len(m.vim.undo))
-	}
-}
-func TestVimInputMenuSubmissionHistory(t *testing.T) {
-	m := newTestChatModel(t, &daemon.Session{ID: "s"})
-	m.SetSize(80, 24)
-	vimKeys(&m, "i", "a", "b", "c", "esc", "0", "x", "i")
-	m.TextArea.SetValue("/t")
-	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	vimKeys(&m, "esc", "u")
-	if m.TextArea.Value() != "" {
-		t.Fatalf("menu submit /t Esc u: want empty, got %q", m.TextArea.Value())
-	}
-}
 func TestVimInputRegisterPayloadAfterSubmit(t *testing.T) {
 	m := newTestChatModel(t, &daemon.Session{ID: "s"})
 	m.SetSize(80, 24)
@@ -53,6 +24,8 @@ func TestVimInputRegisterPayloadAfterSubmit(t *testing.T) {
 	}
 }
 
+// External composer mutations share one snapshot hook, so paste, a collapsing
+// paste and an editor result all undo as one step in NORMAL mode.
 func TestVimInputNormalPasteUndo(t *testing.T) {
 	for _, text := range []string{"small", strings.Repeat("large", 300)} {
 		m := newTestChatModel(t, &daemon.Session{ID: "s"})
@@ -64,7 +37,16 @@ func TestVimInputNormalPasteUndo(t *testing.T) {
 			t.Fatalf("NORMAL Paste u: %q", m.TextArea.Value())
 		}
 	}
+	m := newTestChatModel(t, &daemon.Session{ID: "s"})
+	m.SetSize(80, 24)
+	vimKeys(&m, "esc")
+	m, _ = m.Update(ChatEditorFinishedMsg{SessionID: m.SessionID, Generation: m.Generation, Edited: true, Text: "edited"})
+	vimKeys(&m, "u")
+	if m.TextArea.Value() != "" {
+		t.Fatalf("NORMAL editor u: %q", m.TextArea.Value())
+	}
 }
+
 func TestVimInputImagePasteUndo(t *testing.T) {
 	m := newTestChatModel(t, &daemon.Session{ID: "s"})
 	m.SetSize(80, 24)
@@ -76,29 +58,6 @@ func TestVimInputImagePasteUndo(t *testing.T) {
 	vimKeys(&m, "ctrl+r")
 	if len(m.Images.referenced(m.TextArea.Value())) != 1 {
 		t.Fatalf("redo image lost payload: %q", m.TextArea.Value())
-	}
-}
-func TestVimInputEditorUndo(t *testing.T) {
-	m := newTestChatModel(t, &daemon.Session{ID: "s"})
-	m.SetSize(80, 24)
-	vimKeys(&m, "esc")
-	m, _ = m.Update(ChatEditorFinishedMsg{SessionID: m.SessionID, Generation: m.Generation, Edited: true, Text: "edited"})
-	vimKeys(&m, "u")
-	if m.TextArea.Value() != "" {
-		t.Fatalf("NORMAL editor u: %q", m.TextArea.Value())
-	}
-}
-func TestVimInputMarkerControlUndo(t *testing.T) {
-	m := newTestChatModel(t, &daemon.Session{ID: "s"})
-	m.SetSize(80, 24)
-	marker := m.Pastes.add("payload")
-	m.TextArea.SetValue(marker)
-	m.vimPosition(len([]rune(marker)))
-	vimKeys(&m, "esc", "$")
-	m, _ = m.Update(tea.KeyPressMsg{Code: 'w', Mod: tea.ModCtrl})
-	vimKeys(&m, "u")
-	if m.TextArea.Value() != marker {
-		t.Fatalf("NORMAL ctrl+w u: %q", m.TextArea.Value())
 	}
 }
 

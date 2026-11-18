@@ -19,8 +19,11 @@ func TestQuotaRemainingDisplay(t *testing.T) {
 		if got := ansi.Strip(m.summary(r)); !strings.Contains(got, tc.want) {
 			t.Errorf("used %v: %q", tc.used, got)
 		}
-		if got := ansi.Strip(strings.Join(m.details(r, 80), " ")); !strings.Contains(got, strings.TrimSuffix(tc.want, " left")) || !strings.Contains(got, "left") {
-			t.Errorf("details: %q", got)
-		}
+	}
+	// The details fact clamps above 100% rather than going negative.
+	used := 120.0
+	clamped := daemon.QuotaObservation{UsedPercent: &used, ObservedAt: now.Format(time.RFC3339)}
+	if got := ansi.Strip(strings.Join((QuotaModel{at: now}).details(clamped, 80), " ")); !strings.Contains(got, "0%") || strings.Contains(got, "-") {
+		t.Fatalf("details: %q", got)
 	}
 }

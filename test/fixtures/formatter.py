@@ -2,7 +2,6 @@ import json
 import os
 from pathlib import Path
 import sys
-import time
 
 control = Path(sys.argv[1])
 target = Path(sys.argv[-1])
@@ -24,7 +23,3 @@ if "BAD" in original:
     sys.exit(23)
 
 target.write_text(original.strip() + "\n")
-if (control / "block").exists():
-    (control / "started").write_text(str(os.getpid()))
-    while not (control / "release").exists():
-        time.sleep(0.02)

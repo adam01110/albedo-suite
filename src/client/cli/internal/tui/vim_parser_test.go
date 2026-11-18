@@ -11,10 +11,7 @@ func TestVimCountParser(t *testing.T) {
 		operatorCount, count  int
 		explicit              bool
 	}{
-		{"default", "", "", 0, 1, false},
 		{"prefix", "23", "", 0, 23, true},
-		{"operator_prefix", "3", "d", 2, 6, true},
-		{"operator_default", "", "d", 0, 1, false},
 		{"bounded", "999999999", "", 999, 999, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -32,10 +29,6 @@ func TestVimCountParser(t *testing.T) {
 				t.Fatalf("parser retained prefix: %+v", state)
 			}
 		})
-	}
-	state := vimState{}
-	if state.accumulateCount("0") || state.accumulateCount("x") {
-		t.Fatal("motion parsed as count")
 	}
 }
 

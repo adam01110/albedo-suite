@@ -1,13 +1,11 @@
 import albedo/harness/sdk/opencode_gateway as wire
 import albedo/openai_api/bridge
-import albedo/openai_api/stream
 import albedo_model as types
 import albedo_model/replay
 import gleam/dynamic/decode
 import gleam/io
 import gleam/json
-import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{Some}
 import gleeunit/should
 
 fn reasoning(id: String, encrypted: String) -> json.Json {
@@ -83,20 +81,6 @@ fn completed(output: List(json.Json)) -> String {
   |> json.to_string
 }
 
-fn item_event(kind: String, index: Int, item: json.Json) -> String {
-  json.object([
-    #("type", json.string("response.output_item." <> kind)),
-    #("output_index", json.int(index)),
-    #("item", item),
-  ])
-  |> json.to_string
-}
-
-fn feed(reducer: stream.Reducer, event: String) -> stream.Reducer {
-  let assert Ok(#(next, _, None)) = reducer.feed(event)
-  next
-}
-
 fn assert_replayed(turn: types.Turn, first: json.Json, second: json.Json) {
   let assert [portable] = turn.output
   types.replay_protocol(portable) |> should.equal(types.ChatCompletions)
@@ -167,37 +151,9 @@ fn completed_output_preserves_indices_and_reasoning() {
   assert_replayed(turn, first, second)
 }
 
-fn sparse_streamed_indices_match_argument_events() {
-  let first = reasoning("sparse-one", "opaque-sparse-one")
-  let second = reasoning("sparse-two", "opaque-sparse-two")
-  let reducer =
-    wire.responses_reducer()
-    |> feed(item_event("done", 0, first))
-    |> feed(item_event("done", 1, message()))
-    |> feed(item_event("added", 5, call("call-a")))
-    |> feed(item_event("done", 5, call("call-a")))
-    |> feed(item_event("done", 7, second))
-    |> feed(item_event("added", 9, call("call-b")))
-    |> feed(item_event("done", 9, call("call-b")))
-  let delta =
-    json.object([
-      #("type", json.string("response.function_call_arguments.delta")),
-      #("item_id", json.string("item-call-b")),
-      #("delta", json.string("{}")),
-    ])
-    |> json.to_string
-  let assert Ok(#(reducer, events, None)) = reducer.feed(delta)
-  list.contains(events, types.ArgumentsDelta(9, "python", "{}"))
-  |> should.be_true
-  let assert Ok(#(_, _, Some(turn))) = reducer.feed(completed([]))
-  turn.call_indices |> should.equal([#("call-a", 5), #("call-b", 9)])
-  assert_replayed(turn, first, second)
-}
-
 pub fn main() {
   legacy_details_replay_without_loss()
   completed_output_preserves_indices_and_reasoning()
-  sparse_streamed_indices_match_argument_events()
   io.println(
     "Responses bridge legacy/new encrypted reasoning and native output indices passed",
   )

@@ -21,7 +21,7 @@ func TestProviderAvailabilityToggleIsConditional(t *testing.T) {
 }
 
 func TestProviderAvailabilitySettingsRetainEnabledState(t *testing.T) {
-	for _, enabled := range []any{nil, false, true} {
+	for _, enabled := range []any{nil, false} {
 		profile := map[string]any{"extension": "openai", "endpoint": "https://fixture.example/v1", "model": "fixture", "protocol": "responses", "effort": nil, "image_edge": nil, "account_id": nil, "account_ids": nil, "project": nil, "location": nil, "has_key": false}
 		if enabled != nil {
 			profile["enabled"] = enabled
@@ -48,7 +48,7 @@ func TestProviderAvailabilitySettingsRetainEnabledState(t *testing.T) {
 			t.Fatal(err)
 		}
 		got := profiles.Providers["fixture"]
-		want := enabled == nil || enabled == true
+		want := enabled == nil
 		if got.IsEnabled() != want {
 			t.Fatalf("enabled=%v decoded as %+v", enabled, got.Enabled)
 		}

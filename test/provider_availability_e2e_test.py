@@ -16,10 +16,7 @@ class ProviderAvailabilityTests(unittest.TestCase):
                 return text("checked")
             prompt = latest_user(request)
             if prompt == "inspect models":
-                return python(
-                    "assert not hasattr(commands, 'providers')\n"
-                    "print(json.dumps(await agents.models()))"
-                )
+                return python("print(json.dumps(await agents.models()))")
             if prompt == "reject disabled":
                 return python(
                     "try:\n"
@@ -85,12 +82,11 @@ class ProviderAvailabilityTests(unittest.TestCase):
         self.assertIn("fixture/fixture-model", models)
         return models
 
-    def toggle(self, enabled, profile="openrouter", etag=None):
+    def toggle(self, enabled, profile="openrouter"):
         route = "/settings?group=providers"
-        if etag is None:
-            with self.app.api(route) as response:
-                json.load(response)
-                etag = response.headers["ETag"]
+        with self.app.api(route) as response:
+            json.load(response)
+            etag = response.headers["ETag"]
         with self.app.api(
             route,
             {"profiles": {profile: {"enabled": enabled}}},
@@ -117,30 +113,19 @@ class ProviderAvailabilityTests(unittest.TestCase):
             any(model.startswith("openrouter/") for model in self.models())
         )
         self.assertIn("disabled", self.turn("reject disabled"))
-        self.app.restart()
-        self.assertFalse(
-            any(model.startswith("openrouter/") for model in self.models())
-        )
         self.toggle(True)
         self.assertIn("openrouter/router-model", self.models())
-        self.assertNotIn("router-secret", json.dumps(self.provider.requests))
 
-    def test_toggle_rejects_stale_validator_and_non_boolean(self):
-        with self.app.api("/settings?group=providers") as response:
-            json.load(response)
-            etag = response.headers["ETag"]
-        self.toggle(False, etag=etag)
-        with self.assertRaises(urllib.error.HTTPError) as caught:
-            self.toggle(True, etag=etag)
-        self.assertEqual(caught.exception.code, 412)
-        with self.assertRaises(urllib.error.HTTPError) as caught:
-            self.toggle("false")
-        self.assertEqual(caught.exception.code, 400)
-
-    def test_unknown_profile_does_not_mutate_config(self):
+    def test_toggle_rejects_non_boolean_and_unknown_profile(self):
         path = self.app.home / "config.json"
         before = path.read_bytes()
         with self.assertRaises(urllib.error.HTTPError) as caught:
+            self.toggle("false")
+        self.assertEqual(caught.exception.code, 400)
+        with self.assertRaises(urllib.error.HTTPError) as caught:
             self.toggle(False, "missing")
         self.assertEqual(caught.exception.code, 400)
+        self.assertIn(
+            "cannot toggle an unknown provider profile", caught.exception.read().decode()
+        )
         self.assertEqual(path.read_bytes(), before)

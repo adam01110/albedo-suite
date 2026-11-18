@@ -58,6 +58,10 @@
     enable = true;
     settings.enabled.lsp = true;
   };
+  conflictingMcpEnableFlag = mkHome {
+    enable = true;
+    settings.enabled.mcp = true;
+  };
   invalidEnvironmentName = mkHome {
     enable = true;
     environment."BAD-NAME" = "x";
@@ -89,34 +93,17 @@
     (builtins.tryEval (builtins.deepSeq home.config.programs.albedo.mcp.servers true)).success;
 in
   lib.runTests {
-    testMcpDescriptionIsConfigurable = {
-      expr = configured.config.programs.albedo.mcp.servers.fixture.description;
-      expected = "Load for fixture documentation.";
-    };
-
-    testMcpIdleCleanupDefaultsToOneMinute = {
-      expr = minimal.config.programs.albedo.mcp.idleTimeoutMs;
-      expected = 60000;
-    };
-
     # keep-sorted start block=yes newline_separated=yes
     testConfiguredConfigurationIsValid = {
       expr = assertionsPass configured;
       expected = true;
     };
 
-    testConfiguredManagesProviders = {
-      expr = lib.hasInfix "config.json" configured.config.home.activation.configureAlbedoSettings.data;
-      expected = true;
-    };
-
-    testConflictingEnableFlagIsRejected = {
-      expr = !assertionsPass conflictingEnableFlag;
-      expected = true;
-    };
-
-    testConflictingLspEnableFlagIsRejected = {
-      expr = !assertionsPass conflictingLspEnableFlag;
+    testConflictingEnableFlagsAreRejected = {
+      expr =
+        !assertionsPass conflictingEnableFlag
+        && !assertionsPass conflictingLspEnableFlag
+        && !assertionsPass conflictingMcpEnableFlag;
       expected = true;
     };
 
@@ -125,13 +112,10 @@ in
       expected = true;
     };
 
-    testDisabledHasNoActivation = {
-      expr = !(disabled.config.home.activation ? configureAlbedoSettings);
-      expected = true;
-    };
-
-    testDisabledHasNoHomeVariable = {
-      expr = !(disabled.config.home.sessionVariables ? ALBEDO_HOME);
+    testDisabledIsInert = {
+      expr =
+        !(disabled.config.home.activation ? configureAlbedoSettings)
+        && !(disabled.config.home.sessionVariables ? ALBEDO_HOME);
       expected = true;
     };
 
@@ -160,23 +144,27 @@ in
       expected = true;
     };
 
+    testMcpIdleCleanupDefaultsToOneMinute = {
+      expr = minimal.config.programs.albedo.mcp.idleTimeoutMs;
+      expected = 60000;
+    };
+
     testMinimalConfigurationIsValid = {
       expr = assertionsPass minimal;
       expected = true;
     };
 
-    testMinimalLeavesProvidersUntouched = {
-      expr = !lib.hasInfix "config.json" minimal.config.home.activation.configureAlbedoSettings.data;
+    testProvidersDocumentIsConditional = {
+      expr =
+        lib.hasInfix "config.json" configured.config.home.activation.configureAlbedoSettings.data
+        && !lib.hasInfix "config.json" minimal.config.home.activation.configureAlbedoSettings.data;
       expected = true;
     };
 
-    testNixPathSecretIsRejected = {
-      expr = !secretTypesAccept nixPathSecret;
-      expected = true;
-    };
-
-    testStorePathSecretIsRejected = {
-      expr = !secretTypesAccept storePathSecret;
+    testStorePathsAsSecretsAreRejected = {
+      expr =
+        !secretTypesAccept nixPathSecret
+        && !secretTypesAccept storePathSecret;
       expected = true;
     };
 

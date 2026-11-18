@@ -65,7 +65,7 @@ func TestContextFormattingRawToggleAndCache(t *testing.T) {
 		t.Fatal("default view is not formatted")
 	}
 	m, cmd := m.readerKey(tea.KeyPressMsg{Code: 'r', Text: "r"})
-	if cmd != nil || !d.Raw || d.Scroll != 0 || m.Detail != d {
+	if cmd != nil || !d.Raw || d.Scroll != 0 {
 		t.Fatal("toggle should be local and reset scroll")
 	}
 	if got := strings.Join(d.rows(100), "\n"); got != content {

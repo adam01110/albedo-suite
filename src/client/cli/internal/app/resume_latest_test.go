@@ -72,30 +72,22 @@ func TestPrepareOpenLatestResumesNewestInWorkspace(t *testing.T) {
 }
 
 func TestLatestSessionInPicksNewestInWorkspace(t *testing.T) {
-	old, recent := int64(100), int64(200)
+	old, recent, newest := int64(100), int64(200), int64(300)
 	for _, scenario := range []struct {
 		name      string
 		sessions  []daemon.Session
 		workspace string
 		wantID    string
-		wantFound bool
 	}{
 		{
 			name: "newest in workspace",
 			sessions: []daemon.Session{
+				{ID: "other", Workspace: "/elsewhere", LastAssistantAt: &newest},
 				{ID: "a", Workspace: "/work", LastAssistantAt: &old},
 				{ID: "b", Workspace: "/work", LastAssistantAt: &recent},
 				{ID: "c", Workspace: "/work", LastAssistantAt: &old},
 			},
-			workspace: "/work", wantID: "b", wantFound: true,
-		},
-		{
-			name: "other workspaces ignored",
-			sessions: []daemon.Session{
-				{ID: "other", Workspace: "/elsewhere", LastAssistantAt: &recent},
-				{ID: "mine", Workspace: "/work", LastAssistantAt: &old},
-			},
-			workspace: "/work", wantID: "mine", wantFound: true,
+			workspace: "/work", wantID: "b",
 		},
 		{
 			name: "archived ignored",
@@ -103,25 +95,20 @@ func TestLatestSessionInPicksNewestInWorkspace(t *testing.T) {
 				{ID: "archived", Workspace: "/work", LastAssistantAt: &recent, Archived: true},
 				{ID: "open", Workspace: "/work", LastAssistantAt: &old},
 			},
-			workspace: "/work", wantID: "open", wantFound: true,
+			workspace: "/work", wantID: "open",
 		},
 		{
 			name: "no reply yet still resumes",
 			sessions: []daemon.Session{
 				{ID: "fresh", Workspace: "/work"},
 			},
-			workspace: "/work", wantID: "fresh", wantFound: true,
-		},
-		{
-			name:      "nothing in workspace",
-			sessions:  []daemon.Session{{ID: "other", Workspace: "/elsewhere", LastAssistantAt: &recent}},
-			workspace: "/work", wantFound: false,
+			workspace: "/work", wantID: "fresh",
 		},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			session, found := latestSessionIn(scenario.sessions, scenario.workspace)
-			if found != scenario.wantFound || session.ID != scenario.wantID {
-				t.Fatalf("latestSessionIn: id=%q found=%v, want id=%q found=%v", session.ID, found, scenario.wantID, scenario.wantFound)
+			if !found || session.ID != scenario.wantID {
+				t.Fatalf("latestSessionIn: id=%q found=%v, want id=%q", session.ID, found, scenario.wantID)
 			}
 		})
 	}

@@ -41,7 +41,8 @@ func TestBase16Validation(t *testing.T) {
 	if err != nil || got != want {
 		t.Fatalf("parse = %v, %v", got, err)
 	}
-	for _, bad := range []string{"null", "{}", "[]", "bad", strings.Replace(string(data), want[5], "#xyzxyz", 1), strings.Replace(string(data), want[5], want[5]+"x", 1), strings.Replace(string(data), "base0F", "extra", 1), strings.TrimSuffix(string(data), "}") + `,"extra":"#112233"}`} {
+	// One input per rejection branch: unparsable JSON, a bad slot value, an extra key.
+	for _, bad := range []string{"bad", strings.Replace(string(data), want[5], "#xyzxyz", 1), strings.TrimSuffix(string(data), "}") + `,"extra":"#112233"}`} {
 		if _, err := parseBase16Theme([]byte(bad)); err == nil {
 			t.Errorf("accepted %s", bad)
 		}
@@ -77,8 +78,9 @@ func TestBase16DetectBypassesTerminal(t *testing.T) {
 	if agentColors().you.hex() != p[12] || agentColors().hi.hex() != p[5] {
 		t.Fatal("orchestrator ignored palette")
 	}
-	if hostStyle("example").GetForeground() == nil || languageStyle("Go", "").GetForeground() != lipgloss.Color(base16Nearest(languageHues["Go"])) {
-		t.Fatal("identity ignored palette")
+	// "Go" is #6fd1c4; its nearest palette slot is base0F (#c4a76c).
+	if got := languageStyle("Go", "").GetForeground(); got != lipgloss.Color(p[15]) {
+		t.Fatalf("language label %v, want palette slot %s", got, p[15])
 	}
 	lines := HighlightLines([]string{"var x = 1"}, lexers.Get("go"), nil)
 	if !strings.Contains(lines[0], "38;2;") || strings.Contains(lines[0], "38;5;") {
