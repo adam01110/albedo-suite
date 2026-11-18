@@ -5,13 +5,14 @@ It uses existing stream events, tool progress and bounded transcript history;
 there is no model-maintained plan, extra request, setting or persistent log.
 
 Up to six content rows show the current phase or three active calls plus an
-additional-call count, followed by recent tool invocations from the latest turn.
-The activity counter includes the full latest-turn total, not just the six
-visible rows, and is also used in the narrow-screen footer. Settled actions
-remain visible while idle. A new user turn clears them; mail
-injected into an existing turn does not. Replayed settled tools can reconstruct
-recent rows, but replayed progress never becomes live work. Older history paging
-preserves the latest turn.
+additional-call count, followed by the most recent tool invocations across
+turns. The activity counter totals every tool call in the session's loaded
+history plus live calls, not just the six visible rows or the latest turn, and
+is also used in the narrow-screen footer. New messages, mail and wakes add to
+it rather than resetting it. A snapshot reset rebuilds the count from the
+replayed history window, and loading older history pages adds their calls, so
+calls older than the loaded window are not counted. Replayed settled tools
+reconstruct recent rows, but replayed progress never becomes live work.
 
 Rows show the agent's cell title without a tool-name or status prefix. Titles
 describe activity, not verified accomplishments. Active work retains its active

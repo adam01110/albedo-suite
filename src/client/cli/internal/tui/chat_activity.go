@@ -46,27 +46,13 @@ func (m ChatModel) activityRows() []PageRow {
 	if m.History == nil {
 		return rows
 	}
+	// Recent calls span turns, so a new message or wake does not empty the list.
 	entries := m.History.Entries()
-	seenContent, skippedEnd := false, false
 	for i := len(entries) - 1; i >= 0 && len(rows) < activityLimit; i-- {
 		e := &entries[i]
-		if e.Kind == EntryUser && (e.Source == "" || e.Source == "chat") {
-			break
-		}
-		// The newest turn-end closes the displayed turn; earlier ends bound it.
-		if e.Kind == EntryTurnEnd {
-			if seenContent || skippedEnd {
-				break
-			}
-			skippedEnd = true
-		}
-		if e.Kind == EntryUser {
-			seenContent = true
-		}
 		if e.Kind != EntryTool {
 			continue
 		}
-		seenContent = true
 		if e.activity == nil {
 			_, tone := activityResult(*e)
 			e.activity = &PageRow{Text: activityLabel(e.ToolName, e.ToolTitle), Tone: tone}
@@ -76,28 +62,10 @@ func (m ChatModel) activityRows() []PageRow {
 	return rows
 }
 
-// activityCount uses the transcript's turn total so history eviction and the
-// six-row display limit do not stop the counter.
+// activityCount totals the session's loaded tool calls, so turn boundaries,
+// history eviction and the six-row display limit do not stop the counter.
 func (m ChatModel) activityCount() int {
-	completed := 0
-	if m.transcript.turn != nil {
-		completed = m.transcript.turn.tools
-	} else if m.History != nil {
-		entries := m.History.Entries()
-		for i := len(entries) - 1; i >= 0; i-- {
-			e := entries[i]
-			if e.Kind == EntryTurnEnd {
-				completed = max(completed, e.Tools)
-				break
-			}
-			if e.Kind == EntryUser && (e.Source == "" || e.Source == "chat") {
-				break
-			}
-			if e.Kind == EntryTool {
-				completed++
-			}
-		}
-	}
+	completed := m.activityTools
 	pending := len(m.progressOrder)
 	if pending == 0 && (m.activityRemainder.Text != "" ||
 		(m.Status.Running && !m.Status.Idle && !m.Stopped && !m.TurnFailed && !m.activityEnded)) {
@@ -131,8 +99,28 @@ func activityResult(e HistoryEntry) (string, PageTone) {
 	return "finished", TonePlain
 }
 
-// Only retain a count of calls with no observed result, not a second event log.
+// countOlderActivity adds the calls an older history page reveals; it mirrors
+// showOlder's acceptance and de-duplication so a page is counted once.
+func (m *ChatModel) countOlderActivity(msg ChatOlderLoadedMsg) {
+	if msg.SessionID != m.SessionID || msg.Generation != m.Generation || !m.loadingOlder || msg.Err != nil || msg.Page == nil {
+		return
+	}
+	for _, evt := range msg.Page.Events {
+		if evt.Type == daemon.EventTool && (evt.EntryID == "" || m.History.Find(evt.EntryID) < 0) {
+			m.activityTools++
+		}
+	}
+}
+
+// Only retain counts of calls, not a second event log. Replayed tools count
+// because a snapshot reset rebuilds the session total from loaded history.
 func (m *ChatModel) observeActivity(evt daemon.StreamEvent) {
+	switch evt.Type {
+	case daemon.EventReset:
+		m.activityTools = 0
+	case daemon.EventTool:
+		m.activityTools++
+	}
 	if evt.Replayed && evt.Type != daemon.EventReset {
 		return
 	}

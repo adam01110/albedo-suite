@@ -72,10 +72,11 @@ func TestActivityLifecycleAndCache(t *testing.T) {
 		t.Fatal(text)
 	}
 	activityEvent(&m, daemon.StreamEvent{Type: daemon.EventUser, EntryID: "user-2", Source: "chat", Text: "next"})
-	for _, row := range m.activityRows() {
-		if row.Text == "updated label" || row.Text == "second call" {
-			t.Fatalf("old turn: %#v", row)
-		}
+	activityFinish(&m, "c", "third call", `{"status":"ok"}`)
+	activityEvent(&m, daemon.StreamEvent{Type: daemon.EventTurnCompleted})
+	rows := m.activityRows()
+	if len(rows) < 3 || rows[0].Text != "third call" || rows[1].Text != "updated label" || rows[2].Text != "second call" {
+		t.Fatalf("earlier turns dropped: %#v", rows)
 	}
 }
 

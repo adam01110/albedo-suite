@@ -17,16 +17,9 @@ func TestActivityMailTurnBoundaries(t *testing.T) {
 	activityFinish(&m, "a", "prior", `{"status":"ok"}`)
 	activityEvent(&m, daemon.StreamEvent{Type: daemon.EventTurnCompleted})
 	activityEvent(&m, daemon.StreamEvent{Type: daemon.EventUser, EntryID: "mail-turn", Source: "mail", Text: "new turn"})
-	for _, row := range m.activityRows() {
-		if strings.Contains(row.Text, "prior") {
-			t.Fatal("old tool leaked into tool-free mail turn")
-		}
-	}
 	activityEvent(&m, daemon.StreamEvent{Type: daemon.EventTurnCompleted})
-	for _, row := range m.activityRows() {
-		if strings.Contains(row.Text, "prior") {
-			t.Fatal("old tool leaked after mail turn completion")
-		}
+	if text := activityText(m); !strings.Contains(text, "prior") || !strings.Contains(text, "activity · 1") {
+		t.Fatalf("tool-free mail turn dropped earlier activity: %s", text)
 	}
 }
 

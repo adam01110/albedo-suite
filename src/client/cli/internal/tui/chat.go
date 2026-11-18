@@ -100,6 +100,8 @@ type ChatModel struct {
 	progressOrder     []string
 	activityEnded     bool
 	activityRemainder PageRow
+	// activityTools counts tool calls in loaded history and live work.
+	activityTools int
 	eventChan         chan streamDelivery
 	streamStopped     bool
 	// Images and Pastes are what was pasted into the composer as markers.
@@ -368,6 +370,7 @@ func (m *ChatModel) ClearNotices() {
 // Update handles msg, then fetches older history when it left you at the top.
 func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 	if loaded, ok := msg.(ChatOlderLoadedMsg); ok {
+		m.countOlderActivity(loaded)
 		m = m.showOlder(loaded)
 		return m, m.loadToolImage()
 	}

@@ -95,8 +95,8 @@ func TestActivityRenderedCacheAndLayout(t *testing.T) {
 	}
 	activityEvent(&m, daemon.StreamEvent{Type: daemon.EventUser, EntryID: "next", Source: "chat"})
 	activityEvent(&m, daemon.StreamEvent{Type: daemon.EventTurnCompleted})
-	if m.layoutSidebar != 0 {
-		t.Fatal("empty next turn retained sidebar width")
+	if m.layoutSidebar == 0 || m.View() != fromScratch(m) {
+		t.Fatal("empty next turn dropped earlier activity layout")
 	}
 }
 
@@ -105,14 +105,18 @@ func TestActivityOlderHistoryAndReplayPreserveLatest(t *testing.T) {
 	activityEvent(&m, daemon.StreamEvent{Type: daemon.EventUser, EntryID: "current", Source: "chat", Text: "current"})
 	activityFinish(&m, "current", "current label", `{"status":"ok"}`)
 	activityEvent(&m, daemon.StreamEvent{Type: daemon.EventTurnCompleted})
-	before := activityText(m)
-	m.History.Prepend([]HistoryEntry{
-		{Kind: EntryUser, ID: "old-user", Source: "chat"},
-		{Kind: EntryTool, ID: "old-tool", ToolName: "old-secret-tool"},
-		{Kind: EntryTurnEnd, ID: "old-end"},
-	})
-	if after := activityText(m); after != before {
-		t.Fatalf("older paging changed latest: %s", after)
+	older := ChatOlderLoadedMsg{SessionID: m.SessionID, Generation: m.Generation, Page: &daemon.HistoryPage{Events: []daemon.StreamEvent{
+		{Type: daemon.EventUser, EntryID: "old-user", Source: "chat", Replayed: true},
+		{Type: daemon.EventTool, EntryID: "old-tool", ToolName: "older-tool", Replayed: true},
+		{Type: daemon.EventTool, EntryID: "tool-current", ToolName: "python", ToolTitle: "current label", Replayed: true},
+	}}}
+	m.loadingOlder = true
+	m, _ = m.Update(older)
+	// A page arriving twice is ignored once loading has finished.
+	m, _ = m.Update(older)
+	rows := m.activityRows()
+	if len(rows) != 2 || rows[0].Text != "current label" || rows[1].Text != "older-tool" || m.activityCount() != 2 {
+		t.Fatalf("older paging: %#v count %d", rows, m.activityCount())
 	}
 	activityStart(&m, "live", "live label")
 	activityEvent(&m, daemon.StreamEvent{Type: daemon.EventMessage, EntryID: "historical-message", Replayed: true, Text: "old message"})

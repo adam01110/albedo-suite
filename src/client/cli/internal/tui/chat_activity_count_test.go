@@ -20,12 +20,24 @@ func TestActivityCountBeyondVisibleRows(t *testing.T) {
 	if text := activityText(m); !strings.Contains(text, "activity · 20") {
 		t.Fatal(text)
 	}
-	// Work following a closed turn starts a separate counter.
+	// Later turns keep adding to the session counter.
+	activityEvent(&m, daemon.StreamEvent{Type: daemon.EventUser, Source: "chat", Text: "more"})
 	activityFinish(&m, "next", "same label", `{"status":"ok"}`)
 	activityEvent(&m, daemon.StreamEvent{Type: daemon.EventTurnCompleted})
-	// A new completed turn has its own counter.
-	if text := activityText(m); !strings.Contains(text, "activity · 1") {
+	if text := activityText(m); !strings.Contains(text, "activity · 21") {
 		t.Fatal(text)
+	}
+	activityEvent(&m, daemon.StreamEvent{Type: daemon.EventUser, Source: "mail", Text: "wake"})
+	activityFinish(&m, "woken", "same label", `{"status":"ok"}`)
+	activityEvent(&m, daemon.StreamEvent{Type: daemon.EventTurnCompleted})
+	if text := activityText(m); !strings.Contains(text, "activity · 22") {
+		t.Fatal(text)
+	}
+	// A snapshot reset rebuilds the count from replayed history.
+	activityEvent(&m, daemon.StreamEvent{Type: daemon.EventReset})
+	activityEvent(&m, daemon.StreamEvent{Type: daemon.EventTool, EntryID: "replayed", ToolName: "python", ToolResult: `{"status":"ok"}`, Replayed: true})
+	if got := m.activityCount(); got != 1 {
+		t.Fatalf("reset count: %d", got)
 	}
 }
 
@@ -53,7 +65,7 @@ func TestActivityCountRetentionAndFooter(t *testing.T) {
 		t.Fatal(text)
 	}
 	activityEvent(&m, daemon.StreamEvent{Type: daemon.EventUser, Source: "chat", Text: "next"})
-	if got := m.activityCount(); got > 1 {
-		t.Fatalf("new turn retained old count: %d", got)
+	if got := m.activityCount(); got < 31 {
+		t.Fatalf("new turn dropped session count: %d", got)
 	}
 }
