@@ -2,8 +2,8 @@
 //// reload, completion of an index saved without prices, and trimming that
 //// keeps `cost`, provider `npm` and model `provider`.
 
-import albedo/harness/extensions/models/catalog_cache
 import albedo_file/revision as file_revision
+import albedo_models_dev/catalog_cache
 import gleam/dict
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode

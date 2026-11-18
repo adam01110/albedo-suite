@@ -1,13 +1,13 @@
-import albedo/harness/extension/prompt_docs
-import albedo/harness/extensions/agents/extension as agents
-import albedo/harness/extensions/browser/extension as browser
-import albedo/harness/extensions/mail/extension as mail
-import albedo/harness/extensions/paperclips/extension as paperclips
-import albedo/harness/extensions/remote/extension as remote
-import albedo/harness/extensions/schedule/extension as schedule
-import albedo/harness/kernel/base as python
-import albedo/harness/sdk/extension
-import albedo/harness/sdk/host
+import albedo/composition/prompt_docs
+import albedo/kernel/base as python
+import albedo_ext_agents/extension as agents
+import albedo_ext_browser/extension as browser
+import albedo_ext_mail/extension as mail
+import albedo_ext_paperclips/extension as paperclips
+import albedo_ext_remote/extension as remote
+import albedo_ext_schedule/extension as schedule
+import albedo_sdk/extension
+import albedo_sdk/host
 import gleam/dynamic/decode
 import gleam/int
 import gleam/io

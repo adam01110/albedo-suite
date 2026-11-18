@@ -1,17 +1,17 @@
-import albedo/harness/extensions/zed/extension as zed
-import albedo/harness/extensions/zed/quota as zed_quota
-import albedo/harness/extensions/zed/stream as zed_stream
-import albedo/harness/extensions/zed/wire
-import albedo/harness/sdk/extension
-import albedo/harness/sdk/oauth
-import albedo/openai_api
+import albedo/accounts/oauth_test
+import albedo_ext_zed/extension as zed
+import albedo_ext_zed/quota as zed_quota
+import albedo_ext_zed/stream as zed_stream
+import albedo_ext_zed/wire
 import albedo_model as types
+import albedo_openai as openai_api
+import albedo_sdk/extension
+import albedo_sdk/oauth
 import gleam/dynamic/decode
 import gleam/json
 import gleam/list
 import gleam/option.{None, Some}
 import gleeunit/should
-import harness/oauth_test
 
 @external(erlang, "albedo_zed_login_test", "run")
 fn native() -> Nil

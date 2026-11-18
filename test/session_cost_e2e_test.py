@@ -34,8 +34,8 @@ class SessionCostTests(unittest.TestCase):
         self.session = self.app.session()
 
     def cost(self, status=False):
-        query = "view=status" if status else "tail=0"
-        with self.app.api(f"/sessions/{self.session}?{query}") as response:
+        route = "/status" if status else "?tail=0"
+        with self.app.api(f"/sessions/{self.session}{route}") as response:
             return json.load(response)["usage"]["session_cost_usd"]
 
     def listed_cost(self):

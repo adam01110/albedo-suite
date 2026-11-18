@@ -77,7 +77,7 @@ class LazyMcpTests(unittest.TestCase):
         self.selection({"extensions": {"mcp": True}, "mcp": {"excluded": False}})
 
     def selection(self, value):
-        route = f"/sessions/{self.session}?view=configuration"
+        route = f"/sessions/{self.session}/configuration"
         with self.app.api(route) as response:
             json.load(response)
             etag = response.headers["ETag"]

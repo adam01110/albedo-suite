@@ -93,11 +93,16 @@
 
     withServerSources = package:
       withSuiteNotices (package.overrideAttrs (old: {
-        # Fail on upstream drift before installing editable source files.
+        # The daemon builds in apps/albedo, but the overlay mirrors the whole
+        # source tree, outside the writable source root. Fail on upstream drift
+        # before installing editable source files.
         postPatch =
           ''
-            sha256sum --check ${../../upstream/server.sha256}
-            cp -r --no-preserve=mode ${../../src/server}/. .
+            root=../..
+            test -f "$root/apps/albedo/gleam.toml"
+            chmod -R u+w "$root"
+            (cd "$root" && sha256sum --check ${../../upstream/server.sha256})
+            cp -r --no-preserve=mode ${../../src/server}/. "$root"
           ''
           + (old.postPatch or "");
         doCheck = true;
@@ -137,7 +142,7 @@
         postFixup =
           (old.postFixup or "")
           + ''
-            ALBEDO_BUILD_APP="$out/lib/albedo/albedo" erl +S 2:2 -pa "$out/lib/albedo"/*/ebin -noshell -eval 'application:ensure_all_started(crypto), {ok, nil} = albedo@daemon@build_identity:seal_build(unicode:characters_to_binary(os:getenv("ALBEDO_BUILD_APP"))), halt().'
+            ALBEDO_BUILD_APP="$out/lib/albedo/albedo" erl +S 2:2 -pa "$out/lib/albedo"/*/ebin -noshell -eval 'application:ensure_all_started(crypto), {ok, nil} = albedo@lifecycle@build_identity:seal_build(unicode:characters_to_binary(os:getenv("ALBEDO_BUILD_APP"))), halt().'
           '';
       }));
 

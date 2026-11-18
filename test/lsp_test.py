@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, patch
 SOURCE = Path(
     os.environ.get(
         "ALBEDO_LSP_SOURCE",
-        Path(__file__).resolve().parents[1] / "src/server/priv/python",
+        Path(__file__).resolve().parents[1] / "src/server/python",
     )
 )
 sys.path.insert(0, str(SOURCE))

@@ -47,7 +47,7 @@ type Settings struct {
 func GetSettings(ctx context.Context, conn *Connection) (Settings, error) {
 	var wire protocol.Settings
 	err := executeRead(ctx, conn, operation{Name: "read shared settings", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
-		return protocol.NewGetSettingsRequest(base, nil)
+		return protocol.NewGetSettingsRequest(base)
 	}, Policy: readRecovery}, func(data []byte) error {
 		return decodeRequired(data, &wire)
 	})
@@ -56,7 +56,7 @@ func GetSettings(ctx context.Context, conn *Connection) (Settings, error) {
 	}
 	result := Settings{Profiles: config.Profiles{Active: value(wire.Providers.DefaultProfile), Providers: map[string]config.Settings{}, ETag: wire.GroupResources.Providers.ETag}, MCP: map[string]config.MCPServer{}, Credentials: Credentials{MCP: map[string]MCPSecretNames{}}, ETags: map[string]string{"providers": wire.GroupResources.Providers.ETag, "mcp": wire.GroupResources.MCP.ETag, "extensions": wire.GroupResources.Extensions.ETag, "extension_settings": wire.GroupResources.ExtensionSettings.ETag, "capabilities": wire.GroupResources.Capabilities.ETag, "models": wire.GroupResources.Models.ETag, "ui": wire.GroupResources.UI.ETag}, Extensions: wire.Extensions.Defaults}
 	for name, profile := range wire.Providers.Profiles {
-		result.Profiles.Providers[name] = config.Settings{ProfileName: name, Enabled: profile.Enabled, Extension: profile.Extension, API: value(profile.API), BaseURL: value(profile.Endpoint), Model: profile.Model, Protocol: profile.Protocol, HasKey: profile.HasKey, Effort: profile.Effort, ImageEdge: intPointer(profile.ImageEdge), AccountID: profile.AccountID, AccountIDs: idsToStrings(profile.AccountIDs), Project: profile.Project, Location: profile.Location}
+		result.Profiles.Providers[name] = config.Settings{ProfileName: name, Enabled: profile.Enabled, Extension: profile.Extension, API: value(profile.API), BaseURL: value(profile.Endpoint), Model: profile.Model, Protocol: profile.Protocol, HasKey: profile.HasKey, Effort: profile.Effort, ImageEdge: intPointer(profile.ImageEdge), AccountID: profile.AccountID, AccountIDs: idsToStrings(profile.AccountIDs), Rotation: profile.Rotation, Project: profile.Project, Location: profile.Location}
 		if profile.HasKey {
 			result.Credentials.Providers = append(result.Credentials.Providers, name)
 		}
@@ -98,7 +98,24 @@ func patchSettingsGroup(ctx context.Context, conn *Connection, group, etag strin
 		return err
 	}
 	return executeMutation(ctx, conn, operation{Name: "edit " + group + " settings", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
-		return protocol.NewPatchSettingsRequestWithBody(base, &protocol.PatchSettingsParams{Group: group, IfMatch: etag}, "application/merge-patch+json", body)
+		switch group {
+		case "providers":
+			return protocol.NewPatchProviderSettingsRequestWithBody(base, &protocol.PatchProviderSettingsParams{IfMatch: etag}, "application/merge-patch+json", body)
+		case "mcp":
+			return protocol.NewPatchMCPSettingsRequestWithBody(base, &protocol.PatchMCPSettingsParams{IfMatch: etag}, "application/merge-patch+json", body)
+		case "extensions":
+			return protocol.NewPatchExtensionSettingsRequestWithBody(base, &protocol.PatchExtensionSettingsParams{IfMatch: etag}, "application/merge-patch+json", body)
+		case "extension_settings":
+			return protocol.NewPatchDeclaredSettingsRequestWithBody(base, &protocol.PatchDeclaredSettingsParams{IfMatch: etag}, "application/merge-patch+json", body)
+		case "capabilities":
+			return protocol.NewPatchCapabilitySettingsRequestWithBody(base, &protocol.PatchCapabilitySettingsParams{IfMatch: etag}, "application/merge-patch+json", body)
+		case "models":
+			return protocol.NewPatchModelSettingsRequestWithBody(base, &protocol.PatchModelSettingsParams{IfMatch: etag}, "application/merge-patch+json", body)
+		case "ui":
+			return protocol.NewPatchUISettingsRequestWithBody(base, &protocol.PatchUISettingsParams{IfMatch: etag}, "application/merge-patch+json", body)
+		default:
+			return nil, fieldError("settings group")
+		}
 	}, Headers: headers, Body: body, Policy: authRecovery}, []int{200}, func(data []byte, _ int) error {
 		if err := decodeRequired(data, target); err != nil {
 			return err
@@ -122,11 +139,8 @@ func patchSettingsGroup(ctx context.Context, conn *Connection, group, etag strin
 		default:
 			return fieldError("settings group")
 		}
-		request, err := protocol.NewGetSettingsRequest("", &protocol.GetSettingsParams{Group: &group})
-		if err != nil {
-			return err
-		}
-		if savedGroup != group || savedETag == "" || savedURL != request.URL.RequestURI() {
+
+		if savedGroup != group || savedETag == "" || savedURL != "/settings/"+group {
 			return fieldError("settings resource")
 		}
 		return nil
@@ -149,26 +163,28 @@ func SaveSignedInProvider(ctx context.Context, conn *Connection, name string, pr
 }
 
 func saveProvider(ctx context.Context, conn *Connection, name string, profile config.Settings, etag string, selectDefault, clearKey bool) error {
-	// Nullable patch fields must be emitted to clear saved overrides. Generated
-	// optional pointers omit nil and would preserve those overrides instead.
-	profilePatch := map[string]any{
-		"extension": profile.Extension, "endpoint": optionalText(profile.BaseURL),
-		"protocol": profile.Protocol, "model": profile.Model, "effort": profile.Effort,
-		"image_edge": profile.ImageEdge, "account_id": profile.AccountID, "account_ids": profile.AccountIDs,
-		"project": profile.Project, "location": profile.Location,
+	profilePatch := protocol.ProviderProfilePatch{
+		Extension: protocol.SetPatch(profile.Extension), Endpoint: nullablePatch(optionalText(profile.BaseURL)),
+		Protocol: protocol.SetPatch(profile.Protocol), Model: protocol.SetPatch(profile.Model), Effort: nullablePatch(profile.Effort),
+		ImageEdge: nullablePatch(int64Pointer(profile.ImageEdge)), AccountID: nullablePatch(profile.AccountID),
+		AccountIDs: nullableSlicePatch(profile.AccountIDs), Project: nullablePatch(profile.Project), Location: nullablePatch(profile.Location),
 	}
 	if profile.API != "" {
-		profilePatch["api"] = profile.API
+		profilePatch.API = protocol.SetPatch(profile.API)
+	}
+	if profile.Rotation != "" {
+		profilePatch.Rotation = protocol.SetPatch(profile.Rotation)
 	}
 	if profile.APIKey != "" {
-		profilePatch["api_key"] = profile.APIKey
+		profilePatch.APIKey = protocol.SetNullablePatch(profile.APIKey)
 	} else if clearKey {
-		profilePatch["api_key"] = nil
+		profilePatch.APIKey = protocol.ClearPatch[string]()
 	}
-	body := map[string]any{"profiles": map[string]any{name: profilePatch}}
+	body := protocol.ProviderSettingsPatch{Profiles: protocol.SetPatch(map[string]*protocol.ProviderProfilePatch{name: &profilePatch})}
 	if selectDefault {
-		body["default_profile"] = name
+		body.DefaultProfile = protocol.SetNullablePatch(name)
 	}
+
 	var change protocol.ProviderSettingsChange
 	err := patchSettingsGroup(ctx, conn, "providers", etag, body, &change)
 	return err
@@ -184,12 +200,12 @@ func SetProviderEnabled(ctx context.Context, conn *Connection, name string, enab
 
 func RenameProvider(ctx context.Context, conn *Connection, from, to, etag string) error {
 	var change protocol.ProviderSettingsChange
-	return patchSettingsGroup(ctx, conn, "providers", etag, map[string]any{"renames": map[string]string{from: to}}, &change)
+	return patchSettingsGroup(ctx, conn, "providers", etag, protocol.ProviderSettingsPatch{Renames: protocol.SetPatch(map[string]string{from: to})}, &change)
 }
 func DeleteProvider(ctx context.Context, conn *Connection, name string, profiles config.Profiles) error {
-	body := map[string]any{"profiles": map[string]any{name: nil}}
+	body := protocol.ProviderSettingsPatch{Profiles: protocol.SetPatch(map[string]*protocol.ProviderProfilePatch{name: nil})}
 	if profiles.Active == name {
-		body["default_profile"] = nil
+		body.DefaultProfile = protocol.ClearPatch[string]()
 	}
 	var change protocol.ProviderSettingsChange
 	err := patchSettingsGroup(ctx, conn, "providers", profiles.ETag, body, &change)
@@ -212,9 +228,23 @@ func setSelection(ctx context.Context, conn *Connection, session, kind, id, revi
 		}, &change)
 		return ReloadResult{Message: "Saved the global default; reload open sessions to apply it."}, err
 	}
-	body := map[string]any{"selection": map[string]any{kind: map[string]*bool{id: enabled}}}
+	choices := protocol.SetNullablePatch(map[string]*bool{id: enabled})
+	selection := protocol.SelectionPatch{}
+	switch kind {
+	case "extensions":
+		selection.Extensions = choices
+	case "skills":
+		selection.Skills = choices
+	case "instructions":
+		selection.Instructions = choices
+	case "mcp":
+		selection.MCP = choices
+	default:
+		return ReloadResult{}, fieldError("selection kind")
+	}
+	body := protocol.SessionPatch{Selection: protocol.SetPatch(selection)}
 	if kind == "skills" || kind == "instructions" {
-		body["catalog_revision"] = revision
+		body.CatalogRevision = protocol.SetPatch(revision)
 	}
 	_, err := patchSession(ctx, conn, session, etag, body)
 	return ReloadResult{Message: "Saved the session selection; reload the session to apply it."}, err
@@ -228,7 +258,7 @@ type MCPUpdateRequest struct {
 }
 
 func SaveMCP(ctx context.Context, conn *Connection, session string, request MCPUpdateRequest) (ReloadResult, error) {
-	var definition any
+	var definition *protocol.MCPDefinitionPatch
 	if request.Server != nil {
 		server := request.Server
 		secrets := request.Secrets
@@ -246,28 +276,32 @@ func SaveMCP(ctx context.Context, conn *Connection, session string, request MCPU
 				secrets.Env[name] = nil
 			}
 		}
-		// These nulls clear fields when changing transports; nil optional
-		// pointers in MCPDefinitionPatch would omit them.
-		patch := map[string]any{
-			"enabled": server.Enabled == nil || *server.Enabled, "transport": server.Type,
-			"command": optionalText(server.Command), "arguments": nonNil(server.Args),
-			"cwd": optionalText(server.CWD), "url": optionalText(server.URL),
-			"environment": nonNilMap(server.Env), "headers": nonNilMap(server.Headers),
-			"bearer_token_env_var": optionalText(server.BearerTokenEnvVar),
-			"enabled_tools":        nullIfEmpty(server.EnabledTools), "disabled_tools": nonNil(server.DisabledTools),
-			"secrets": secrets,
+		secretPatch, err := secrets.wire()
+		if err != nil {
+			return ReloadResult{}, err
+		}
+		definition = &protocol.MCPDefinitionPatch{
+			Enabled: protocol.SetPatch(server.Enabled == nil || *server.Enabled), Transport: protocol.SetPatch(server.Type),
+			Command: nullablePatch(optionalText(server.Command)), Arguments: protocol.SetPatch(nonNil(server.Args)),
+			Cwd: nullablePatch(optionalText(server.CWD)), URL: nullablePatch(optionalText(server.URL)),
+			Environment: protocol.SetNullablePatch(mcpValueSources(server.Env)), Headers: protocol.SetNullablePatch(mcpValueSources(server.Headers)),
+			BearerTokenEnvVar: nullablePatch(optionalText(server.BearerTokenEnvVar)),
+			EnabledTools:      protocol.ClearPatch[[]string](), DisabledTools: protocol.SetPatch(nonNil(server.DisabledTools)),
+			Secrets: protocol.SetPatch(secretPatch),
+		}
+		if len(server.EnabledTools) > 0 {
+			definition.EnabledTools = protocol.SetNullablePatch(server.EnabledTools)
 		}
 		if server.StartupTimeoutMs != 0 {
-			patch["startup_timeout_ms"] = server.StartupTimeoutMs
+			definition.StartupTimeoutMs = protocol.SetPatch(int64(server.StartupTimeoutMs))
 		}
 		if server.CallTimeoutMs != 0 {
-			patch["call_timeout_ms"] = server.CallTimeoutMs
+			definition.CallTimeoutMs = protocol.SetPatch(int64(server.CallTimeoutMs))
 		}
-		definition = patch
 	}
 	var change protocol.MCPSettingsChange
-	err := patchSettingsGroup(ctx, conn, "mcp", request.ETag, map[string]any{
-		"definitions": map[string]any{request.Name: definition},
+	err := patchSettingsGroup(ctx, conn, "mcp", request.ETag, protocol.MCPSettingsPatch{
+		Definitions: protocol.SetPatch(map[string]*protocol.MCPDefinitionPatch{request.Name: definition}),
 	}, &change)
 	return applicationResult(change.Application), err
 }
@@ -276,9 +310,9 @@ func SaveMCP(ctx context.Context, conn *Connection, session string, request MCPU
 // asks for a sign-in on its next request.
 func SignOutMCP(ctx context.Context, conn *Connection, name, etag string) error {
 	var change protocol.MCPSettingsChange
-	return patchSettingsGroup(ctx, conn, "mcp", etag, map[string]any{
-		"definitions":         map[string]any{name: map[string]any{"secrets": map[string]any{"oauth": nil}}},
-		"validate_connection": false,
+	return patchSettingsGroup(ctx, conn, "mcp", etag, protocol.MCPSettingsPatch{
+		Definitions:        protocol.SetPatch(map[string]*protocol.MCPDefinitionPatch{name: {Secrets: protocol.SetPatch(protocol.MCPSecretsPatch{Oauth: protocol.ClearPatch[any]()})}}),
+		ValidateConnection: protocol.SetPatch(false),
 	}, &change)
 }
 
@@ -302,13 +336,12 @@ func nonNil[T any](s []T) []T {
 	return s
 }
 
-// nullIfEmpty is the wire value for an optional allowlist: null means no
-// allowlist, while an empty list would allow nothing.
-func nullIfEmpty[T any](s []T) []T {
-	if len(s) == 0 {
-		return nil
+func mcpValueSources(values map[string]map[string]string) map[string]*protocol.ValueSource {
+	sources := make(map[string]*protocol.ValueSource, len(values))
+	for key, value := range values {
+		sources[key] = &protocol.ValueSource{Source: value["source"], Value: value["value"]}
 	}
-	return s
+	return sources
 }
 func nonNilMap[K comparable, V any](m map[K]V) map[K]V {
 	if m == nil {
@@ -346,7 +379,7 @@ func DismissNotice(ctx context.Context, conn *Connection, id string) (UIPreferen
 		var wire protocol.UISettings
 		var etag string
 		err := executeRead(ctx, conn, operation{Name: "read ui settings", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
-			return protocol.NewGetSettingsRequest(base, &protocol.GetSettingsParams{Group: new("ui")})
+			return protocol.NewGetUISettingsRequest(base)
 		}, Validator: &etag, Policy: readRecovery}, func(data []byte) error {
 			return decodeRequired(data, &wire)
 		})
@@ -357,7 +390,7 @@ func DismissNotice(ctx context.Context, conn *Connection, id string) (UIPreferen
 			return uiPreferences(wire, etag), nil
 		}
 		var change protocol.UISettingsChange
-		err = patchSettingsGroup(ctx, conn, "ui", etag, map[string]any{"dismissed_notices": append(slices.Clip(wire.DismissedNotices), id)}, &change)
+		err = patchSettingsGroup(ctx, conn, "ui", etag, protocol.UISettingsPatch{DismissedNotices: protocol.SetPatch(append(slices.Clip(wire.DismissedNotices), id))}, &change)
 		if apiErr, stale := errors.AsType[*APIError](err); stale && apiErr.StatusCode == http.StatusPreconditionFailed && attempt == 0 {
 			continue
 		}
@@ -385,13 +418,13 @@ func PatchSessionUI(ctx context.Context, conn *Connection, session string, patch
 		}
 		patch.ETag = current.ETag
 	}
-	body := protocol.SessionPatch{Preferences: &protocol.PreferencePatch{Pinned: patch.Pinned, Archived: patch.Archived}}
+	body := protocol.SessionPatch{Preferences: protocol.SetPatch(protocol.PreferencePatch{Pinned: patchIfPresent(patch.Pinned), Archived: patchIfPresent(patch.Archived)})}
 	updated, err := patchSession(ctx, conn, session, patch.ETag, body)
 	prefs := UIPreferences{SessionETags: map[string]string{session: updated.ETag}}
-	if updated.Pinned {
+	if updated.Value.Preferences.Pinned {
 		prefs.Pinned = []string{session}
 	}
-	if updated.Archived {
+	if updated.Value.Preferences.Archived {
 		prefs.Archived = []string{session}
 	}
 	return prefs, err
@@ -517,7 +550,7 @@ type ExtensionSettings struct {
 func GetExtensionSettings(ctx context.Context, conn *Connection) (ExtensionSettings, error) {
 	var result ExtensionSettings
 	err := executeRead(ctx, conn, operation{Name: "read extension settings", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
-		return protocol.NewGetSettingsRequest(base, &protocol.GetSettingsParams{Group: new("extension_settings")})
+		return protocol.NewGetDeclaredSettingsRequest(base)
 	}, Validator: &result.ETag, Policy: readRecovery}, func(data []byte) error {
 		var wire protocol.DeclaredSettings
 		if err := decodeRequired(data, &wire); err != nil {
@@ -543,7 +576,7 @@ func SaveExtensionSetting(ctx context.Context, conn *Connection, etag, section, 
 	// A nil value marshals to JSON null, which is how the daemon is asked to
 	// drop the saved value.
 	var change protocol.DeclaredSettingsChange
-	body := map[string]any{"values": map[string]any{section: map[string]any{key: value}}}
+	body := protocol.DeclaredSettingsPatch{Values: map[string]map[string]json.RawMessage{section: {key: value}}}
 	if err := patchSettingsGroup(ctx, conn, "extension_settings", etag, body, &change); err != nil {
 		return ExtensionSettings{}, err
 	}
@@ -611,4 +644,31 @@ func declaredValue(kind SettingKind, raw json.RawMessage) (SettingValue, error) 
 		return SettingValue{}, err
 	}
 	return SettingValue{Number: &number}, nil
+}
+
+// Pointer adapters make the caller's existing omission or clear intent explicit.
+func patchIfPresent[T any](value *T) protocol.PatchField[T] {
+	if value == nil {
+		return protocol.PatchField[T]{}
+	}
+	return protocol.SetPatch(*value)
+}
+func nullablePatch[T any](value *T) protocol.NullablePatchField[T] {
+	if value == nil {
+		return protocol.ClearPatch[T]()
+	}
+	return protocol.SetNullablePatch(*value)
+}
+func nullableSlicePatch[T any](value []T) protocol.NullablePatchField[[]T] {
+	if value == nil {
+		return protocol.ClearPatch[[]T]()
+	}
+	return protocol.SetNullablePatch(value)
+}
+func int64Pointer(value *int) *int64 {
+	if value == nil {
+		return nil
+	}
+	converted := int64(*value)
+	return &converted
 }

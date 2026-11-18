@@ -82,7 +82,7 @@ in
       tar xzf ${fffBin} -C "$modules/@ff-labs/fff-bin-linux-${arch}-gnu" --strip-components=1
       tar xzf ${ffiRs} -C "$modules/ffi-rs" --strip-components=1
       tar xzf ${ffiBin} -C "$modules/@yuuang/ffi-rs-linux-${arch}-gnu" --strip-components=1
-      cp ${../../src/server/priv/python/albedo_fff.mjs} "$out/libexec/albedo-fff.mjs"
+      cp ${../../src/server/python/albedo_fff.mjs} "$out/libexec/albedo-fff.mjs"
       cp ${../../LICENSE} "$out/share/licenses/albedo-fff/LICENSE"
       cp ${./fff-sources.md} "$out/share/licenses/albedo-fff/SOURCE.md"
       cp ${fffLicense} "$out/share/licenses/albedo-fff/fff-LICENSE"

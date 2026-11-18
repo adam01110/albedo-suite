@@ -1,10 +1,11 @@
 # Provider availability
 
-In the providers menu (`/login`), highlight a saved provider profile and press
-**Ctrl+T** to disable or re-enable it. The footer shows the action. Disabled
-profiles remain visible with a `disabled` label, but Enter cannot select them.
-The menu keeps its search and highlighted profile after the change. There is
-no separate provider-availability slash command or Python command.
+In `/accounts` (alias `/login`), open **advanced** to reach the named setups,
+highlight a saved provider profile and press **Ctrl+T** to disable or re-enable
+it. The accounts list itself has no toggle. The footer shows the action.
+Disabled profiles remain visible with a `disabled` label, but Enter cannot
+select them. The list keeps its search and highlighted profile after the change.
+There is no separate provider-availability slash command or Python command.
 
 Disabling removes the profile from `agents.models()` and automatic provider
 selection. Explicit new selections and child-agent requests reject disabled

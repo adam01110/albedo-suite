@@ -21,7 +21,8 @@ nix shell --no-update-lock-file --inputs-from . nixpkgs#go --command \
 for pair in \
   "cli/internal/daemon/protocol/api.gen.go:src/client" \
   "cli/internal/daemon/protocol/digest.gen.go:src/client" \
-  "src/albedo/daemon/api_digest.gleam:src/server"; do
+  "cli/internal/daemon/protocol/patches.gen.go:src/client" \
+  "apps/albedo/src/albedo/http/api_digest.gleam:src/server"; do
   name=${pair%%:*}
   overlay=${pair#*:}/$name
   if [ -f "$overlay" ]; then

@@ -83,7 +83,7 @@ class ProviderAvailabilityTests(unittest.TestCase):
         return models
 
     def toggle(self, enabled, profile="openrouter"):
-        route = "/settings?group=providers"
+        route = "/settings/providers"
         with self.app.api(route) as response:
             json.load(response)
             etag = response.headers["ETag"]

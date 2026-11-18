@@ -1,6 +1,6 @@
 {
   "harness.py": {
-    "sha256": "694a1547ec51a3cc57135309e093ac6d20ad661663869d356b22b13a6ed8571b",
+    "sha256": "c856025bcc9a8d758ed2b5a70d6766db07563a815da542d877c16c72585246f8",
     "replacements": [
       [
         "def prompt_text(request):",
@@ -17,7 +17,7 @@
     ]
   },
   "kernel_detach_test.py": {
-    "sha256": "2087bcdafaa015a811fe6bfb7841c7f7e3d26601c1c8e13c8e5da1214c2f3d1f",
+    "sha256": "52a549336f993da14bd65db82d9fa7f8a45153e2e84938e4a157eec2369f416c",
     "replacements": [
       [
         "item[\"content\"] for item in request[\"input\"] if item.get(\"role\") == \"user\"",
@@ -39,7 +39,7 @@
     ]
   },
   "image_limits_test.py": {
-    "sha256": "a9d94dd51e538308f20268cadfdceae5a83959859a657a0858544ac576e187be",
+    "sha256": "c1ccd9093b30b2ba54b8e482559acdd4e13d52614e1f07cb25fcbff1d146949b",
     "replacements": [
       [
         "                item.get(\"content\")\n",
@@ -48,7 +48,7 @@
     ]
   },
   "history_content_test.py": {
-    "sha256": "7553aa0ece17ab387b5046061e5474b6e94d8711c242609afffb29660a58d882",
+    "sha256": "49cca0b55df6ea1e099ed8394746f967d9930125d1430f0f5f713ed374dfc252",
     "replacements": [
       [
         "from harness import Albedo, Provider, Reply, exclusive, operation_id, python, text",

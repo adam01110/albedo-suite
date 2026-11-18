@@ -52,10 +52,51 @@ type ACPAttachment struct {
 	SessionID ID `json:"session_id"`
 }
 
+// ACPEmbeddedResourceBlock defines model for ACPEmbeddedResourceBlock.
+type ACPEmbeddedResourceBlock struct {
+	// Annotations Explicit domain payload: tool arguments, tool results, provider-private state, or extension data. JSON values of any type are allowed; no core resource uses this as its envelope.
+	Annotations *DynamicJSON `json:"annotations,omitempty"`
+
+	// Meta Explicit domain payload: tool arguments, tool results, provider-private state, or extension data. JSON values of any type are allowed; no core resource uses this as its envelope.
+	Meta     *DynamicJSON                `json:"meta,omitempty"`
+	Resource ACPEmbeddedResourceContents `json:"resource"`
+	Type     string                      `json:"type"`
+}
+
+// ACPEmbeddedResourceContents defines model for ACPEmbeddedResourceContents.
+type ACPEmbeddedResourceContents struct {
+	Blob *string `json:"blob,omitempty"`
+
+	// Meta Explicit domain payload: tool arguments, tool results, provider-private state, or extension data. JSON values of any type are allowed; no core resource uses this as its envelope.
+	Meta     *DynamicJSON `json:"meta,omitempty"`
+	MimeType *string      `json:"mime_type,omitempty" nullable:"true"`
+	Text     *string      `json:"text,omitempty"`
+	URI      string       `json:"uri"`
+}
+
 // ACPEnvVariable defines model for ACPEnvVariable.
 type ACPEnvVariable struct {
 	Name  string `json:"name"`
 	Value string `json:"value"`
+}
+
+// ACPHTTPHeader defines model for ACPHTTPHeader.
+type ACPHTTPHeader struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+// ACPImageBlock defines model for ACPImageBlock.
+type ACPImageBlock struct {
+	// Annotations Explicit domain payload: tool arguments, tool results, provider-private state, or extension data. JSON values of any type are allowed; no core resource uses this as its envelope.
+	Annotations *DynamicJSON `json:"annotations,omitempty"`
+	Data        string       `json:"data"`
+
+	// Meta Explicit domain payload: tool arguments, tool results, provider-private state, or extension data. JSON values of any type are allowed; no core resource uses this as its envelope.
+	Meta     *DynamicJSON `json:"meta,omitempty"`
+	MimeType string       `json:"mime_type"`
+	Type     string       `json:"type"`
+	URI      *string      `json:"uri,omitempty" nullable:"true"`
 }
 
 // ACPLease defines model for ACPLease.
@@ -64,17 +105,26 @@ type ACPLease struct {
 	LeaseMs     int64 `json:"lease_ms"`
 }
 
-// ACPMCPServer Editor-supplied stdio MCP server. command is an absolute executable run without a shell in the session workspace; env values are literal secrets held only in daemon memory.
+// ACPMCPServer Editor-supplied stdio or Streamable HTTP MCP server. The daemon runs stdio commands in the session workspace. HTTP uses literal headers. The daemon holds endpoints and credentials in memory.
 type ACPMCPServer struct {
-	Args    []string `json:"args"`
-	Command string   `json:"command"`
+	Args []string `json:"args,omitzero"`
 
-	// Env Names must be unique; duplicates are rejected.
-	Env  []ACPEnvVariable `json:"env"`
-	Name string           `json:"name"`
+	// Command Absolute executable path.
+	Command string `json:"command,omitempty"`
+
+	// Env Names must be unique.
+	Env []ACPEnvVariable `json:"env,omitzero"`
+
+	// Headers Header names must be unique, ignoring case.
+	Headers []ACPHTTPHeader `json:"headers,omitzero"`
+	Name    string          `json:"name"`
+	Type    string          `json:"type,omitempty"`
+
+	// URL HTTP or HTTPS endpoint with no userinfo or fragment.
+	URL string `json:"url,omitempty"`
 }
 
-// ACPMCPServerIdentity Durable stand-in for an overlay server. The fingerprint is a keyed digest of command, args and env; literal values are never stored.
+// ACPMCPServerIdentity Durable stand-in for an overlay server. The fingerprint is a keyed digest of the transport configuration. The receipt contains only names and fingerprints.
 type ACPMCPServerIdentity struct {
 	Fingerprint string `json:"fingerprint"`
 	Name        string `json:"name"`
@@ -87,10 +137,20 @@ type ACPOutputBoundary struct {
 	UTF8Bytes int64 `json:"utf8_bytes"`
 }
 
+// ACPPlan defines model for ACPPlan.
+type ACPPlan struct {
+	Items []struct {
+		CreatedAt string `json:"created_at"`
+		Done      bool   `json:"done"`
+		ID        int64  `json:"id"`
+		Text      string `json:"text"`
+	} `json:"items"`
+}
+
 // ACPPromptBlock defines model for ACPPromptBlock.
 type ACPPromptBlock = json.RawMessage
 
-// ACPPromptInputRequest Only for ACP sessions, with the attachment token. Forms its own logical turn; no other input joins it and it joins no other turn. Blocks keep their order, metadata and original URIs.
+// ACPPromptInputRequest Only for ACP sessions, with the attachment token. Forms its own logical turn; no other input joins it and it joins no other turn. Blocks keep their order, metadata and original URIs in the submission identity. At most ten blocks may be images.
 type ACPPromptInputRequest struct {
 	Blocks []ACPPromptBlock `json:"blocks"`
 	Kind   string           `json:"kind"`
@@ -150,6 +210,9 @@ type ACPTextBlock struct {
 type Account struct {
 	Detail string `json:"detail"`
 
+	// Email The sign-in's email when the provider reports one; null for keys, environment accounts, and sign-ins that carry no email. New sign-ins take it as their label until renamed.
+	Email *string `json:"email" nullable:"true"`
+
 	// Endpoint The base url a key account sends to; null for sign-in accounts.
 	Endpoint *string `json:"endpoint" nullable:"true"`
 
@@ -162,6 +225,12 @@ type Account struct {
 
 	// LimitedUntil When a rate or usage limit recorded against this account ends; null when it has room.
 	LimitedUntil *string `json:"limited_until" nullable:"true"`
+
+	// NeedsSignIn The saved sign-in can no longer be used (its renewal was refused, it was revoked, or the provider suspended it) until it is signed in again. Rotation skips it. Always false for keys.
+	NeedsSignIn bool `json:"needs_sign_in"`
+
+	// Plan The subscription tier the provider reports for a sign-in, such as `Max`, `Pro` or `Plus`; null when unknown.
+	Plan *string `json:"plan" nullable:"true"`
 
 	// Provider Opaque identity. Never infer a resource type or route from its contents.
 	Provider ID `json:"provider"`
@@ -196,7 +265,7 @@ type ActionOperation struct {
 	// ResultSchema Explicit domain payload: tool arguments, tool results, provider-private state, or extension data. JSON values of any type are allowed; no core resource uses this as its envelope.
 	ResultSchema DynamicJSON `json:"result_schema"`
 
-	// SuccessStatus Expected synchronous JSON success status. Omitted operations accept 200 or 201 for mutations and 200 for reads.
+	// SuccessStatus Expected JSON admission or success status. 202 requires the operation's typed receipt workflow; it does not mean completed work. Omitted operations accept 200 or 201 for mutations and 200 for reads.
 	SuccessStatus *int64 `json:"success_status,omitempty"`
 }
 
@@ -695,6 +764,17 @@ type CompactionProgress struct {
 	Total     *int64 `json:"total" nullable:"true"`
 }
 
+// CompactionReceipt defines model for CompactionReceipt.
+type CompactionReceipt struct {
+	// ID Opaque identity. Never infer a resource type or route from its contents.
+	ID     ID                `json:"id"`
+	Result *CompactionResult `json:"result" nullable:"true"`
+
+	// SessionID Opaque identity. Never infer a resource type or route from its contents.
+	SessionID ID     `json:"session_id"`
+	State     string `json:"state"`
+}
+
 // CompactionRequest defines model for CompactionRequest.
 type CompactionRequest struct {
 	// Strategy Opaque identity. Never infer a resource type or route from its contents.
@@ -720,6 +800,14 @@ type Composition struct {
 	LoadedRevision  *ID                    `json:"loaded_revision" nullable:"true"`
 	NeedsReload     bool                   `json:"needs_reload"`
 	Quarantine      []QuarantineDiagnostic `json:"quarantine"`
+}
+
+// ConfigurationApplication defines model for ConfigurationApplication.
+type ConfigurationApplication struct {
+	// DesiredRevision Opaque identity. Never infer a resource type or route from its contents.
+	DesiredRevision ID   `json:"desired_revision"`
+	LoadedRevision  *ID  `json:"loaded_revision" nullable:"true"`
+	NeedsReload     bool `json:"needs_reload"`
 }
 
 // ContentPart Offsets count exact stored UTF-8 bytes.
@@ -1056,11 +1144,11 @@ type DiscordBotPage struct {
 
 // DiscordBotPatch defines model for DiscordBotPatch.
 type DiscordBotPatch struct {
-	Enabled  *bool   `json:"enabled,omitempty"`
-	Name     *string `json:"name,omitempty"`
-	OwnerID  *string `json:"owner_id,omitempty"`
-	Revision int64   `json:"revision"`
-	Token    *string `json:"token,omitempty"`
+	Enabled  PatchField[bool]   `json:"enabled,omitempty"`
+	Name     PatchField[string] `json:"name,omitempty"`
+	OwnerID  PatchField[string] `json:"owner_id,omitempty"`
+	Revision int64              `json:"revision"`
+	Token    PatchField[string] `json:"token,omitempty"`
 }
 
 // DiscordBotUser defines model for DiscordBotUser.
@@ -1239,7 +1327,7 @@ type ExtensionSettingsChange struct {
 
 // ExtensionSettingsPatch defines model for ExtensionSettingsPatch.
 type ExtensionSettingsPatch struct {
-	Defaults map[string]*bool `json:"defaults,omitempty"`
+	Defaults PatchField[map[string]*bool] `json:"defaults,omitempty"`
 }
 
 // ExtensionSettingsResource defines model for ExtensionSettingsResource.
@@ -1580,10 +1668,10 @@ type HookPage struct {
 
 // HookPatch defines model for HookPatch.
 type HookPatch struct {
-	Enabled         *bool   `json:"enabled,omitempty"`
-	Name            *string `json:"name,omitempty"`
-	SignatureHeader *string `json:"signature_header,omitempty"`
-	SignaturePrefix *string `json:"signature_prefix,omitempty"`
+	Enabled         PatchField[bool]   `json:"enabled,omitempty"`
+	Name            PatchField[string] `json:"name,omitempty"`
+	SignatureHeader PatchField[string] `json:"signature_header,omitempty"`
+	SignaturePrefix PatchField[string] `json:"signature_prefix,omitempty"`
 }
 
 // HookPermission defines model for HookPermission.
@@ -1605,7 +1693,7 @@ type HookPermissionChange struct {
 
 // HookPermissionPatch defines model for HookPermissionPatch.
 type HookPermissionPatch struct {
-	AgentManage *bool `json:"agent_manage,omitempty"`
+	AgentManage PatchField[bool] `json:"agent_manage,omitempty"`
 }
 
 // HookPermissionResource defines model for HookPermissionResource.
@@ -1803,6 +1891,9 @@ type JobOutputPage struct {
 
 	// Offset Byte the page starts at.
 	Offset Counter `json:"offset"`
+
+	// Source Full cell source when `job.kind` is `cell`, bounded to 16384 characters.
+	Source *string `json:"source" nullable:"true"`
 	Text   string  `json:"text"`
 }
 
@@ -1982,7 +2073,7 @@ type Login struct {
 
 // LoginPatch defines model for LoginPatch.
 type LoginPatch struct {
-	Response *string `json:"response,omitempty"`
+	Response PatchField[string] `json:"response,omitempty"`
 }
 
 // LoginProvider defines model for LoginProvider.
@@ -2057,36 +2148,33 @@ type MCPDefinition struct {
 
 // MCPDefinitionPatch Partial merge patch. Public and secret sources cannot overlap. HTTP and stdio fields are validated against transport on the complete candidate. Public environment/header entries accept null removal; a null whole map clears it. Switching credential sources removes the former source in the same patch.
 type MCPDefinitionPatch struct {
-	Arguments         []string                 `json:"arguments,omitempty"`
-	BearerTokenEnvVar *string                  `json:"bearer_token_env_var,omitempty" nullable:"true"`
-	CallTimeoutMs     *int64                   `json:"call_timeout_ms,omitempty"`
-	Command           *string                  `json:"command,omitempty" nullable:"true"`
-	Cwd               *Workspace               `json:"cwd,omitempty" nullable:"true"`
-	DisabledTools     []string                 `json:"disabled_tools,omitempty"`
-	Enabled           *bool                    `json:"enabled,omitempty"`
-	EnabledTools      []string                 `json:"enabled_tools,omitempty" nullable:"true"`
-	Environment       *map[string]*ValueSource `json:"environment,omitempty" nullable:"true"`
-	Headers           *map[string]*ValueSource `json:"headers,omitempty" nullable:"true"`
-	Secrets           *MCPSecretsPatch         `json:"secrets,omitempty"`
-	StartupTimeoutMs  *int64                   `json:"startup_timeout_ms,omitempty"`
-	Transport         *string                  `json:"transport,omitempty"`
-	URL               *string                  `json:"url,omitempty" nullable:"true"`
+	Arguments         PatchField[[]string]                        `json:"arguments,omitempty"`
+	BearerTokenEnvVar NullablePatchField[string]                  `json:"bearer_token_env_var,omitempty" nullable:"true"`
+	CallTimeoutMs     PatchField[int64]                           `json:"call_timeout_ms,omitempty"`
+	Command           NullablePatchField[string]                  `json:"command,omitempty" nullable:"true"`
+	Cwd               NullablePatchField[Workspace]               `json:"cwd,omitempty" nullable:"true"`
+	DisabledTools     PatchField[[]string]                        `json:"disabled_tools,omitempty"`
+	Enabled           PatchField[bool]                            `json:"enabled,omitempty"`
+	EnabledTools      NullablePatchField[[]string]                `json:"enabled_tools,omitempty" nullable:"true"`
+	Environment       NullablePatchField[map[string]*ValueSource] `json:"environment,omitempty" nullable:"true"`
+	Headers           NullablePatchField[map[string]*ValueSource] `json:"headers,omitempty" nullable:"true"`
+	Secrets           PatchField[MCPSecretsPatch]                 `json:"secrets,omitempty"`
+	StartupTimeoutMs  PatchField[int64]                           `json:"startup_timeout_ms,omitempty"`
+	Transport         PatchField[string]                          `json:"transport,omitempty"`
+	URL               NullablePatchField[string]                  `json:"url,omitempty" nullable:"true"`
 }
 
 // MCPSecretsPatch defines model for MCPSecretsPatch.
 type MCPSecretsPatch struct {
-	BearerToken *string            `json:"bearer_token,omitempty" nullable:"true"`
-	Environment map[string]*string `json:"environment,omitempty"`
-	Headers     map[string]*string `json:"headers,omitempty"`
+	BearerToken NullablePatchField[string]     `json:"bearer_token,omitempty" nullable:"true"`
+	Environment PatchField[map[string]*string] `json:"environment,omitempty"`
+	Headers     PatchField[map[string]*string] `json:"headers,omitempty"`
 
 	// Oauth Null signs the server out of its OAuth sign-in.
-	Oauth any `json:"oauth,omitempty" nullable:"true"`
+	Oauth NullablePatchField[any] `json:"oauth,omitempty" nullable:"true"`
 
 	// OauthClient A client the user registered with the server's authorization server, used instead of registering albedo; null forgets it.
-	OauthClient *struct {
-		ClientID     string  `json:"client_id"`
-		ClientSecret *string `json:"client_secret,omitempty" nullable:"true"`
-	} `json:"oauth_client,omitempty" nullable:"true"`
+	OauthClient NullablePatchField[MCPSecretsPatchOauthClient] `json:"oauth_client,omitempty" nullable:"true"`
 }
 
 // MCPSettings defines model for MCPSettings.
@@ -2105,8 +2193,8 @@ type MCPSettingsChange struct {
 //
 // Examples: {"definitions":{"example":{"enabled":true,"secrets":{"bearer_token":"synthetic-example-token"},"transport":"http","url":"https://tools.example/mcp"}},"validate_connection":true}
 type MCPSettingsPatch struct {
-	Definitions        map[string]*MCPDefinitionPatch `json:"definitions,omitempty"`
-	ValidateConnection *bool                          `json:"validate_connection,omitempty"`
+	Definitions        PatchField[map[string]*MCPDefinitionPatch] `json:"definitions,omitempty"`
+	ValidateConnection PatchField[bool]                           `json:"validate_connection,omitempty"`
 }
 
 // MCPSettingsResource defines model for MCPSettingsResource.
@@ -2233,8 +2321,8 @@ type ModelSettingsChange struct {
 
 // ModelSettingsPatch Keys are cap_key values from model metadata. For raised_caps, true raises to the advertised maximum; false uses the ordinary limit; null clears the choice. A missing choice defaults to false. For compact_at, a token count is the window every session on that model compacts against, as long as it is below the model's window; null clears it. Only raised_caps and compact_at are writable.
 type ModelSettingsPatch struct {
-	CompactAt  map[string]*int64 `json:"compact_at,omitempty"`
-	RaisedCaps map[string]*bool  `json:"raised_caps,omitempty"`
+	CompactAt  PatchField[map[string]*int64] `json:"compact_at,omitempty"`
+	RaisedCaps PatchField[map[string]*bool]  `json:"raised_caps,omitempty"`
 }
 
 // ModelSettingsResource defines model for ModelSettingsResource.
@@ -2449,9 +2537,9 @@ type PaperclipPage struct {
 
 // PaperclipPatch Reply cannot accompany resolved or dismissed status. It acknowledges the item.
 type PaperclipPatch struct {
-	Reply      *string `json:"reply,omitempty"`
-	Resolution *string `json:"resolution,omitempty"`
-	Status     *string `json:"status,omitempty"`
+	Reply      PatchField[string] `json:"reply,omitempty"`
+	Resolution PatchField[string] `json:"resolution,omitempty"`
+	Status     PatchField[string] `json:"status,omitempty"`
 }
 
 // PaperclipResource defines model for PaperclipResource.
@@ -2481,11 +2569,11 @@ type PendingInput struct {
 
 // PreferencePatch defines model for PreferencePatch.
 type PreferencePatch struct {
-	Archived *bool `json:"archived,omitempty"`
+	Archived PatchField[bool] `json:"archived,omitempty"`
 
 	// PinBefore Moves the session among the pinned, before this pinned session, or last when null. The session must be pinned, in this patch or already. Fails with 409 `pin_target_invalid` when the target is not pinned, and 400 `pin_move_unpinned` when the session is not. Only this session is renumbered when a number is free between its new neighbours; otherwise the fewest neighbours shift in the same commit and are named in the collection stream's `invalidate` event. A shift changes their ETag, not their revision, so a change already admitted against them still commits.
-	PinBefore *ID   `json:"pin_before,omitempty" nullable:"true"`
-	Pinned    *bool `json:"pinned,omitempty"`
+	PinBefore NullablePatchField[ID] `json:"pin_before,omitempty" nullable:"true"`
+	Pinned    PatchField[bool]       `json:"pinned,omitempty"`
 }
 
 // Preview defines model for Preview.
@@ -2519,7 +2607,7 @@ type ProgressPreview struct {
 type ProviderProfile struct {
 	AccountID *ID `json:"account_id" nullable:"true"`
 
-	// AccountIDs Accounts this profile rotates between after a limit, by id. Null when it does not rotate. Exclusive with `account_id`; with neither, a profile uses one account (its saved key, the environment key, or the provider's selected or first account) and never switches.
+	// AccountIDs Accounts this profile uses, in order, by id. Null when it does not rotate. Exclusive with `account_id`; with neither, a profile uses one account (its saved key, the environment key, or the provider's selected or first account) and never switches. `rotation` says how the list is used.
 	AccountIDs []ID `json:"account_ids" nullable:"true"`
 
 	// API Bedrock API mode. Null or omission means messages; replay protocol is unchanged.
@@ -2542,35 +2630,41 @@ type ProviderProfile struct {
 	Model    ID      `json:"model"`
 	Project  *string `json:"project" nullable:"true"`
 	Protocol string  `json:"protocol"`
+
+	// Rotation How `account_ids` is used. `failover` uses the first ready account and moves down the list after a limit. `spread` starts each new session (every agent is a session) on the next ready account in turn and keeps it there for the session's life, so its prompt cache stays warm; it moves only when that account is limited or needs sign-in, and stays on the account it moved to. `first` uses only the first and waits out its limit. Ignored without `account_ids`.
+	Rotation string `json:"rotation"`
 }
 
 // ProviderProfilePatch Partial existing profile; extension and model required when creating a new map entry.
 type ProviderProfilePatch struct {
-	AccountID *ID `json:"account_id,omitempty" nullable:"true"`
+	AccountID NullablePatchField[ID] `json:"account_id,omitempty" nullable:"true"`
 
-	// AccountIDs Accounts this profile rotates between after a limit, by id. Null when it does not rotate. Exclusive with `account_id`; with neither, a profile uses one account (its saved key, the environment key, or the provider's selected or first account) and never switches.
-	AccountIDs []ID `json:"account_ids,omitempty" nullable:"true"`
+	// AccountIDs Accounts this profile uses, in order, by id. Null when it does not rotate. Exclusive with `account_id`; with neither, a profile uses one account (its saved key, the environment key, or the provider's selected or first account) and never switches. `rotation` says how the list is used.
+	AccountIDs NullablePatchField[[]ID] `json:"account_ids,omitempty" nullable:"true"`
 
 	// API Bedrock API mode. Omission preserves an existing value; new and legacy profiles without a value use messages; converse selects streaming Converse.
-	API    *string `json:"api,omitempty"`
-	APIKey *string `json:"api_key,omitempty" nullable:"true"`
+	API    PatchField[string]         `json:"api,omitempty"`
+	APIKey NullablePatchField[string] `json:"api_key,omitempty" nullable:"true"`
 
 	// Effort Profile reasoning override. A supported level overrides the model default for inheriting sessions. Null, inherit, or default leaves the model default in control.
-	Effort *string `json:"effort,omitempty" nullable:"true"`
+	Effort NullablePatchField[string] `json:"effort,omitempty" nullable:"true"`
 
 	// Enabled Temporarily disable or restore a saved profile without deleting credentials.
-	Enabled  *bool   `json:"enabled,omitempty"`
-	Endpoint *string `json:"endpoint,omitempty" nullable:"true"`
+	Enabled  PatchField[bool]           `json:"enabled,omitempty"`
+	Endpoint NullablePatchField[string] `json:"endpoint,omitempty" nullable:"true"`
 
 	// Extension Opaque identity. Never infer a resource type or route from its contents.
-	Extension *ID     `json:"extension,omitempty"`
-	ImageEdge *int64  `json:"image_edge,omitempty" nullable:"true"`
-	Location  *string `json:"location,omitempty" nullable:"true"`
+	Extension PatchField[ID]             `json:"extension,omitempty"`
+	ImageEdge NullablePatchField[int64]  `json:"image_edge,omitempty" nullable:"true"`
+	Location  NullablePatchField[string] `json:"location,omitempty" nullable:"true"`
 
 	// Model Opaque identity. Never infer a resource type or route from its contents.
-	Model    *ID     `json:"model,omitempty"`
-	Project  *string `json:"project,omitempty" nullable:"true"`
-	Protocol *string `json:"protocol,omitempty"`
+	Model    PatchField[ID]             `json:"model,omitempty"`
+	Project  NullablePatchField[string] `json:"project,omitempty" nullable:"true"`
+	Protocol PatchField[string]         `json:"protocol,omitempty"`
+
+	// Rotation How `account_ids` is used. `failover` uses the first ready account and moves down the list after a limit. `spread` starts each new session (every agent is a session) on the next ready account in turn and keeps it there for the session's life, so its prompt cache stays warm; it moves only when that account is limited or needs sign-in, and stays on the account it moved to. `first` uses only the first and waits out its limit. Ignored without `account_ids`.
+	Rotation PatchField[string] `json:"rotation,omitempty"`
 }
 
 // ProviderRequestRecord defines model for ProviderRequestRecord.
@@ -2647,11 +2741,11 @@ type ProviderSettingsChange struct {
 //
 // Examples: {"default_profile":"personal","profiles":{"personal":{"account_id":null,"api_key":"synthetic-example-key","effort":null,"endpoint":"https://provider.example/v1","extension":"openai","image_edge":null,"location":null,"model":"example-model","project":null,"protocol":"responses"}}}
 type ProviderSettingsPatch struct {
-	DefaultProfile *ID                              `json:"default_profile,omitempty" nullable:"true"`
-	Profiles       map[string]*ProviderProfilePatch `json:"profiles,omitempty"`
+	DefaultProfile NullablePatchField[ID]                       `json:"default_profile,omitempty" nullable:"true"`
+	Profiles       PatchField[map[string]*ProviderProfilePatch] `json:"profiles,omitempty"`
 
 	// Renames Existing profile names mapped to new ones, applied before profiles, which then use the new names. The saved key, default_profile and every session on the old name follow. An unknown old name is 409 unknown_profile; a new name another profile already has is 409 profile_exists.
-	Renames map[string]ID `json:"renames,omitempty"`
+	Renames PatchField[map[string]ID] `json:"renames,omitempty"`
 }
 
 // ProviderSettingsResource defines model for ProviderSettingsResource.
@@ -2984,7 +3078,7 @@ type RequestRecordPage struct {
 
 // ResetBatch Leading reset and complete snapshot. Later events, if any, follow the snapshot cursor. Envelope cursor advances through every delivered event.
 //
-// Examples: {"cursor":0,"events":[{"data":{"reason":"initial"},"type":"reset"}],"generation":"J6kYj6IGcXyP3eMIp-WL3A","snapshot":{"active_output":[],"activity":{"latest_answer":null,"latest_input":null,"lines":[],"observed_at":"2026-10-02T14:00:00Z","output_scalars":0,"output_utf8_bytes":0},"activity_at":"2026-10-02T14:00:00Z","address":null,"automatic_name":"New session","closed":false,"composition":{"availability":{},"dependencies":{},"desired_revision":"composition-1","loaded_revision":null,"needs_reload":true,"quarantine":[]},"configuration_resource":{"etag":"\"session-config-1\"","url":"/sessions/01a0fcea-2b00-7000-8000-000000000001?view=configuration","value":{"effort":null,"id":"01a0fcea-2b00-7000-8000-000000000001","model":"example-model","name":"New session","preferences":{"archived":false,"pin_order":null,"pinned":false},"provider_profile":"personal","revision":"config-1","selection":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"workspace":"/workspace/project"}},"created_at":"2026-10-02T14:00:00Z","creation":{"resolved":{"effort":null,"model":"example-model","provider_profile":"personal","workspace":"/workspace/project"},"submitted":{"effort":null,"kind":"new","model":null,"name":null,"provider_profile":null,"workspace":"/workspace/project"}},"current_progress":[],"cursor":{"generation":"J6kYj6IGcXyP3eMIp-WL3A","sequence":0},"depth":0,"effort":null,"family_revision":"family-1","glances":[],"history":{"high_water":0,"items":[],"newer":null,"older":null},"id":"01a0fcea-2b00-7000-8000-000000000001","input_order":0,"kernel":{"build":null,"instance_id":null,"live_job_count":0,"running_jobs":[],"stage":null,"stale":false,"staleness_reasons":[],"state":"none"},"location":{"host":null,"label":null,"path":"/workspace/project","user":null},"model":"example-model","name":"New session","parent_id":null,"pending_inputs":[],"preferences":{"archived":false,"opens":0,"pin_order":null,"pinned":false},"preview":{"text":"","transcript_count":0,"truncated":false},"provider_profile":"personal","revision":"config-1","root_id":"01a0fcea-2b00-7000-8000-000000000001","selection":{"effective":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"overrides":{"extensions":{},"instructions":{},"mcp":{},"skills":{}}},"shell_commands":[],"status":{"blocking_reason":null,"interrupt_requested":false,"phase":"idle","run_id":null},"usage":{"cache_fade":[],"cache_ttl_seconds":null,"cache_write_tokens":null,"cached_prompt_tokens":null,"completion_tokens":null,"context_window_tokens":null,"elapsed_ms":null,"model":null,"observed_at":null,"prompt_tokens":null,"tokens_per_second":null,"total_tokens":null},"workspace":"/workspace/project","workspace_change":null}}
+// Examples: {"cursor":0,"events":[{"data":{"reason":"initial"},"type":"reset"}],"generation":"J6kYj6IGcXyP3eMIp-WL3A","snapshot":{"active_output":[],"activity":{"latest_answer":null,"latest_input":null,"lines":[],"observed_at":"2026-10-02T14:00:00Z","output_scalars":0,"output_utf8_bytes":0},"activity_at":"2026-10-02T14:00:00Z","address":null,"automatic_name":"New session","closed":false,"composition":{"availability":{},"dependencies":{},"desired_revision":"composition-1","loaded_revision":null,"needs_reload":true,"quarantine":[]},"configuration_resource":{"etag":"\"session-config-1\"","url":"/sessions/01a0fcea-2b00-7000-8000-000000000001/configuration","value":{"effort":null,"id":"01a0fcea-2b00-7000-8000-000000000001","model":"example-model","name":"New session","preferences":{"archived":false,"pin_order":null,"pinned":false},"provider_profile":"personal","revision":"config-1","selection":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"workspace":"/workspace/project"}},"created_at":"2026-10-02T14:00:00Z","creation":{"resolved":{"effort":null,"model":"example-model","provider_profile":"personal","workspace":"/workspace/project"},"submitted":{"effort":null,"kind":"new","model":null,"name":null,"provider_profile":null,"workspace":"/workspace/project"}},"current_progress":[],"cursor":{"generation":"J6kYj6IGcXyP3eMIp-WL3A","sequence":0},"depth":0,"effort":null,"family_revision":"family-1","glances":[],"history":{"high_water":0,"items":[],"newer":null,"older":null},"id":"01a0fcea-2b00-7000-8000-000000000001","input_order":0,"kernel":{"build":null,"instance_id":null,"live_job_count":0,"running_jobs":[],"stage":null,"stale":false,"staleness_reasons":[],"state":"none"},"location":{"host":null,"label":null,"path":"/workspace/project","user":null},"model":"example-model","name":"New session","parent_id":null,"pending_inputs":[],"preferences":{"archived":false,"opens":0,"pin_order":null,"pinned":false},"preview":{"text":"","transcript_count":0,"truncated":false},"provider_profile":"personal","revision":"config-1","root_id":"01a0fcea-2b00-7000-8000-000000000001","selection":{"effective":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"overrides":{"extensions":{},"instructions":{},"mcp":{},"skills":{}}},"shell_commands":[],"status":{"blocking_reason":null,"interrupt_requested":false,"phase":"idle","run_id":null},"usage":{"cache_fade":[],"cache_ttl_seconds":null,"cache_write_tokens":null,"cached_prompt_tokens":null,"completion_tokens":null,"context_window_tokens":null,"elapsed_ms":null,"model":null,"observed_at":null,"prompt_tokens":null,"tokens_per_second":null,"total_tokens":null},"workspace":"/workspace/project","workspace_change":null}}
 type ResetBatch struct {
 	Cursor Counter        `json:"cursor"`
 	Events []SessionEvent `json:"events"`
@@ -2992,7 +3086,7 @@ type ResetBatch struct {
 	// Generation 128 random bits encoded as unpadded base64url; new for each session actor lifetime.
 	Generation Generation `json:"generation"`
 
-	// Snapshot Examples: {"active_output":[],"activity":{"latest_answer":null,"latest_input":null,"lines":[],"observed_at":"2026-10-02T14:00:00Z","output_scalars":0,"output_utf8_bytes":0},"activity_at":"2026-10-02T14:00:00Z","address":null,"automatic_name":"New session","closed":false,"composition":{"availability":{},"dependencies":{},"desired_revision":"composition-1","loaded_revision":null,"needs_reload":true,"quarantine":[]},"configuration_resource":{"etag":"\"session-config-1\"","url":"/sessions/01a0fcea-2b00-7000-8000-000000000001?view=configuration","value":{"effort":null,"id":"01a0fcea-2b00-7000-8000-000000000001","model":"example-model","name":"New session","preferences":{"archived":false,"pin_order":null,"pinned":false},"provider_profile":"personal","revision":"config-1","selection":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"workspace":"/workspace/project"}},"created_at":"2026-10-02T14:00:00Z","creation":{"resolved":{"effort":null,"model":"example-model","provider_profile":"personal","workspace":"/workspace/project"},"submitted":{"effort":null,"kind":"new","model":null,"name":null,"provider_profile":null,"workspace":"/workspace/project"}},"current_progress":[],"cursor":{"generation":"J6kYj6IGcXyP3eMIp-WL3A","sequence":0},"depth":0,"effort":null,"family_revision":"family-1","glances":[],"history":{"high_water":0,"items":[],"newer":null,"older":null},"id":"01a0fcea-2b00-7000-8000-000000000001","input_order":0,"kernel":{"build":null,"instance_id":null,"live_job_count":0,"running_jobs":[],"stage":null,"stale":false,"staleness_reasons":[],"state":"none"},"location":{"host":null,"label":null,"path":"/workspace/project","user":null},"model":"example-model","name":"New session","parent_id":null,"pending_inputs":[],"preferences":{"archived":false,"opens":0,"pin_order":null,"pinned":false},"preview":{"text":"","transcript_count":0,"truncated":false},"provider_profile":"personal","revision":"config-1","root_id":"01a0fcea-2b00-7000-8000-000000000001","selection":{"effective":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"overrides":{"extensions":{},"instructions":{},"mcp":{},"skills":{}}},"shell_commands":[],"status":{"blocking_reason":null,"interrupt_requested":false,"phase":"idle","run_id":null},"usage":{"cache_fade":[],"cache_ttl_seconds":null,"cache_write_tokens":null,"cached_prompt_tokens":null,"completion_tokens":null,"context_window_tokens":null,"elapsed_ms":null,"model":null,"observed_at":null,"prompt_tokens":null,"tokens_per_second":null,"total_tokens":null},"workspace":"/workspace/project","workspace_change":null}
+	// Snapshot Examples: {"active_output":[],"activity":{"latest_answer":null,"latest_input":null,"lines":[],"observed_at":"2026-10-02T14:00:00Z","output_scalars":0,"output_utf8_bytes":0},"activity_at":"2026-10-02T14:00:00Z","address":null,"automatic_name":"New session","closed":false,"composition":{"availability":{},"dependencies":{},"desired_revision":"composition-1","loaded_revision":null,"needs_reload":true,"quarantine":[]},"configuration_resource":{"etag":"\"session-config-1\"","url":"/sessions/01a0fcea-2b00-7000-8000-000000000001/configuration","value":{"effort":null,"id":"01a0fcea-2b00-7000-8000-000000000001","model":"example-model","name":"New session","preferences":{"archived":false,"pin_order":null,"pinned":false},"provider_profile":"personal","revision":"config-1","selection":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"workspace":"/workspace/project"}},"created_at":"2026-10-02T14:00:00Z","creation":{"resolved":{"effort":null,"model":"example-model","provider_profile":"personal","workspace":"/workspace/project"},"submitted":{"effort":null,"kind":"new","model":null,"name":null,"provider_profile":null,"workspace":"/workspace/project"}},"current_progress":[],"cursor":{"generation":"J6kYj6IGcXyP3eMIp-WL3A","sequence":0},"depth":0,"effort":null,"family_revision":"family-1","glances":[],"history":{"high_water":0,"items":[],"newer":null,"older":null},"id":"01a0fcea-2b00-7000-8000-000000000001","input_order":0,"kernel":{"build":null,"instance_id":null,"live_job_count":0,"running_jobs":[],"stage":null,"stale":false,"staleness_reasons":[],"state":"none"},"location":{"host":null,"label":null,"path":"/workspace/project","user":null},"model":"example-model","name":"New session","parent_id":null,"pending_inputs":[],"preferences":{"archived":false,"opens":0,"pin_order":null,"pinned":false},"preview":{"text":"","transcript_count":0,"truncated":false},"provider_profile":"personal","revision":"config-1","root_id":"01a0fcea-2b00-7000-8000-000000000001","selection":{"effective":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"overrides":{"extensions":{},"instructions":{},"mcp":{},"skills":{}}},"shell_commands":[],"status":{"blocking_reason":null,"interrupt_requested":false,"phase":"idle","run_id":null},"usage":{"cache_fade":[],"cache_ttl_seconds":null,"cache_write_tokens":null,"cached_prompt_tokens":null,"completion_tokens":null,"context_window_tokens":null,"elapsed_ms":null,"model":null,"observed_at":null,"prompt_tokens":null,"tokens_per_second":null,"total_tokens":null},"workspace":"/workspace/project","workspace_change":null}
 	Snapshot Session `json:"snapshot"`
 }
 
@@ -3096,10 +3190,10 @@ type SchedulePage struct {
 
 // SchedulePatch Validate complete candidate: once has null repetition; recurring and heartbeat require every_seconds.
 type SchedulePatch struct {
-	DelaySeconds *int64  `json:"delay_seconds,omitempty"`
-	EverySeconds *int64  `json:"every_seconds,omitempty" nullable:"true"`
-	Kind         *string `json:"kind,omitempty"`
-	Prompt       *string `json:"prompt,omitempty"`
+	DelaySeconds PatchField[int64]         `json:"delay_seconds,omitempty"`
+	EverySeconds NullablePatchField[int64] `json:"every_seconds,omitempty" nullable:"true"`
+	Kind         PatchField[string]        `json:"kind,omitempty"`
+	Prompt       PatchField[string]        `json:"prompt,omitempty"`
 }
 
 // ScheduleResource defines model for ScheduleResource.
@@ -3129,13 +3223,13 @@ type SelectionOverrides struct {
 
 // SelectionPatch Null map entry clears that override. Null entire map clears all overrides of that kind.
 type SelectionPatch struct {
-	Extensions   *map[string]*bool `json:"extensions,omitempty" nullable:"true"`
-	Instructions *map[string]*bool `json:"instructions,omitempty" nullable:"true"`
-	MCP          *map[string]*bool `json:"mcp,omitempty" nullable:"true"`
-	Skills       *map[string]*bool `json:"skills,omitempty" nullable:"true"`
+	Extensions   NullablePatchField[map[string]*bool] `json:"extensions,omitempty" nullable:"true"`
+	Instructions NullablePatchField[map[string]*bool] `json:"instructions,omitempty" nullable:"true"`
+	MCP          NullablePatchField[map[string]*bool] `json:"mcp,omitempty" nullable:"true"`
+	Skills       NullablePatchField[map[string]*bool] `json:"skills,omitempty" nullable:"true"`
 }
 
-// Server Examples: {"build":"example-build","capabilities":{"collection_invalidation":1,"durable_inputs":1,"session_replay":1,"storage_report":1,"tool_progress":1},"digest":null,"extensions":[{"name":"work","version":1}],"instance_id":"instance-1","notices":[],"protocol":3,"quota":null,"state":"ready"}
+// Server Examples: {"build":"example-build","capabilities":{"collection_invalidation":1,"durable_inputs":1,"session_replay":1,"storage_report":1,"tool_progress":1},"digest":null,"extensions":[{"name":"work","version":1}],"instance_id":"instance-1","notices":[],"protocol":4,"quota":null,"state":"ready"}
 type Server struct {
 	// APIDigest Digest of the HTTP contract this daemon serves (docs/openapi.yaml without prose or examples), as cli/tools/apigen computes it. A client generated from a different digest may reject responses, so it refuses to attach and names the side to rebuild or restart. Absent from daemons that predate it.
 	APIDigest    *string          `json:"api_digest,omitempty"`
@@ -3173,14 +3267,17 @@ type Server struct {
 // Session defines model for Session.
 type Session struct {
 	// Acp Present only for ACP-owned sessions. Attachment state is read separately from the session capture.
-	Acp                   *ACPState                    `json:"acp,omitempty"`
-	ActiveOutput          []ActiveOutput               `json:"active_output"`
-	Activity              Activity                     `json:"activity"`
-	ActivityAt            *Timestamp                   `json:"activity_at" nullable:"true"`
-	Address               *string                      `json:"address" nullable:"true"`
-	AutomaticName         string                       `json:"automatic_name"`
-	Closed                bool                         `json:"closed"`
-	Composition           Composition                  `json:"composition"`
+	Acp           *ACPState      `json:"acp,omitempty"`
+	ActiveOutput  []ActiveOutput `json:"active_output"`
+	Activity      Activity       `json:"activity"`
+	ActivityAt    *Timestamp     `json:"activity_at" nullable:"true"`
+	Address       *string        `json:"address" nullable:"true"`
+	AutomaticName string         `json:"automatic_name"`
+	Closed        bool           `json:"closed"`
+	Composition   Composition    `json:"composition"`
+
+	// ConfigurationEtag Strong opaque validator for the complete canonical representation.
+	ConfigurationEtag     *ETag                        `json:"configuration_etag,omitempty"`
 	ConfigurationResource SessionConfigurationResource `json:"configuration_resource"`
 	CreatedAt             *Timestamp                   `json:"created_at" nullable:"true"`
 
@@ -3258,12 +3355,9 @@ type SessionChange struct {
 		Warnings      Warnings `json:"warnings"`
 	} `json:"move" nullable:"true"`
 
-	// Session Examples: {"active_output":[],"activity":{"latest_answer":null,"latest_input":null,"lines":[],"observed_at":"2026-10-02T14:00:00Z","output_scalars":0,"output_utf8_bytes":0},"activity_at":"2026-10-02T14:00:00Z","address":null,"automatic_name":"New session","closed":false,"composition":{"availability":{},"dependencies":{},"desired_revision":"composition-1","loaded_revision":null,"needs_reload":true,"quarantine":[]},"configuration_resource":{"etag":"\"session-config-1\"","url":"/sessions/01a0fcea-2b00-7000-8000-000000000001?view=configuration","value":{"effort":null,"id":"01a0fcea-2b00-7000-8000-000000000001","model":"example-model","name":"New session","preferences":{"archived":false,"pin_order":null,"pinned":false},"provider_profile":"personal","revision":"config-1","selection":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"workspace":"/workspace/project"}},"created_at":"2026-10-02T14:00:00Z","creation":{"resolved":{"effort":null,"model":"example-model","provider_profile":"personal","workspace":"/workspace/project"},"submitted":{"effort":null,"kind":"new","model":null,"name":null,"provider_profile":null,"workspace":"/workspace/project"}},"current_progress":[],"cursor":{"generation":"J6kYj6IGcXyP3eMIp-WL3A","sequence":0},"depth":0,"effort":null,"family_revision":"family-1","glances":[],"history":{"high_water":0,"items":[],"newer":null,"older":null},"id":"01a0fcea-2b00-7000-8000-000000000001","input_order":0,"kernel":{"build":null,"instance_id":null,"live_job_count":0,"running_jobs":[],"stage":null,"stale":false,"staleness_reasons":[],"state":"none"},"location":{"host":null,"label":null,"path":"/workspace/project","user":null},"model":"example-model","name":"New session","parent_id":null,"pending_inputs":[],"preferences":{"archived":false,"opens":0,"pin_order":null,"pinned":false},"preview":{"text":"","transcript_count":0,"truncated":false},"provider_profile":"personal","revision":"config-1","root_id":"01a0fcea-2b00-7000-8000-000000000001","selection":{"effective":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"overrides":{"extensions":{},"instructions":{},"mcp":{},"skills":{}}},"shell_commands":[],"status":{"blocking_reason":null,"interrupt_requested":false,"phase":"idle","run_id":null},"usage":{"cache_fade":[],"cache_ttl_seconds":null,"cache_write_tokens":null,"cached_prompt_tokens":null,"completion_tokens":null,"context_window_tokens":null,"elapsed_ms":null,"model":null,"observed_at":null,"prompt_tokens":null,"tokens_per_second":null,"total_tokens":null},"workspace":"/workspace/project","workspace_change":null}
+	// Session Examples: {"active_output":[],"activity":{"latest_answer":null,"latest_input":null,"lines":[],"observed_at":"2026-10-02T14:00:00Z","output_scalars":0,"output_utf8_bytes":0},"activity_at":"2026-10-02T14:00:00Z","address":null,"automatic_name":"New session","closed":false,"composition":{"availability":{},"dependencies":{},"desired_revision":"composition-1","loaded_revision":null,"needs_reload":true,"quarantine":[]},"configuration_resource":{"etag":"\"session-config-1\"","url":"/sessions/01a0fcea-2b00-7000-8000-000000000001/configuration","value":{"effort":null,"id":"01a0fcea-2b00-7000-8000-000000000001","model":"example-model","name":"New session","preferences":{"archived":false,"pin_order":null,"pinned":false},"provider_profile":"personal","revision":"config-1","selection":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"workspace":"/workspace/project"}},"created_at":"2026-10-02T14:00:00Z","creation":{"resolved":{"effort":null,"model":"example-model","provider_profile":"personal","workspace":"/workspace/project"},"submitted":{"effort":null,"kind":"new","model":null,"name":null,"provider_profile":null,"workspace":"/workspace/project"}},"current_progress":[],"cursor":{"generation":"J6kYj6IGcXyP3eMIp-WL3A","sequence":0},"depth":0,"effort":null,"family_revision":"family-1","glances":[],"history":{"high_water":0,"items":[],"newer":null,"older":null},"id":"01a0fcea-2b00-7000-8000-000000000001","input_order":0,"kernel":{"build":null,"instance_id":null,"live_job_count":0,"running_jobs":[],"stage":null,"stale":false,"staleness_reasons":[],"state":"none"},"location":{"host":null,"label":null,"path":"/workspace/project","user":null},"model":"example-model","name":"New session","parent_id":null,"pending_inputs":[],"preferences":{"archived":false,"opens":0,"pin_order":null,"pinned":false},"preview":{"text":"","transcript_count":0,"truncated":false},"provider_profile":"personal","revision":"config-1","root_id":"01a0fcea-2b00-7000-8000-000000000001","selection":{"effective":{"extensions":{},"instructions":{},"mcp":{},"skills":{}},"overrides":{"extensions":{},"instructions":{},"mcp":{},"skills":{}}},"shell_commands":[],"status":{"blocking_reason":null,"interrupt_requested":false,"phase":"idle","run_id":null},"usage":{"cache_fade":[],"cache_ttl_seconds":null,"cache_write_tokens":null,"cached_prompt_tokens":null,"completion_tokens":null,"context_window_tokens":null,"elapsed_ms":null,"model":null,"observed_at":null,"prompt_tokens":null,"tokens_per_second":null,"total_tokens":null},"workspace":"/workspace/project","workspace_change":null}
 	Session Session `json:"session"`
 }
-
-// SessionChangeRequest defines model for SessionChangeRequest.
-type SessionChangeRequest = json.RawMessage
 
 // SessionCommittedEvent defines model for SessionCommittedEvent.
 type SessionCommittedEvent struct {
@@ -3318,6 +3412,12 @@ type SessionConfiguration struct {
 
 	// Workspace Canonical daemon-host location, local or SSH. Clients do not resolve this path locally.
 	Workspace Workspace `json:"workspace"`
+}
+
+// SessionConfigurationChange defines model for SessionConfigurationChange.
+type SessionConfigurationChange struct {
+	Application ConfigurationApplication     `json:"application"`
+	Resource    SessionConfigurationResource `json:"resource"`
 }
 
 // SessionConfigurationResource defines model for SessionConfigurationResource.
@@ -3490,30 +3590,30 @@ type SessionPage struct {
 // Examples: {"catalog_revision":"discovery-1","selection":{"extensions":{"browser":null},"skills":{"candidate-1":false}}}
 type SessionPatch struct {
 	// CatalogRevision Opaque identity. Never infer a resource type or route from its contents.
-	CatalogRevision *ID `json:"catalog_revision,omitempty"`
+	CatalogRevision PatchField[ID] `json:"catalog_revision,omitempty"`
 
 	// ContextWindow Tokens this session compacts against instead of the model's catalogued window. Null uses the model's window.
-	ContextWindow *int64 `json:"context_window,omitempty" nullable:"true"`
+	ContextWindow NullablePatchField[int64] `json:"context_window,omitempty" nullable:"true"`
 
 	// CyberAccess Select Blue for this session; null explicitly clears it.
-	CyberAccess *string `json:"cyber_access,omitempty" nullable:"true"`
+	CyberAccess NullablePatchField[string] `json:"cyber_access,omitempty" nullable:"true"`
 
 	// Effort Saved reasoning choice. inherit follows the profile override or model default; default bypasses the profile override. Other strings select an explicit supported level. Null restores legacy unset behavior. Omission preserves the current choice.
-	Effort *string `json:"effort,omitempty" nullable:"true"`
+	Effort NullablePatchField[string] `json:"effort,omitempty" nullable:"true"`
 
 	// Fast Enable provider fast mode; enabling requires a supported capability and may affect billing.
-	Fast *bool `json:"fast,omitempty"`
+	Fast PatchField[bool] `json:"fast,omitempty"`
 
 	// Model Opaque identity. Never infer a resource type or route from its contents.
-	Model       *ID              `json:"model,omitempty"`
-	Name        *string          `json:"name,omitempty" nullable:"true"`
-	Preferences *PreferencePatch `json:"preferences,omitempty"`
+	Model       PatchField[ID]              `json:"model,omitempty"`
+	Name        NullablePatchField[string]  `json:"name,omitempty" nullable:"true"`
+	Preferences PatchField[PreferencePatch] `json:"preferences,omitempty"`
 
 	// ProviderProfile Opaque identity. Never infer a resource type or route from its contents.
-	ProviderProfile *ID `json:"provider_profile,omitempty"`
+	ProviderProfile PatchField[ID] `json:"provider_profile,omitempty"`
 
 	// Selection Null map entry clears that override. Null entire map clears all overrides of that kind.
-	Selection *SelectionPatch `json:"selection,omitempty"`
+	Selection PatchField[SelectionPatch] `json:"selection,omitempty"`
 }
 
 // SessionPreferences defines model for SessionPreferences.
@@ -3552,7 +3652,7 @@ type SessionRetryEvent struct {
 
 // SessionSSE One parsed SSE event. Decode data as JSON and validate SessionBatch separately; contentSchema is not asserted by ordinary JSON Schema validation. No event, id or retry fields are emitted.
 //
-// Examples: {"data":"{\"generation\":\"J6kYj6IGcXyP3eMIp-WL3A\",\"cursor\":0,\"events\":[{\"type\":\"reset\",\"data\":{\"reason\":\"initial\"}}],\"snapshot\":{\"id\":\"01a0fcea-2b00-7000-8000-000000000001\",\"name\":\"New session\",\"automatic_name\":\"New session\",\"workspace\":\"/workspace/project\",\"location\":{\"host\":null,\"user\":null,\"path\":\"/workspace/project\",\"label\":null},\"parent_id\":null,\"root_id\":\"01a0fcea-2b00-7000-8000-000000000001\",\"address\":null,\"depth\":0,\"closed\":false,\"created_at\":\"2026-10-02T14:00:00Z\",\"activity_at\":\"2026-10-02T14:00:00Z\",\"provider_profile\":\"personal\",\"model\":\"example-model\",\"effort\":null,\"status\":{\"phase\":\"idle\",\"run_id\":null,\"interrupt_requested\":false,\"blocking_reason\":null},\"preview\":{\"text\":\"\",\"transcript_count\":0,\"truncated\":false},\"preferences\":{\"pinned\":false,\"pin_order\":null,\"archived\":false,\"opens\":0},\"current_progress\":[],\"activity\":{\"lines\":[],\"output_scalars\":0,\"output_utf8_bytes\":0,\"observed_at\":\"2026-10-02T14:00:00Z\",\"latest_input\":null,\"latest_answer\":null},\"cursor\":{\"generation\":\"J6kYj6IGcXyP3eMIp-WL3A\",\"sequence\":0},\"creation\":{\"submitted\":{\"kind\":\"new\",\"workspace\":\"/workspace/project\",\"name\":null,\"provider_profile\":null,\"model\":null,\"effort\":null},\"resolved\":{\"workspace\":\"/workspace/project\",\"provider_profile\":\"personal\",\"model\":\"example-model\",\"effort\":null}},\"revision\":\"config-1\",\"family_revision\":\"family-1\",\"configuration_resource\":{\"url\":\"/sessions/01a0fcea-2b00-7000-8000-000000000001?view=configuration\",\"etag\":\"\\\"session-config-1\\\"\",\"value\":{\"id\":\"01a0fcea-2b00-7000-8000-000000000001\",\"name\":\"New session\",\"workspace\":\"/workspace/project\",\"provider_profile\":\"personal\",\"model\":\"example-model\",\"effort\":null,\"preferences\":{\"pinned\":false,\"pin_order\":null,\"archived\":false},\"selection\":{\"extensions\":{},\"skills\":{},\"instructions\":{},\"mcp\":{}},\"revision\":\"config-1\"}},\"workspace_change\":null,\"selection\":{\"overrides\":{\"extensions\":{},\"skills\":{},\"instructions\":{},\"mcp\":{}},\"effective\":{\"extensions\":{},\"skills\":{},\"instructions\":{},\"mcp\":{}}},\"composition\":{\"desired_revision\":\"composition-1\",\"loaded_revision\":null,\"needs_reload\":true,\"dependencies\":{},\"quarantine\":[],\"availability\":{}},\"kernel\":{\"instance_id\":null,\"state\":\"none\",\"stage\":null,\"build\":null,\"stale\":false,\"staleness_reasons\":[],\"live_job_count\":0,\"running_jobs\":[]},\"pending_inputs\":[],\"input_order\":0,\"usage\":{\"model\":null,\"observed_at\":null,\"prompt_tokens\":null,\"cached_prompt_tokens\":null,\"cache_write_tokens\":null,\"completion_tokens\":null,\"total_tokens\":null,\"elapsed_ms\":null,\"tokens_per_second\":null,\"context_window_tokens\":null,\"cache_ttl_seconds\":null,\"cache_fade\":[]},\"history\":{\"items\":[],\"older\":null,\"newer\":null,\"high_water\":0},\"glances\":[]}}"}, {"data":"{\"generation\":\"J6kYj6IGcXyP3eMIp-WL3A\",\"cursor\":1,\"events\":[{\"type\":\"input\",\"sequence\":1,\"data\":{\"input\":{\"id\":\"01a0fcea-2b00-7000-8000-000000000002\",\"session_id\":\"01a0fcea-2b00-7000-8000-000000000001\",\"kind\":\"message\",\"admission\":\"accepted\",\"http_status\":202,\"problem\":null,\"accepted_at\":\"2026-10-02T14:00:00Z\",\"acceptance_order\":1,\"delivery\":\"pending\",\"blocking_reason\":null,\"transcript_position\":null,\"turn\":null,\"client_id\":\"draft-1\"}}}]}"}
+// Examples: {"data":"{\"generation\":\"J6kYj6IGcXyP3eMIp-WL3A\",\"cursor\":0,\"events\":[{\"type\":\"reset\",\"data\":{\"reason\":\"initial\"}}],\"snapshot\":{\"id\":\"01a0fcea-2b00-7000-8000-000000000001\",\"name\":\"New session\",\"automatic_name\":\"New session\",\"workspace\":\"/workspace/project\",\"location\":{\"host\":null,\"user\":null,\"path\":\"/workspace/project\",\"label\":null},\"parent_id\":null,\"root_id\":\"01a0fcea-2b00-7000-8000-000000000001\",\"address\":null,\"depth\":0,\"closed\":false,\"created_at\":\"2026-10-02T14:00:00Z\",\"activity_at\":\"2026-10-02T14:00:00Z\",\"provider_profile\":\"personal\",\"model\":\"example-model\",\"effort\":null,\"status\":{\"phase\":\"idle\",\"run_id\":null,\"interrupt_requested\":false,\"blocking_reason\":null},\"preview\":{\"text\":\"\",\"transcript_count\":0,\"truncated\":false},\"preferences\":{\"pinned\":false,\"pin_order\":null,\"archived\":false,\"opens\":0},\"current_progress\":[],\"activity\":{\"lines\":[],\"output_scalars\":0,\"output_utf8_bytes\":0,\"observed_at\":\"2026-10-02T14:00:00Z\",\"latest_input\":null,\"latest_answer\":null},\"cursor\":{\"generation\":\"J6kYj6IGcXyP3eMIp-WL3A\",\"sequence\":0},\"creation\":{\"submitted\":{\"kind\":\"new\",\"workspace\":\"/workspace/project\",\"name\":null,\"provider_profile\":null,\"model\":null,\"effort\":null},\"resolved\":{\"workspace\":\"/workspace/project\",\"provider_profile\":\"personal\",\"model\":\"example-model\",\"effort\":null}},\"revision\":\"config-1\",\"family_revision\":\"family-1\",\"configuration_resource\":{\"url\":\"/sessions/01a0fcea-2b00-7000-8000-000000000001/configuration\",\"etag\":\"\\\"session-config-1\\\"\",\"value\":{\"id\":\"01a0fcea-2b00-7000-8000-000000000001\",\"name\":\"New session\",\"workspace\":\"/workspace/project\",\"provider_profile\":\"personal\",\"model\":\"example-model\",\"effort\":null,\"preferences\":{\"pinned\":false,\"pin_order\":null,\"archived\":false},\"selection\":{\"extensions\":{},\"skills\":{},\"instructions\":{},\"mcp\":{}},\"revision\":\"config-1\"}},\"workspace_change\":null,\"selection\":{\"overrides\":{\"extensions\":{},\"skills\":{},\"instructions\":{},\"mcp\":{}},\"effective\":{\"extensions\":{},\"skills\":{},\"instructions\":{},\"mcp\":{}}},\"composition\":{\"desired_revision\":\"composition-1\",\"loaded_revision\":null,\"needs_reload\":true,\"dependencies\":{},\"quarantine\":[],\"availability\":{}},\"kernel\":{\"instance_id\":null,\"state\":\"none\",\"stage\":null,\"build\":null,\"stale\":false,\"staleness_reasons\":[],\"live_job_count\":0,\"running_jobs\":[]},\"pending_inputs\":[],\"input_order\":0,\"usage\":{\"model\":null,\"observed_at\":null,\"prompt_tokens\":null,\"cached_prompt_tokens\":null,\"cache_write_tokens\":null,\"completion_tokens\":null,\"total_tokens\":null,\"elapsed_ms\":null,\"tokens_per_second\":null,\"context_window_tokens\":null,\"cache_ttl_seconds\":null,\"cache_fade\":[]},\"history\":{\"items\":[],\"older\":null,\"newer\":null,\"high_water\":0},\"glances\":[]}}"}, {"data":"{\"generation\":\"J6kYj6IGcXyP3eMIp-WL3A\",\"cursor\":1,\"events\":[{\"type\":\"input\",\"sequence\":1,\"data\":{\"input\":{\"id\":\"01a0fcea-2b00-7000-8000-000000000002\",\"session_id\":\"01a0fcea-2b00-7000-8000-000000000001\",\"kind\":\"message\",\"admission\":\"accepted\",\"http_status\":202,\"problem\":null,\"accepted_at\":\"2026-10-02T14:00:00Z\",\"acceptance_order\":1,\"delivery\":\"pending\",\"blocking_reason\":null,\"transcript_position\":null,\"turn\":null,\"client_id\":\"draft-1\"}}}]}"}
 type SessionSSE struct {
 	Data string `json:"data"`
 }
@@ -3615,17 +3715,20 @@ type SessionStatusRead struct {
 // SessionSummary Session live fields and cursor are captured together. ACP attachment metadata is read separately. Extra response fields may be ignored.
 type SessionSummary struct {
 	// Acp Present only for ACP-owned sessions. Attachment state is read separately from the session capture.
-	Acp             *ACPState      `json:"acp,omitempty"`
-	Activity        Activity       `json:"activity"`
-	ActivityAt      *Timestamp     `json:"activity_at" nullable:"true"`
-	Address         *string        `json:"address" nullable:"true"`
-	AutomaticName   string         `json:"automatic_name"`
-	Closed          bool           `json:"closed"`
-	CreatedAt       *Timestamp     `json:"created_at" nullable:"true"`
-	CurrentProgress []ToolProgress `json:"current_progress"`
-	Cursor          *Cursor        `json:"cursor" nullable:"true"`
-	CyberAccess     *string        `json:"cyber_access,omitempty" nullable:"true"`
-	Depth           int64          `json:"depth"`
+	Acp           *ACPState  `json:"acp,omitempty"`
+	Activity      Activity   `json:"activity"`
+	ActivityAt    *Timestamp `json:"activity_at" nullable:"true"`
+	Address       *string    `json:"address" nullable:"true"`
+	AutomaticName string     `json:"automatic_name"`
+	Closed        bool       `json:"closed"`
+
+	// ConfigurationEtag Strong opaque validator for the complete canonical representation.
+	ConfigurationEtag *ETag          `json:"configuration_etag,omitempty"`
+	CreatedAt         *Timestamp     `json:"created_at" nullable:"true"`
+	CurrentProgress   []ToolProgress `json:"current_progress"`
+	Cursor            *Cursor        `json:"cursor" nullable:"true"`
+	CyberAccess       *string        `json:"cyber_access,omitempty" nullable:"true"`
+	Depth             int64          `json:"depth"`
 
 	// Effort Saved reasoning choice. inherit follows the profile override or model default; default bypasses the profile override. Other strings select an explicit supported level. Null retains legacy unset behavior.
 	Effort *string `json:"effort" nullable:"true"`
@@ -4333,15 +4436,15 @@ type UISettingsChange struct {
 
 // UISettingsPatch defines model for UISettingsPatch.
 type UISettingsPatch struct {
-	DismissedNotices []ID `json:"dismissed_notices,omitempty"`
+	DismissedNotices PatchField[[]ID] `json:"dismissed_notices,omitempty"`
 
 	// ProxyAllow Networks `albedo proxy` serves to besides this machine, as CIDR or an address whose trailing zero octets stand for any (10.0.0.0 is 10.0.0.0/8).
-	ProxyAllow []string `json:"proxy_allow,omitempty"`
-	Thinking   *bool    `json:"thinking,omitempty"`
-	Tools      *bool    `json:"tools,omitempty"`
+	ProxyAllow PatchField[[]string] `json:"proxy_allow,omitempty"`
+	Thinking   PatchField[bool]     `json:"thinking,omitempty"`
+	Tools      PatchField[bool]     `json:"tools,omitempty"`
 
 	// WebAllow Networks `albedo web` serves to besides this machine, as CIDR or an address whose trailing zero octets stand for any (10.0.0.0 is 10.0.0.0/8).
-	WebAllow []string `json:"web_allow,omitempty"`
+	WebAllow PatchField[[]string] `json:"web_allow,omitempty"`
 }
 
 // UISettingsResource defines model for UISettingsResource.
@@ -4554,14 +4657,14 @@ type WorkPage struct {
 
 // WorkPatch defines model for WorkPatch.
 type WorkPatch struct {
-	Notes *string `json:"notes,omitempty"`
+	Notes PatchField[string] `json:"notes,omitempty"`
 
 	// NotifySessionID Opaque identity. Never infer a resource type or route from its contents.
-	NotifySessionID *ID     `json:"notify_session_id,omitempty"`
-	RunID           *ID     `json:"run_id,omitempty" nullable:"true"`
-	SessionID       *ID     `json:"session_id,omitempty" nullable:"true"`
-	Status          *string `json:"status,omitempty"`
-	Title           *string `json:"title,omitempty"`
+	NotifySessionID PatchField[ID]         `json:"notify_session_id,omitempty"`
+	RunID           NullablePatchField[ID] `json:"run_id,omitempty" nullable:"true"`
+	SessionID       NullablePatchField[ID] `json:"session_id,omitempty" nullable:"true"`
+	Status          PatchField[string]     `json:"status,omitempty"`
+	Title           PatchField[string]     `json:"title,omitempty"`
 }
 
 // WorkResource defines model for WorkResource.
@@ -5004,7 +5107,6 @@ type ListSessionsParams struct {
 
 // DeleteSessionParams defines parameters for DeleteSession.
 type DeleteSessionParams struct {
-	View           string  `form:"view" json:"view"`
 	Scope          *string `form:"scope,omitempty" json:"scope,omitempty"`
 	FamilyRevision *ID     `form:"family_revision,omitempty" json:"family_revision,omitempty"`
 
@@ -5014,21 +5116,7 @@ type DeleteSessionParams struct {
 
 // GetSessionParams defines parameters for GetSession.
 type GetSessionParams struct {
-	View            *string     `form:"view,omitempty" json:"view,omitempty"`
-	Tail            *int64      `form:"tail,omitempty" json:"tail,omitempty"`
-	AfterGeneration *Generation `form:"after_generation,omitempty" json:"after_generation,omitempty"`
-	AfterSeq        *Counter    `form:"after_seq,omitempty" json:"after_seq,omitempty"`
-}
-
-// PatchSessionParams defines parameters for PatchSession.
-type PatchSessionParams struct {
-	View string `form:"view" json:"view"`
-
-	// IfMatch Observed canonical representation validator. Wildcards and weak validators are not accepted.
-	IfMatch IfMatch `json:"If-Match"`
-
-	// AlbedoAttachmentToken Required for kind acp creation and for input or scoped cancellation in an ACP session. Also authorizes model-only configuration patches by an ACP attachment holder. Ordinary creation ignores this header. Input, scoped cancellation, and configuration patches parse and reject malformed supplied values. Not part of the durable intent.
-	AlbedoAttachmentToken *AttachmentTokenOptional `json:"Albedo-Attachment-Token,omitempty"`
+	Tail *int64 `form:"tail,omitempty" json:"tail,omitempty"`
 }
 
 // CreateSessionParams defines parameters for CreateSession.
@@ -5036,7 +5124,7 @@ type CreateSessionParams struct {
 	// IfNoneMatch Conditional creation only.
 	IfNoneMatch IfNoneMatch `json:"If-None-Match"`
 
-	// AlbedoAttachmentToken Required for kind acp creation and for input or scoped cancellation in an ACP session. Also authorizes model-only configuration patches by an ACP attachment holder. Ordinary creation ignores this header. Input, scoped cancellation, and configuration patches parse and reject malformed supplied values. Not part of the durable intent.
+	// AlbedoAttachmentToken Required for kind acp creation and for input or scoped cancellation in an ACP session. Also authorizes compaction and scoped execution configuration patches by an ACP attachment holder. Ordinary creation ignores this header. Input, scoped cancellation, compaction for ACP sessions, and configuration patches parse and reject malformed supplied values. Not part of the durable intent.
 	AlbedoAttachmentToken *AttachmentTokenOptional `json:"Albedo-Attachment-Token,omitempty"`
 }
 
@@ -5079,18 +5167,37 @@ type GetSessionChangesParams struct {
 	IfNoneMatch *string `json:"If-None-Match,omitempty"`
 }
 
-// GetContextParams defines parameters for GetContext.
-type GetContextParams struct {
-	View       *string  `form:"view,omitempty" json:"view,omitempty"`
-	SnapshotID *ID      `form:"snapshot_id,omitempty" json:"snapshot_id,omitempty"`
-	SectionID  *ID      `form:"section_id,omitempty" json:"section_id,omitempty"`
-	Page       *Counter `form:"page,omitempty" json:"page,omitempty"`
-	After      *Counter `form:"after,omitempty" json:"after,omitempty"`
+// GetCompactionParams defines parameters for GetCompaction.
+type GetCompactionParams struct {
+	// AlbedoAttachmentToken Required for kind acp creation and for input or scoped cancellation in an ACP session. Also authorizes compaction and scoped execution configuration patches by an ACP attachment holder. Ordinary creation ignores this header. Input, scoped cancellation, compaction for ACP sessions, and configuration patches parse and reject malformed supplied values. Not part of the durable intent.
+	AlbedoAttachmentToken *AttachmentTokenOptional `json:"Albedo-Attachment-Token,omitempty"`
+}
 
-	// SinceMs Requests only. Include attempts finished at or after this Unix timestamp in milliseconds.
-	SinceMs *Counter `form:"since_ms,omitempty" json:"since_ms,omitempty"`
-	Limit   *Limit   `form:"limit,omitempty" json:"limit,omitempty"`
-	Next    *Next    `form:"next,omitempty" json:"next,omitempty"`
+// PutCompactionParams defines parameters for PutCompaction.
+type PutCompactionParams struct {
+	// AlbedoAttachmentToken Required for kind acp creation and for input or scoped cancellation in an ACP session. Also authorizes compaction and scoped execution configuration patches by an ACP attachment holder. Ordinary creation ignores this header. Input, scoped cancellation, compaction for ACP sessions, and configuration patches parse and reject malformed supplied values. Not part of the durable intent.
+	AlbedoAttachmentToken *AttachmentTokenOptional `json:"Albedo-Attachment-Token,omitempty"`
+}
+
+// PatchSessionParams defines parameters for PatchSession.
+type PatchSessionParams struct {
+	// IfMatch Observed canonical representation validator. Wildcards and weak validators are not accepted.
+	IfMatch IfMatch `json:"If-Match"`
+
+	// AlbedoAttachmentToken Required for kind acp creation and for input or scoped cancellation in an ACP session. Also authorizes compaction and scoped execution configuration patches by an ACP attachment holder. Ordinary creation ignores this header. Input, scoped cancellation, compaction for ACP sessions, and configuration patches parse and reject malformed supplied values. Not part of the durable intent.
+	AlbedoAttachmentToken *AttachmentTokenOptional `json:"Albedo-Attachment-Token,omitempty"`
+}
+
+// GetContextSectionParams defines parameters for GetContextSection.
+type GetContextSectionParams struct {
+	Page Counter `form:"page" json:"page"`
+}
+
+// WatchSessionParams defines parameters for WatchSession.
+type WatchSessionParams struct {
+	Tail            *int64      `form:"tail,omitempty" json:"tail,omitempty"`
+	AfterGeneration *Generation `form:"after_generation,omitempty" json:"after_generation,omitempty"`
+	AfterSeq        *Counter    `form:"after_seq,omitempty" json:"after_seq,omitempty"`
 }
 
 // PatchFastModeApplicationMergePatchPlusJSONBody defines parameters for PatchFastMode.
@@ -5131,15 +5238,21 @@ type GetHistoryContentParams struct {
 	Next *Next `form:"next,omitempty" json:"next,omitempty"`
 }
 
+// GetHistoryImageParams defines parameters for GetHistoryImage.
+type GetHistoryImageParams struct {
+	// Edge Optional longer-edge pixel bound for thumbnail previews. Images already within this bound are returned unchanged.
+	Edge *int64 `form:"edge,omitempty" json:"edge,omitempty"`
+}
+
 // PutInputParams defines parameters for PutInput.
 type PutInputParams struct {
-	// AlbedoAttachmentToken Required for kind acp creation and for input or scoped cancellation in an ACP session. Also authorizes model-only configuration patches by an ACP attachment holder. Ordinary creation ignores this header. Input, scoped cancellation, and configuration patches parse and reject malformed supplied values. Not part of the durable intent.
+	// AlbedoAttachmentToken Required for kind acp creation and for input or scoped cancellation in an ACP session. Also authorizes compaction and scoped execution configuration patches by an ACP attachment holder. Ordinary creation ignores this header. Input, scoped cancellation, compaction for ACP sessions, and configuration patches parse and reject malformed supplied values. Not part of the durable intent.
 	AlbedoAttachmentToken *AttachmentTokenOptional `json:"Albedo-Attachment-Token,omitempty"`
 }
 
 // CancelInputParams defines parameters for CancelInput.
 type CancelInputParams struct {
-	// AlbedoAttachmentToken Required for kind acp creation and for input or scoped cancellation in an ACP session. Also authorizes model-only configuration patches by an ACP attachment holder. Ordinary creation ignores this header. Input, scoped cancellation, and configuration patches parse and reject malformed supplied values. Not part of the durable intent.
+	// AlbedoAttachmentToken Required for kind acp creation and for input or scoped cancellation in an ACP session. Also authorizes compaction and scoped execution configuration patches by an ACP attachment holder. Ordinary creation ignores this header. Input, scoped cancellation, compaction for ACP sessions, and configuration patches parse and reject malformed supplied values. Not part of the durable intent.
 	AlbedoAttachmentToken *AttachmentTokenOptional `json:"Albedo-Attachment-Token,omitempty"`
 }
 
@@ -5153,6 +5266,16 @@ type MoveSessionToDaemonJSONBody struct {
 	TransferID string `json:"transfer_id"`
 }
 
+// GetSessionRequestsParams defines parameters for GetSessionRequests.
+type GetSessionRequestsParams struct {
+	After *Counter `form:"after,omitempty" json:"after,omitempty"`
+
+	// SinceMs Requests only. Include attempts finished at or after this Unix timestamp in milliseconds.
+	SinceMs *Counter `form:"since_ms,omitempty" json:"since_ms,omitempty"`
+	Limit   *Limit   `form:"limit,omitempty" json:"limit,omitempty"`
+	Next    *Next    `form:"next,omitempty" json:"next,omitempty"`
+}
+
 // GetShellCommandOutputParams defines parameters for GetShellCommandOutput.
 type GetShellCommandOutputParams struct {
 	Offset *int64 `form:"offset,omitempty" json:"offset,omitempty"`
@@ -5162,15 +5285,53 @@ type GetShellCommandOutputParams struct {
 // GenerateSessionTitleJSONBody defines parameters for GenerateSessionTitle.
 type GenerateSessionTitleJSONBody = map[string]interface{}
 
-// GetSettingsParams defines parameters for GetSettings.
-type GetSettingsParams struct {
-	Group *string `form:"group,omitempty" json:"group,omitempty"`
+// MoveSessionWorkspaceParams defines parameters for MoveSessionWorkspace.
+type MoveSessionWorkspaceParams struct {
+	// IfMatch Observed canonical representation validator. Wildcards and weak validators are not accepted.
+	IfMatch IfMatch `json:"If-Match"`
+
+	// AlbedoAttachmentToken Required for kind acp creation and for input or scoped cancellation in an ACP session. Also authorizes compaction and scoped execution configuration patches by an ACP attachment holder. Ordinary creation ignores this header. Input, scoped cancellation, compaction for ACP sessions, and configuration patches parse and reject malformed supplied values. Not part of the durable intent.
+	AlbedoAttachmentToken *AttachmentTokenOptional `json:"Albedo-Attachment-Token,omitempty"`
 }
 
-// PatchSettingsParams defines parameters for PatchSettings.
-type PatchSettingsParams struct {
-	Group string `form:"group" json:"group"`
+// PatchCapabilitySettingsParams defines parameters for PatchCapabilitySettings.
+type PatchCapabilitySettingsParams struct {
+	// IfMatch Observed canonical representation validator. Wildcards and weak validators are not accepted.
+	IfMatch IfMatch `json:"If-Match"`
+}
 
+// PatchDeclaredSettingsParams defines parameters for PatchDeclaredSettings.
+type PatchDeclaredSettingsParams struct {
+	// IfMatch Observed canonical representation validator. Wildcards and weak validators are not accepted.
+	IfMatch IfMatch `json:"If-Match"`
+}
+
+// PatchExtensionSettingsParams defines parameters for PatchExtensionSettings.
+type PatchExtensionSettingsParams struct {
+	// IfMatch Observed canonical representation validator. Wildcards and weak validators are not accepted.
+	IfMatch IfMatch `json:"If-Match"`
+}
+
+// PatchMCPSettingsParams defines parameters for PatchMCPSettings.
+type PatchMCPSettingsParams struct {
+	// IfMatch Observed canonical representation validator. Wildcards and weak validators are not accepted.
+	IfMatch IfMatch `json:"If-Match"`
+}
+
+// PatchModelSettingsParams defines parameters for PatchModelSettings.
+type PatchModelSettingsParams struct {
+	// IfMatch Observed canonical representation validator. Wildcards and weak validators are not accepted.
+	IfMatch IfMatch `json:"If-Match"`
+}
+
+// PatchProviderSettingsParams defines parameters for PatchProviderSettings.
+type PatchProviderSettingsParams struct {
+	// IfMatch Observed canonical representation validator. Wildcards and weak validators are not accepted.
+	IfMatch IfMatch `json:"If-Match"`
+}
+
+// PatchUISettingsParams defines parameters for PatchUISettings.
+type PatchUISettingsParams struct {
 	// IfMatch Observed canonical representation validator. Wildcards and weak validators are not accepted.
 	IfMatch IfMatch `json:"If-Match"`
 }
@@ -5369,9 +5530,6 @@ type CollectForwardedMailJSONRequestBody CollectForwardedMailJSONBody
 // ShutdownServerJSONRequestBody defines body for ShutdownServer for application/json ContentType.
 type ShutdownServerJSONRequestBody = ShutdownRequest
 
-// PatchSessionApplicationMergePatchPlusJSONRequestBody defines body for PatchSession for application/merge-patch+json ContentType.
-type PatchSessionApplicationMergePatchPlusJSONRequestBody = SessionChangeRequest
-
 // CreateSessionJSONRequestBody defines body for CreateSession for application/json ContentType.
 type CreateSessionJSONRequestBody = SessionCreationRequest
 
@@ -5381,8 +5539,11 @@ type AttachACPSessionJSONRequestBody = ACPAttachRequest
 // RenewACPSessionJSONRequestBody defines body for RenewACPSession for application/json ContentType.
 type RenewACPSessionJSONRequestBody = EmptyRequest
 
-// CompactSessionJSONRequestBody defines body for CompactSession for application/json ContentType.
-type CompactSessionJSONRequestBody = CompactionRequest
+// PutCompactionJSONRequestBody defines body for PutCompaction for application/json ContentType.
+type PutCompactionJSONRequestBody = CompactionRequest
+
+// PatchSessionApplicationMergePatchPlusJSONRequestBody defines body for PatchSession for application/merge-patch+json ContentType.
+type PatchSessionApplicationMergePatchPlusJSONRequestBody = SessionPatch
 
 // PatchFastModeApplicationMergePatchPlusJSONRequestBody defines body for PatchFastMode for application/merge-patch+json ContentType.
 type PatchFastModeApplicationMergePatchPlusJSONRequestBody PatchFastModeApplicationMergePatchPlusJSONBody
@@ -5435,8 +5596,29 @@ type GenerateSessionTitleJSONRequestBody = GenerateSessionTitleJSONBody
 // RecordVisitJSONRequestBody defines body for RecordVisit for application/json ContentType.
 type RecordVisitJSONRequestBody = EmptyRequest
 
-// PatchSettingsApplicationMergePatchPlusJSONRequestBody defines body for PatchSettings for application/merge-patch+json ContentType.
-type PatchSettingsApplicationMergePatchPlusJSONRequestBody = SettingsPatch
+// MoveSessionWorkspaceJSONRequestBody defines body for MoveSessionWorkspace for application/json ContentType.
+type MoveSessionWorkspaceJSONRequestBody = WorkspaceMoveRequest
+
+// PatchCapabilitySettingsApplicationMergePatchPlusJSONRequestBody defines body for PatchCapabilitySettings for application/merge-patch+json ContentType.
+type PatchCapabilitySettingsApplicationMergePatchPlusJSONRequestBody = CapabilitySettingsPatch
+
+// PatchDeclaredSettingsApplicationMergePatchPlusJSONRequestBody defines body for PatchDeclaredSettings for application/merge-patch+json ContentType.
+type PatchDeclaredSettingsApplicationMergePatchPlusJSONRequestBody = DeclaredSettingsPatch
+
+// PatchExtensionSettingsApplicationMergePatchPlusJSONRequestBody defines body for PatchExtensionSettings for application/merge-patch+json ContentType.
+type PatchExtensionSettingsApplicationMergePatchPlusJSONRequestBody = ExtensionSettingsPatch
+
+// PatchMCPSettingsApplicationMergePatchPlusJSONRequestBody defines body for PatchMCPSettings for application/merge-patch+json ContentType.
+type PatchMCPSettingsApplicationMergePatchPlusJSONRequestBody = MCPSettingsPatch
+
+// PatchModelSettingsApplicationMergePatchPlusJSONRequestBody defines body for PatchModelSettings for application/merge-patch+json ContentType.
+type PatchModelSettingsApplicationMergePatchPlusJSONRequestBody = ModelSettingsPatch
+
+// PatchProviderSettingsApplicationMergePatchPlusJSONRequestBody defines body for PatchProviderSettings for application/merge-patch+json ContentType.
+type PatchProviderSettingsApplicationMergePatchPlusJSONRequestBody = ProviderSettingsPatch
+
+// PatchUISettingsApplicationMergePatchPlusJSONRequestBody defines body for PatchUISettings for application/merge-patch+json ContentType.
+type PatchUISettingsApplicationMergePatchPlusJSONRequestBody = UISettingsPatch
 
 // CheckTransferShapeJSONRequestBody defines body for CheckTransferShape for application/json ContentType.
 type CheckTransferShapeJSONRequestBody = TransferShape
@@ -5542,7 +5724,7 @@ type ClientInterface interface {
 
 	// DeleteAccount Remove an unreferenced provider account
 	//
-	// Reject if a profile pins it by `account_id`, if it is the last account of a profile's `account_ids`, or if it comes from the environment (`account_external`). Otherwise it also leaves every `account_ids` list naming it. Does not interrupt captured credentials in an active request. Account IDs are never reused. Requires capability `provider_auth: 1`.
+	// Signs the account out. Reject only an account that comes from the environment (`account_external`). A profile pinned to it by `account_id` goes back to automatic selection, and it leaves every `account_ids` list naming it; a list it empties becomes null. Does not interrupt captured credentials in an active request. Account IDs are never reused. Requires capability `provider_auth: 1`.
 	//
 	// Corresponds with DELETE /auth/accounts/{account_id} (the `DeleteAccount` operationId).
 	DeleteAccount(ctx context.Context, accountID ID, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -5855,7 +6037,7 @@ type ClientInterface interface {
 
 	// GetLinkGroup Read linked membership and presence
 	//
-	// Only configuration view has the canonical membership ETag. Presence does not change that validator.
+	// Only configuration view has the canonical membership ETag. Presence does not change that validator. A managed worktree uses its recorded origin's membership and validator. Unresolved legacy membership conflicts return 409 link_migration_conflict.
 	//
 	// Corresponds with GET /extensions/links/groups (the `GetLinkGroup` operationId).
 	GetLinkGroup(ctx context.Context, params *GetLinkGroupParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -6443,30 +6625,10 @@ type ClientInterface interface {
 	// Corresponds with DELETE /sessions/{session_id} (the `DeleteSession` operationId).
 	DeleteSession(ctx context.Context, sessionID ID, params *DeleteSessionParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// GetSession Read or watch one session
-	//
-	// JSON defaults to complete Session. Configuration and status JSON exclude tail and replay parameters. SSE accepts tail and after_generation/after_seq, without view. Initial subscription omits both cursors; reconnect keeps the fully consumed pair. A missing generation requests reset. after_generation without after_seq is invalid. Neither auth failure nor closure starts a daemon.
+	// GetSession Read a session snapshot
 	//
 	// Corresponds with GET /sessions/{session_id} (the `GetSession` operationId).
 	GetSession(ctx context.Context, sessionID ID, params *GetSessionParams, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	// PatchSessionWithBody Edit configuration or move workspace
-	//
-	// Use the observed configuration URL and validator. Workspace is a standalone change carrying the observed session family revision. Busy target fails before commit; busy descendants follow a committed parent move at idle. Other configuration fields commit together. No automatic lost-response retry. An ACP attachment holder may select a model with a patch containing only model and an optional provider_profile; other execution changes remain unavailable to ACP sessions.
-	//
-	// Takes any type of body and a specified content type.
-	//
-	// Corresponds with PATCH /sessions/{session_id} (the `PatchSession` operationId).
-	PatchSessionWithBody(ctx context.Context, sessionID ID, params *PatchSessionParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	// PatchSessionWithApplicationMergePatchPlusJSONBody Edit configuration or move workspace
-	//
-	// Use the observed configuration URL and validator. Workspace is a standalone change carrying the observed session family revision. Busy target fails before commit; busy descendants follow a committed parent move at idle. Other configuration fields commit together. No automatic lost-response retry. An ACP attachment holder may select a model with a patch containing only model and an optional provider_profile; other execution changes remain unavailable to ACP sessions.
-	//
-	// Takes a body of the `application/merge-patch+json` content type.
-	//
-	// Corresponds with PATCH /sessions/{session_id} (the `PatchSession` operationId).
-	PatchSessionWithApplicationMergePatchPlusJSONBody(ctx context.Context, sessionID ID, params *PatchSessionParams, body PatchSessionApplicationMergePatchPlusJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// CreateSessionWithBody Create a new, forked or child session
 	//
@@ -6495,7 +6657,7 @@ type ClientInterface interface {
 
 	// AttachACPSessionWithBody Attach this ACP connection as the session's single writer
 	//
-	// Attach or re-attach with the same token. 409 not_acp_session for a session created without kind acp; 409 workspace_mismatch unless workspace equals the session's canonical workspace exactly; 409 attachment_held while another token holds a live lease (never stolen); 409 session_busy when the session has an active turn and the overlay differs from the installed one (nothing changes); 409 mcp_overlay_conflict for duplicate names or names already configured globally; 409 mcp_overlay_failed when an idle replacement could not be prepared (the previous overlay and attachment stay as they were). 503 overlay_installed_reload_failed means publication succeeded but runtime reload failed; the replacement remains installed. 503 overlay_update_uncertain means publication or reload was not confirmed within 15 seconds and may still complete. An identical reattach retries a failed reload. With editor-mcp enabled, publication awaiting reload blocks turns with 409 overlay_installed_reload_failed. A missing required overlay after restart blocks turns with 409 overlay_reattach_required; the editor must resume and resupply its servers. An empty overlay permits daemon-driven turns after daemon restart, but old editor tokens are invalid. Failed setup releases a newly acquired lease and retains a preexisting same-token lease. An empty list removes only the editor overlay.
+	// Attach or re-attach with the same token. 409 not_acp_session for a session created without kind acp; 409 workspace_mismatch unless workspace equals the session's canonical workspace exactly; 409 attachment_held while another token holds a live lease (never stolen); 409 session_busy when the session has an active turn and the overlay differs from the installed one (nothing changes); 409 mcp_overlay_conflict for duplicate editor names. Globally configured names take precedence; 409 mcp_overlay_failed when an idle replacement could not be prepared (the previous overlay and attachment stay as they were). 503 overlay_installed_reload_failed means publication succeeded but runtime reload failed; the replacement remains installed. 503 overlay_update_uncertain means publication or reload was not confirmed within 15 seconds and may still complete. An identical reattach retries a failed reload. With editor-mcp enabled, publication awaiting reload blocks turns with 409 overlay_installed_reload_failed. A missing required overlay after restart blocks turns with 409 overlay_reattach_required; the editor must resume and resupply its servers. An empty overlay permits daemon-driven turns after daemon restart, but old editor tokens are invalid. Failed setup releases a newly acquired lease and retains a preexisting same-token lease. An empty list removes only the editor overlay.
 	//
 	// Takes any type of body and a specified content type.
 	//
@@ -6504,7 +6666,7 @@ type ClientInterface interface {
 
 	// AttachACPSession Attach this ACP connection as the session's single writer
 	//
-	// Attach or re-attach with the same token. 409 not_acp_session for a session created without kind acp; 409 workspace_mismatch unless workspace equals the session's canonical workspace exactly; 409 attachment_held while another token holds a live lease (never stolen); 409 session_busy when the session has an active turn and the overlay differs from the installed one (nothing changes); 409 mcp_overlay_conflict for duplicate names or names already configured globally; 409 mcp_overlay_failed when an idle replacement could not be prepared (the previous overlay and attachment stay as they were). 503 overlay_installed_reload_failed means publication succeeded but runtime reload failed; the replacement remains installed. 503 overlay_update_uncertain means publication or reload was not confirmed within 15 seconds and may still complete. An identical reattach retries a failed reload. With editor-mcp enabled, publication awaiting reload blocks turns with 409 overlay_installed_reload_failed. A missing required overlay after restart blocks turns with 409 overlay_reattach_required; the editor must resume and resupply its servers. An empty overlay permits daemon-driven turns after daemon restart, but old editor tokens are invalid. Failed setup releases a newly acquired lease and retains a preexisting same-token lease. An empty list removes only the editor overlay.
+	// Attach or re-attach with the same token. 409 not_acp_session for a session created without kind acp; 409 workspace_mismatch unless workspace equals the session's canonical workspace exactly; 409 attachment_held while another token holds a live lease (never stolen); 409 session_busy when the session has an active turn and the overlay differs from the installed one (nothing changes); 409 mcp_overlay_conflict for duplicate editor names. Globally configured names take precedence; 409 mcp_overlay_failed when an idle replacement could not be prepared (the previous overlay and attachment stay as they were). 503 overlay_installed_reload_failed means publication succeeded but runtime reload failed; the replacement remains installed. 503 overlay_update_uncertain means publication or reload was not confirmed within 15 seconds and may still complete. An identical reattach retries a failed reload. With editor-mcp enabled, publication awaiting reload blocks turns with 409 overlay_installed_reload_failed. A missing required overlay after restart blocks turns with 409 overlay_reattach_required; the editor must resume and resupply its servers. An empty overlay permits daemon-driven turns after daemon restart, but old editor tokens are invalid. Failed setup releases a newly acquired lease and retains a preexisting same-token lease. An empty list removes only the editor overlay.
 	//
 	// Takes a body of the `application/json` content type.
 	//
@@ -6529,6 +6691,13 @@ type ClientInterface interface {
 	// Corresponds with POST /sessions/{session_id}/acp-attachment/renew (the `RenewACPSession` operationId).
 	RenewACPSession(ctx context.Context, sessionID ID, params *RenewACPSessionParams, body RenewACPSessionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// GetACPPlan Read an ACP session's retained checklist
+	//
+	// Returns the full retained checklist in creation order. Open items map to pending plan entries and checked items map to completed entries. The session must have been created over ACP.
+	//
+	// Corresponds with GET /sessions/{session_id}/acp-plan (the `GetACPPlan` operationId).
+	GetACPPlan(ctx context.Context, sessionID ID, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// GetActiveOutputContent Read unfinished output at a captured snapshot cutoff
 	//
 	// Pages contain at most 262144 UTF-8 bytes and remain within the captured cutoff. Preserve the required snapshot query when following next.
@@ -6550,30 +6719,48 @@ type ClientInterface interface {
 	// Corresponds with GET /sessions/{session_id}/changes (the `GetSessionChanges` operationId).
 	GetSessionChanges(ctx context.Context, sessionID ID, params *GetSessionChangesParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// CompactSessionWithBody Compact model context while retaining history
+	// GetCompaction Read a compaction receipt
 	//
-	// Idle required. Selecting a strategy can succeed even if compaction later fails; report both. Full durable history stays intact. No automatic retry.
+	// Corresponds with GET /sessions/{session_id}/compactions/{action_id} (the `GetCompaction` operationId).
+	GetCompaction(ctx context.Context, sessionID ID, actionID ID, params *GetCompactionParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PutCompactionWithBody Admit identified compaction
 	//
 	// Takes any type of body and a specified content type.
 	//
-	// Corresponds with POST /sessions/{session_id}/compaction (the `CompactSession` operationId).
-	CompactSessionWithBody(ctx context.Context, sessionID ID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// Corresponds with PUT /sessions/{session_id}/compactions/{action_id} (the `PutCompaction` operationId).
+	PutCompactionWithBody(ctx context.Context, sessionID ID, actionID ID, params *PutCompactionParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// CompactSession Compact model context while retaining history
-	//
-	// Idle required. Selecting a strategy can succeed even if compaction later fails; report both. Full durable history stays intact. No automatic retry.
+	// PutCompaction Admit identified compaction
 	//
 	// Takes a body of the `application/json` content type.
 	//
-	// Corresponds with POST /sessions/{session_id}/compaction (the `CompactSession` operationId).
-	CompactSession(ctx context.Context, sessionID ID, body CompactSessionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// Corresponds with PUT /sessions/{session_id}/compactions/{action_id} (the `PutCompaction` operationId).
+	PutCompaction(ctx context.Context, sessionID ID, actionID ID, params *PutCompactionParams, body PutCompactionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// GetContext Inspect prepared context or request records
+	// GetSessionConfiguration Read session configuration
 	//
-	// Summary never prepares a request. Section requires snapshot_id, section_id, page and forbids request-pagination fields. Requests accepts after/since_ms/limit/next. Stale snapshot is 410 context_changed, never another section. Requires capability `context: 1`.
+	// Corresponds with GET /sessions/{session_id}/configuration (the `GetSessionConfiguration` operationId).
+	GetSessionConfiguration(ctx context.Context, sessionID ID, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PatchSessionWithBody Edit session configuration
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with PATCH /sessions/{session_id}/configuration (the `PatchSession` operationId).
+	PatchSessionWithBody(ctx context.Context, sessionID ID, params *PatchSessionParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PatchSessionWithApplicationMergePatchPlusJSONBody Edit session configuration
+	//
+	// Takes a body of the `application/merge-patch+json` content type.
+	//
+	// Corresponds with PATCH /sessions/{session_id}/configuration (the `PatchSession` operationId).
+	PatchSessionWithApplicationMergePatchPlusJSONBody(ctx context.Context, sessionID ID, params *PatchSessionParams, body PatchSessionApplicationMergePatchPlusJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetContext Read ContextSummary
 	//
 	// Corresponds with GET /sessions/{session_id}/context (the `GetContext` operationId).
-	GetContext(ctx context.Context, sessionID ID, params *GetContextParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	GetContext(ctx context.Context, sessionID ID, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetContextWindow Read the window this session compacts against
 	//
@@ -6581,6 +6768,16 @@ type ClientInterface interface {
 	//
 	// Corresponds with GET /sessions/{session_id}/context-window (the `GetContextWindow` operationId).
 	GetContextWindow(ctx context.Context, sessionID ID, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetContextSection Read ContextSectionPage
+	//
+	// Corresponds with GET /sessions/{session_id}/context/{snapshot_id}/sections/{section_id} (the `GetContextSection` operationId).
+	GetContextSection(ctx context.Context, sessionID ID, snapshotID ID, sectionID ID, params *GetContextSectionParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// WatchSession Read session events
+	//
+	// Corresponds with GET /sessions/{session_id}/events (the `WatchSession` operationId).
+	WatchSession(ctx context.Context, sessionID ID, params *WatchSessionParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetFastMode Read fast-mode state and provider capability
 	//
@@ -6645,10 +6842,10 @@ type ClientInterface interface {
 
 	// GetHistoryImage Read one image field as its own bytes
 	//
-	// Image references in history point here. The body is the stored image itself, not base64, and is never content-coded.
+	// Image references in history point here. The body is the stored image itself, not base64, and is never content-coded. When `edge` is given and either dimension exceeds it, the response is scaled down so its longer edge equals `edge` and encoded as lossy WebP; smaller images are returned untouched.
 	//
 	// Corresponds with GET /sessions/{session_id}/history/{entry_id}/{field} (the `GetHistoryImage` operationId).
-	GetHistoryImage(ctx context.Context, sessionID ID, entryID ID, field string, reqEditors ...RequestEditorFn) (*http.Response, error)
+	GetHistoryImage(ctx context.Context, sessionID ID, entryID ID, field string, params *GetHistoryImageParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetInput Read a durable input outcome
 	//
@@ -6826,6 +7023,11 @@ type ClientInterface interface {
 	// Corresponds with POST /sessions/{session_id}/reload (the `ReloadSession` operationId).
 	ReloadSession(ctx context.Context, sessionID ID, body ReloadSessionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// GetSessionRequests Read RequestRecordPage
+	//
+	// Corresponds with GET /sessions/{session_id}/requests (the `GetSessionRequests` operationId).
+	GetSessionRequests(ctx context.Context, sessionID ID, params *GetSessionRequestsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// RewindSessionWithBody Cut a session back to before a user message and keep the removed tail as an archived session
 	//
 	// Idle required. The checkpoint must be a user message from the checkpoint view. The session keeps every row before it, and the full prior conversation is copied first into a new archived session. The session actor stops, so attached streams reconnect and reset. Python namespace and files on disk are not rewound. A requested summary is made before anything changes, so a failed summary leaves the session untouched. Requires capability `history_rewind: 1`.
@@ -6905,6 +7107,11 @@ type ClientInterface interface {
 	// Takes a body of the `application/json` content type.
 	CancelSideQuestion(ctx context.Context, sessionID ID, questionID UUIDv7, body CancelSideQuestionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// GetSessionStatus Read session status
+	//
+	// Corresponds with GET /sessions/{session_id}/status (the `GetSessionStatus` operationId).
+	GetSessionStatus(ctx context.Context, sessionID ID, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// GenerateSessionTitleWithBody Generate a session name from the conversation
 	//
 	// Takes any type of body and a specified content type.
@@ -6937,30 +7144,159 @@ type ClientInterface interface {
 	// Corresponds with PUT /sessions/{session_id}/visits/{visit_id} (the `RecordVisit` operationId).
 	RecordVisit(ctx context.Context, sessionID ID, visitID UUIDv7, body RecordVisitJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// GetSettings Read shared settings or one canonical group
-	//
-	// Without group, return Settings and observed group validators. With group, return that group only; the ETag covers that representation.
-	//
-	// Corresponds with GET /settings (the `GetSettings` operationId).
-	GetSettings(ctx context.Context, params *GetSettingsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	// PatchSettingsWithBody Atomically edit one settings group
-	//
-	// Query group selects its corresponding schema. Omitted fields keep values. Null removes only nullable fields or map entries. Candidate validation precedes the complete group commit. No lost-response retry.
+	// MoveSessionWorkspaceWithBody Move a session workspace
 	//
 	// Takes any type of body and a specified content type.
 	//
-	// Corresponds with PATCH /settings (the `PatchSettings` operationId).
-	PatchSettingsWithBody(ctx context.Context, params *PatchSettingsParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// Corresponds with POST /sessions/{session_id}/workspace (the `MoveSessionWorkspace` operationId).
+	MoveSessionWorkspaceWithBody(ctx context.Context, sessionID ID, params *MoveSessionWorkspaceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// PatchSettingsWithApplicationMergePatchPlusJSONBody Atomically edit one settings group
+	// MoveSessionWorkspace Move a session workspace
 	//
-	// Query group selects its corresponding schema. Omitted fields keep values. Null removes only nullable fields or map entries. Candidate validation precedes the complete group commit. No lost-response retry.
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /sessions/{session_id}/workspace (the `MoveSessionWorkspace` operationId).
+	MoveSessionWorkspace(ctx context.Context, sessionID ID, params *MoveSessionWorkspaceParams, body MoveSessionWorkspaceJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetSettings Read shared settings or one canonical group
+	//
+	// Return aggregate settings with canonical group resources.
+	//
+	// Corresponds with GET /settings (the `GetSettings` operationId).
+	GetSettings(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetCapabilitySettings Read capabilities settings
+	//
+	// Corresponds with GET /settings/capabilities (the `GetCapabilitySettings` operationId).
+	GetCapabilitySettings(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PatchCapabilitySettingsWithBody Edit capabilities settings
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with PATCH /settings/capabilities (the `PatchCapabilitySettings` operationId).
+	PatchCapabilitySettingsWithBody(ctx context.Context, params *PatchCapabilitySettingsParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PatchCapabilitySettingsWithApplicationMergePatchPlusJSONBody Edit capabilities settings
 	//
 	// Takes a body of the `application/merge-patch+json` content type.
 	//
-	// Corresponds with PATCH /settings (the `PatchSettings` operationId).
-	PatchSettingsWithApplicationMergePatchPlusJSONBody(ctx context.Context, params *PatchSettingsParams, body PatchSettingsApplicationMergePatchPlusJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// Corresponds with PATCH /settings/capabilities (the `PatchCapabilitySettings` operationId).
+	PatchCapabilitySettingsWithApplicationMergePatchPlusJSONBody(ctx context.Context, params *PatchCapabilitySettingsParams, body PatchCapabilitySettingsApplicationMergePatchPlusJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetDeclaredSettings Read extension_settings settings
+	//
+	// Corresponds with GET /settings/extension_settings (the `GetDeclaredSettings` operationId).
+	GetDeclaredSettings(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PatchDeclaredSettingsWithBody Edit extension_settings settings
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with PATCH /settings/extension_settings (the `PatchDeclaredSettings` operationId).
+	PatchDeclaredSettingsWithBody(ctx context.Context, params *PatchDeclaredSettingsParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PatchDeclaredSettingsWithApplicationMergePatchPlusJSONBody Edit extension_settings settings
+	//
+	// Takes a body of the `application/merge-patch+json` content type.
+	//
+	// Corresponds with PATCH /settings/extension_settings (the `PatchDeclaredSettings` operationId).
+	PatchDeclaredSettingsWithApplicationMergePatchPlusJSONBody(ctx context.Context, params *PatchDeclaredSettingsParams, body PatchDeclaredSettingsApplicationMergePatchPlusJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetExtensionSettings Read extensions settings
+	//
+	// Corresponds with GET /settings/extensions (the `GetExtensionSettings` operationId).
+	GetExtensionSettings(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PatchExtensionSettingsWithBody Edit extensions settings
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with PATCH /settings/extensions (the `PatchExtensionSettings` operationId).
+	PatchExtensionSettingsWithBody(ctx context.Context, params *PatchExtensionSettingsParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PatchExtensionSettingsWithApplicationMergePatchPlusJSONBody Edit extensions settings
+	//
+	// Takes a body of the `application/merge-patch+json` content type.
+	//
+	// Corresponds with PATCH /settings/extensions (the `PatchExtensionSettings` operationId).
+	PatchExtensionSettingsWithApplicationMergePatchPlusJSONBody(ctx context.Context, params *PatchExtensionSettingsParams, body PatchExtensionSettingsApplicationMergePatchPlusJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetMCPSettings Read mcp settings
+	//
+	// Corresponds with GET /settings/mcp (the `GetMCPSettings` operationId).
+	GetMCPSettings(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PatchMCPSettingsWithBody Edit mcp settings
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with PATCH /settings/mcp (the `PatchMCPSettings` operationId).
+	PatchMCPSettingsWithBody(ctx context.Context, params *PatchMCPSettingsParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PatchMCPSettingsWithApplicationMergePatchPlusJSONBody Edit mcp settings
+	//
+	// Takes a body of the `application/merge-patch+json` content type.
+	//
+	// Corresponds with PATCH /settings/mcp (the `PatchMCPSettings` operationId).
+	PatchMCPSettingsWithApplicationMergePatchPlusJSONBody(ctx context.Context, params *PatchMCPSettingsParams, body PatchMCPSettingsApplicationMergePatchPlusJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetModelSettings Read models settings
+	//
+	// Corresponds with GET /settings/models (the `GetModelSettings` operationId).
+	GetModelSettings(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PatchModelSettingsWithBody Edit models settings
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with PATCH /settings/models (the `PatchModelSettings` operationId).
+	PatchModelSettingsWithBody(ctx context.Context, params *PatchModelSettingsParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PatchModelSettingsWithApplicationMergePatchPlusJSONBody Edit models settings
+	//
+	// Takes a body of the `application/merge-patch+json` content type.
+	//
+	// Corresponds with PATCH /settings/models (the `PatchModelSettings` operationId).
+	PatchModelSettingsWithApplicationMergePatchPlusJSONBody(ctx context.Context, params *PatchModelSettingsParams, body PatchModelSettingsApplicationMergePatchPlusJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetProviderSettings Read providers settings
+	//
+	// Corresponds with GET /settings/providers (the `GetProviderSettings` operationId).
+	GetProviderSettings(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PatchProviderSettingsWithBody Edit providers settings
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with PATCH /settings/providers (the `PatchProviderSettings` operationId).
+	PatchProviderSettingsWithBody(ctx context.Context, params *PatchProviderSettingsParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PatchProviderSettingsWithApplicationMergePatchPlusJSONBody Edit providers settings
+	//
+	// Takes a body of the `application/merge-patch+json` content type.
+	//
+	// Corresponds with PATCH /settings/providers (the `PatchProviderSettings` operationId).
+	PatchProviderSettingsWithApplicationMergePatchPlusJSONBody(ctx context.Context, params *PatchProviderSettingsParams, body PatchProviderSettingsApplicationMergePatchPlusJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetUISettings Read ui settings
+	//
+	// Corresponds with GET /settings/ui (the `GetUISettings` operationId).
+	GetUISettings(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PatchUISettingsWithBody Edit ui settings
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with PATCH /settings/ui (the `PatchUISettings` operationId).
+	PatchUISettingsWithBody(ctx context.Context, params *PatchUISettingsParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PatchUISettingsWithApplicationMergePatchPlusJSONBody Edit ui settings
+	//
+	// Takes a body of the `application/merge-patch+json` content type.
+	//
+	// Corresponds with PATCH /settings/ui (the `PatchUISettings` operationId).
+	PatchUISettingsWithApplicationMergePatchPlusJSONBody(ctx context.Context, params *PatchUISettingsParams, body PatchUISettingsApplicationMergePatchPlusJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetStorage Read storage accounting
 	//
@@ -7213,7 +7549,7 @@ func (c *Client) GetAuth(ctx context.Context, reqEditors ...RequestEditorFn) (*h
 
 // DeleteAccount Remove an unreferenced provider account
 //
-// Reject if a profile pins it by `account_id`, if it is the last account of a profile's `account_ids`, or if it comes from the environment (`account_external`). Otherwise it also leaves every `account_ids` list naming it. Does not interrupt captured credentials in an active request. Account IDs are never reused. Requires capability `provider_auth: 1`.
+// Signs the account out. Reject only an account that comes from the environment (`account_external`). A profile pinned to it by `account_id` goes back to automatic selection, and it leaves every `account_ids` list naming it; a list it empties becomes null. Does not interrupt captured credentials in an active request. Account IDs are never reused. Requires capability `provider_auth: 1`.
 //
 // Corresponds with DELETE /auth/accounts/{account_id} (the `DeleteAccount` operationId).
 func (c *Client) DeleteAccount(ctx context.Context, accountID ID, reqEditors ...RequestEditorFn) (*http.Response, error) {
@@ -7916,7 +8252,7 @@ func (c *Client) UnlinkWorkspace(ctx context.Context, params *UnlinkWorkspacePar
 
 // GetLinkGroup Read linked membership and presence
 //
-// Only configuration view has the canonical membership ETag. Presence does not change that validator.
+// Only configuration view has the canonical membership ETag. Presence does not change that validator. A managed worktree uses its recorded origin's membership and validator. Unresolved legacy membership conflicts return 409 link_migration_conflict.
 //
 // Corresponds with GET /extensions/links/groups (the `GetLinkGroup` operationId).
 func (c *Client) GetLinkGroup(ctx context.Context, params *GetLinkGroupParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
@@ -9244,51 +9580,11 @@ func (c *Client) DeleteSession(ctx context.Context, sessionID ID, params *Delete
 	return c.Client.Do(req)
 }
 
-// GetSession Read or watch one session
-//
-// JSON defaults to complete Session. Configuration and status JSON exclude tail and replay parameters. SSE accepts tail and after_generation/after_seq, without view. Initial subscription omits both cursors; reconnect keeps the fully consumed pair. A missing generation requests reset. after_generation without after_seq is invalid. Neither auth failure nor closure starts a daemon.
+// GetSession Read a session snapshot
 //
 // Corresponds with GET /sessions/{session_id} (the `GetSession` operationId).
 func (c *Client) GetSession(ctx context.Context, sessionID ID, params *GetSessionParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetSessionRequest(c.Server, sessionID, params)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-// PatchSessionWithBody Edit configuration or move workspace
-//
-// Use the observed configuration URL and validator. Workspace is a standalone change carrying the observed session family revision. Busy target fails before commit; busy descendants follow a committed parent move at idle. Other configuration fields commit together. No automatic lost-response retry. An ACP attachment holder may select a model with a patch containing only model and an optional provider_profile; other execution changes remain unavailable to ACP sessions.
-//
-// Takes any type of body and a specified content type.
-//
-// Corresponds with PATCH /sessions/{session_id} (the `PatchSession` operationId).
-func (c *Client) PatchSessionWithBody(ctx context.Context, sessionID ID, params *PatchSessionParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewPatchSessionRequestWithBody(c.Server, sessionID, params, contentType, body)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-// PatchSessionWithApplicationMergePatchPlusJSONBody Edit configuration or move workspace
-//
-// Use the observed configuration URL and validator. Workspace is a standalone change carrying the observed session family revision. Busy target fails before commit; busy descendants follow a committed parent move at idle. Other configuration fields commit together. No automatic lost-response retry. An ACP attachment holder may select a model with a patch containing only model and an optional provider_profile; other execution changes remain unavailable to ACP sessions.
-//
-// Takes a body of the `application/merge-patch+json` content type.
-//
-// Corresponds with PATCH /sessions/{session_id} (the `PatchSession` operationId).
-func (c *Client) PatchSessionWithApplicationMergePatchPlusJSONBody(ctx context.Context, sessionID ID, params *PatchSessionParams, body PatchSessionApplicationMergePatchPlusJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewPatchSessionRequestWithApplicationMergePatchPlusJSONBody(c.Server, sessionID, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -9356,7 +9652,7 @@ func (c *Client) ReleaseACPSession(ctx context.Context, sessionID ID, params *Re
 
 // AttachACPSessionWithBody Attach this ACP connection as the session's single writer
 //
-// Attach or re-attach with the same token. 409 not_acp_session for a session created without kind acp; 409 workspace_mismatch unless workspace equals the session's canonical workspace exactly; 409 attachment_held while another token holds a live lease (never stolen); 409 session_busy when the session has an active turn and the overlay differs from the installed one (nothing changes); 409 mcp_overlay_conflict for duplicate names or names already configured globally; 409 mcp_overlay_failed when an idle replacement could not be prepared (the previous overlay and attachment stay as they were). 503 overlay_installed_reload_failed means publication succeeded but runtime reload failed; the replacement remains installed. 503 overlay_update_uncertain means publication or reload was not confirmed within 15 seconds and may still complete. An identical reattach retries a failed reload. With editor-mcp enabled, publication awaiting reload blocks turns with 409 overlay_installed_reload_failed. A missing required overlay after restart blocks turns with 409 overlay_reattach_required; the editor must resume and resupply its servers. An empty overlay permits daemon-driven turns after daemon restart, but old editor tokens are invalid. Failed setup releases a newly acquired lease and retains a preexisting same-token lease. An empty list removes only the editor overlay.
+// Attach or re-attach with the same token. 409 not_acp_session for a session created without kind acp; 409 workspace_mismatch unless workspace equals the session's canonical workspace exactly; 409 attachment_held while another token holds a live lease (never stolen); 409 session_busy when the session has an active turn and the overlay differs from the installed one (nothing changes); 409 mcp_overlay_conflict for duplicate editor names. Globally configured names take precedence; 409 mcp_overlay_failed when an idle replacement could not be prepared (the previous overlay and attachment stay as they were). 503 overlay_installed_reload_failed means publication succeeded but runtime reload failed; the replacement remains installed. 503 overlay_update_uncertain means publication or reload was not confirmed within 15 seconds and may still complete. An identical reattach retries a failed reload. With editor-mcp enabled, publication awaiting reload blocks turns with 409 overlay_installed_reload_failed. A missing required overlay after restart blocks turns with 409 overlay_reattach_required; the editor must resume and resupply its servers. An empty overlay permits daemon-driven turns after daemon restart, but old editor tokens are invalid. Failed setup releases a newly acquired lease and retains a preexisting same-token lease. An empty list removes only the editor overlay.
 //
 // Takes any type of body and a specified content type.
 //
@@ -9375,7 +9671,7 @@ func (c *Client) AttachACPSessionWithBody(ctx context.Context, sessionID ID, par
 
 // AttachACPSession Attach this ACP connection as the session's single writer
 //
-// Attach or re-attach with the same token. 409 not_acp_session for a session created without kind acp; 409 workspace_mismatch unless workspace equals the session's canonical workspace exactly; 409 attachment_held while another token holds a live lease (never stolen); 409 session_busy when the session has an active turn and the overlay differs from the installed one (nothing changes); 409 mcp_overlay_conflict for duplicate names or names already configured globally; 409 mcp_overlay_failed when an idle replacement could not be prepared (the previous overlay and attachment stay as they were). 503 overlay_installed_reload_failed means publication succeeded but runtime reload failed; the replacement remains installed. 503 overlay_update_uncertain means publication or reload was not confirmed within 15 seconds and may still complete. An identical reattach retries a failed reload. With editor-mcp enabled, publication awaiting reload blocks turns with 409 overlay_installed_reload_failed. A missing required overlay after restart blocks turns with 409 overlay_reattach_required; the editor must resume and resupply its servers. An empty overlay permits daemon-driven turns after daemon restart, but old editor tokens are invalid. Failed setup releases a newly acquired lease and retains a preexisting same-token lease. An empty list removes only the editor overlay.
+// Attach or re-attach with the same token. 409 not_acp_session for a session created without kind acp; 409 workspace_mismatch unless workspace equals the session's canonical workspace exactly; 409 attachment_held while another token holds a live lease (never stolen); 409 session_busy when the session has an active turn and the overlay differs from the installed one (nothing changes); 409 mcp_overlay_conflict for duplicate editor names. Globally configured names take precedence; 409 mcp_overlay_failed when an idle replacement could not be prepared (the previous overlay and attachment stay as they were). 503 overlay_installed_reload_failed means publication succeeded but runtime reload failed; the replacement remains installed. 503 overlay_update_uncertain means publication or reload was not confirmed within 15 seconds and may still complete. An identical reattach retries a failed reload. With editor-mcp enabled, publication awaiting reload blocks turns with 409 overlay_installed_reload_failed. A missing required overlay after restart blocks turns with 409 overlay_reattach_required; the editor must resume and resupply its servers. An empty overlay permits daemon-driven turns after daemon restart, but old editor tokens are invalid. Failed setup releases a newly acquired lease and retains a preexisting same-token lease. An empty list removes only the editor overlay.
 //
 // Takes a body of the `application/json` content type.
 //
@@ -9420,6 +9716,23 @@ func (c *Client) RenewACPSessionWithBody(ctx context.Context, sessionID ID, para
 // Corresponds with POST /sessions/{session_id}/acp-attachment/renew (the `RenewACPSession` operationId).
 func (c *Client) RenewACPSession(ctx context.Context, sessionID ID, params *RenewACPSessionParams, body RenewACPSessionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewRenewACPSessionRequest(c.Server, sessionID, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetACPPlan Read an ACP session's retained checklist
+//
+// Returns the full retained checklist in creation order. Open items map to pending plan entries and checked items map to completed entries. The session must have been created over ACP.
+//
+// Corresponds with GET /sessions/{session_id}/acp-plan (the `GetACPPlan` operationId).
+func (c *Client) GetACPPlan(ctx context.Context, sessionID ID, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetACPPlanRequest(c.Server, sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -9481,15 +9794,28 @@ func (c *Client) GetSessionChanges(ctx context.Context, sessionID ID, params *Ge
 	return c.Client.Do(req)
 }
 
-// CompactSessionWithBody Compact model context while retaining history
+// GetCompaction Read a compaction receipt
 //
-// Idle required. Selecting a strategy can succeed even if compaction later fails; report both. Full durable history stays intact. No automatic retry.
+// Corresponds with GET /sessions/{session_id}/compactions/{action_id} (the `GetCompaction` operationId).
+func (c *Client) GetCompaction(ctx context.Context, sessionID ID, actionID ID, params *GetCompactionParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetCompactionRequest(c.Server, sessionID, actionID, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PutCompactionWithBody Admit identified compaction
 //
 // Takes any type of body and a specified content type.
 //
-// Corresponds with POST /sessions/{session_id}/compaction (the `CompactSession` operationId).
-func (c *Client) CompactSessionWithBody(ctx context.Context, sessionID ID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewCompactSessionRequestWithBody(c.Server, sessionID, contentType, body)
+// Corresponds with PUT /sessions/{session_id}/compactions/{action_id} (the `PutCompaction` operationId).
+func (c *Client) PutCompactionWithBody(ctx context.Context, sessionID ID, actionID ID, params *PutCompactionParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPutCompactionRequestWithBody(c.Server, sessionID, actionID, params, contentType, body)
 	if err != nil {
 		return nil, err
 	}
@@ -9500,15 +9826,13 @@ func (c *Client) CompactSessionWithBody(ctx context.Context, sessionID ID, conte
 	return c.Client.Do(req)
 }
 
-// CompactSession Compact model context while retaining history
-//
-// Idle required. Selecting a strategy can succeed even if compaction later fails; report both. Full durable history stays intact. No automatic retry.
+// PutCompaction Admit identified compaction
 //
 // Takes a body of the `application/json` content type.
 //
-// Corresponds with POST /sessions/{session_id}/compaction (the `CompactSession` operationId).
-func (c *Client) CompactSession(ctx context.Context, sessionID ID, body CompactSessionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewCompactSessionRequest(c.Server, sessionID, body)
+// Corresponds with PUT /sessions/{session_id}/compactions/{action_id} (the `PutCompaction` operationId).
+func (c *Client) PutCompaction(ctx context.Context, sessionID ID, actionID ID, params *PutCompactionParams, body PutCompactionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPutCompactionRequest(c.Server, sessionID, actionID, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -9519,13 +9843,60 @@ func (c *Client) CompactSession(ctx context.Context, sessionID ID, body CompactS
 	return c.Client.Do(req)
 }
 
-// GetContext Inspect prepared context or request records
+// GetSessionConfiguration Read session configuration
 //
-// Summary never prepares a request. Section requires snapshot_id, section_id, page and forbids request-pagination fields. Requests accepts after/since_ms/limit/next. Stale snapshot is 410 context_changed, never another section. Requires capability `context: 1`.
+// Corresponds with GET /sessions/{session_id}/configuration (the `GetSessionConfiguration` operationId).
+func (c *Client) GetSessionConfiguration(ctx context.Context, sessionID ID, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetSessionConfigurationRequest(c.Server, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PatchSessionWithBody Edit session configuration
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with PATCH /sessions/{session_id}/configuration (the `PatchSession` operationId).
+func (c *Client) PatchSessionWithBody(ctx context.Context, sessionID ID, params *PatchSessionParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPatchSessionRequestWithBody(c.Server, sessionID, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PatchSessionWithApplicationMergePatchPlusJSONBody Edit session configuration
+//
+// Takes a body of the `application/merge-patch+json` content type.
+//
+// Corresponds with PATCH /sessions/{session_id}/configuration (the `PatchSession` operationId).
+func (c *Client) PatchSessionWithApplicationMergePatchPlusJSONBody(ctx context.Context, sessionID ID, params *PatchSessionParams, body PatchSessionApplicationMergePatchPlusJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPatchSessionRequestWithApplicationMergePatchPlusJSONBody(c.Server, sessionID, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetContext Read ContextSummary
 //
 // Corresponds with GET /sessions/{session_id}/context (the `GetContext` operationId).
-func (c *Client) GetContext(ctx context.Context, sessionID ID, params *GetContextParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetContextRequest(c.Server, sessionID, params)
+func (c *Client) GetContext(ctx context.Context, sessionID ID, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetContextRequest(c.Server, sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -9543,6 +9914,36 @@ func (c *Client) GetContext(ctx context.Context, sessionID ID, params *GetContex
 // Corresponds with GET /sessions/{session_id}/context-window (the `GetContextWindow` operationId).
 func (c *Client) GetContextWindow(ctx context.Context, sessionID ID, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetContextWindowRequest(c.Server, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetContextSection Read ContextSectionPage
+//
+// Corresponds with GET /sessions/{session_id}/context/{snapshot_id}/sections/{section_id} (the `GetContextSection` operationId).
+func (c *Client) GetContextSection(ctx context.Context, sessionID ID, snapshotID ID, sectionID ID, params *GetContextSectionParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetContextSectionRequest(c.Server, sessionID, snapshotID, sectionID, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// WatchSession Read session events
+//
+// Corresponds with GET /sessions/{session_id}/events (the `WatchSession` operationId).
+func (c *Client) WatchSession(ctx context.Context, sessionID ID, params *WatchSessionParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewWatchSessionRequest(c.Server, sessionID, params)
 	if err != nil {
 		return nil, err
 	}
@@ -9686,11 +10087,11 @@ func (c *Client) GetHistoryContent(ctx context.Context, sessionID ID, entryID ID
 
 // GetHistoryImage Read one image field as its own bytes
 //
-// Image references in history point here. The body is the stored image itself, not base64, and is never content-coded.
+// Image references in history point here. The body is the stored image itself, not base64, and is never content-coded. When `edge` is given and either dimension exceeds it, the response is scaled down so its longer edge equals `edge` and encoded as lossy WebP; smaller images are returned untouched.
 //
 // Corresponds with GET /sessions/{session_id}/history/{entry_id}/{field} (the `GetHistoryImage` operationId).
-func (c *Client) GetHistoryImage(ctx context.Context, sessionID ID, entryID ID, field string, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetHistoryImageRequest(c.Server, sessionID, entryID, field)
+func (c *Client) GetHistoryImage(ctx context.Context, sessionID ID, entryID ID, field string, params *GetHistoryImageParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetHistoryImageRequest(c.Server, sessionID, entryID, field, params)
 	if err != nil {
 		return nil, err
 	}
@@ -10077,6 +10478,21 @@ func (c *Client) ReloadSession(ctx context.Context, sessionID ID, body ReloadSes
 	return c.Client.Do(req)
 }
 
+// GetSessionRequests Read RequestRecordPage
+//
+// Corresponds with GET /sessions/{session_id}/requests (the `GetSessionRequests` operationId).
+func (c *Client) GetSessionRequests(ctx context.Context, sessionID ID, params *GetSessionRequestsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetSessionRequestsRequest(c.Server, sessionID, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 // RewindSessionWithBody Cut a session back to before a user message and keep the removed tail as an archived session
 //
 // Idle required. The checkpoint must be a user message from the checkpoint view. The session keeps every row before it, and the full prior conversation is copied first into a new archived session. The session actor stops, so attached streams reconnect and reset. Python namespace and files on disk are not rewound. A requested summary is made before anything changes, so a failed summary leaves the session untouched. Requires capability `history_rewind: 1`.
@@ -10286,6 +10702,21 @@ func (c *Client) CancelSideQuestion(ctx context.Context, sessionID ID, questionI
 	return c.Client.Do(req)
 }
 
+// GetSessionStatus Read session status
+//
+// Corresponds with GET /sessions/{session_id}/status (the `GetSessionStatus` operationId).
+func (c *Client) GetSessionStatus(ctx context.Context, sessionID ID, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetSessionStatusRequest(c.Server, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 // GenerateSessionTitleWithBody Generate a session name from the conversation
 //
 // Takes any type of body and a specified content type.
@@ -10358,32 +10789,13 @@ func (c *Client) RecordVisit(ctx context.Context, sessionID ID, visitID UUIDv7, 
 	return c.Client.Do(req)
 }
 
-// GetSettings Read shared settings or one canonical group
-//
-// Without group, return Settings and observed group validators. With group, return that group only; the ETag covers that representation.
-//
-// Corresponds with GET /settings (the `GetSettings` operationId).
-func (c *Client) GetSettings(ctx context.Context, params *GetSettingsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetSettingsRequest(c.Server, params)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-// PatchSettingsWithBody Atomically edit one settings group
-//
-// Query group selects its corresponding schema. Omitted fields keep values. Null removes only nullable fields or map entries. Candidate validation precedes the complete group commit. No lost-response retry.
+// MoveSessionWorkspaceWithBody Move a session workspace
 //
 // Takes any type of body and a specified content type.
 //
-// Corresponds with PATCH /settings (the `PatchSettings` operationId).
-func (c *Client) PatchSettingsWithBody(ctx context.Context, params *PatchSettingsParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewPatchSettingsRequestWithBody(c.Server, params, contentType, body)
+// Corresponds with POST /sessions/{session_id}/workspace (the `MoveSessionWorkspace` operationId).
+func (c *Client) MoveSessionWorkspaceWithBody(ctx context.Context, sessionID ID, params *MoveSessionWorkspaceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewMoveSessionWorkspaceRequestWithBody(c.Server, sessionID, params, contentType, body)
 	if err != nil {
 		return nil, err
 	}
@@ -10394,15 +10806,373 @@ func (c *Client) PatchSettingsWithBody(ctx context.Context, params *PatchSetting
 	return c.Client.Do(req)
 }
 
-// PatchSettingsWithApplicationMergePatchPlusJSONBody Atomically edit one settings group
+// MoveSessionWorkspace Move a session workspace
 //
-// Query group selects its corresponding schema. Omitted fields keep values. Null removes only nullable fields or map entries. Candidate validation precedes the complete group commit. No lost-response retry.
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /sessions/{session_id}/workspace (the `MoveSessionWorkspace` operationId).
+func (c *Client) MoveSessionWorkspace(ctx context.Context, sessionID ID, params *MoveSessionWorkspaceParams, body MoveSessionWorkspaceJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewMoveSessionWorkspaceRequest(c.Server, sessionID, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetSettings Read shared settings or one canonical group
+//
+// Return aggregate settings with canonical group resources.
+//
+// Corresponds with GET /settings (the `GetSettings` operationId).
+func (c *Client) GetSettings(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetSettingsRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetCapabilitySettings Read capabilities settings
+//
+// Corresponds with GET /settings/capabilities (the `GetCapabilitySettings` operationId).
+func (c *Client) GetCapabilitySettings(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetCapabilitySettingsRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PatchCapabilitySettingsWithBody Edit capabilities settings
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with PATCH /settings/capabilities (the `PatchCapabilitySettings` operationId).
+func (c *Client) PatchCapabilitySettingsWithBody(ctx context.Context, params *PatchCapabilitySettingsParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPatchCapabilitySettingsRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PatchCapabilitySettingsWithApplicationMergePatchPlusJSONBody Edit capabilities settings
 //
 // Takes a body of the `application/merge-patch+json` content type.
 //
-// Corresponds with PATCH /settings (the `PatchSettings` operationId).
-func (c *Client) PatchSettingsWithApplicationMergePatchPlusJSONBody(ctx context.Context, params *PatchSettingsParams, body PatchSettingsApplicationMergePatchPlusJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewPatchSettingsRequestWithApplicationMergePatchPlusJSONBody(c.Server, params, body)
+// Corresponds with PATCH /settings/capabilities (the `PatchCapabilitySettings` operationId).
+func (c *Client) PatchCapabilitySettingsWithApplicationMergePatchPlusJSONBody(ctx context.Context, params *PatchCapabilitySettingsParams, body PatchCapabilitySettingsApplicationMergePatchPlusJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPatchCapabilitySettingsRequestWithApplicationMergePatchPlusJSONBody(c.Server, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetDeclaredSettings Read extension_settings settings
+//
+// Corresponds with GET /settings/extension_settings (the `GetDeclaredSettings` operationId).
+func (c *Client) GetDeclaredSettings(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetDeclaredSettingsRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PatchDeclaredSettingsWithBody Edit extension_settings settings
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with PATCH /settings/extension_settings (the `PatchDeclaredSettings` operationId).
+func (c *Client) PatchDeclaredSettingsWithBody(ctx context.Context, params *PatchDeclaredSettingsParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPatchDeclaredSettingsRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PatchDeclaredSettingsWithApplicationMergePatchPlusJSONBody Edit extension_settings settings
+//
+// Takes a body of the `application/merge-patch+json` content type.
+//
+// Corresponds with PATCH /settings/extension_settings (the `PatchDeclaredSettings` operationId).
+func (c *Client) PatchDeclaredSettingsWithApplicationMergePatchPlusJSONBody(ctx context.Context, params *PatchDeclaredSettingsParams, body PatchDeclaredSettingsApplicationMergePatchPlusJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPatchDeclaredSettingsRequestWithApplicationMergePatchPlusJSONBody(c.Server, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetExtensionSettings Read extensions settings
+//
+// Corresponds with GET /settings/extensions (the `GetExtensionSettings` operationId).
+func (c *Client) GetExtensionSettings(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetExtensionSettingsRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PatchExtensionSettingsWithBody Edit extensions settings
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with PATCH /settings/extensions (the `PatchExtensionSettings` operationId).
+func (c *Client) PatchExtensionSettingsWithBody(ctx context.Context, params *PatchExtensionSettingsParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPatchExtensionSettingsRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PatchExtensionSettingsWithApplicationMergePatchPlusJSONBody Edit extensions settings
+//
+// Takes a body of the `application/merge-patch+json` content type.
+//
+// Corresponds with PATCH /settings/extensions (the `PatchExtensionSettings` operationId).
+func (c *Client) PatchExtensionSettingsWithApplicationMergePatchPlusJSONBody(ctx context.Context, params *PatchExtensionSettingsParams, body PatchExtensionSettingsApplicationMergePatchPlusJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPatchExtensionSettingsRequestWithApplicationMergePatchPlusJSONBody(c.Server, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetMCPSettings Read mcp settings
+//
+// Corresponds with GET /settings/mcp (the `GetMCPSettings` operationId).
+func (c *Client) GetMCPSettings(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetMCPSettingsRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PatchMCPSettingsWithBody Edit mcp settings
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with PATCH /settings/mcp (the `PatchMCPSettings` operationId).
+func (c *Client) PatchMCPSettingsWithBody(ctx context.Context, params *PatchMCPSettingsParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPatchMCPSettingsRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PatchMCPSettingsWithApplicationMergePatchPlusJSONBody Edit mcp settings
+//
+// Takes a body of the `application/merge-patch+json` content type.
+//
+// Corresponds with PATCH /settings/mcp (the `PatchMCPSettings` operationId).
+func (c *Client) PatchMCPSettingsWithApplicationMergePatchPlusJSONBody(ctx context.Context, params *PatchMCPSettingsParams, body PatchMCPSettingsApplicationMergePatchPlusJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPatchMCPSettingsRequestWithApplicationMergePatchPlusJSONBody(c.Server, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetModelSettings Read models settings
+//
+// Corresponds with GET /settings/models (the `GetModelSettings` operationId).
+func (c *Client) GetModelSettings(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetModelSettingsRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PatchModelSettingsWithBody Edit models settings
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with PATCH /settings/models (the `PatchModelSettings` operationId).
+func (c *Client) PatchModelSettingsWithBody(ctx context.Context, params *PatchModelSettingsParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPatchModelSettingsRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PatchModelSettingsWithApplicationMergePatchPlusJSONBody Edit models settings
+//
+// Takes a body of the `application/merge-patch+json` content type.
+//
+// Corresponds with PATCH /settings/models (the `PatchModelSettings` operationId).
+func (c *Client) PatchModelSettingsWithApplicationMergePatchPlusJSONBody(ctx context.Context, params *PatchModelSettingsParams, body PatchModelSettingsApplicationMergePatchPlusJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPatchModelSettingsRequestWithApplicationMergePatchPlusJSONBody(c.Server, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetProviderSettings Read providers settings
+//
+// Corresponds with GET /settings/providers (the `GetProviderSettings` operationId).
+func (c *Client) GetProviderSettings(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetProviderSettingsRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PatchProviderSettingsWithBody Edit providers settings
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with PATCH /settings/providers (the `PatchProviderSettings` operationId).
+func (c *Client) PatchProviderSettingsWithBody(ctx context.Context, params *PatchProviderSettingsParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPatchProviderSettingsRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PatchProviderSettingsWithApplicationMergePatchPlusJSONBody Edit providers settings
+//
+// Takes a body of the `application/merge-patch+json` content type.
+//
+// Corresponds with PATCH /settings/providers (the `PatchProviderSettings` operationId).
+func (c *Client) PatchProviderSettingsWithApplicationMergePatchPlusJSONBody(ctx context.Context, params *PatchProviderSettingsParams, body PatchProviderSettingsApplicationMergePatchPlusJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPatchProviderSettingsRequestWithApplicationMergePatchPlusJSONBody(c.Server, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetUISettings Read ui settings
+//
+// Corresponds with GET /settings/ui (the `GetUISettings` operationId).
+func (c *Client) GetUISettings(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetUISettingsRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PatchUISettingsWithBody Edit ui settings
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with PATCH /settings/ui (the `PatchUISettings` operationId).
+func (c *Client) PatchUISettingsWithBody(ctx context.Context, params *PatchUISettingsParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPatchUISettingsRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PatchUISettingsWithApplicationMergePatchPlusJSONBody Edit ui settings
+//
+// Takes a body of the `application/merge-patch+json` content type.
+//
+// Corresponds with PATCH /settings/ui (the `PatchUISettings` operationId).
+func (c *Client) PatchUISettingsWithApplicationMergePatchPlusJSONBody(ctx context.Context, params *PatchUISettingsParams, body PatchUISettingsApplicationMergePatchPlusJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPatchUISettingsRequestWithApplicationMergePatchPlusJSONBody(c.Server, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -15361,14 +16131,6 @@ func NewDeleteSessionRequest(server string, sessionID ID, params *DeleteSessionP
 		// per the OpenAPI spec (e.g. "color=blue,black,brown").
 		var rawQueryFragments []string
 
-		if queryFrag, err := runtime.StyleParamWithOptions("form", true, "view", params.View, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
-			return nil, err
-		} else {
-			for _, qp := range strings.Split(queryFrag, "&") {
-				rawQueryFragments = append(rawQueryFragments, qp)
-			}
-		}
-
 		if params.Scope != nil {
 
 			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "scope", *params.Scope, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
@@ -15455,45 +16217,9 @@ func NewGetSessionRequest(server string, sessionID ID, params *GetSessionParams)
 		// per the OpenAPI spec (e.g. "color=blue,black,brown").
 		var rawQueryFragments []string
 
-		if params.View != nil {
-
-			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "view", *params.View, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
-				return nil, err
-			} else {
-				for _, qp := range strings.Split(queryFrag, "&") {
-					rawQueryFragments = append(rawQueryFragments, qp)
-				}
-			}
-
-		}
-
 		if params.Tail != nil {
 
 			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "tail", *params.Tail, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "integer", Format: ""}); err != nil {
-				return nil, err
-			} else {
-				for _, qp := range strings.Split(queryFrag, "&") {
-					rawQueryFragments = append(rawQueryFragments, qp)
-				}
-			}
-
-		}
-
-		if params.AfterGeneration != nil {
-
-			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "after_generation", *params.AfterGeneration, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
-				return nil, err
-			} else {
-				for _, qp := range strings.Split(queryFrag, "&") {
-					rawQueryFragments = append(rawQueryFragments, qp)
-				}
-			}
-
-		}
-
-		if params.AfterSeq != nil {
-
-			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "after_seq", *params.AfterSeq, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "integer", Format: ""}); err != nil {
 				return nil, err
 			} else {
 				for _, qp := range strings.Split(queryFrag, "&") {
@@ -15512,100 +16238,6 @@ func NewGetSessionRequest(server string, sessionID ID, params *GetSessionParams)
 	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
 	if err != nil {
 		return nil, err
-	}
-
-	return req, nil
-}
-
-// NewPatchSessionRequestWithApplicationMergePatchPlusJSONBody calls the generic PatchSession builder with application/merge-patch+json body
-func NewPatchSessionRequestWithApplicationMergePatchPlusJSONBody(server string, sessionID ID, params *PatchSessionParams, body PatchSessionApplicationMergePatchPlusJSONRequestBody) (*http.Request, error) {
-	var bodyReader io.Reader
-	buf, err := json.Marshal(body)
-	if err != nil {
-		return nil, err
-	}
-	bodyReader = bytes.NewReader(buf)
-	return NewPatchSessionRequestWithBody(server, sessionID, params, "application/merge-patch+json", bodyReader)
-}
-
-// NewPatchSessionRequestWithBody constructs an http.Request for the PatchSession method, with any body, and a specified content type
-func NewPatchSessionRequestWithBody(server string, sessionID ID, params *PatchSessionParams, contentType string, body io.Reader) (*http.Request, error) {
-	var err error
-
-	var pathParam0 string
-
-	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
-	if err != nil {
-		return nil, err
-	}
-
-	serverURL, err := url.Parse(server)
-	if err != nil {
-		return nil, err
-	}
-
-	operationPath := fmt.Sprintf("/sessions/%s", pathParam0)
-	if operationPath[0] == '/' {
-		operationPath = "." + operationPath
-	}
-
-	queryURL, err := serverURL.Parse(operationPath)
-	if err != nil {
-		return nil, err
-	}
-
-	if params != nil {
-		// queryValues collects non-styled parameters (passthrough, JSON)
-		// that are safe to round-trip through url.Values.Encode().
-		queryValues := queryURL.Query()
-		// rawQueryFragments collects pre-encoded query fragments from
-		// styled parameters, preserving literal commas as delimiters
-		// per the OpenAPI spec (e.g. "color=blue,black,brown").
-		var rawQueryFragments []string
-
-		if queryFrag, err := runtime.StyleParamWithOptions("form", true, "view", params.View, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
-			return nil, err
-		} else {
-			for _, qp := range strings.Split(queryFrag, "&") {
-				rawQueryFragments = append(rawQueryFragments, qp)
-			}
-		}
-
-		if encoded := queryValues.Encode(); encoded != "" {
-			rawQueryFragments = append(rawQueryFragments, encoded)
-		}
-		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
-	}
-
-	req, err := http.NewRequest(http.MethodPatch, queryURL.String(), body)
-	if err != nil {
-		return nil, err
-	}
-
-	req.Header.Add("Content-Type", contentType)
-
-	if params != nil {
-
-		var headerParam0 string
-
-		headerParam0, err = runtime.StyleParamWithOptions("simple", false, "If-Match", params.IfMatch, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("If-Match", headerParam0)
-
-		if params.AlbedoAttachmentToken != nil {
-			var headerParam1 string
-
-			headerParam1, err = runtime.StyleParamWithOptions("simple", false, "Albedo-Attachment-Token", *params.AlbedoAttachmentToken, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
-			if err != nil {
-				return nil, err
-			}
-
-			req.Header.Set("Albedo-Attachment-Token", headerParam1)
-		}
-
 	}
 
 	return req, nil
@@ -15849,6 +16481,40 @@ func NewRenewACPSessionRequestWithBody(server string, sessionID ID, params *Rene
 	return req, nil
 }
 
+// NewGetACPPlanRequest constructs an http.Request for the GetACPPlan method
+func NewGetACPPlanRequest(server string, sessionID ID) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/sessions/%s/acp-plan", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
 // NewGetActiveOutputContentRequest constructs an http.Request for the GetActiveOutputContent method
 func NewGetActiveOutputContentRequest(server string, sessionID ID, contentID ID, params *GetActiveOutputContentParams) (*http.Request, error) {
 	var err error
@@ -16086,19 +16752,133 @@ func NewGetSessionChangesRequest(server string, sessionID ID, params *GetSession
 	return req, nil
 }
 
-// NewCompactSessionRequest calls the generic CompactSession builder with application/json body
-func NewCompactSessionRequest(server string, sessionID ID, body CompactSessionJSONRequestBody) (*http.Request, error) {
+// NewGetCompactionRequest constructs an http.Request for the GetCompaction method
+func NewGetCompactionRequest(server string, sessionID ID, actionID ID, params *GetCompactionParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithOptions("simple", false, "action_id", actionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/sessions/%s/compactions/%s", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.AlbedoAttachmentToken != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Albedo-Attachment-Token", *params.AlbedoAttachmentToken, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Albedo-Attachment-Token", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewPutCompactionRequest calls the generic PutCompaction builder with application/json body
+func NewPutCompactionRequest(server string, sessionID ID, actionID ID, params *PutCompactionParams, body PutCompactionJSONRequestBody) (*http.Request, error) {
 	var bodyReader io.Reader
 	buf, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
 	}
 	bodyReader = bytes.NewReader(buf)
-	return NewCompactSessionRequestWithBody(server, sessionID, "application/json", bodyReader)
+	return NewPutCompactionRequestWithBody(server, sessionID, actionID, params, "application/json", bodyReader)
 }
 
-// NewCompactSessionRequestWithBody constructs an http.Request for the CompactSession method, with any body, and a specified content type
-func NewCompactSessionRequestWithBody(server string, sessionID ID, contentType string, body io.Reader) (*http.Request, error) {
+// NewPutCompactionRequestWithBody constructs an http.Request for the PutCompaction method, with any body, and a specified content type
+func NewPutCompactionRequestWithBody(server string, sessionID ID, actionID ID, params *PutCompactionParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithOptions("simple", false, "action_id", actionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/sessions/%s/compactions/%s", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPut, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.AlbedoAttachmentToken != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Albedo-Attachment-Token", *params.AlbedoAttachmentToken, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Albedo-Attachment-Token", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewGetSessionConfigurationRequest constructs an http.Request for the GetSessionConfiguration method
+func NewGetSessionConfigurationRequest(server string, sessionID ID) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -16113,7 +16893,7 @@ func NewCompactSessionRequestWithBody(server string, sessionID ID, contentType s
 		return nil, err
 	}
 
-	operationPath := fmt.Sprintf("/sessions/%s/compaction", pathParam0)
+	operationPath := fmt.Sprintf("/sessions/%s/configuration", pathParam0)
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -16123,18 +16903,87 @@ func NewCompactSessionRequestWithBody(server string, sessionID ID, contentType s
 		return nil, err
 	}
 
-	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewPatchSessionRequestWithApplicationMergePatchPlusJSONBody calls the generic PatchSession builder with application/merge-patch+json body
+func NewPatchSessionRequestWithApplicationMergePatchPlusJSONBody(server string, sessionID ID, params *PatchSessionParams, body PatchSessionApplicationMergePatchPlusJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPatchSessionRequestWithBody(server, sessionID, params, "application/merge-patch+json", bodyReader)
+}
+
+// NewPatchSessionRequestWithBody constructs an http.Request for the PatchSession method, with any body, and a specified content type
+func NewPatchSessionRequestWithBody(server string, sessionID ID, params *PatchSessionParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/sessions/%s/configuration", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPatch, queryURL.String(), body)
 	if err != nil {
 		return nil, err
 	}
 
 	req.Header.Add("Content-Type", contentType)
 
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithOptions("simple", false, "If-Match", params.IfMatch, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("If-Match", headerParam0)
+
+		if params.AlbedoAttachmentToken != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithOptions("simple", false, "Albedo-Attachment-Token", *params.AlbedoAttachmentToken, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Albedo-Attachment-Token", headerParam1)
+		}
+
+	}
+
 	return req, nil
 }
 
 // NewGetContextRequest constructs an http.Request for the GetContext method
-func NewGetContextRequest(server string, sessionID ID, params *GetContextParams) (*http.Request, error) {
+func NewGetContextRequest(server string, sessionID ID) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -16157,117 +17006,6 @@ func NewGetContextRequest(server string, sessionID ID, params *GetContextParams)
 	queryURL, err := serverURL.Parse(operationPath)
 	if err != nil {
 		return nil, err
-	}
-
-	if params != nil {
-		// queryValues collects non-styled parameters (passthrough, JSON)
-		// that are safe to round-trip through url.Values.Encode().
-		queryValues := queryURL.Query()
-		// rawQueryFragments collects pre-encoded query fragments from
-		// styled parameters, preserving literal commas as delimiters
-		// per the OpenAPI spec (e.g. "color=blue,black,brown").
-		var rawQueryFragments []string
-
-		if params.View != nil {
-
-			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "view", *params.View, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
-				return nil, err
-			} else {
-				for _, qp := range strings.Split(queryFrag, "&") {
-					rawQueryFragments = append(rawQueryFragments, qp)
-				}
-			}
-
-		}
-
-		if params.SnapshotID != nil {
-
-			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "snapshot_id", *params.SnapshotID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
-				return nil, err
-			} else {
-				for _, qp := range strings.Split(queryFrag, "&") {
-					rawQueryFragments = append(rawQueryFragments, qp)
-				}
-			}
-
-		}
-
-		if params.SectionID != nil {
-
-			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "section_id", *params.SectionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
-				return nil, err
-			} else {
-				for _, qp := range strings.Split(queryFrag, "&") {
-					rawQueryFragments = append(rawQueryFragments, qp)
-				}
-			}
-
-		}
-
-		if params.Page != nil {
-
-			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "page", *params.Page, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "integer", Format: ""}); err != nil {
-				return nil, err
-			} else {
-				for _, qp := range strings.Split(queryFrag, "&") {
-					rawQueryFragments = append(rawQueryFragments, qp)
-				}
-			}
-
-		}
-
-		if params.After != nil {
-
-			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "after", *params.After, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "integer", Format: ""}); err != nil {
-				return nil, err
-			} else {
-				for _, qp := range strings.Split(queryFrag, "&") {
-					rawQueryFragments = append(rawQueryFragments, qp)
-				}
-			}
-
-		}
-
-		if params.SinceMs != nil {
-
-			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "since_ms", *params.SinceMs, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "integer", Format: ""}); err != nil {
-				return nil, err
-			} else {
-				for _, qp := range strings.Split(queryFrag, "&") {
-					rawQueryFragments = append(rawQueryFragments, qp)
-				}
-			}
-
-		}
-
-		if params.Limit != nil {
-
-			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "limit", *params.Limit, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "integer", Format: ""}); err != nil {
-				return nil, err
-			} else {
-				for _, qp := range strings.Split(queryFrag, "&") {
-					rawQueryFragments = append(rawQueryFragments, qp)
-				}
-			}
-
-		}
-
-		if params.Next != nil {
-
-			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "next", *params.Next, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
-				return nil, err
-			} else {
-				for _, qp := range strings.Split(queryFrag, "&") {
-					rawQueryFragments = append(rawQueryFragments, qp)
-				}
-			}
-
-		}
-
-		if encoded := queryValues.Encode(); encoded != "" {
-			rawQueryFragments = append(rawQueryFragments, encoded)
-		}
-		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
 	}
 
 	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
@@ -16302,6 +17040,162 @@ func NewGetContextWindowRequest(server string, sessionID ID) (*http.Request, err
 	queryURL, err := serverURL.Parse(operationPath)
 	if err != nil {
 		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetContextSectionRequest constructs an http.Request for the GetContextSection method
+func NewGetContextSectionRequest(server string, sessionID ID, snapshotID ID, sectionID ID, params *GetContextSectionParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithOptions("simple", false, "snapshot_id", snapshotID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam2 string
+
+	pathParam2, err = runtime.StyleParamWithOptions("simple", false, "section_id", sectionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/sessions/%s/context/%s/sections/%s", pathParam0, pathParam1, pathParam2)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if queryFrag, err := runtime.StyleParamWithOptions("form", true, "page", params.Page, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "integer", Format: ""}); err != nil {
+			return nil, err
+		} else {
+			for _, qp := range strings.Split(queryFrag, "&") {
+				rawQueryFragments = append(rawQueryFragments, qp)
+			}
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewWatchSessionRequest constructs an http.Request for the WatchSession method
+func NewWatchSessionRequest(server string, sessionID ID, params *WatchSessionParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/sessions/%s/events", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if params.Tail != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "tail", *params.Tail, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.AfterGeneration != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "after_generation", *params.AfterGeneration, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.AfterSeq != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "after_seq", *params.AfterSeq, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
 	}
 
 	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
@@ -16710,7 +17604,7 @@ func NewGetHistoryContentRequest(server string, sessionID ID, entryID ID, params
 }
 
 // NewGetHistoryImageRequest constructs an http.Request for the GetHistoryImage method
-func NewGetHistoryImageRequest(server string, sessionID ID, entryID ID, field string) (*http.Request, error) {
+func NewGetHistoryImageRequest(server string, sessionID ID, entryID ID, field string, params *GetHistoryImageParams) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -16747,6 +17641,33 @@ func NewGetHistoryImageRequest(server string, sessionID ID, entryID ID, field st
 	queryURL, err := serverURL.Parse(operationPath)
 	if err != nil {
 		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if params.Edge != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "edge", *params.Edge, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
 	}
 
 	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
@@ -17320,6 +18241,103 @@ func NewReloadSessionRequestWithBody(server string, sessionID ID, contentType st
 	return req, nil
 }
 
+// NewGetSessionRequestsRequest constructs an http.Request for the GetSessionRequests method
+func NewGetSessionRequestsRequest(server string, sessionID ID, params *GetSessionRequestsParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/sessions/%s/requests", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if params.After != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "after", *params.After, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.SinceMs != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "since_ms", *params.SinceMs, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.Limit != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "limit", *params.Limit, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "integer", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.Next != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "next", *params.Next, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
 // NewRewindSessionRequest calls the generic RewindSession builder with application/json body
 func NewRewindSessionRequest(server string, sessionID ID, body RewindSessionJSONRequestBody) (*http.Request, error) {
 	var bodyReader io.Reader
@@ -17745,6 +18763,40 @@ func NewCancelSideQuestionRequestWithBody(server string, sessionID ID, questionI
 	return req, nil
 }
 
+// NewGetSessionStatusRequest constructs an http.Request for the GetSessionStatus method
+func NewGetSessionStatusRequest(server string, sessionID ID) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/sessions/%s/status", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
 // NewGenerateSessionTitleRequest calls the generic GenerateSessionTitle builder with application/json body
 func NewGenerateSessionTitleRequest(server string, sessionID ID, body GenerateSessionTitleJSONRequestBody) (*http.Request, error) {
 	var bodyReader io.Reader
@@ -17846,8 +18898,79 @@ func NewRecordVisitRequestWithBody(server string, sessionID ID, visitID UUIDv7, 
 	return req, nil
 }
 
+// NewMoveSessionWorkspaceRequest calls the generic MoveSessionWorkspace builder with application/json body
+func NewMoveSessionWorkspaceRequest(server string, sessionID ID, params *MoveSessionWorkspaceParams, body MoveSessionWorkspaceJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewMoveSessionWorkspaceRequestWithBody(server, sessionID, params, "application/json", bodyReader)
+}
+
+// NewMoveSessionWorkspaceRequestWithBody constructs an http.Request for the MoveSessionWorkspace method, with any body, and a specified content type
+func NewMoveSessionWorkspaceRequestWithBody(server string, sessionID ID, params *MoveSessionWorkspaceParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/sessions/%s/workspace", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithOptions("simple", false, "If-Match", params.IfMatch, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("If-Match", headerParam0)
+
+		if params.AlbedoAttachmentToken != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithOptions("simple", false, "Albedo-Attachment-Token", *params.AlbedoAttachmentToken, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Albedo-Attachment-Token", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
 // NewGetSettingsRequest constructs an http.Request for the GetSettings method
-func NewGetSettingsRequest(server string, params *GetSettingsParams) (*http.Request, error) {
+func NewGetSettingsRequest(server string) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -17863,33 +18986,6 @@ func NewGetSettingsRequest(server string, params *GetSettingsParams) (*http.Requ
 	queryURL, err := serverURL.Parse(operationPath)
 	if err != nil {
 		return nil, err
-	}
-
-	if params != nil {
-		// queryValues collects non-styled parameters (passthrough, JSON)
-		// that are safe to round-trip through url.Values.Encode().
-		queryValues := queryURL.Query()
-		// rawQueryFragments collects pre-encoded query fragments from
-		// styled parameters, preserving literal commas as delimiters
-		// per the OpenAPI spec (e.g. "color=blue,black,brown").
-		var rawQueryFragments []string
-
-		if params.Group != nil {
-
-			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "group", *params.Group, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
-				return nil, err
-			} else {
-				for _, qp := range strings.Split(queryFrag, "&") {
-					rawQueryFragments = append(rawQueryFragments, qp)
-				}
-			}
-
-		}
-
-		if encoded := queryValues.Encode(); encoded != "" {
-			rawQueryFragments = append(rawQueryFragments, encoded)
-		}
-		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
 	}
 
 	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
@@ -17900,19 +18996,8 @@ func NewGetSettingsRequest(server string, params *GetSettingsParams) (*http.Requ
 	return req, nil
 }
 
-// NewPatchSettingsRequestWithApplicationMergePatchPlusJSONBody calls the generic PatchSettings builder with application/merge-patch+json body
-func NewPatchSettingsRequestWithApplicationMergePatchPlusJSONBody(server string, params *PatchSettingsParams, body PatchSettingsApplicationMergePatchPlusJSONRequestBody) (*http.Request, error) {
-	var bodyReader io.Reader
-	buf, err := json.Marshal(body)
-	if err != nil {
-		return nil, err
-	}
-	bodyReader = bytes.NewReader(buf)
-	return NewPatchSettingsRequestWithBody(server, params, "application/merge-patch+json", bodyReader)
-}
-
-// NewPatchSettingsRequestWithBody constructs an http.Request for the PatchSettings method, with any body, and a specified content type
-func NewPatchSettingsRequestWithBody(server string, params *PatchSettingsParams, contentType string, body io.Reader) (*http.Request, error) {
+// NewGetCapabilitySettingsRequest constructs an http.Request for the GetCapabilitySettings method
+func NewGetCapabilitySettingsRequest(server string) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -17920,7 +19005,7 @@ func NewPatchSettingsRequestWithBody(server string, params *PatchSettingsParams,
 		return nil, err
 	}
 
-	operationPath := fmt.Sprintf("/settings")
+	operationPath := fmt.Sprintf("/settings/capabilities")
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -17930,27 +19015,522 @@ func NewPatchSettingsRequestWithBody(server string, params *PatchSettingsParams,
 		return nil, err
 	}
 
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewPatchCapabilitySettingsRequestWithApplicationMergePatchPlusJSONBody calls the generic PatchCapabilitySettings builder with application/merge-patch+json body
+func NewPatchCapabilitySettingsRequestWithApplicationMergePatchPlusJSONBody(server string, params *PatchCapabilitySettingsParams, body PatchCapabilitySettingsApplicationMergePatchPlusJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPatchCapabilitySettingsRequestWithBody(server, params, "application/merge-patch+json", bodyReader)
+}
+
+// NewPatchCapabilitySettingsRequestWithBody constructs an http.Request for the PatchCapabilitySettings method, with any body, and a specified content type
+func NewPatchCapabilitySettingsRequestWithBody(server string, params *PatchCapabilitySettingsParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/settings/capabilities")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPatch, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
 	if params != nil {
-		// queryValues collects non-styled parameters (passthrough, JSON)
-		// that are safe to round-trip through url.Values.Encode().
-		queryValues := queryURL.Query()
-		// rawQueryFragments collects pre-encoded query fragments from
-		// styled parameters, preserving literal commas as delimiters
-		// per the OpenAPI spec (e.g. "color=blue,black,brown").
-		var rawQueryFragments []string
 
-		if queryFrag, err := runtime.StyleParamWithOptions("form", true, "group", params.Group, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithOptions("simple", false, "If-Match", params.IfMatch, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+		if err != nil {
 			return nil, err
-		} else {
-			for _, qp := range strings.Split(queryFrag, "&") {
-				rawQueryFragments = append(rawQueryFragments, qp)
-			}
 		}
 
-		if encoded := queryValues.Encode(); encoded != "" {
-			rawQueryFragments = append(rawQueryFragments, encoded)
+		req.Header.Set("If-Match", headerParam0)
+
+	}
+
+	return req, nil
+}
+
+// NewGetDeclaredSettingsRequest constructs an http.Request for the GetDeclaredSettings method
+func NewGetDeclaredSettingsRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/settings/extension_settings")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewPatchDeclaredSettingsRequestWithApplicationMergePatchPlusJSONBody calls the generic PatchDeclaredSettings builder with application/merge-patch+json body
+func NewPatchDeclaredSettingsRequestWithApplicationMergePatchPlusJSONBody(server string, params *PatchDeclaredSettingsParams, body PatchDeclaredSettingsApplicationMergePatchPlusJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPatchDeclaredSettingsRequestWithBody(server, params, "application/merge-patch+json", bodyReader)
+}
+
+// NewPatchDeclaredSettingsRequestWithBody constructs an http.Request for the PatchDeclaredSettings method, with any body, and a specified content type
+func NewPatchDeclaredSettingsRequestWithBody(server string, params *PatchDeclaredSettingsParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/settings/extension_settings")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPatch, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithOptions("simple", false, "If-Match", params.IfMatch, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+		if err != nil {
+			return nil, err
 		}
-		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+
+		req.Header.Set("If-Match", headerParam0)
+
+	}
+
+	return req, nil
+}
+
+// NewGetExtensionSettingsRequest constructs an http.Request for the GetExtensionSettings method
+func NewGetExtensionSettingsRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/settings/extensions")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewPatchExtensionSettingsRequestWithApplicationMergePatchPlusJSONBody calls the generic PatchExtensionSettings builder with application/merge-patch+json body
+func NewPatchExtensionSettingsRequestWithApplicationMergePatchPlusJSONBody(server string, params *PatchExtensionSettingsParams, body PatchExtensionSettingsApplicationMergePatchPlusJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPatchExtensionSettingsRequestWithBody(server, params, "application/merge-patch+json", bodyReader)
+}
+
+// NewPatchExtensionSettingsRequestWithBody constructs an http.Request for the PatchExtensionSettings method, with any body, and a specified content type
+func NewPatchExtensionSettingsRequestWithBody(server string, params *PatchExtensionSettingsParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/settings/extensions")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPatch, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithOptions("simple", false, "If-Match", params.IfMatch, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("If-Match", headerParam0)
+
+	}
+
+	return req, nil
+}
+
+// NewGetMCPSettingsRequest constructs an http.Request for the GetMCPSettings method
+func NewGetMCPSettingsRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/settings/mcp")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewPatchMCPSettingsRequestWithApplicationMergePatchPlusJSONBody calls the generic PatchMCPSettings builder with application/merge-patch+json body
+func NewPatchMCPSettingsRequestWithApplicationMergePatchPlusJSONBody(server string, params *PatchMCPSettingsParams, body PatchMCPSettingsApplicationMergePatchPlusJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPatchMCPSettingsRequestWithBody(server, params, "application/merge-patch+json", bodyReader)
+}
+
+// NewPatchMCPSettingsRequestWithBody constructs an http.Request for the PatchMCPSettings method, with any body, and a specified content type
+func NewPatchMCPSettingsRequestWithBody(server string, params *PatchMCPSettingsParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/settings/mcp")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPatch, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithOptions("simple", false, "If-Match", params.IfMatch, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("If-Match", headerParam0)
+
+	}
+
+	return req, nil
+}
+
+// NewGetModelSettingsRequest constructs an http.Request for the GetModelSettings method
+func NewGetModelSettingsRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/settings/models")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewPatchModelSettingsRequestWithApplicationMergePatchPlusJSONBody calls the generic PatchModelSettings builder with application/merge-patch+json body
+func NewPatchModelSettingsRequestWithApplicationMergePatchPlusJSONBody(server string, params *PatchModelSettingsParams, body PatchModelSettingsApplicationMergePatchPlusJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPatchModelSettingsRequestWithBody(server, params, "application/merge-patch+json", bodyReader)
+}
+
+// NewPatchModelSettingsRequestWithBody constructs an http.Request for the PatchModelSettings method, with any body, and a specified content type
+func NewPatchModelSettingsRequestWithBody(server string, params *PatchModelSettingsParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/settings/models")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPatch, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithOptions("simple", false, "If-Match", params.IfMatch, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("If-Match", headerParam0)
+
+	}
+
+	return req, nil
+}
+
+// NewGetProviderSettingsRequest constructs an http.Request for the GetProviderSettings method
+func NewGetProviderSettingsRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/settings/providers")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewPatchProviderSettingsRequestWithApplicationMergePatchPlusJSONBody calls the generic PatchProviderSettings builder with application/merge-patch+json body
+func NewPatchProviderSettingsRequestWithApplicationMergePatchPlusJSONBody(server string, params *PatchProviderSettingsParams, body PatchProviderSettingsApplicationMergePatchPlusJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPatchProviderSettingsRequestWithBody(server, params, "application/merge-patch+json", bodyReader)
+}
+
+// NewPatchProviderSettingsRequestWithBody constructs an http.Request for the PatchProviderSettings method, with any body, and a specified content type
+func NewPatchProviderSettingsRequestWithBody(server string, params *PatchProviderSettingsParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/settings/providers")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPatch, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithOptions("simple", false, "If-Match", params.IfMatch, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("If-Match", headerParam0)
+
+	}
+
+	return req, nil
+}
+
+// NewGetUISettingsRequest constructs an http.Request for the GetUISettings method
+func NewGetUISettingsRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/settings/ui")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewPatchUISettingsRequestWithApplicationMergePatchPlusJSONBody calls the generic PatchUISettings builder with application/merge-patch+json body
+func NewPatchUISettingsRequestWithApplicationMergePatchPlusJSONBody(server string, params *PatchUISettingsParams, body PatchUISettingsApplicationMergePatchPlusJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPatchUISettingsRequestWithBody(server, params, "application/merge-patch+json", bodyReader)
+}
+
+// NewPatchUISettingsRequestWithBody constructs an http.Request for the PatchUISettings method, with any body, and a specified content type
+func NewPatchUISettingsRequestWithBody(server string, params *PatchUISettingsParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/settings/ui")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
 	}
 
 	req, err := http.NewRequest(http.MethodPatch, queryURL.String(), body)
@@ -19168,4 +20748,10 @@ func (c *Client) applyEditors(ctx context.Context, req *http.Request, additional
 	return nil
 }
 
+type
+
 // Response decoding is owned by the daemon adapter.
+MCPSecretsPatchOauthClient struct {
+	ClientID     string                     `json:"client_id"`
+	ClientSecret NullablePatchField[string] `json:"client_secret,omitempty" nullable:"true"`
+}

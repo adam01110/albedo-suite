@@ -34,21 +34,24 @@ func HomeDir() string {
 // daemon's credential store. APIKey carries a newly entered draft value;
 // HasKey is presence metadata returned by the daemon.
 type Settings struct {
-	ProfileName string   `json:"-"`
-	Enabled     *bool    `json:"enabled,omitempty"`
-	Effort      *string  `json:"effort,omitempty"`
-	ImageEdge   *int     `json:"image_edge,omitempty"`
-	AccountID   *string  `json:"account_id,omitempty"`
-	AccountIDs  []string `json:"account_ids,omitempty"`
-	Project     *string  `json:"project,omitempty"`
-	Location    *string  `json:"location,omitempty"`
-	Extension   string   `json:"extension,omitempty"`
-	API         string   `json:"api,omitempty"`
-	BaseURL     string   `json:"baseUrl,omitempty"`
-	APIKey      string   `json:"apiKey,omitempty"`
-	Model       string   `json:"model"`
-	Protocol    string   `json:"protocol"`
-	HasKey      bool     `json:"hasKey,omitempty"`
+	ProfileName string  `json:"-"`
+	Enabled     *bool   `json:"enabled,omitempty"`
+	Effort      *string `json:"effort,omitempty"`
+	ImageEdge   *int    `json:"image_edge,omitempty"`
+	AccountID   *string `json:"account_id,omitempty"`
+	Project     *string `json:"project,omitempty"`
+	Location    *string `json:"location,omitempty"`
+	// Rotation is how AccountIDs is used: failover, spread or first. Empty
+	// is the daemon's default, failover.
+	Rotation   string   `json:"rotation,omitempty"`
+	Extension  string   `json:"extension,omitempty"`
+	API        string   `json:"api,omitempty"`
+	BaseURL    string   `json:"baseUrl,omitempty"`
+	APIKey     string   `json:"apiKey,omitempty"`
+	Model      string   `json:"model"`
+	Protocol   string   `json:"protocol"`
+	AccountIDs []string `json:"account_ids,omitempty"`
+	HasKey     bool     `json:"hasKey,omitempty"`
 }
 
 func (s Settings) IsEnabled() bool { return s.Enabled == nil || *s.Enabled }
@@ -98,7 +101,7 @@ func (s Settings) Validate() (Settings, error) {
 	}
 
 	return Settings{
-		ProfileName: s.ProfileName, Enabled: s.Enabled, Effort: s.Effort, ImageEdge: s.ImageEdge, AccountID: s.AccountID, AccountIDs: s.AccountIDs, Project: s.Project, Location: s.Location,
+		ProfileName: s.ProfileName, Enabled: s.Enabled, Effort: s.Effort, ImageEdge: s.ImageEdge, AccountID: s.AccountID, AccountIDs: s.AccountIDs, Rotation: s.Rotation, Project: s.Project, Location: s.Location,
 		Extension: ext,
 		API:       s.API,
 		BaseURL:   endpoint,

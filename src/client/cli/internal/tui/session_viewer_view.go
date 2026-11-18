@@ -378,7 +378,7 @@ func (m SessionViewer) row(item PickerItem, s daemon.Session, sec int, selected 
 		case "archive":
 			glyph, title, hint, fg = "▤ ", "Archive", counted(len(m.archivedIDs), "session"), DefaultStyles.Muted
 		case "login":
-			glyph, title, hint, fg = "◇ ", "Accounts", "providers", DefaultStyles.Muted
+			glyph, title, hint, fg = "◇ ", "Accounts", "sign-ins", DefaultStyles.Muted
 		}
 		titleWidth := min(ansi.StringWidth(title), cols.title)
 		return fill(bar + st(fg).Render(glyph) + st(lipgloss.NewStyle()).Render(" ") +
@@ -525,7 +525,7 @@ func (m SessionViewer) actionPreview(id string, inner, height int) []string {
 			DefaultStyles.Faint.Render("enter ") + DefaultStyles.Muted.Render("browse")}
 	default:
 		lines = []string{"", "", DefaultStyles.Muted.Bold(true).Render("◇ Accounts"), "",
-			DefaultStyles.Muted.Render("add a provider, sign in, or pick"), DefaultStyles.Muted.Render("which one new sessions use."), "",
+			DefaultStyles.Muted.Render("sign in to Claude, ChatGPT, Gemini"), DefaultStyles.Muted.Render("or a key; rotation and sign-out."), "",
 			DefaultStyles.Faint.Render("enter ") + DefaultStyles.Muted.Render("manage")}
 	}
 	for i, l := range lines {

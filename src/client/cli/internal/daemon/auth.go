@@ -27,11 +27,17 @@ type Terms struct {
 	Paragraphs          []string
 }
 type Account struct {
-	Provider, ID, Label, Detail, Kind, Source, LimitedUntil string
 	Endpoint                                                *string
-	RotatedByProfiles                                       []string
-	Selected                                                bool
-	SelectedByProfiles                                      []string
+	Provider, ID, Label, Detail, Kind, Source, LimitedUntil string
+	// Email and Plan are what the provider reported for a sign-in; empty
+	// when it reported nothing.
+	Email, Plan        string
+	RotatedByProfiles  []string
+	SelectedByProfiles []string
+	Selected           bool
+	// NeedsSignIn marks a saved sign-in the provider no longer accepts; it
+	// works again after signing in again.
+	NeedsSignIn bool
 }
 type SignIns struct {
 	Logins   []SignIn
@@ -44,7 +50,7 @@ type SignInStatus struct {
 }
 
 func accountValue(w protocol.Account) Account {
-	return Account{Provider: string(w.Provider), ID: string(w.ID), Label: w.Label, Detail: w.Detail, Kind: w.Kind, Source: w.Source, Endpoint: w.Endpoint, LimitedUntil: value(w.LimitedUntil), RotatedByProfiles: idsToStrings(w.RotatedByProfiles), Selected: len(w.SelectedByProfiles) > 0, SelectedByProfiles: idsToStrings(w.SelectedByProfiles)}
+	return Account{Provider: string(w.Provider), ID: string(w.ID), Label: w.Label, Detail: w.Detail, Kind: w.Kind, Source: w.Source, Endpoint: w.Endpoint, LimitedUntil: value(w.LimitedUntil), Email: value(w.Email), Plan: value(w.Plan), NeedsSignIn: w.NeedsSignIn, RotatedByProfiles: idsToStrings(w.RotatedByProfiles), Selected: len(w.SelectedByProfiles) > 0, SelectedByProfiles: idsToStrings(w.SelectedByProfiles)}
 }
 func idsToStrings(ids []protocol.ID) []string {
 	if len(ids) == 0 {
@@ -228,7 +234,7 @@ func SignInInput(ctx context.Context, conn *Connection, id, input, etag string) 
 	var next string
 	return executeMutation(ctx, conn, operation{Capability: "provider_auth", Name: "answer provider login", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
 		return protocol.NewAnswerLoginRequestWithBody(base, id, &protocol.AnswerLoginParams{IfMatch: etag}, "application/merge-patch+json", body)
-	}, Body: protocol.LoginPatch{Response: &input}, Headers: headers, Validator: &next, Policy: noRecovery, Timeout: signInTimeout}, []int{200}, func(data []byte, _ int) error {
+	}, Body: protocol.LoginPatch{Response: protocol.SetPatch(input)}, Headers: headers, Validator: &next, Policy: noRecovery, Timeout: signInTimeout}, []int{200}, func(data []byte, _ int) error {
 		var w protocol.Login
 		if err := json.Unmarshal(data, &w); err != nil {
 			return err

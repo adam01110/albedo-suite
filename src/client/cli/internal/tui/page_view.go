@@ -9,6 +9,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
@@ -32,7 +33,20 @@ type PageDocument = daemon.PageDocument
 type PageCancelMsg struct{}
 type PageViewChangedMsg struct{}
 
+const pageRefreshInterval = time.Minute
+
 type pageLoadedMsg struct {
+	Doc *PageDocument
+	Err error
+	Gen int
+}
+
+type pageRefreshTickMsg struct {
+	Gen     int
+	TickGen int
+}
+
+type pageRefreshedMsg struct {
 	Doc *PageDocument
 	Err error
 	Gen int
@@ -76,6 +90,7 @@ type PageViewModel struct {
 	ChoiceIndex             int
 	FieldIndex, ActionIndex int
 	FormValues              map[string]json.RawMessage
+	refreshTickGen          int
 	Busy                    bool
 }
 
@@ -104,6 +119,29 @@ func (m *PageViewModel) fitInput() {
 
 func (m PageViewModel) Init() tea.Cmd {
 	return m.loadPageCmd(m.Generation)
+}
+
+// RefreshTickCmd schedules the calm minute-level page refresh when connected.
+func (m *PageViewModel) RefreshTickCmd() tea.Cmd {
+	if m.Conn == nil {
+		return nil
+	}
+	m.refreshTickGen++
+	gen, tickGen := m.Generation, m.refreshTickGen
+	return tea.Tick(pageRefreshInterval, func(time.Time) tea.Msg {
+		return pageRefreshTickMsg{Gen: gen, TickGen: tickGen}
+	})
+}
+
+func (m PageViewModel) silentRefreshCmd(gen int) tea.Cmd {
+	previous := m.Doc
+	return func() tea.Msg {
+		if m.Conn == nil {
+			return nil
+		}
+		doc, err := daemon.RefreshPage(context.Background(), m.Conn, m.SessionID, m.Command, previous)
+		return pageRefreshedMsg{Doc: doc, Err: err, Gen: gen}
+	}
 }
 
 // Confirming reports a question waiting for enter or esc.
@@ -251,7 +289,25 @@ func (m PageViewModel) Update(msg tea.Msg) (PageViewModel, tea.Cmd) {
 		}
 		m.setDoc(msg.Doc)
 		m.Error = ""
-		return m, nil
+		return m, m.RefreshTickCmd()
+
+	case pageRefreshTickMsg:
+		if msg.Gen != m.Generation || msg.TickGen != m.refreshTickGen || m.Conn == nil {
+			return m, nil
+		}
+		if m.Mode != modeBrowse || m.Busy || m.Confirming() {
+			return m, m.RefreshTickCmd()
+		}
+		return m, m.silentRefreshCmd(m.Generation)
+
+	case pageRefreshedMsg:
+		if msg.Gen != m.Generation {
+			return m, nil
+		}
+		if msg.Err == nil && msg.Doc != nil && m.Mode == modeBrowse && !m.Busy && !m.Confirming() {
+			m.setDoc(msg.Doc)
+		}
+		return m, m.RefreshTickCmd()
 
 	case pageShortcutPreparedMsg:
 		if !m.settle(msg.Gen, msg.Err, &m.Busy) {
@@ -325,6 +381,7 @@ func (m PageViewModel) keyPress(msg tea.KeyPressMsg) (PageViewModel, tea.Cmd) {
 	}
 	if key == "esc" || key == "ctrl+c" {
 		if m.Mode == modeBrowse {
+			m.Generation = nextPageGeneration()
 			return m, func() tea.Msg { return PageCancelMsg{} }
 		}
 		m.cancelPrompt()

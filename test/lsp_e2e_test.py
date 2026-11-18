@@ -144,7 +144,7 @@ class LspE2ETests(unittest.TestCase):
         self.assertEqual(result["session"]["state"], "applied")
 
     def selection(self, enabled):
-        route = f"/sessions/{self.session}?view=configuration"
+        route = f"/sessions/{self.session}/configuration"
         with self.app.api(route) as response:
             json.load(response)
             etag = response.headers["ETag"]

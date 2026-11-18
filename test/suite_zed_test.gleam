@@ -1,10 +1,10 @@
-import albedo/harness/extensions/zed/stream as zed_stream
-import albedo/harness/extensions/zed/wire
-import albedo/openai_api
-import albedo/openai_api/request as encoder
-import albedo/openai_api/stream as albedo_stream
+import albedo_ext_zed/stream as zed_stream
+import albedo_ext_zed/wire
 import albedo_model as types
 import albedo_model/replay
+import albedo_model_stream
+import albedo_openai as openai_api
+import albedo_openai/request as encoder
 import albedo_sse as sse
 import gleam/bit_array
 import gleam/dynamic/decode
@@ -459,7 +459,7 @@ fn provider_requests() {
   assert_responses_items_typed(gpt)
 }
 
-fn feed(reducer: albedo_stream.Reducer, event: String) {
+fn feed(reducer: albedo_model_stream.Reducer, event: String) {
   let assert Ok(#(next, events, turn)) = reducer.feed(event)
   #(next, events, turn)
 }

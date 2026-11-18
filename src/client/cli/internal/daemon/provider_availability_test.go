@@ -10,7 +10,7 @@ import (
 func TestProviderAvailabilityToggleIsConditional(t *testing.T) {
 	conn := controlledConnection(t, func(w http.ResponseWriter, r *http.Request) {
 		data, _ := io.ReadAll(r.Body)
-		if r.Method != http.MethodPatch || r.URL.String() != "/settings?group=providers" || r.Header.Get("If-Match") != `"providers-1"` ||
+		if r.Method != http.MethodPatch || r.URL.String() != "/settings/providers" || r.Header.Get("If-Match") != `"providers-1"` ||
 			string(data) != `{"profiles":{"claude":{"enabled":false}}}` {
 			t.Errorf("unexpected toggle %s %s If-Match=%q %s", r.Method, r.URL, r.Header.Get("If-Match"), data)
 		}
@@ -22,7 +22,7 @@ func TestProviderAvailabilityToggleIsConditional(t *testing.T) {
 
 func TestProviderAvailabilitySettingsRetainEnabledState(t *testing.T) {
 	for _, enabled := range []any{nil, false} {
-		profile := map[string]any{"extension": "openai", "endpoint": "https://fixture.example/v1", "model": "fixture", "protocol": "responses", "effort": nil, "image_edge": nil, "account_id": nil, "account_ids": nil, "project": nil, "location": nil, "has_key": false}
+		profile := map[string]any{"extension": "openai", "endpoint": "https://fixture.example/v1", "model": "fixture", "protocol": "responses", "effort": nil, "image_edge": nil, "account_id": nil, "account_ids": nil, "project": nil, "location": nil, "rotation": "failover", "has_key": false}
 		if enabled != nil {
 			profile["enabled"] = enabled
 		}

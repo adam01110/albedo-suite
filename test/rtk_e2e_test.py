@@ -1,7 +1,7 @@
 """Real RTK plus real supervised subprocess integration (isolated HOME).
 
 ALBEDO_RTK_SOURCE is the integrated priv/python tree; RTK must be on PATH.
-For overlay-only testing set ALBEDO_RTK_UPSTREAM to pinned upstream priv/python.
+For overlay-only testing set ALBEDO_RTK_UPSTREAM to pinned upstream python/.
 No daemon/network/provider/build required.
 """
 
@@ -22,7 +22,7 @@ from unittest.mock import patch
 SOURCE = Path(
     os.environ.get(
         "ALBEDO_RTK_SOURCE",
-        Path(__file__).resolve().parents[1] / "src/server/priv/python",
+        Path(__file__).resolve().parents[1] / "src/server/python",
     )
 )
 if "ALBEDO_RTK_UPSTREAM" in os.environ:

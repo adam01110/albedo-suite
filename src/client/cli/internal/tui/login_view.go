@@ -51,7 +51,7 @@ func (m LoginModel) fieldLabel() string {
 		if m.LoginState == "confirming" {
 			return "account confirmation (type confirm)"
 		}
-		return "callback URL or code"
+		return "code or callback URL"
 	}
 	label, _ := m.question()
 	return label
@@ -95,20 +95,47 @@ func (m LoginModel) View() string {
 
 func (m LoginModel) screen() string {
 	width := cmp.Or(m.Width, 80)
-	title := brand("albedo") + " " + DefaultStyles.Muted.Render("/login")
+	title := brand("albedo") + " " + DefaultStyles.Muted.Render("/accounts")
+	if m.advanced {
+		title += DefaultStyles.Faint.Render(" › ") + DefaultStyles.Muted.Render("advanced")
+	}
 	right := m.Name
-	if m.Step == StepChoose || (m.Step == StepRemove || m.Step == StepRotationPrompt) {
+	onList := m.Step == StepChoose || m.Step == StepAdvanced || m.Step == StepAddKey || m.Step == StepRemove || m.Step == StepRotationPrompt || m.signingInline() || (m.Step == StepSaving && m.listBusy != "")
+	if onList {
 		right = homePath(config.HomeDir())
+	}
+	if m.Step == StepChoose && m.accountsEmpty() {
+		right = "no accounts yet"
 	}
 	if right != "" {
 		right = DefaultStyles.Faint.Render(right)
 	}
 	footer := m.footer(width)
+	if m.Step == StepChoose && m.accountsEmpty() {
+		return listFrame{title: title, right: right, list: m.firstRunList, footer: footer}.view(m.Width, m.Height)
+	}
+	if m.signingInline() {
+		f := m.accountsFrame(title, right, footer)
+		if m.Provider == "zed" && m.LoginState != "confirming" && !m.signInOver() {
+			f.filter = promptLead() + DefaultStyles.Faint.Render("waiting for the browser sign-in")
+		} else if !m.signInOver() {
+			f.filter = promptLead() + DefaultStyles.Muted.Render(m.fieldLabel()+"  ") + m.TextInput.View()
+		} else {
+			f.filter = promptLead() + DefaultStyles.Faint.Render("the sign-in did not finish")
+		}
+		return f.view(m.Width, m.Height)
+	}
+	if m.Step == StepSaving && m.listBusy != "" {
+		return m.accountsFrame(title, right, footer).view(m.Width, m.Height)
+	}
 	// A removal question keeps the list it asks about on screen, the way every
 	// other confirm does.
 	if m.listing() || (m.Step == StepRemove || m.Step == StepRotationPrompt) {
+		if !m.advanced && (m.Step == StepChoose || m.Step == StepRemove) {
+			return m.accountsFrame(title, right, footer).view(m.Width, m.Height)
+		}
 		lv := m.pickerFor().listView
-		lv.Empty = "nothing to choose"
+		lv.Empty = cmp.Or(lv.Empty, "nothing to choose")
 		return lv.frame(title, right, footer).view(m.Width, m.Height)
 	}
 	f := listFrame{
@@ -119,6 +146,14 @@ func (m LoginModel) screen() string {
 		footer: footer,
 	}
 	return f.view(m.Width, m.Height)
+}
+
+// accountsFrame is the accounts list in the frame, with a pane wide enough
+// for an account's facts on one row each.
+func (m LoginModel) accountsFrame(title, right, footer string) listFrame {
+	f := m.ChoosePicker.frame(title, right, footer)
+	f.paneWidth = func(width int) int { return min(max(width*38/100, 36), 48) }
+	return f
 }
 
 // filterLine is the question's input line; a step that is only waiting on the
@@ -232,7 +267,7 @@ func (m LoginModel) hints() []hint {
 		if verb := m.enterVerb(); verb != "" {
 			hints = append(hints, hint{"enter", verb})
 		}
-		if item, ok := m.ChoosePicker.Highlighted(); ok && m.Step == StepChoose {
+		if item, ok := m.ChoosePicker.Highlighted(); ok && m.Step == StepAdvanced {
 			if name, ok := m.highlightedProfile(); ok {
 				if m.editable(name) {
 					hints = append(hints, hint{"ctrl+e", "edit"})
@@ -250,7 +285,11 @@ func (m LoginModel) hints() []hint {
 				hints = append(hints, hint{"ctrl+r", "rename"})
 			}
 			if _, removable := m.removalFor(item.ID); removable && !external {
-				hints = append(hints, hint{"ctrl+x", "remove"})
+				verb := "remove"
+				if isAccount {
+					verb = "sign out"
+				}
+				hints = append(hints, hint{"ctrl+x", verb})
 			}
 		}
 		return append(hints, hint{"esc", "back"})
@@ -372,8 +411,29 @@ func (m LoginModel) signInHint() string {
 	return "browser sign-in finishes on its own; paste the callback URL or code if it stalls"
 }
 
+// zedSignInFooter is an inline Zed sign-in's keys: the browser finishes it,
+// and the identity the daemon verified is shown beside the confirmation keys.
+func (m LoginModel) zedSignInFooter(width int) string {
+	if m.Error != "" {
+		return footerLine(width, m.hints(), DefaultStyles.Error.Render(m.Error), true)
+	}
+	if m.LoginState == "confirming" {
+		return footerLine(width, m.hints(), DefaultStyles.Warning.Render(m.Status), m.Status != "")
+	}
+	return footerLine(width, m.hints(), DefaultStyles.Faint.Render(m.signInHint()), true)
+}
+
 // footer is the keys, with an error or the catalog's note beside them.
 func (m LoginModel) footer(width int) string {
+	if m.signingInline() && m.Provider == "zed" && !m.signInOver() {
+		return m.zedSignInFooter(width)
+	}
+	if !m.advanced && (m.Step == StepChoose || m.signingInline() || (m.Step == StepSaving && m.listBusy != "") || (m.Step == StepRemove && m.Removing.Kind == "account")) {
+		return m.accountsFooter(width)
+	}
+	if m.Step == StepRemove && m.Removing.Kind == "account" {
+		return m.signOutFooter(width)
+	}
 	if m.Step == StepRotationPrompt {
 		return footerLine(width, []hint{{"↑↓", "choose"}, {"enter", "continue"}, {"esc", "no"}}, DefaultStyles.Warning.Render(m.confirm.prompt), true)
 	}
@@ -386,8 +446,8 @@ func (m LoginModel) footer(width int) string {
 	status := ""
 	if m.CatalogNote != "" && (m.Step == StepModels || m.Step == StepOAuthModels) {
 		status = DefaultStyles.Faint.Render(m.CatalogNote)
-	} else if m.Status != "" && m.Step == StepChoose {
+	} else if m.Status != "" && (m.Step == StepChoose || m.Step == StepAdvanced) {
 		status = DefaultStyles.Faint.Render(m.Status)
 	}
-	return footerLine(width, m.hints(), status, m.Status != "" && m.Step == StepChoose)
+	return footerLine(width, m.hints(), status, m.Status != "" && (m.Step == StepChoose || m.Step == StepAdvanced))
 }

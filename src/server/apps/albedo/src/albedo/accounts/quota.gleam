@@ -1,0 +1,923 @@
+//// Provider quota readings, polled per account and recorded raw.
+////
+//// One poller for the whole daemon owns the schedule. Every account albedo
+//// can see is polled on its own cadence: each OAuth account in a provider's
+//// rotation pool, and each API-key profile whose base url names a feed. Zed is
+//// the one provider Albedo reads itself: the core has no Zed feed, so its
+//// accounts are polled for account-level edit-prediction usage. Never two
+//// polls of one account at once; a limit at or above 80 percent, or one
+//// resetting within fifteen minutes, moves that account onto the busy
+//// cadence; a failure backs off. Credentials come from the same readers and
+//// refreshers the request path uses, so polling refreshes tokens the way
+//// requests do; Zed's account reading authenticates with the stored access
+//// token as it stands, so polling renews no inference token.
+////
+//// Only readings are stored — percentages, windows, reset times, statuses and
+//// errors exactly as the feed reported them, never anything derived. Phase 2
+//// derives what it needs from these rows.
+
+import albedo_clock
+import albedo_ext_zed/quota as zed_quota
+import albedo_process
+import albedo_protect
+import albedo_sdk/key_environment.{type KeyEnvironment}
+import albedo_sdk/network
+import albedo_sdk/network_context
+import albedo_sdk/profiles as configuration
+import albedo_sdk/settings
+import albedo_sdk/store
+import albedo_sdk/usage_feed.{type Limit, type Report, type Target}
+import gleam/dict.{type Dict}
+import gleam/dynamic/decode
+import gleam/erlang/atom
+import gleam/erlang/process.{type Subject}
+import gleam/int
+import gleam/io
+import gleam/json
+import gleam/list
+import gleam/option.{type Option, None, Some}
+import gleam/otp/actor
+import gleam/result
+import sqlight
+
+/// The feed the poller polls through: the real one, or a fake in tests.
+pub type Fetch =
+  fn(String, json.Json, Int) -> Result(Report, String)
+
+pub type Settings {
+  Settings(poll_seconds: Int, busy_poll_seconds: Int, enabled: Bool)
+}
+
+const default_settings = Settings(600, 120, True)
+
+/// `$ALBEDO_HOME/extensions.json` under `"quota"`, read like any extension's
+/// settings, and re-read every round so changes apply without a restart.
+fn load_settings() -> Settings {
+  let decoder = {
+    use poll_seconds <- decode.optional_field("pollSeconds", 600, decode.int)
+    use busy_poll_seconds <- decode.optional_field(
+      "busyPollSeconds",
+      120,
+      decode.int,
+    )
+    use enabled <- decode.optional_field("enabled", True, decode.bool)
+    decode.success(Settings(poll_seconds, busy_poll_seconds, enabled))
+  }
+  settings.load("quota", decoder, default_settings)
+  |> result.unwrap(default_settings)
+  |> clamped
+}
+
+fn clamped(settings: Settings) -> Settings {
+  let poll_seconds = int.clamp(settings.poll_seconds, 1, 86_400)
+  Settings(
+    poll_seconds,
+    int.clamp(settings.busy_poll_seconds, 1, poll_seconds),
+    settings.enabled,
+  )
+}
+
+/// One account to poll, and the step its source runs after each report.
+pub opaque type Watched {
+  Watched(
+    target: Target,
+    heal: fn(String, String, List(Limit)) -> Nil,
+    service: network.Service,
+  )
+}
+
+/// The accounts this daemon can poll, with credentials refreshed the way
+/// requests refresh them: every source's sign-in accounts, then each saved
+/// profile the source of its extension maps to a feed.
+fn enumerate(
+  home: String,
+  sources: List(#(String, usage_feed.Source)),
+  keys: KeyEnvironment,
+) -> List(Watched) {
+  let accounts =
+    list.flat_map(sources, fn(entry) {
+      let source = entry.1
+      network_context.routed(network.Extension(entry.0), fn() {
+        Ok(source.accounts(home, keys))
+      })
+      |> result.unwrap([])
+      |> list.map(Watched(_, source.heal, network.Extension(entry.0)))
+    })
+  let profiles =
+    configuration.providers(home)
+    |> result.unwrap([])
+    |> list.filter_map(fn(profile) {
+      use source <- result.try(list.key_find(sources, profile.extension))
+      use route <- result.try(
+        network.resolve(network.Extension(profile.extension))
+        |> result.replace_error(Nil),
+      )
+      use target <- result.map(
+        network_context.with_route(route, fn() {
+          source.profile(home, profile.name, keys)
+        }),
+      )
+      Watched(target, source.heal, network.Extension(profile.extension))
+    })
+  list.append(accounts, profiles)
+}
+
+// ---- the poller ---------------------------------------------------------
+
+pub type Message {
+  Tick(generation: Int)
+  WorkerTimedOut(process.Pid)
+  /// The account list, as a spawn saw it.
+  Enumerated(pid: process.Pid, targets: List(Watched))
+  /// One poll finished: the account key, whether it failed, and whether it
+  /// is busy.
+  Polled(
+    key: String,
+    pid: process.Pid,
+    failed: Bool,
+    busy: Bool,
+    attempted_at: Int,
+  )
+  Down(process.Down)
+}
+
+type Account {
+  Account(
+    /// provider <> "/" <> label: one polled account, never two polls at once.
+    key: String,
+    watched: Watched,
+    /// Wall-clock milliseconds for this account's next poll.
+    next_due: Int,
+    /// Consecutive failed polls, for backoff.
+    failures: Int,
+    /// The process polling now, so a crash frees the slot.
+    polling: Option(process.Pid),
+    /// Whether the latest discovery still lists this account.
+    listed: Bool,
+  )
+}
+
+type State {
+  State(
+    home: String,
+    database: store.Store,
+    fetch: Fetch,
+    /// Every installed extension's quota source, with its extension's name.
+    sources: List(#(String, usage_feed.Source)),
+    settings: fn() -> Settings,
+    worker_timeout_ms: Int,
+    accounts: Dict(String, Account),
+    self: Subject(Message),
+    /// Cancel and replace the pending tick when an earlier deadline appears.
+    timer: Option(process.Timer),
+    generation: Int,
+    /// The process listing accounts now, so a crash cannot wedge it.
+    enumerating: Option(process.Pid),
+    last_enumerated: Int,
+    /// The runtime's key environment, for sources that poll key accounts.
+    keys: KeyEnvironment,
+  )
+}
+
+/// A provider's feed: the core's, except Zed, which the core has no feed for
+/// and Albedo reads itself. Both are passed so the choice is a value, not a
+/// hard-wired call.
+pub fn feed(
+  provider: String,
+  credential: json.Json,
+  now: Int,
+  zed: fn(json.Json) -> Result(Report, String),
+  core: Fetch,
+) -> Result(Report, String) {
+  case provider {
+    "zed" -> zed(credential)
+    _ -> core(provider, credential, now)
+  }
+}
+
+/// One poller for the whole daemon. It starts with the daemon, restarts under
+/// its supervisor, and polls each account it can see on its own cadence. The
+/// daemon passes the core's feed; Zed is read here regardless.
+pub fn start(
+  home: String,
+  database: store.Store,
+  fetch: Fetch,
+  sources: List(#(String, usage_feed.Source)),
+  keys: KeyEnvironment,
+) -> Result(actor.Started(Subject(Message)), actor.StartError) {
+  start_with(
+    home,
+    database,
+    fn(provider, credential, now) {
+      feed(provider, credential, now, zed_quota.fetch, fetch)
+    },
+    sources,
+    keys,
+    load_settings,
+    120_000,
+  )
+}
+
+/// Dependency-injected poller for isolated lifecycle tests.
+pub fn start_with(
+  home: String,
+  database: store.Store,
+  fetch: Fetch,
+  sources: List(#(String, usage_feed.Source)),
+  keys: KeyEnvironment,
+  settings: fn() -> Settings,
+  worker_timeout_ms: Int,
+) -> Result(actor.Started(Subject(Message)), actor.StartError) {
+  actor.new_with_initialiser(30_000, fn(self) {
+    albedo_process.label("albedo_quota", home)
+    let timer = albedo_clock.send_after(self, 0, Tick(0))
+    Ok(
+      actor.initialised(State(
+        home,
+        database,
+        fetch,
+        sources,
+        settings,
+        worker_timeout_ms,
+        dict.new(),
+        self,
+        Some(timer),
+        0,
+        None,
+        0,
+        keys,
+      ))
+      |> actor.returning(self)
+      |> actor.selecting(
+        process.new_selector()
+        |> process.select(self)
+        |> process.select_monitors(Down),
+      ),
+    )
+  })
+  |> actor.on_message(handle)
+  |> actor.start
+}
+
+fn handle(state: State, message: Message) -> actor.Next(State, Message) {
+  case message {
+    Tick(generation) if generation != state.generation -> actor.continue(state)
+    Tick(_) -> retick(on_tick(State(..state, timer: None)))
+    WorkerTimedOut(pid) -> {
+      case owns_worker(state, pid) {
+        False -> actor.continue(state)
+        True -> {
+          process.kill(pid)
+          retick(fell(state, pid, "quota worker timed out"))
+        }
+      }
+    }
+    Enumerated(pid, targets) -> {
+      case state.enumerating == Some(pid) {
+        False -> actor.continue(state)
+        True ->
+          retick(merged(
+            State(..state, enumerating: None),
+            targets,
+            albedo_clock.system_ms(),
+          ))
+      }
+    }
+    Polled(key, pid, failed, busy, attempted_at) -> {
+      case dict.get(state.accounts, key) {
+        Ok(account) if account.polling == Some(pid) ->
+          retick(finished(state, key, failed, busy, attempted_at))
+        _ -> actor.continue(state)
+      }
+    }
+    Down(process.ProcessDown(_, pid, _)) ->
+      retick(fell(state, pid, "quota worker exited before reporting"))
+    // The poller monitors processes only; a port is never one of them.
+    Down(process.PortDown(_, _, _)) -> actor.continue(state)
+  }
+}
+
+fn on_tick(state: State) -> State {
+  let config = state.settings()
+  let now = albedo_clock.system_ms()
+  case config.enabled {
+    False -> State(..state, accounts: dict.new())
+    True -> {
+      let state = case
+        state.enumerating,
+        now - state.last_enumerated >= config.poll_seconds * 1000
+      {
+        None, True -> enumerate_now(state, now)
+        _, _ -> state
+      }
+      start_due(state, now)
+    }
+  }
+}
+
+/// Account discovery runs off the poller: a refresh may wait on the network.
+/// The attempt is what the cadence counts from, so a discovery that fails
+/// fast never spins.
+fn enumerate_now(state: State, now: Int) -> State {
+  let self = state.self
+  let home = state.home
+  let sources = state.sources
+  let keys = state.keys
+  let pid =
+    process.spawn_unlinked(fn() {
+      process.send(
+        self,
+        Enumerated(process.self(), enumerate(home, sources, keys)),
+      )
+    })
+  let _ = process.monitor(pid)
+  let _ =
+    albedo_clock.send_after(
+      state.self,
+      state.worker_timeout_ms * 5 / 2,
+      WorkerTimedOut(pid),
+    )
+  State(..state, enumerating: Some(pid), last_enumerated: now)
+}
+
+/// New accounts poll at once; an account that is polling now finishes first,
+/// so its readings stay even if the account has since gone.
+fn merged(state: State, targets: List(Watched), now: Int) -> State {
+  let fresh =
+    list.fold(targets, dict.new(), fn(accounts, watched) {
+      let key = key_of(watched.target)
+      let account = case dict.get(state.accounts, key) {
+        Ok(existing) -> Account(..existing, watched:, listed: True)
+        Error(_) -> Account(key, watched, now, 0, None, True)
+      }
+      dict.insert(accounts, key, account)
+    })
+  let accounts =
+    dict.fold(state.accounts, fresh, fn(accounts, key, account) {
+      case dict.has_key(accounts, key), account.polling {
+        False, Some(_) ->
+          dict.insert(accounts, key, Account(..account, listed: False))
+        _, _ -> accounts
+      }
+    })
+  State(..state, accounts: accounts)
+}
+
+fn start_due(state: State, now: Int) -> State {
+  let fetch = state.fetch
+  let database = state.database
+  let self = state.self
+  dict.fold(state.accounts, state, fn(state, key, account) {
+    case account.next_due <= now, account.polling {
+      True, None -> {
+        let watched = account.watched
+        let home = state.home
+        let pid =
+          process.spawn_unlinked(fn() {
+            let #(failed, busy) = run(fetch, database, watched, home)
+            process.send(self, Polled(key, process.self(), failed, busy, now))
+          })
+        let _ = process.monitor(pid)
+        let _ =
+          albedo_clock.send_after(
+            self,
+            state.worker_timeout_ms,
+            WorkerTimedOut(pid),
+          )
+        State(
+          ..state,
+          accounts: dict.insert(
+            state.accounts,
+            key,
+            Account(..account, polling: Some(pid)),
+          ),
+        )
+      }
+      _, _ -> state
+    }
+  })
+}
+
+/// Seconds until an account's next poll: the busy cadence while any limit is
+/// at or above 80 percent or resets within fifteen minutes, the ordinary
+/// cadence otherwise, and after `failures` failed polls in a row a backoff
+/// that doubles six times at most and never waits past an hour.
+pub fn wait_seconds(settings: Settings, failures: Int, busy: Bool) -> Int {
+  case failures, busy {
+    0, True -> settings.busy_poll_seconds
+    0, False -> settings.poll_seconds
+    _, _ ->
+      settings.poll_seconds * int.bitwise_shift_left(1, int.min(failures, 6))
+      |> int.min(3600)
+  }
+}
+
+fn finished(
+  state: State,
+  key: String,
+  failed: Bool,
+  busy: Bool,
+  attempted_at: Int,
+) -> State {
+  case dict.get(state.accounts, key) {
+    Error(_) -> state
+    Ok(account) if !account.listed ->
+      State(..state, accounts: dict.delete(state.accounts, key))
+    Ok(account) -> {
+      let failures = case failed {
+        True -> account.failures + 1
+        False -> 0
+      }
+      let wait = wait_seconds(state.settings(), failures, busy)
+      State(
+        ..state,
+        accounts: dict.insert(
+          state.accounts,
+          key,
+          Account(
+            ..account,
+            failures: failures,
+            polling: None,
+            next_due: attempted_at + wait * 1000,
+          ),
+        ),
+      )
+    }
+  }
+}
+
+/// A spawned poll that crashed never answers `Polled`: free its slot and
+/// back the account off, so a crashing feed cannot wedge the schedule.
+fn owns_worker(state: State, pid: process.Pid) -> Bool {
+  state.enumerating == Some(pid)
+  || list.any(dict.values(state.accounts), fn(account) {
+    account.polling == Some(pid)
+  })
+}
+
+fn fell(state: State, pid: process.Pid, message: String) -> State {
+  case state.enumerating {
+    Some(enumerating) if enumerating == pid -> {
+      io.println_error("quota account discovery failed: " <> message)
+      State(..state, enumerating: None)
+    }
+    _ ->
+      case
+        dict.to_list(state.accounts)
+        |> list.find(fn(entry) { entry.1.polling == Some(pid) })
+      {
+        Error(_) -> state
+        Ok(#(key, account)) -> {
+          let now = albedo_clock.system_ms()
+          record(
+            state.database,
+            account.watched.target,
+            None,
+            [],
+            Some(message),
+            now,
+          )
+          finished(state, key, True, False, now)
+        }
+      }
+  }
+}
+
+/// Replace the timer as deadlines change; generations ignore already-delivered ticks.
+fn retick(state: State) -> actor.Next(State, Message) {
+  let _ = option.map(state.timer, process.cancel_timer)
+  let generation = state.generation + 1
+  let timer =
+    albedo_clock.send_after(state.self, tick_delay(state), Tick(generation))
+  actor.continue(State(..state, timer: Some(timer), generation: generation))
+}
+
+fn tick_delay(state: State) -> Int {
+  next_delay(
+    state.settings(),
+    albedo_clock.system_ms(),
+    state.last_enumerated,
+    state.enumerating != None,
+    list.map(dict.values(state.accounts), fn(account) {
+      #(account.next_due, account.polling != None)
+    }),
+  )
+}
+
+/// In-flight work has its own deadline, not an overdue idle-poll deadline.
+pub fn next_delay(
+  config: Settings,
+  now: Int,
+  last_enumerated: Int,
+  enumerating: Bool,
+  accounts: List(#(Int, Bool)),
+) -> Int {
+  case config.enabled {
+    False -> config.poll_seconds * 1000
+    True -> {
+      let idle =
+        list.filter_map(accounts, fn(account) {
+          case account.1 {
+            True -> Error(Nil)
+            False -> Ok(account.0)
+          }
+        })
+      let due = case enumerating {
+        True -> idle
+        False -> [last_enumerated + config.poll_seconds * 1000, ..idle]
+      }
+      let delay = case minimum(due) {
+        None -> config.poll_seconds * 1000
+        Some(when) -> when - now
+      }
+      int.clamp(delay, 250, config.poll_seconds * 1000)
+    }
+  }
+}
+
+fn minimum(values: List(Int)) -> Option(Int) {
+  list.fold(values, None, fn(best, value) {
+    case best {
+      Some(current) -> Some(int.min(current, value))
+      None -> Some(value)
+    }
+  })
+}
+
+/// One poll of one account, off the poller: whatever comes back is recorded
+/// exactly as it came, then the account's source heals from the report, and
+/// the schedule hears whether it failed and whether the account is busy.
+fn run(
+  fetch: Fetch,
+  database: store.Store,
+  watched: Watched,
+  home: String,
+) -> #(Bool, Bool) {
+  let target = watched.target
+  let now = albedo_clock.system_ms()
+  let fetched =
+    albedo_protect.attempt(fn() {
+      network_context.routed(watched.service, fn() {
+        fetch(target.provider, target.credential, now)
+      })
+    })
+    |> result.unwrap(Error("quota feed worker crashed"))
+  case fetched {
+    Ok(report) -> {
+      record(database, target, report.plan, report.limits, report.error, now)
+      watched.heal(home, target.label, report.limits)
+      #(report.error != None, is_busy(report, now))
+    }
+    Error(message) -> {
+      record(database, target, None, [], Some(message), now)
+      #(True, False)
+    }
+  }
+}
+
+fn is_busy(report: Report, now: Int) -> Bool {
+  list.any(report.limits, fn(limit) {
+    case limit.used_percent {
+      Some(used) if used >=. 80.0 -> True
+      _ ->
+        case limit.resets_at {
+          Some(resets_at) ->
+            resets_at > now && resets_at - now <= 15 * 60 * 1000
+          None -> False
+        }
+    }
+  })
+}
+
+// ---- the readings -------------------------------------------------------
+
+/// One stored reading, exactly as the feed reported it.
+pub type Sample {
+  Sample(
+    id: Int,
+    /// The account's non-secret label.
+    account: String,
+    provider: String,
+    /// The report plan: what 100 percent means can change with it.
+    plan: Option(String),
+    limit_id: String,
+    label: String,
+    used_percent: Option(Float),
+    window_label: Option(String),
+    window_seconds: Option(Int),
+    resets_at: Option(Int),
+    scope: Option(String),
+    status: String,
+    error: Option(String),
+    observed_at: Int,
+    source: String,
+  )
+}
+
+const schema =
+  "
+CREATE TABLE IF NOT EXISTS quota_sample (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ account TEXT NOT NULL,
+ provider TEXT NOT NULL,
+ plan TEXT,
+ limit_id TEXT NOT NULL DEFAULT '',
+ label TEXT NOT NULL DEFAULT '',
+ used_percent REAL,
+ window_label TEXT,
+ window_seconds INTEGER,
+ resets_at INTEGER,
+ scope TEXT,
+ status TEXT NOT NULL DEFAULT '',
+ error TEXT,
+ observed_at INTEGER NOT NULL,
+ source TEXT NOT NULL DEFAULT 'poll'
+);
+CREATE INDEX IF NOT EXISTS quota_sample_latest
+ ON quota_sample(account, provider, limit_id, id);
+CREATE INDEX IF NOT EXISTS quota_sample_report
+ ON quota_sample(account, provider, id);
+"
+
+/// The table, before any session or poller starts.
+pub fn initialise(database: store.Store) -> Result(Nil, String) {
+  store.query(database, fn(db) {
+    store.transaction(db, fn() { store.exec(db, schema) })
+  })
+}
+
+/// Only readings: one row per limit the report carried, or one row carrying
+/// the report's error when it carried none.
+fn record(
+  database: store.Store,
+  target: Target,
+  plan: Option(String),
+  limits: List(Limit),
+  error: Option(String),
+  now: Int,
+) -> Nil {
+  let rows = case limits {
+    [] -> [
+      Row(
+        target.label,
+        target.provider,
+        plan,
+        "",
+        "",
+        None,
+        None,
+        None,
+        None,
+        None,
+        "",
+        error,
+        now,
+      ),
+    ]
+    _ ->
+      list.map(limits, fn(limit) {
+        Row(
+          target.label,
+          target.provider,
+          plan,
+          limit.id,
+          limit.label,
+          limit.used_percent,
+          limit.window_label,
+          limit.window_seconds,
+          limit.resets_at,
+          limit.scope,
+          limit.status,
+          error,
+          now,
+        )
+      })
+  }
+  let outcome =
+    store.query(database, fn(db) {
+      list.try_each(rows, fn(row) { insert(db, row) })
+    })
+  case outcome {
+    Ok(_) -> Nil
+    Error(message) -> io.println_error("quota sample write failed: " <> message)
+  }
+}
+
+type Row {
+  Row(
+    account: String,
+    provider: String,
+    plan: Option(String),
+    limit_id: String,
+    label: String,
+    used_percent: Option(Float),
+    window_label: Option(String),
+    window_seconds: Option(Int),
+    resets_at: Option(Int),
+    scope: Option(String),
+    status: String,
+    error: Option(String),
+    observed_at: Int,
+  )
+}
+
+fn insert(db: sqlight.Connection, row: Row) -> Result(Nil, String) {
+  store.run(
+    db,
+    "INSERT INTO quota_sample(account, provider, plan, limit_id, label, used_percent, window_label, window_seconds, resets_at, scope, status, error, observed_at, source)
+     VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'poll')",
+    [
+      sqlight.text(row.account),
+      sqlight.text(row.provider),
+      sqlight.nullable(sqlight.text, row.plan),
+      sqlight.text(row.limit_id),
+      sqlight.text(row.label),
+      sqlight.nullable(sqlight.float, row.used_percent),
+      sqlight.nullable(sqlight.text, row.window_label),
+      sqlight.nullable(sqlight.int, row.window_seconds),
+      sqlight.nullable(sqlight.int, row.resets_at),
+      sqlight.nullable(sqlight.text, row.scope),
+      sqlight.text(row.status),
+      sqlight.nullable(sqlight.text, row.error),
+      sqlight.int(row.observed_at),
+    ],
+  )
+}
+
+const sample_columns =
+  "id, account, provider, plan, limit_id, label, used_percent, window_label, window_seconds, resets_at, scope, status, error, observed_at, source"
+
+fn sample_decoder() -> decode.Decoder(Sample) {
+  use id <- decode.field(0, decode.int)
+  use account <- decode.field(1, decode.string)
+  use provider <- decode.field(2, decode.string)
+  use plan <- decode.field(3, decode.optional(decode.string))
+  use limit_id <- decode.field(4, decode.string)
+  use label <- decode.field(5, decode.string)
+  use used_percent <- decode.field(6, decode.optional(decode.float))
+  use window_label <- decode.field(7, decode.optional(decode.string))
+  use window_seconds <- decode.field(8, decode.optional(decode.int))
+  use resets_at <- decode.field(9, decode.optional(decode.int))
+  use scope <- decode.field(10, decode.optional(decode.string))
+  use status <- decode.field(11, decode.string)
+  use error <- decode.field(12, decode.optional(decode.string))
+  use observed_at <- decode.field(13, decode.int)
+  use source <- decode.field(14, decode.string)
+  decode.success(Sample(
+    id,
+    account,
+    provider,
+    plan,
+    limit_id,
+    label,
+    used_percent,
+    window_label,
+    window_seconds,
+    resets_at,
+    scope,
+    status,
+    error,
+    observed_at,
+    source,
+  ))
+}
+
+/// Only the newest complete report per account/provider is current. Failed polls
+/// replace current windows too; historical readings remain available via history.
+pub fn latest(database: store.Store) -> Result(List(Sample), String) {
+  store.read(database, "SELECT " <> sample_columns <> " FROM quota_sample s
+     WHERE s.observed_at = (SELECT t.observed_at FROM quota_sample t
+                           WHERE t.account = s.account AND t.provider = s.provider
+                           ORDER BY t.id DESC LIMIT 1)
+       AND s.id = (SELECT MAX(r.id) FROM quota_sample r
+                   WHERE r.account = s.account AND r.provider = s.provider
+                     AND r.limit_id = s.limit_id)
+     ORDER BY s.account, s.provider, s.limit_id", [], sample_decoder())
+}
+
+pub type Filter {
+  Everything
+  Trail(provider: String, account: String, limit: String, since: Option(Int))
+}
+
+@external(erlang, "calendar", "rfc3339_to_system_time")
+fn erlang_rfc3339_to_system_time(
+  stamp: String,
+  options: List(#(atom.Atom, atom.Atom)),
+) -> Int
+
+pub fn parse_rfc3339(stamp: String) -> Result(Int, Nil) {
+  let opts = [#(atom.create("unit"), atom.create("millisecond"))]
+  case
+    albedo_protect.attempt(fn() { erlang_rfc3339_to_system_time(stamp, opts) })
+  {
+    Ok(ms) -> Ok(ms)
+    Error(_) -> Error(Nil)
+  }
+}
+
+/// Readings newest-first with id keyset paging: `before` 0 starts at the
+/// newest, any other value continues after that row id.
+pub fn history(
+  database: store.Store,
+  filter: Filter,
+  before: Int,
+  limit: Int,
+) -> Result(List(Sample), String) {
+  case filter {
+    Everything ->
+      case before <= 0 {
+        True ->
+          store.read(
+            database,
+            "SELECT "
+              <> sample_columns
+              <> " FROM quota_sample ORDER BY id DESC LIMIT ?",
+            [sqlight.int(limit)],
+            sample_decoder(),
+          )
+        False ->
+          store.read(
+            database,
+            "SELECT "
+              <> sample_columns
+              <> " FROM quota_sample WHERE id < ? ORDER BY id DESC LIMIT ?",
+            [sqlight.int(before), sqlight.int(limit)],
+            sample_decoder(),
+          )
+      }
+    Trail(provider, account, limit_id, since) ->
+      case since {
+        None ->
+          case before <= 0 {
+            True ->
+              store.read(
+                database,
+                "SELECT "
+                  <> sample_columns
+                  <> " FROM quota_sample WHERE account = ? AND provider = ? AND limit_id = ? ORDER BY id DESC LIMIT ?",
+                [
+                  sqlight.text(account),
+                  sqlight.text(provider),
+                  sqlight.text(limit_id),
+                  sqlight.int(limit),
+                ],
+                sample_decoder(),
+              )
+            False ->
+              store.read(
+                database,
+                "SELECT "
+                  <> sample_columns
+                  <> " FROM quota_sample WHERE account = ? AND provider = ? AND limit_id = ? AND id < ? ORDER BY id DESC LIMIT ?",
+                [
+                  sqlight.text(account),
+                  sqlight.text(provider),
+                  sqlight.text(limit_id),
+                  sqlight.int(before),
+                  sqlight.int(limit),
+                ],
+                sample_decoder(),
+              )
+          }
+        Some(since_ms) ->
+          case before <= 0 {
+            True ->
+              store.read(
+                database,
+                "SELECT "
+                  <> sample_columns
+                  <> " FROM quota_sample WHERE account = ? AND provider = ? AND limit_id = ? AND observed_at >= ? ORDER BY id DESC LIMIT ?",
+                [
+                  sqlight.text(account),
+                  sqlight.text(provider),
+                  sqlight.text(limit_id),
+                  sqlight.int(since_ms),
+                  sqlight.int(limit),
+                ],
+                sample_decoder(),
+              )
+            False ->
+              store.read(
+                database,
+                "SELECT "
+                  <> sample_columns
+                  <> " FROM quota_sample WHERE account = ? AND provider = ? AND limit_id = ? AND observed_at >= ? AND id < ? ORDER BY id DESC LIMIT ?",
+                [
+                  sqlight.text(account),
+                  sqlight.text(provider),
+                  sqlight.text(limit_id),
+                  sqlight.int(since_ms),
+                  sqlight.int(before),
+                  sqlight.int(limit),
+                ],
+                sample_decoder(),
+              )
+          }
+      }
+  }
+}
+
+fn key_of(target: Target) -> String {
+  target.provider <> "/" <> target.label
+}

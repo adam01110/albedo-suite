@@ -13,7 +13,7 @@ sys.path.insert(
     0,
     os.environ.get(
         "ALBEDO_RTK_SOURCE",
-        str(Path(__file__).resolve().parents[1] / "src/server/priv/python"),
+        str(Path(__file__).resolve().parents[1] / "src/server/python"),
     ),
 )
 import albedo_rtk
@@ -23,7 +23,7 @@ class RtkRoutingTests(unittest.TestCase):
     def test_agent_instructions_do_not_expose_routing(self):
         extension = (
             Path(__file__).resolve().parents[1]
-            / "src/server/src/albedo/harness/extensions/run/extension.gleam"
+            / "src/server/extensions/run/src/albedo_ext_run/extension.gleam"
         )
         if not extension.exists():
             self.skipTest("source overlay is unavailable")
@@ -233,9 +233,9 @@ class RestoredJobTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_restored_job_pipe_and_stdin_report_retention(self):
         job = await self.restored_job()
-        with self.assertRaisesRegex(ValueError, "wrote more than it retains"):
+        with self.assertRaisesRegex(ValueError, "exceeded the pipe replay limit"):
             job.pipe(sys.executable, "-c", "pass", env=dict(os.environ))
-        with self.assertRaisesRegex(ValueError, "wrote more than it retains"):
+        with self.assertRaisesRegex(ValueError, "exceeded the pipe replay limit"):
             self.plugin.run(
                 sys.executable, "-c", "pass", stdin=job, env=dict(os.environ)
             )

@@ -12,7 +12,7 @@ sys.path.insert(
     0,
     os.environ.get(
         "ALBEDO_PYTHON_SOURCE",
-        str(Path(__file__).resolve().parents[1] / "src/server/priv/python"),
+        str(Path(__file__).resolve().parents[1] / "src/server/python"),
     ),
 )
 import albedo_plugins
@@ -23,7 +23,7 @@ albedo_plugins.__path__.insert(
         Path(
             os.environ.get(
                 "ALBEDO_PYTHON_SOURCE",
-                Path(__file__).resolve().parents[1] / "src/server/priv/python",
+                Path(__file__).resolve().parents[1] / "src/server/python",
             )
         )
         / "albedo_plugins"

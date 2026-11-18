@@ -50,7 +50,7 @@ and optional default CLI diff visibility. `upstream/pin.json` inventories server
 replacements; the client
 replacements live under `src/client/cli/`.
 `test/model_catalogs_test.py` adapts upstream
-`test/e2e/model_catalogs_test.py` from the current pinned revision for
+`e2e/model_catalogs_test.py` from the current pinned revision for
 endpoint-scoped cache
 fixtures; its provider catalog assertions are retained.
 `src/client/cli/third_party/bubbletea/cursed_renderer.go` modifies upstream's
@@ -58,9 +58,9 @@ vendored copy of Charmbracelet's Bubble Tea, which remains under its MIT license
 (preserved in upstream's `cli/third_party/bubbletea/LICENSE`); the change ports
 charmbracelet/bubbletea pull request 1868.
 `scripts/test-e2e.py` adds a kernel-reattachment readiness barrier to upstream
-`test/e2e/kernel_upgrade_test.py` from the current pinned revision; its
+`e2e/kernel_upgrade_test.py` from the current pinned revision; its
 forced-swap assertions are retained. Guarded text adapters for native
-`harness.py`, `kernel_detach_test.py`, `cache_miss_test.py` and
+`harness.py`, `kernel_detach_test.py`, `history_content_test.py`,
 `image_limits_test.py` and `repetition_test.py` accept typed
 Responses content parts without removing their assertions. Skill discovery now
 uses upstream's native catalog filtering without a suite fixture change.

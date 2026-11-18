@@ -2,14 +2,24 @@
 
 ## Source files
 
-`src/server/` and `src/client/` use the same paths as upstream. They contain the
-files the suite replaces and the files it adds. Edit them as ordinary Gleam,
-Erlang, Python and Go source.
+`src/server/` and `src/client/` use the same paths as upstream, relative to the
+repository root. They contain the files the suite replaces and the files it
+adds. Edit them as ordinary Gleam, Erlang, Python and Go source.
+
+Upstream is a Gleam workspace: the daemon is `apps/albedo`, extensions are
+packages under `extensions/`, shared libraries under `packages/`, and kernel
+Python under `python/` (shipped as the daemon's `priv/python`). A suite file goes
+in the package whose dependencies it already uses: package manifests are not
+changed, because NUR checks the daemon's `manifest.toml` against its vendored
+copy. Suite-only providers and extensions that need core modules live in the
+daemon as `apps/albedo/src/albedo_ext_<name>/`.
 
 `nix/modules/packages.nix` uses the locked NUR package definitions. It checks the
 source hash in `upstream/pin.json` and the original files in
 `upstream/*.sha256`. It then copies the suite files before NUR's existing
-post-patch hooks run. Upstream dependencies, patches and build checks remain
+post-patch hooks run. The server builds in NUR's `apps/albedo` source root, so
+its overlay is copied two levels up, into the whole unpacked source. Upstream
+dependencies, patches and build checks remain
 in use.
 
 ## Updating upstream
@@ -128,7 +138,8 @@ CLI and daemon share a machine; it does not query remote zoxide databases.
 
 ## Typed Responses input items
 
-`src/server/src/albedo/openai_api/request.gleam` replaces the upstream Responses
+`src/server/packages/albedo_openai/src/albedo_openai/request.gleam` replaces
+the upstream Responses
 encoder, which writes messages it builds itself as `{"role": ..., "content":
 ...}` input items; a strict endpoint parses the input as a `type`-tagged union
 and rejects the request before any model sees it (Zed's cloud answers
@@ -160,7 +171,8 @@ baseline checksum and its inventory entry when upstream emits typed items.
 
 ## Temporary Codex error decoding
 
-`src/server/src/albedo/openai_api/responses.gleam` retains upstream support for
+`src/server/packages/albedo_openai/src/albedo_openai/responses.gleam` retains
+upstream support for
 nested `error.message` and top-level `message`, and temporarily adds string
 `error` and code-only error events. Messages take precedence over codes. Unknown
 or non-string shapes retain typed malformed-error diagnostics without dumping raw
@@ -205,7 +217,7 @@ failed servers still require explicit `lsp.close()` before retrying. Idle cleanu
 does not discard pending edit checks or run as a session background job.
 
 LSP owns `albedo_lsp.py`, `albedo_plugins/lsp.py`,
-`harness/extensions/lsp/extension.gleam` and `nix/home-manager/lsp.nix`.
+`apps/albedo/src/albedo_ext_lsp/extension.gleam` and `nix/home-manager/lsp.nix`.
 Retirement also removes its file-write tracking in `albedo_plugins/files.py`,
 its import/registration in `extensions.gleam`, its
 settings/enable wiring in `runtime.nix`, its Home Manager import, and its tests
@@ -213,7 +225,7 @@ and fixture. Replace Infra's `albedo/lsp.nix` declaration with native settings
 before removing its suite options.
 
 Formatter owns `albedo_formatter.py`, `albedo_plugins/formatter.py`,
-`harness/extensions/formatter/extension.gleam` and
+`apps/albedo/src/albedo_ext_formatter/extension.gleam` and
 `nix/home-manager/formatter.nix`. Retirement also removes file-write tracking in
 `albedo_plugins/files.py`, its optional stage in `files.check()`, and formatter
 registration/settings. Final-acceptance hook support has been retired; native
@@ -324,7 +336,8 @@ the run succeeds. `--no-retry` keeps the first result.
 Two helpers shorten the merge loop. `scripts/regen-api.sh` reruns upstream's
 `cli/tools/apigen` on the pinned source with the suite's
 `src/server/docs/openapi.yaml` and copies the generated `api.gen.go`,
-`digest.gen.go` and `api_digest.gleam` back into the overlay, so merge only the
+`digest.gen.go`, `patches.gen.go` and `api_digest.gleam` back into the overlay,
+so merge only the
 contract and regenerate the rest. `scripts/overlay-tree.sh server|client [dir]`
 runs the package's own unpack, patch (checksum guard and overlay copy),
 configure and build phases once in `/tmp/albedo-overlay-<component>`, leaving a

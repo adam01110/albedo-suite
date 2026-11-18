@@ -9,7 +9,7 @@ import tempfile
 import unittest
 
 SCRIPT = os.environ.get("ALBEDO_FFF_SCRIPT") or str(
-    Path(__file__).resolve().parents[1] / "src/server/priv/python/albedo_fff.mjs"
+    Path(__file__).resolve().parents[1] / "src/server/python/albedo_fff.mjs"
 )
 
 

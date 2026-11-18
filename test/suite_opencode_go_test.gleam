@@ -1,6 +1,6 @@
-import albedo/harness/extensions/opencode_go/routing
-import albedo/harness/extensions/opencode_go/wire
 import albedo_env
+import albedo_ext_opencode_go/routing
+import albedo_ext_opencode_go/wire
 import gleam/io
 import gleam/option
 import gleeunit/should

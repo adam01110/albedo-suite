@@ -103,7 +103,7 @@ before retrying.
 
 `test/lazy_mcp_python_test.py` checks the Python API with a fake host.
 `test/suite_lazy_mcp_test.gleam` checks the manager's state and lifecycle
-(`src/server/src/albedo/harness/extensions/mcp/lazy.gleam`) against upstream's
+(`src/server/extensions/mcp/src/albedo_ext_mcp/lazy.gleam`) against upstream's
 fake stdio server. `test/lazy_mcp_test.py` uses the packaged daemon and local
 stdio fixtures.
 

@@ -39,13 +39,18 @@ const (
 	StepRename
 	StepCredential
 	StepRotationPrompt
+	// StepAdvanced lists the named setups (profiles) behind the accounts,
+	// with today's edit, rename, pin and remove actions.
+	StepAdvanced
+	// StepAddKey lists the providers an API key or endpoint is set up for.
+	StepAddKey
 )
 
 // signInPollInterval is how often the daemon is asked about a running sign-in.
 const signInPollInterval = 300 * time.Millisecond
 
-// removal names something /login can delete: a provider in config.json or an
-// account in the daemon's credential store.
+// removal names something /accounts can delete: an account in the daemon's
+// credential store (signing it out), or a setup under advanced.
 type removal struct {
 	Kind     string // "provider" | "account"
 	Provider string
@@ -56,7 +61,6 @@ type removal struct {
 type LoginModel struct {
 	readCtx                      context.Context
 	cancelReads                  context.CancelFunc
-	closed                       bool
 	Conn                         *daemon.Connection
 	openBrowser                  func(url string)
 	Removing                     removal
@@ -87,16 +91,32 @@ type LoginModel struct {
 	ModelPicker                  loginPick
 	confirm
 	// terms warns before a sign-in in termsLogin starts.
-	terms      *termsBox
-	termsLogin daemon.SignIn
-	Generation int
-	Width      int
-	Height     int
-	Step       LoginStep
+	terms           *termsBox
+	termsLogin      daemon.SignIn
+	RenameAccountID string
+	// reSignIn is the account an inline sign-in signs in again.
+	reSignIn string
+	// focus is the row the next rebuild of the accounts list highlights.
+	focus string
+	// listBusy is what the accounts list says while a change it made is
+	// saved; rotationNote is what it says once that change is saved.
+	listBusy, rotationNote string
+	Generation             int
+	Width                  int
+	Height                 int
+	Step                   LoginStep
+	firstCursor            int
 	// Editing changes the saved profile Name in place: it saves without
 	// making Name the default and comes back to the list.
-	Editing         bool
-	RenameAccountID string
+	Editing bool
+	// loaded is set once the daemon's accounts were read.
+	loaded bool
+	// advanced shows the setups list instead of the accounts.
+	advanced bool
+	// inline is a sign-in started from the accounts list, which stays on
+	// screen while it runs.
+	inline bool
+	closed bool
 }
 
 // NewLoginModel panics if conn is nil. A nil browser opener disables automatic
@@ -146,29 +166,42 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 			return m, nil
 		}
 		if msg.Loaded {
+			if !m.loaded && m.focus == "" {
+				// The rows before the first read are placeholders; the
+				// cursor starts on the first account instead.
+				m.ChoosePicker = loginPick{}
+			}
 			m.SignIns = msg.Listed.Logins
 			m.Accounts = msg.Listed.Accounts
+			m.loaded = true
 		}
 		if msg.Profiles != nil {
 			m.Profiles = *msg.Profiles
 		}
 		if m.Step == StepSaving {
-			removed := m.Removing
-			m.Removing = removal{}
+			removed, note := m.Removing, m.rotationNote
+			m.Removing, m.rotationNote = removal{}, ""
 			m.Error, m.Status = "", ""
-			if msg.Err != nil {
-				m.Error = m.refusalError(removed, msg.Err)
+			switch {
+			case msg.Err != nil:
+				m.Error = msg.Err.Error()
+			case removed.Kind == "account":
+				m.Status = "Signed out " + removed.Label + "."
+			case note != "":
+				m.Status = note
 			}
 			return m, m.backToChoose()
 		}
 		if msg.Err != nil && m.Error == "" {
 			m.Error = msg.Err.Error()
 		}
-		m.buildChoosePicker()
+		if m.Step == StepChoose || m.Step == StepAdvanced || m.signingInline() {
+			m.buildChoosePicker()
+		}
 		if m.Hint != "" {
 			return m, m.applyHint()
 		}
-		if m.Step != StepChoose {
+		if m.Step != StepChoose && m.Step != StepAdvanced {
 			return m, nil
 		}
 		return m, m.ChoosePicker.Init()
@@ -185,6 +218,9 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 		m.LoginETag = msg.ETag
 		if msg.Err != nil {
 			m.Error = operationError(msg.Err, "", "Sign-in may have started; check your accounts before starting another. Its outcome cannot be confirmed from this response.")
+			if m.inline {
+				m.buildChoosePicker()
+			}
 			if msg.ID == "" {
 				return m, nil
 			}
@@ -195,6 +231,9 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 		m.LoginState = "waiting"
 		m.LoginInstructions = ""
 		m.Status = ""
+		if m.inline {
+			m.buildChoosePicker()
+		}
 
 		cmds := []tea.Cmd{textinput.Blink}
 		if msg.URL != "" {
@@ -223,7 +262,11 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 		if msg.Err != nil {
 			m.Error = msg.Err.Error()
 			if api, ok := errors.AsType[*daemon.APIError](msg.Err); ok && (api.StatusCode == 404 || api.StatusCode == 410) {
-				return m, m.endSignIn()
+				end := m.endSignIn()
+				if m.inline {
+					return m, tea.Batch(end, m.endInline())
+				}
+				return m, end
 			}
 			return m, signInPollTickCmd(msg.ID, m.Generation)
 		}
@@ -239,6 +282,9 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 			browser = m.openBrowserCmd(msg.URL)
 		}
 		m.Status = msg.Message
+		if m.inline {
+			m.buildChoosePicker()
+		}
 		switch msg.State {
 		case "complete":
 			m.LoginID = ""
@@ -248,6 +294,13 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 				} else {
 					m.Accounts = append(m.Accounts, account)
 				}
+			}
+			if m.inline {
+				if len(msg.Accounts) > 0 {
+					return m, m.signedIn(msg.Accounts[0])
+				}
+				m.Status = "Signed in."
+				return m, m.endInline()
 			}
 			if login, ok := m.signInFor(m.Provider); (ok && login.Kind == "service") || (len(msg.Accounts) > 0 && msg.Accounts[0].Kind == "service") {
 				label := m.Provider
@@ -264,7 +317,11 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 			return m, m.credentialChosen()
 		case "failed", "cancelled", "expired":
 			m.LoginID = ""
-			m.Error = msg.Message
+			m.Error = cmp.Or(msg.Message, "the sign-in "+msg.State)
+			if m.inline {
+				m.Status = ""
+				return m, m.endInline()
+			}
 			return m, nil
 		default:
 			return m, tea.Batch(browser, signInPollTickCmd(msg.ID, m.Generation))
@@ -315,6 +372,28 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 		switch {
 		case m.terms != nil:
 			return m, m.termsKey(msg)
+		case m.Step == StepSaving && m.listBusy != "":
+			// The list waits for its change; only leaving is possible.
+			if key != "esc" && key != "ctrl+c" {
+				return m, nil
+			}
+		case m.Step == StepChoose && m.accountsEmpty():
+			return m, m.firstRunKey(msg)
+		case m.Step == StepChoose:
+			if took, cmd := m.accountsKey(msg); took {
+				return m, cmd
+			}
+		case m.signingInline() && (key == "esc" || key == "ctrl+c"):
+			cancel := m.endSignIn()
+			m.Error, m.Status = "", "sign-in cancelled"
+			return m, tea.Batch(cancel, m.endInline())
+		case m.signingInline() && key == "ctrl+o":
+			if m.SignInURL != "" {
+				return m, m.openBrowserCmd(m.SignInURL)
+			}
+			return m, nil
+		case m.signingInline() && (key == "up" || key == "down"):
+			return m, nil
 		case m.Step == StepRotationPrompt:
 			if key == "esc" || key == "ctrl+c" {
 				return m, m.rotationAnswer(false)
@@ -326,17 +405,13 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 			return m, m.ChoosePicker.update(msg)
 		case m.Step == StepRemove:
 			return m, m.confirmKey(msg)
-		case m.Step == StepChoose && key == "ctrl+t":
+		case m.Step == StepAdvanced && key == "ctrl+t":
 			return m, m.toggleProvider()
-		case m.Step == StepChoose && (key == "ctrl+d" || key == "ctrl+x"):
+		case m.Step == StepAdvanced && (key == "ctrl+d" || key == "ctrl+x"):
 			if item, ok := m.ChoosePicker.Highlighted(); ok {
 				if account, accountOK := m.accountAt(item.ID); accountOK {
 					if account.Source == "env" {
 						m.Status = "environment accounts are read-only and cannot be removed"
-						return m, nil
-					}
-					if refusal := m.removalRefusal(account); refusal != "" {
-						m.Error, m.Status = "", refusal
 						return m, nil
 					}
 				}
@@ -350,7 +425,7 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 				return m, m.toggleCredentialTick()
 			}
 			return m, m.saveCredentialSelection()
-		case m.Step == StepChoose && (key == "ctrl+r" || key == "ctrl+e"):
+		case m.Step == StepAdvanced && (key == "ctrl+r" || key == "ctrl+e"):
 			if item, ok := m.ChoosePicker.Highlighted(); ok {
 				if account, accountOK := m.accountAt(item.ID); accountOK {
 					if account.Source == "env" {
@@ -377,7 +452,17 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 			return m, m.backToChoose()
 		}
 		if key == "esc" || key == "ctrl+c" || key == "ctrl+d" {
-			pickerStep := m.Step == StepChoose || m.Step == StepAccountProfile || m.Step == StepCredential || m.Step == StepOAuthFlow || m.Step == StepProtocol || m.Step == StepModels || m.Step == StepOAuthModels
+			pickerStep := m.Step == StepChoose || m.Step == StepAdvanced || m.Step == StepAddKey || m.Step == StepAccountProfile || m.Step == StepCredential || m.Step == StepOAuthFlow || m.Step == StepProtocol || m.Step == StepModels || m.Step == StepOAuthModels
+			if key == "esc" && !pickerStep && m.Step != StepSaving {
+				// A question goes back to the list it started from.
+				cancel := m.endSignIn()
+				m.LoginValues, m.LoginFields = nil, nil
+				m.TextInput.SetValue("")
+				m.Generation = nextPageGeneration()
+				m.Error = ""
+				m.inline, m.reSignIn = false, ""
+				return m, tea.Batch(cancel, m.backToChoose())
+			}
 			if !pickerStep || key == "ctrl+d" {
 				cancel := m.Close()
 				m.LoginValues = nil
@@ -410,6 +495,12 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 		case StepCredential:
 			return m, m.chooseCredentialRow(msg.ID)
 		case StepChoose:
+			return m, m.chooseAccountsRow(msg.ID)
+		case StepAddKey:
+			if p, ok := customProviderByID(msg.ID); ok {
+				return m, m.startCustomProvider(p)
+			}
+		case StepAdvanced:
 			if p, ok := customProviderByID(msg.ID); ok {
 				return m, m.startCustomProvider(p)
 			}
@@ -451,7 +542,12 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 
 	case PickerCancelMsg:
 		switch m.Step {
-		case StepOAuthFlow, StepOAuthFields, StepAccountProfile, StepCredential:
+		case StepOAuthFlow, StepOAuthFields, StepAccountProfile, StepCredential, StepAddKey:
+			m.inline, m.reSignIn = false, ""
+			return m, m.backToChoose()
+		case StepAdvanced:
+			m.advanced = false
+			m.focus = rowAdvanced
 			return m, m.backToChoose()
 		case StepChoose, StepOAuthModels:
 			return m, func() tea.Msg { return LoginCancelMsg{} }
@@ -481,7 +577,7 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 	}
 
 	switch m.Step {
-	case StepChoose, StepAccountProfile, StepCredential, StepOAuthFlow, StepProtocol, StepModels, StepOAuthModels:
+	case StepChoose, StepAdvanced, StepAddKey, StepAccountProfile, StepCredential, StepOAuthFlow, StepProtocol, StepModels, StepOAuthModels:
 		return m, m.pickUpdate(msg)
 	}
 
@@ -628,7 +724,7 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 }
 
 type keyAccountSavedMsg struct {
-	Gen     int
-	Account daemon.Account
 	Err     error
+	Account daemon.Account
+	Gen     int
 }

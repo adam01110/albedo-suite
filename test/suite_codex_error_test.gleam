@@ -1,7 +1,7 @@
 // Error envelope variants are wire-parser regressions, independent of daemon lifecycle.
-import albedo/openai_api/responses
 import albedo_model as types
 import albedo_model/cost
+import albedo_openai/responses
 import gleam/io
 import gleam/list
 import gleam/option.{None}

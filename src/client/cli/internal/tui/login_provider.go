@@ -336,9 +336,11 @@ func (m *LoginModel) applyHint() tea.Cmd {
 		m.Draft = saved
 		return m.useProfile(name, saved)
 	}
-	if login, ok := m.signInFor(name); ok {
-		m.Draft = signInDraft(name)
-		return m.startSignIn(login)
+	if _, ok := m.signInFor(name); ok {
+		// Signing in runs on the accounts list, which the daemon joins
+		// the new account to; no setup question is asked.
+		m.Name = ""
+		return m.signInInline(name, "")
 	}
 	m.useNamedGoProvider(name)
 	return m.askEndpoint()

@@ -112,16 +112,12 @@ func (s *Service) PrepareOpen(ctx context.Context, options OpenOptions) (Prepare
 	return PreparedOpen{Connection: conn, Settings: settings, Sessions: sessions, Selected: initial, Workspace: absWorkspace, LoginRequired: !configured}, nil
 }
 
-func (s *Service) Sessions(ctx context.Context) ([]daemon.Session, error) {
+func (s *Service) RootSessions(ctx context.Context) ([]daemon.Session, error) {
 	conn, err := s.Connect(ctx)
 	if err != nil {
 		return nil, err
 	}
-	sessions, err := daemon.ListSessions(ctx, conn)
-	if err != nil {
-		return nil, err
-	}
-	return slices.DeleteFunc(sessions, func(session daemon.Session) bool { return session.Archived }), nil
+	return daemon.ListSessions(ctx, conn)
 }
 
 // resolveSessionID addresses full IDs directly and expands prefixes against roots.

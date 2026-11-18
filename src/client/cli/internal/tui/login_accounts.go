@@ -6,7 +6,6 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -49,19 +48,20 @@ func (m LoginModel) accountAt(id string) (daemon.Account, bool) {
 	return m.Accounts[index], true
 }
 
-// The rules the accounts picker groups its rows under.
+// The rules the advanced setups list groups its rows under.
 const (
-	sectionProviders = "providers"
+	sectionProviders = "setups"
 	sectionAccounts  = "accounts"
-	sectionNew       = "new profile"
+	sectionNew       = "new setup"
 	sectionSignIn    = "sign in"
 )
 
-// buildChoosePicker lists everything /login can do: the profiles new sessions
-// can use, the accounts the daemon holds, the kinds of profile it can make,
-// whether they sign in or take a key, and the service sign-ins tools use. The
-// rules say which is which, so enter can mean one thing per section.
-func (m *LoginModel) buildChoosePicker() {
+// buildAdvancedPicker lists the setups behind the accounts: the profiles new
+// sessions can use, the accounts the daemon holds (to pin one to a setup),
+// the kinds of setup it can make, whether they sign in or take a key, and
+// the service sign-ins tools use. The rules say which is which, so enter
+// can mean one thing per section.
+func (m *LoginModel) buildAdvancedPicker() {
 	var items []loginItem
 	for _, name := range slices.Sorted(maps.Keys(m.Profiles.Providers)) {
 		settings := m.Profiles.Providers[name]
@@ -123,7 +123,7 @@ func (m *LoginModel) buildChoosePicker() {
 			ID: "signin:" + login.Provider, Label: login.Label, Detail: detail, section: sectionNew,
 			lead:  DefaultStyles.Muted.Render("+"),
 			facts: append(signInFacts(login, accounts), loginFact{"auth", "one signed-in account, or a rotation of them"}),
-			note:  "enter names a new profile, then picks the account it signs in with",
+			note:  "enter names a new setup, then picks the account it signs in with",
 		})
 	}
 	for _, p := range customProviders {
@@ -131,11 +131,15 @@ func (m *LoginModel) buildChoosePicker() {
 			ID: p.ID, Label: p.Label, Detail: p.Detail, section: sectionNew,
 			lead:  DefaultStyles.Muted.Render("+"),
 			facts: p.facts(),
-			note:  "enter names a new profile, or updates the one you name",
+			note:  "enter names a new setup, or updates the one you name",
 		})
 	}
 	items = append(items, services...)
-	m.ChoosePicker = newLoginPick("", items, "use:"+m.Profiles.Active, m.Width, m.Height)
+	initial := "use:" + m.Profiles.Active
+	if row, ok := m.ChoosePicker.highlighted(); ok && slices.ContainsFunc(items, func(item loginItem) bool { return item.ID == row.key }) {
+		initial = row.key
+	}
+	m.ChoosePicker = newLoginPick("", items, initial, m.Width, m.Height)
 }
 
 // profileDetail is a profile's one-line summary: what it runs and how it
@@ -302,59 +306,21 @@ func (m LoginModel) removalFor(id string) (removal, bool) {
 	return removal{}, false
 }
 
-// removalRefusal says why the daemon would refuse to remove an account, or
-// is empty when it would not: a profile pins it, or it is the last account a
-// rotation has.
-func (m LoginModel) removalRefusal(account daemon.Account) string {
-	if pinned := account.SelectedByProfiles; len(pinned) > 0 {
-		return fmt.Sprintf("%s is still used by %s; give %s another account first with ctrl+e on the profile", account.Label, strings.Join(pinned, ", "), itOrThem(pinned))
-	}
-	var last []string
-	for _, name := range account.RotatedByProfiles {
-		if len(m.Profiles.Providers[name].AccountIDs) <= 1 {
-			last = append(last, name)
-		}
-	}
-	if len(last) > 0 {
-		return fmt.Sprintf("%s is the last account %s rotates; give %s another account first with ctrl+e on the profile", account.Label, strings.Join(last, ", "), itOrThem(last))
-	}
-	return ""
-}
-
-// refusalError is what a failed change says: for an account the daemon
-// would not remove, which profiles hold it, read from the list re-read after.
-func (m LoginModel) refusalError(removed removal, err error) string {
-	if api, ok := errors.AsType[*daemon.APIError](err); ok && api.Code == "account_in_use" && removed.Kind == "account" {
-		if i := slices.IndexFunc(m.Accounts, func(a daemon.Account) bool { return a.ID == removed.ID }); i >= 0 {
-			if refusal := m.removalRefusal(m.Accounts[i]); refusal != "" {
-				return refusal
-			}
-		}
-	}
-	return err.Error()
-}
-
-// itOrThem is the pronoun for a list of profiles.
-func itOrThem(names []string) string {
-	if len(names) == 1 {
-		return "it"
-	}
-	return "them"
-}
-
+// confirmRemoval asks before signing an account out, saying what keeps
+// running or stops, or before removing a setup under advanced.
 func (m *LoginModel) confirmRemoval(target removal) tea.Cmd {
-	detail := "This removes the provider and its saved key"
-	if target.Kind == "account" {
-		detail = "This removes its saved credential"
-		for _, a := range m.Accounts {
-			if a.ID == target.ID && len(a.RotatedByProfiles) > 0 {
-				detail += "; it leaves rotations " + strings.Join(a.RotatedByProfiles, ", ")
-			}
-		}
-	}
 	m.Removing = target
 	m.Step = StepRemove
-	m.confirm.ask("remove", target.ID, "remove", detail+". Remove "+target.Kind+" "+target.Label+"?")
+	m.Error = ""
+	if target.Kind == "account" {
+		consequence := ""
+		if account, ok := m.accountByID(target.ID); ok {
+			consequence = m.signOutConsequence(account)
+		}
+		m.confirm.ask("sign out", target.ID, "sign out", consequence)
+		return nil
+	}
+	m.confirm.ask("remove", target.ID, "remove", "This removes the setup and its saved key; accounts stay signed in. Remove setup "+target.Label+"?")
 	return nil
 }
 
@@ -460,8 +426,14 @@ func providerProtocol(provider string) string {
 	return "responses"
 }
 
+// backToChoose returns to the list the screen started from: the accounts,
+// or the setups under advanced.
 func (m *LoginModel) backToChoose() tea.Cmd {
 	m.Step = StepChoose
+	if m.advanced {
+		m.Step = StepAdvanced
+	}
+	m.listBusy = ""
 	m.RenameAccountID = ""
 	m.CredentialTicks = nil
 	m.Editing = false
@@ -513,6 +485,7 @@ func (m *LoginModel) termsKey(msg tea.KeyPressMsg) tea.Cmd {
 	if proceed {
 		return m.beginSignIn(login)
 	}
+	m.inline, m.reSignIn = false, ""
 	return nil
 }
 
@@ -529,6 +502,15 @@ func (m *LoginModel) beginSignIn(login daemon.SignIn) tea.Cmd {
 	m.LoginETag = ""
 	m.SignInURL = ""
 	m.Error = ""
+	if len(login.Flows) > 1 && m.inline {
+		// An inline sign-in asks nothing: the browser flow also takes a
+		// pasted code, so it serves another machine too.
+		m.LoginFlow = login.Flows[0]
+		if slices.Contains(login.Flows, "browser") {
+			m.LoginFlow = "browser"
+		}
+		return m.nextLoginField()
+	}
 	if len(login.Flows) > 1 {
 		m.Step = StepOAuthFlow
 		items := make([]loginItem, 0, len(login.Flows))
@@ -584,6 +566,9 @@ func (m *LoginModel) beginLoginCmd() tea.Cmd {
 	m.Status = "starting sign-in…"
 	m.TextInput.Placeholder = ""
 	m.promptInput("", false)
+	if m.inline {
+		m.buildChoosePicker()
+	}
 	conn, provider, flow, gen, lifetime := m.Conn, m.Provider, m.LoginFlow, m.Generation, m.readCtx
 	values := maps.Clone(m.LoginValues)
 	m.LoginValues = nil
@@ -706,6 +691,9 @@ func accountLimit(a daemon.Account) string {
 }
 
 func accountLead(a daemon.Account) string {
+	if a.NeedsSignIn {
+		return DefaultStyles.Error.Render("✕")
+	}
 	if accountLimit(a) != "" {
 		return DefaultStyles.Warning.Render("!")
 	}
@@ -713,5 +701,8 @@ func accountLead(a daemon.Account) string {
 }
 
 func accountTag(a daemon.Account) string {
+	if a.NeedsSignIn {
+		return DefaultStyles.Error.Render("needs sign-in")
+	}
 	return DefaultStyles.Warning.Render(accountLimit(a))
 }

@@ -425,7 +425,7 @@ func (m *ChatModel) isRecognizedCommand(input string) bool {
 	switch token {
 	case "/a", "/agents", "/sessions", "/q", "/quit", "/exit", "/new", "/model", "/extensions",
 		"/plugins", "/tree", "/fork", "/btw", "/quota", "/usage", "/context", "/t", "/thinking", "/v", "/verbose",
-		"/status", "/login", "/mouse", "/skills", "/instructions", "/mcp", "/cd", "/effort", "/compact", "/kernel", "/reload",
+		"/status", "/login", "/accounts", "/mouse", "/skills", "/instructions", "/mcp", "/cd", "/effort", "/compact", "/kernel", "/reload",
 		"/work", "/paperclips", "/webhooks", "/discord", "/config", "/settings":
 		return true
 	}
@@ -630,8 +630,10 @@ func (m *ChatModel) handleSubmittedCommand(input string, cmds *[]tea.Cmd) {
 		switch {
 		case strings.HasPrefix(trimmed, "/model "):
 			emit(ChatExecuteCommandMsg{Name: "/model", Args: strings.TrimSpace(trimmed[7:])})
-		case strings.HasPrefix(trimmed, "/login"):
+		case trimmed == "/login" || strings.HasPrefix(trimmed, "/login "):
 			emit(ChatOpenLoginMsg{Name: strings.TrimSpace(strings.TrimPrefix(trimmed, "/login"))})
+		case trimmed == "/accounts" || strings.HasPrefix(trimmed, "/accounts "):
+			emit(ChatOpenLoginMsg{Name: strings.TrimSpace(strings.TrimPrefix(trimmed, "/accounts"))})
 		default:
 			for _, cmd := range m.CommandMenu.Catalog {
 				if cmd.Name == trimmed && cmd.Page != nil && *cmd.Page {

@@ -1,6 +1,6 @@
 """Native FFF integration through the production daemon RPC and stdin boundary.
 
-Set ALBEDO_PYTHON_SOURCE to upstream's priv/python directory and
+Set ALBEDO_PYTHON_SOURCE to upstream's python/ directory and
 ALBEDO_FFF_COMMAND to a worker launcher when testing outside a packaged kernel.
 """
 
@@ -25,7 +25,7 @@ SOURCE = (
     Path(os.environ["ALBEDO_FFF_SOURCE"]) / "albedo_plugins/files.py"
     if os.environ.get("ALBEDO_FFF_SOURCE")
     else Path(__file__).resolve().parents[1]
-    / "src/server/priv/python/albedo_plugins/files.py"
+    / "src/server/python/albedo_plugins/files.py"
 )
 spec = importlib.util.spec_from_file_location("fff_files_tested", SOURCE)
 assert spec is not None and spec.loader is not None
@@ -36,7 +36,7 @@ spec.loader.exec_module(module)
 
 ERLANG = os.environ.get("ALBEDO_FFF_ERLANG") or str(
     Path(__file__).resolve().parents[1]
-    / "src/server/src/albedo/harness/extensions/files/albedo_fff.erl"
+    / "src/server/extensions/files/src/albedo_fff.erl"
 )
 
 
@@ -53,7 +53,7 @@ class DaemonRpc:
         self.configure(self.command)
         stub = directory / "kernel_environment.erl"
         stub.write_text(
-            "-module('albedo@harness@kernel@environment'). -export([clean/0]). "
+            "-module('albedo@kernel@environment'). -export([clean/0]). "
             "clean() -> []."
         )
         bridge = directory / "bridge.escript"

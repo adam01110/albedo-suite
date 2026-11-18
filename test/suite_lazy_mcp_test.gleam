@@ -3,13 +3,18 @@
 //// idle cleanup, catalogue drift, dropped transports, adoption and owner
 //// death.
 
-import albedo/harness/extensions/mcp/lazy
-import albedo/harness/extensions/mcp/loads
-import albedo/harness/host_install
-import albedo/harness/sdk/extension
-import albedo/harness/sdk/page
-import albedo/harness/sdk/storage
-import albedo/harness/sdk/store
+import albedo/composition/mcp_owner_support
+import albedo/lifecycle/host_install
+import albedo/storage/core_store
+import albedo_ext_mcp/lazy
+import albedo_ext_mcp/loads
+import albedo_sdk/capabilities
+import albedo_sdk/extension
+import albedo_sdk/page
+import albedo_sdk/storage
+import albedo_sdk/store
+import albedo_sdk/worktree
+import gleam/dict
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/erlang/process
@@ -19,22 +24,14 @@ import gleam/json
 import gleam/list
 import gleam/result
 import gleam/string
-import harness/mcp_owner_support
 
 pub fn main() -> Nil {
   host_install.install()
   let home = "/tmp/albedo-suite-lazy-mcp-" <> int.to_string(unique())
   let _ = make_dir(home)
   set_env("ALBEDO_HOME", home)
-  write(
-    home <> "/capabilities.json",
-    "{\"global\":{\"mcp\":{\"blocked\":false}}}",
-  )
   let assert Ok(ledger) =
-    store.start(
-      home <> "/preferences.db",
-      "CREATE TABLE session_selection(session TEXT,kind TEXT,preference_key TEXT,enabled INTEGER)",
-    )
+    store.start(home <> "/preferences.db", "", core_store.tables())
   let scope = storage.host(ledger)
   let assert Ok(Nil) =
     storage.query(scope, fn(db) {
@@ -63,10 +60,17 @@ fn descriptions_are_validated(scope: storage.Storage) -> Nil {
       "{\"retryMs\":30000,\"servers\":{\"a\":{\"type\":\"http\",\"url\":\"https://example.invalid/mcp\",\"description\":"
       <> bad
       <> "}}}"
-    let assert Error(_) = lazy.prepare(config, scope, "session", owner)
+    let assert Error(_) =
+      lazy.prepare(config, preferences, scope, "session", owner)
   })
   let assert Ok(#(empty, context)) =
-    lazy.prepare("{\"retryMs\":30000,\"servers\":{}}", scope, "session", owner)
+    lazy.prepare(
+      "{\"retryMs\":30000,\"servers\":{}}",
+      preferences,
+      scope,
+      "session",
+      owner,
+    )
   assert context == ""
   lazy.close(empty)
   mcp_owner_support.kill_wait(runtime.pid)
@@ -95,6 +99,7 @@ fn startup_contacts_nothing_and_loads_once(
   let assert Ok(#(manager, context)) =
     lazy.prepare(
       config(servers, 0),
+      preferences,
       scope,
       "session",
       extension.preparation_owner(runtime.pid),
@@ -201,6 +206,7 @@ fn idle_cleanup_reconnects_and_refuses_drift(
   let assert Ok(#(manager, _)) =
     lazy.prepare(
       config([#("a", server(Ok(control), "", True))], 300),
+      preferences,
       scope,
       "session",
       extension.preparation_owner(runtime.pid),
@@ -245,6 +251,7 @@ fn owner_death_ends_the_manager(scope: storage.Storage) -> Nil {
         prepared,
         lazy.prepare(
           config,
+          preferences,
           scope,
           "session",
           extension.preparation_owner(runtime.pid),
@@ -260,6 +267,7 @@ fn owner_death_ends_the_manager(scope: storage.Storage) -> Nil {
   let assert Ok(#(adopted, _)) =
     lazy.prepare(
       config,
+      preferences,
       scope,
       "session",
       extension.preparation_owner(runtime.pid),
@@ -307,7 +315,8 @@ fn config(servers: List(#(String, json.Json)), idle: Int) -> String {
 
 /// The session's sidebar rows: name, badge and tone.
 fn sidebar(scope: storage.Storage) -> List(#(String, String, page.Tone)) {
-  let assert Ok(glance) = loads.sidebar(scope, "session", "")
+  let assert Ok(glance) =
+    loads.sidebar(extension.Sidebar("session", "", worktree.no_origins(), scope))
   assert glance.title == "mcp"
   list.map(glance.rows, fn(row) { #(row.text, row.badge, row.tone) })
 }
@@ -425,3 +434,11 @@ fn coerce(value: a) -> b
 
 @external(erlang, "erlang", "unique_integer")
 fn unique() -> Int
+
+/// What the host's capabilities.json and session selection would answer:
+/// only the server named "blocked" is turned off.
+fn preferences() -> Result(capabilities.Preferences, String) {
+  let assert Ok(config) =
+    json.parse("{\"global\":{\"mcp\":{\"blocked\":false}}}", decode.dynamic)
+  Ok(capabilities.scoped(config, dict.new()))
+}

@@ -9,7 +9,7 @@ import unittest
 SOURCE = Path(
     os.environ.get("ALBEDO_REMOTE_SOURCE")
     or os.environ.get("ALBEDO_PYTHON_SOURCE")
-    or Path(__file__).resolve().parents[1] / "src/server/priv/python"
+    or Path(__file__).resolve().parents[1] / "src/server/python"
 )
 sys.path.insert(0, str(SOURCE))
 from albedo_plugins import remote

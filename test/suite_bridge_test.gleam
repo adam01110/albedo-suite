@@ -1,7 +1,7 @@
-import albedo/harness/sdk/opencode_gateway as wire
-import albedo/openai_api/bridge
 import albedo_model as types
 import albedo_model/replay
+import albedo_openai/bridge
+import albedo_openai/opencode as wire
 import gleam/dynamic/decode
 import gleam/io
 import gleam/json

@@ -71,7 +71,7 @@ UPSTREAM_CASES = (
 def synchronize_kernel_upgrade_fixture(
     path,
     *,
-    expected_sha256="68300636e5cada63b95cb1f5b9154c2dbf23761772562ce245b0a19127fe618d",
+    expected_sha256="d49d58381d29a26ed5d6d3929c3bb33b062060dd7bc10ff209e29e0d389e8a65",
 ):
     """Listener readiness precedes asynchronous kernel reattachment after restart."""
     original = "    def test_kernel_upgrade_forces_the_swap_past_a_live_job(self):\n        self.cell(\"import os\\nsurvivor = 41\\nj = run('sleep', '60')\\nos.getpid()\")\n        self.edit_bundle()\n        self.app.restart()\n"
@@ -114,7 +114,7 @@ def prepare_source(upstream, destination, suite):
             entry.chmod(entry.stat().st_mode | owner_permissions)
     destination.chmod(0o700)
 
-    cases_directory = destination / "test/e2e"
+    cases_directory = destination / "e2e"
     synchronize_kernel_upgrade_fixture(cases_directory / "kernel_upgrade_test.py")
     synchronize_typed_response_fixtures(
         cases_directory,
@@ -143,7 +143,7 @@ def retry_targets(log):
 
 def run_cases(source, environment, targets, jobs, exclusive_jobs):
     """Run targets in one upstream invocation and return its exit code and stderr."""
-    command = [sys.executable, "-B", "test/e2e/run.py", *targets]
+    command = [sys.executable, "-B", "e2e/run.py", *targets]
     if jobs:
         command += ["-j", str(jobs)]
     if exclusive_jobs:

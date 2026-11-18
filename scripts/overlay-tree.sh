@@ -31,15 +31,16 @@ fi
 
 markers='^(<<<<<<<|\|\|\|\|\|\|\||>>>>>>>) '
 sync_tree() {
-  tree=$(cat "$dir/.tree")
-  cp -r --no-preserve=mode "src/$component/." "$tree/"
+  # Overlays mirror the unpacked source, which may contain the build directory.
+  root=$(cat "$dir/.root")
+  cp -r --no-preserve=mode "src/$component/." "$root/"
   # Unresolved files compile as pristine upstream so other owners can build.
   { grep -rlIE --exclude-dir=__pycache__ "$markers" "src/$component" || true; } | while read -r file; do
     name=${file#"src/$component/"}
-    install -m644 "$(cat "$dir/.src")/$name" "$tree/$name"
+    install -m644 "$(cat "$dir/.src")/$name" "$root/$name"
     echo "pristine (unresolved): $name" >&2
   done
-  echo "tree: $tree"
+  echo "tree: $(cat "$dir/.tree")"
 }
 
 if $sync; then
@@ -47,6 +48,8 @@ if $sync; then
   exit 0
 fi
 
+# Unpacked vendor trees are read-only.
+if [ -e "$dir" ]; then chmod -R u+w "$dir"; fi
 rm -rf "$dir"
 mkdir -p "$dir"
 # Phases run in a subshell so a failing build still leaves the tree to inspect.
@@ -60,6 +63,7 @@ nix develop "${develop[@]}" --command bash -c '
   unpackPhase
   cd "$sourceRoot"
   pwd > "$1/.tree"
+  echo "$1/${sourceRoot%%/*}" > "$1/.root"
   echo "$src" > "$1/.src"
   for phase in patchPhase configurePhase buildPhase; do
     if [ -n "${!phase:-}" ]; then eval "${!phase}"; else "$phase"; fi

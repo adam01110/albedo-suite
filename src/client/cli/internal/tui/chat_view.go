@@ -300,7 +300,7 @@ func (m ChatModel) header(width int) string {
 		if m.modelNameID == m.Model && m.modelNameProfile == m.Provider {
 			modelDefault, profile = m.effortDefault, m.effortProfile
 		}
-		model += ":" + reasoningValue(m.Effort, modelDefault, profile)
+		model += levelJoin() + reasoningValue(m.Effort, modelDefault, profile)
 	}
 	if m.Fast {
 		model += "  ϟ"

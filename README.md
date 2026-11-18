@@ -30,7 +30,7 @@ providers, skills and SOPS declarations stay in Infra.
 | [Monitor snapshots](docs/monitor.md) | Export running-agent status and cached connected-account quotas without starting the daemon. |
 | [RTK and FFF](docs/tool-parity.md) | Filter supported commands through RTK and replace file search with FFF. |
 | [Zed provider](docs/zed.md) | Native hosted-model streaming with tool choice, thinking, effort and usage. |
-| [Provider availability](docs/provider-availability.md) | Disable or re-enable saved profiles with Ctrl+T in `/login`. |
+| [Provider availability](docs/provider-availability.md) | Disable or re-enable saved profiles with Ctrl+T under `/accounts` advanced setups. |
 | CLI resume | `albedo resume` without an ID reopens the newest non-archived session in the current directory. |
 | [Vim editing](docs/vim.md) | Modal composer motions and edits, with the current mode in the footer. |
 | [TUI activity](docs/activity-sidebar.md) | Show passive current and recent tool activity below background jobs. |

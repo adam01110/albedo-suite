@@ -244,7 +244,7 @@ class ZedE2ETests(unittest.TestCase):
         self.assertNotIn("leftover-zed-jwt", reason)
         self.assertEqual(self.provider.requests, [])
         self.assertEqual(self.provider.get_headers, [])
-        route = "/settings?group=providers"
+        route = "/settings/providers"
         with self.app.api(route) as response:
             etag = response.headers["ETag"]
             json.load(response)

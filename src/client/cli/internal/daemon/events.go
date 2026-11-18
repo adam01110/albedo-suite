@@ -322,6 +322,7 @@ const (
 )
 
 type ResourceInvalidation struct {
+	URL                                            string
 	Session, Settings, Catalog, Context, Extension bool
 }
 

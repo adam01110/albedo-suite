@@ -1,9 +1,10 @@
-import albedo/daemon/quota
-import albedo/harness/extensions/zed/quota as zed_quota
-import albedo/harness/sdk/key_environment
-import albedo/harness/sdk/store
-import albedo/harness/sdk/usage_feed
+import albedo/accounts/quota
+import albedo/storage/core_store
 import albedo_clock as clock
+import albedo_ext_zed/quota as zed_quota
+import albedo_sdk/key_environment
+import albedo_sdk/store
+import albedo_sdk/usage_feed
 import gleam/erlang/process
 import gleam/io
 import gleam/json
@@ -13,7 +14,7 @@ import gleam/string
 import sqlight
 
 fn database() -> store.Store {
-  let assert Ok(db) = store.start(":memory:", "")
+  let assert Ok(db) = store.start(":memory:", "", core_store.tables())
   let assert Ok(Nil) = quota.initialise(db)
   db
 }

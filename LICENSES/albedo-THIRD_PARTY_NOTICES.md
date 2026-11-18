@@ -7,8 +7,8 @@ The Python kernel's saved-state design follows prime-agent's REPL runtime
 own so one unserialisable object costs only itself, cap per variable and in
 aggregate, write through a temporary file in the same directory, and record the
 working directory alongside the values. Albedo's implementation
-(`priv/python/albedo_kernel.py`, `save_state` and `load_state`) is its own code
-and falls back to `pickle` where prime-agent requires `dill`.
+(`python/albedo_state.py`, `save_state` and `load_state`) is its own code and
+falls back to `pickle` where prime-agent requires `dill`.
 
 prime-agent is distributed under the MIT License:
 
@@ -55,11 +55,11 @@ here; `native/render/Cargo.lock` pins their versions.
 
 ## linguist
 
-`priv/linguist/languages.yml` and `priv/linguist/popular.yml` are GitHub
-linguist's language table and popular-language list
-(https://github.com/github-linguist/linguist, `lib/linguist/`), shipped
-unmodified. The folder browser reads them for file languages, their colours and
-the language shares in `/fs/preview`.
+`apps/albedo/priv/linguist/languages.yml` and
+`apps/albedo/priv/linguist/popular.yml` are GitHub linguist's language table and
+popular-language list (https://github.com/github-linguist/linguist,
+`lib/linguist/`), shipped unmodified. The folder browser reads them for file
+languages, their colours and the language shares in `/fs/preview`.
 
 linguist is distributed under the MIT License:
 
@@ -169,8 +169,9 @@ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 ## Imagegen skill
 
-`priv/skills/imagegen/` adapts the Apache-2.0 licensed OpenAI imagegen skill and
-Anthropic frontend-design principles. Exact source revisions, links, attribution
-and adaptation notes are in `priv/skills/imagegen/SOURCES.md`; the licence is
-included as `priv/skills/imagegen/LICENSE.txt`. These files retain their
+`apps/albedo/priv/skills/imagegen/` adapts the Apache-2.0 licensed OpenAI
+imagegen skill and Anthropic frontend-design principles. Exact source revisions,
+links, attribution and adaptation notes are in
+`apps/albedo/priv/skills/imagegen/SOURCES.md`; the licence is included as
+`apps/albedo/priv/skills/imagegen/LICENSE.txt`. These files retain their
 Apache-2.0 licence.

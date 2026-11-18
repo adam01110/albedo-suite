@@ -107,11 +107,11 @@ class OpenCodeGoE2ETests(unittest.TestCase):
             ("gpt-5.6-luna", "/responses"),
             ("glm-5.2", "/chat/completions"),
         ]:
-            with self.app.api(f"/sessions/{session}?view=configuration") as response:
+            with self.app.api(f"/sessions/{session}/configuration") as response:
                 json.load(response)
                 validator = response.headers["ETag"]
             with self.app.api(
-                f"/sessions/{session}?view=configuration",
+                f"/sessions/{session}/configuration",
                 {"model": model},
                 method="PATCH",
                 headers={"If-Match": validator},

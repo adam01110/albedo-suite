@@ -308,7 +308,7 @@ func decodeChatEnvelope(envelope sessionEventEnvelope, wireBytes int, content *e
 		if err := decodeRequired(envelope.Data, &data, "kind", "url"); err != nil {
 			return nil, err
 		}
-		var resources ResourceInvalidation
+		resources := ResourceInvalidation{URL: data.URL}
 		switch data.Kind {
 		case "session":
 			resources.Session = true

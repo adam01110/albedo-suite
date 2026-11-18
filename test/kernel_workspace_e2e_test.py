@@ -119,16 +119,16 @@ class KernelWorkspaceTests(unittest.TestCase):
         moved = self.workspace.with_name("moved-project")
         self.workspace.rename(moved)
         self.block()
-        with self.app.api(f"/sessions/{self.session}?view=configuration") as response:
+        with self.app.api(f"/sessions/{self.session}/configuration") as response:
             response.read()
             etag = response.headers["ETag"]
         moved_response = self.api(
-            f"/sessions/{self.session}?view=configuration",
+            f"/sessions/{self.session}/workspace",
             {
                 "workspace": str(moved),
                 "family_revision": self.snapshot()["family_revision"],
             },
-            method="PATCH",
+            method="POST",
             headers={"If-Match": etag},
         )
         self.assertEqual(moved_response["move"]["warnings"], [], moved_response["move"])

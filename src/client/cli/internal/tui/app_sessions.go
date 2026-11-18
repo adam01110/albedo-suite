@@ -85,7 +85,15 @@ func (m *AppModel) handleSessionResults(msg tea.Msg) (tea.Cmd, bool) {
 			m.SessionPicker.notice = operationError(msg.Err, "Could not rename the session: ", "Session may have been renamed; refresh the session list before trying again.")
 			return tea.Batch(cmd, m.refusedConfigurationCmd(msg.Err)), true
 		}
-		m.updateSession(msg.Session)
+		if current, ok := m.session(msg.Configuration.Value.ID); ok {
+			current.ETag = msg.Configuration.ETag
+			if msg.Configuration.Value.Name != nil {
+				current.Title = *msg.Configuration.Value.Name
+			} else {
+				current.Title = current.AutomaticTitle
+			}
+			m.updateSession(current)
+		}
 		m.SessionPicker.notice = ""
 		return cmd, true
 	case sessionsLoadedMsg:
@@ -196,7 +204,7 @@ func (m *AppModel) renameSessionCmd(rename SessionRenameMsg) tea.Cmd {
 			etag = current.ETag
 		}
 		s, err := daemon.RenameSession(context.Background(), conn, rename.ID, rename.Name, etag)
-		return sessionRenamedMsg{SessionRenameMsg: rename, Session: s, Err: err}
+		return sessionRenamedMsg{SessionRenameMsg: rename, Configuration: s, Err: err}
 	}
 }
 

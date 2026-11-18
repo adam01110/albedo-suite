@@ -19,9 +19,8 @@ func TestZedBrowserLoginAndConfirmation(t *testing.T) {
 	if cmd := m.applyHint(); cmd == nil || m.Step != StepOAuth || m.Provider != "zed" {
 		t.Fatalf("/login zed did not start browser sign-in: %+v", m)
 	}
-	if m.Draft.Extension != "zed" || m.Draft.Protocol != "chat_completions" || m.Draft.BaseURL != "https://cloud.zed.dev" {
-		t.Fatalf("wrong Zed draft: %+v", m.Draft)
-	}
+	// The sign-in runs on the accounts list; the daemon joins the account to
+	// the Zed profiles, so no draft profile is built here.
 	m.LoginID = "login-one"
 	m.LoginETag = "waiting-etag"
 	m.TextInput.SetValue("confirm")
@@ -79,7 +78,7 @@ func TestZedSavedProfileSignIn(t *testing.T) {
 			m.SignIns = []daemon.SignIn{{Provider: "zed", Label: "add Zed account", Kind: "model", Flows: []string{"browser"}}}
 			m.Accounts = tc.accounts
 			m.Profiles = config.Profiles{Providers: map[string]config.Settings{"zed": tc.settings}, Active: "zed"}
-			m.buildChoosePicker()
+			showSetups(&m)
 			if detail := m.profileDetail(tc.settings, "zed"); detail != tc.detail {
 				t.Fatalf("profile detail %q, want %q", detail, tc.detail)
 			}
@@ -101,7 +100,7 @@ func TestZedSavedProfileSignIn(t *testing.T) {
 func TestZedBrowserSignInClearsAStoredKey(t *testing.T) {
 	var saved map[string]any
 	conn := commandTestConnection(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPatch || r.URL.RequestURI() != "/settings?group=providers" {
+		if r.Method != http.MethodPatch || r.URL.RequestURI() != "/settings/providers" {
 			t.Errorf("unexpected request %s %s", r.Method, r.URL.RequestURI())
 			return
 		}
@@ -123,7 +122,7 @@ func TestZedBrowserSignInClearsAStoredKey(t *testing.T) {
 			"group": "providers",
 			"resource": map[string]any{
 				"etag": "next-etag",
-				"url":  "/settings?group=providers",
+				"url":  "/settings/providers",
 				"value": map[string]any{
 					"profiles":        map[string]any{},
 					"default_profile": "zed",

@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -234,12 +235,12 @@ accepts the full ID or any prefix that matches only one session.
 
 To work with a session from a script or another agent, use "sessions send" to give
 it a message and "sessions read" to see what it said.`, Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
-		result, err := deps.Application.Sessions(cmd.Context())
+		result, err := deps.Application.RootSessions(cmd.Context())
 		if err != nil {
 			return err
 		}
 		if asJSON {
-			return writeJSON(cmd.OutOrStdout(), result, true)
+			return writeJSON(cmd.OutOrStdout(), slices.DeleteFunc(result, func(s daemon.Session) bool { return s.Archived }), true)
 		}
 		_, err = fmt.Fprintln(cmd.OutOrStdout(), sessionListing(result, time.Now()))
 		return err

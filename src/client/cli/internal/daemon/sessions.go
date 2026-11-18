@@ -41,6 +41,7 @@ type ForkRequest struct{ Checkpoint string }
 type Session struct {
 	ID               string    `json:"id"`
 	Title            string    `json:"name"`
+	AutomaticTitle   string    `json:"-"`
 	LastAssistantAt  *int64    `json:"activity_at"` // Unix seconds, when observed.
 	CreatedAt        *int64    `json:"-"`           // Unix milliseconds.
 	ActivityAt       *int64    `json:"-"`           // Unix milliseconds: a turn's start or end.
@@ -107,7 +108,7 @@ func (s Session) LastUsage() *Usage {
 
 func sessionValue(wire protocol.Session) Session {
 	location := &Location{Host: wire.Location.Host, User: wire.Location.User, Path: wire.Location.Path, Label: wire.Location.Label}
-	session := Session{ID: wire.ID, Title: wire.Name, Cursor: wire.Cursor, LastAssistantAt: timestampSeconds(value(wire.ActivityAt)), CreatedAt: timestampMilliseconds(value(wire.CreatedAt)), ActivityAt: timestampMilliseconds(value(wire.ActivityAt)), TranscriptCount: int(wire.Preview.TranscriptCount), Workspace: wire.Workspace, Location: location, Model: value(wire.Model), CyberAccess: value(wire.CyberAccess), Effort: value(wire.Effort), Fast: wire.Fast, ContextWindow: wire.ConfigurationResource.Value.ContextWindow, Provider: value(wire.ProviderProfile), ETag: wire.ConfigurationResource.ETag, FamilyRevision: wire.FamilyRevision, ParentID: wire.ParentID, RootID: wire.RootID, Depth: int(wire.Depth), Closed: wire.Closed, Pinned: wire.Preferences.Pinned, Archived: wire.Preferences.Archived, Opens: int(wire.Preferences.Opens), Status: capturedStatus(wire), wire: wire}
+	session := Session{ID: wire.ID, Title: wire.Name, AutomaticTitle: wire.AutomaticName, Cursor: wire.Cursor, LastAssistantAt: timestampSeconds(value(wire.ActivityAt)), CreatedAt: timestampMilliseconds(value(wire.CreatedAt)), ActivityAt: timestampMilliseconds(value(wire.ActivityAt)), TranscriptCount: int(wire.Preview.TranscriptCount), Workspace: wire.Workspace, Location: location, Model: value(wire.Model), CyberAccess: value(wire.CyberAccess), Effort: value(wire.Effort), Fast: wire.Fast, ContextWindow: wire.ConfigurationResource.Value.ContextWindow, Provider: value(wire.ProviderProfile), ETag: wire.ConfigurationResource.ETag, FamilyRevision: wire.FamilyRevision, ParentID: wire.ParentID, RootID: wire.RootID, Depth: int(wire.Depth), Closed: wire.Closed, Pinned: wire.Preferences.Pinned, Archived: wire.Preferences.Archived, Opens: int(wire.Preferences.Opens), Status: capturedStatus(wire), wire: wire}
 	session.Glances = glancesValue(wire.Glances)
 	session.Moved = movedValue(wire.Moved)
 	session.MovePending = movePendingValue(wire.MovePending)
@@ -189,14 +190,15 @@ func GetSession(ctx context.Context, conn *Connection, id string) (Session, erro
 
 type SessionCondition struct{ ETag, FamilyRevision string }
 type SessionConfiguration struct {
-	Value protocol.SessionConfiguration
-	ETag  string
+	Value       protocol.SessionConfiguration
+	ETag        string
+	Application *protocol.ConfigurationApplication
 }
 
 func GetSessionConfiguration(ctx context.Context, conn *Connection, id string) (SessionConfiguration, error) {
 	var result SessionConfiguration
 	err := executeRead(ctx, conn, operation{Name: "read session configuration", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
-		return protocol.NewGetSessionRequest(base, id, &protocol.GetSessionParams{View: new("configuration")})
+		return protocol.NewGetSessionConfigurationRequest(base, id)
 	}, Validator: &result.ETag, Policy: readRecovery}, func(data []byte) error {
 		if err := decodeRequired(data, &result.Value); err != nil {
 			return err
@@ -208,49 +210,47 @@ func GetSessionConfiguration(ctx context.Context, conn *Connection, id string) (
 	})
 	return result, err
 }
-func patchSession(ctx context.Context, conn *Connection, id, etag string, body any) (Session, error) {
+func patchSession(ctx context.Context, conn *Connection, id, etag string, body any) (SessionConfiguration, error) {
 	headers, err := observedHeaders(etag)
 	if err != nil {
-		return Session{}, err
+		return SessionConfiguration{}, err
 	}
 	return patchSessionWithHeaders(ctx, conn, id, headers, body)
 }
 
-func patchSessionWithHeaders(ctx context.Context, conn *Connection, id string, headers http.Header, body any) (Session, error) {
-	var result Session
+func patchSessionWithHeaders(ctx context.Context, conn *Connection, id string, headers http.Header, body any) (SessionConfiguration, error) {
+	var result SessionConfiguration
 	err := executeMutation(ctx, conn, operation{Name: "edit session configuration", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
-		return protocol.NewPatchSessionRequestWithBody(base, id, &protocol.PatchSessionParams{View: "configuration", IfMatch: headers.Get("If-Match")}, "application/merge-patch+json", body)
+		return protocol.NewPatchSessionRequestWithBody(base, id, &protocol.PatchSessionParams{IfMatch: headers.Get("If-Match")}, "application/merge-patch+json", body)
 	}, Headers: headers, Body: body, Policy: authRecovery}, []int{200}, func(data []byte, _ int) error {
-		var change protocol.SessionChange
+		var change protocol.SessionConfigurationChange
 		if err := decodeRequired(data, &change); err != nil {
 			return err
 		}
-		if change.Session.ConfigurationResource.ETag == "" || change.Session.ID != id || change.Session.ConfigurationResource.Value.ID != id {
-			return fieldError("session change")
+		if change.Resource.ETag == "" || change.Resource.Value.ID != id {
+			return fieldError("configuration change")
 		}
-		if err := validateSession(change.Session); err != nil {
-			return err
-		}
-		result = sessionValue(change.Session)
+		result = SessionConfiguration{Value: change.Resource.Value, ETag: change.Resource.ETag, Application: &change.Application}
+
 		return nil
 	})
 	return result, err
 }
-func RenameSession(ctx context.Context, conn *Connection, id, name, etag string) (Session, error) {
-	return patchSession(ctx, conn, id, etag, protocol.SessionPatch{Name: &name})
+func RenameSession(ctx context.Context, conn *Connection, id, name, etag string) (SessionConfiguration, error) {
+	return patchSession(ctx, conn, id, etag, protocol.SessionPatch{Name: protocol.SetNullablePatch(name)})
 }
 
 // SetContextWindow sets the tokens a session compacts against, or restores the
 // model's window when tokens is nil. An empty etag reads the current one.
-func SetContextWindow(ctx context.Context, conn *Connection, id, etag string, tokens *int64) (Session, error) {
+func SetContextWindow(ctx context.Context, conn *Connection, id, etag string, tokens *int64) (SessionConfiguration, error) {
 	if etag == "" {
 		configuration, err := GetSessionConfiguration(ctx, conn, id)
 		if err != nil {
-			return Session{}, err
+			return SessionConfiguration{}, err
 		}
 		etag = configuration.ETag
 	}
-	return patchSession(ctx, conn, id, etag, map[string]any{"context_window": tokens})
+	return patchSession(ctx, conn, id, etag, protocol.SessionPatch{ContextWindow: nullablePatch(tokens)})
 }
 func ForkSession(ctx context.Context, conn *Connection, id string, body ForkRequest) (Session, error) {
 	return CreateSession(ctx, conn, CreateSessionRequest{Kind: "fork", SourceSessionID: id, CheckpointID: body.Checkpoint})
@@ -307,7 +307,7 @@ func DeleteSession(ctx context.Context, conn *Connection, id string, tree bool, 
 	if err != nil {
 		return DeletionResult{}, err
 	}
-	params := protocol.DeleteSessionParams{View: "configuration", Scope: new("leaf"), IfMatch: condition.ETag}
+	params := protocol.DeleteSessionParams{Scope: new("leaf"), IfMatch: condition.ETag}
 	if tree {
 		if condition.FamilyRevision == "" {
 			return DeletionResult{}, errors.New("subtree deletion requires the observed family revision")
@@ -443,7 +443,9 @@ func previewItems(ctx context.Context, conn *Connection, id string, entries []pr
 }
 
 func summaryValue(row protocol.SessionSummary) Session {
-	return sessionValue(protocol.Session{ID: row.ID, Name: row.Name, AutomaticName: row.AutomaticName, Workspace: row.Workspace, Location: row.Location, ParentID: row.ParentID, RootID: row.RootID, Address: row.Address, Depth: row.Depth, Closed: row.Closed, CreatedAt: row.CreatedAt, ActivityAt: row.ActivityAt, ProviderProfile: row.ProviderProfile, Model: row.Model, CyberAccess: row.CyberAccess, Effort: row.Effort, Status: row.Status, Preview: row.Preview, Preferences: row.Preferences, CurrentProgress: row.CurrentProgress, Activity: row.Activity, Cursor: row.Cursor, Moved: row.Moved, MovePending: row.MovePending, SessionCostUsd: row.SessionCostUsd})
+	session := sessionValue(protocol.Session{ID: row.ID, Name: row.Name, AutomaticName: row.AutomaticName, Workspace: row.Workspace, Location: row.Location, ParentID: row.ParentID, RootID: row.RootID, Address: row.Address, Depth: row.Depth, Closed: row.Closed, CreatedAt: row.CreatedAt, ActivityAt: row.ActivityAt, ProviderProfile: row.ProviderProfile, Model: row.Model, CyberAccess: row.CyberAccess, Effort: row.Effort, Status: row.Status, Preview: row.Preview, Preferences: row.Preferences, CurrentProgress: row.CurrentProgress, Activity: row.Activity, Cursor: row.Cursor, Moved: row.Moved, MovePending: row.MovePending, SessionCostUsd: row.SessionCostUsd})
+	session.ETag = value(row.ConfigurationEtag)
+	return session
 }
 func ListAllSessions(ctx context.Context, conn *Connection) ([]Session, error) {
 	sessions, _, err := listSessions(ctx, conn, protocol.ListSessionsParams{Scope: new("all")})

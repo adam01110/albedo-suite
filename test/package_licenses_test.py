@@ -12,6 +12,28 @@ PACKAGES = {
 }
 
 
+def sealed_files(output):
+    """The files upstream's build seal hashes (build_identity's
+    applications_digest): each application's ebin and priv trees, symlinks
+    followed, named from `output` and sorted, without the kernel venv."""
+    paths = []
+    for app in output.iterdir():
+        if not (app / "ebin").is_dir():
+            continue
+        for subtree in ("ebin", "priv"):
+            for directory, directories, names in os.walk(
+                app / subtree, followlinks=True
+            ):
+                if Path(directory) == output / "albedo/priv/python":
+                    directories[:] = [d for d in directories if d != ".venv"]
+                paths += [
+                    (Path(directory) / name).relative_to(output).as_posix()
+                    for name in names
+                    if (Path(directory) / name).is_file()
+                ]
+    return sorted(paths)
+
+
 class PackageLicenseTests(unittest.TestCase):
     def assert_agpl_with_classpath_exception(self, doc):
         license_text = (doc / "LICENSE").read_text()
@@ -71,20 +93,14 @@ class PackageLicenseTests(unittest.TestCase):
         self.assertIn("cd -P source/suite", source)
 
     def test_server_build_seal_matches_installed_files(self):
-        app = PACKAGES["server"] / "lib/albedo/albedo"
-        seal = (app / ".build-digest").read_text()
-        digest = hashlib.sha256()
-        paths = sorted(
-            (Path(directory) / name).relative_to(app).as_posix()
-            for subtree in ("ebin", "priv")
-            for directory, _, names in os.walk(app / subtree, followlinks=True)
-            for name in names
-            if (Path(directory) / name).is_file()
-        )
+        output = PACKAGES["server"] / "lib/albedo"
+        seal = (output / "albedo/.build-digest-v2").read_text()
+        paths = sealed_files(output)
         self.assertTrue(paths)
+        digest = hashlib.sha256()
         for name in paths:
             digest.update(name.encode())
-            with (app / name).open("rb") as source:
+            with (output / name).open("rb") as source:
                 while chunk := source.read(65536):
                     digest.update(chunk)
         self.assertEqual(seal, digest.hexdigest() + "\n")

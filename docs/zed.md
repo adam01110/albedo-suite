@@ -1,7 +1,8 @@
 # Zed provider
 
 The `zed` extension calls Zed's hosted `/completions` endpoint directly. No
-proxy or zed2cli installation is required. `/login` has a Zed profile row.
+proxy or zed2cli installation is required. Zed profiles are listed under
+`/accounts` advanced setups.
 
 Create a profile with extension `zed`, base URL `https://cloud.zed.dev`, protocol
 `chat_completions`, and a model returned by Zed's authenticated `/models` catalog.
@@ -10,13 +11,15 @@ field chooses the native wire protocol for each model.
 
 ## Browser sign-in
 
-Run `/login zed` (or choose **add Zed account** in `/login`), open the printed
-`https://zed.dev/native_app_signin` URL, sign in with the Zed account's GitHub
-identity, and return to Albedo. The browser ends on zed.dev's success page;
-Albedo then shows the identity validated by `cloud.zed.dev`, including the GitHub
-login, user ID and organization. Check that it is yours, type `confirm`, and
-select a model. Cancel if the identity is unexpected. No credential is saved
-until that current identity is explicitly confirmed.
+Run `/login zed` (or start the Zed sign-in from `/accounts`). The sign-in runs
+on the accounts list: open the printed `https://zed.dev/native_app_signin` URL,
+sign in with the Zed account's GitHub identity, and return to Albedo. The browser
+ends on zed.dev's success page; Albedo then shows the identity validated by
+`cloud.zed.dev`, including the GitHub login, user ID and organization, in the
+footer. Check that it is yours and type `confirm`. Cancel if the identity is
+unexpected. No credential is saved until that current identity is explicitly
+confirmed. The daemon joins the new account to existing Zed profiles; if the
+sign-in leaves no Zed profile, create one under advanced setups.
 
 The identity confirmation is a distinct login state, `confirming`: the daemon
 publishes the validated account in that state, accepts only `confirm` as input,

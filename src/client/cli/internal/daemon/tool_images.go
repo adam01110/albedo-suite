@@ -39,7 +39,7 @@ func (c *ChatClient) ReadImage(ctx context.Context, image ImageMetadata) ([]byte
 	data, err := requestBytes(ctx, c.conn, operation{Name: "read tool image", Policy: readRecovery,
 		Headers: http.Header{"Accept": {"image/png, image/jpeg, image/webp"}},
 		BuildRequest: func(base string, _ io.Reader) (*http.Request, error) {
-			return protocol.NewGetHistoryImageRequest(base, c.agentID, parts[0], parts[1])
+			return protocol.NewGetHistoryImageRequest(base, protocol.ID(c.agentID), protocol.ID(parts[0]), parts[1], nil)
 		}}, responseLimits{successStatus: http.StatusOK, bodyBytes: MaxPreviewImageBytes, errorBytes: 64 * 1024})
 	if err != nil {
 		return nil, err

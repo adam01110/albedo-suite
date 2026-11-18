@@ -6,7 +6,7 @@ run() ->
     application:ensure_all_started(crypto),
     application:ensure_all_started(public_key),
     install_transport(),
-    {ok, OAuth} = 'albedo@harness@sdk@oauth_flows':start(),
+    {ok, OAuth} = 'albedo_sdk@oauth_flows':start(),
     persistent_term:put(zed_login_oauth, OAuth),
     Table = ets:new(zed_login_fixture, [named_table, public, set]),
     {ok, Listen} = gen_tcp:listen(0, [binary, {active, false}, {ip, {127,0,0,1}}, {packet, http_bin}]),
@@ -56,19 +56,19 @@ install_transport() ->
     file:delete(Temp).
 
 %% The SDK modules the moved Erlang APIs became.
--define(CREDS, 'albedo@harness@sdk@credential_store').
+-define(CREDS, 'albedo_sdk@credential_store').
 
 oauth_service() -> persistent_term:get(zed_login_oauth).
 start_identified(Home, Id, Provider, Login, Intent) ->
-    'albedo@harness@sdk@oauth_flows':start_identified(oauth_service(), Home, Id, Provider, Login, none, Intent).
+    'albedo_sdk@oauth_flows':start_identified(oauth_service(), Home, Id, Provider, Login, none, Intent, fun() -> none end).
 get_identified(Home, Id, Logins) ->
-    'albedo@harness@sdk@oauth_flows':get_identified(oauth_service(), Home, Id, Logins).
+    'albedo_sdk@oauth_flows':get_identified(oauth_service(), Home, Id, Logins).
 input_identified(Home, Id, Match, Text, Logins) ->
-    'albedo@harness@sdk@oauth_flows':input_identified(oauth_service(), Home, Id, Match, Text, Logins).
+    'albedo_sdk@oauth_flows':input_identified(oauth_service(), Home, Id, Match, Text, Logins).
 cancel_identified(Home, Id, Logins) ->
-    'albedo@harness@sdk@oauth_flows':cancel_identified(oauth_service(), Home, Id, Logins).
+    'albedo_sdk@oauth_flows':cancel_identified(oauth_service(), Home, Id, Logins).
 etag(Flow) -> 'albedo_web@etag':strong(Flow).
-read_json(Path) -> 'albedo@harness@sdk@settings_store':read_object(Path).
+read_json(Path) -> 'albedo_sdk@settings_store':read_object(Path).
 write_json(Path, Value) -> {ok, nil} = ?CREDS:write(Path, Value), ok.
 put_accounts(Path, Accounts) -> {ok, nil} = ?CREDS:put_accounts(Path, Accounts), ok.
 
@@ -411,7 +411,7 @@ confirmation_cases() ->
     Home = home(),
     try
         L = login(),
-        {ok, Snapshot} = 'albedo@harness@sdk@auth_accounts':auth_snapshot(Home,[L],'albedo@harness@sdk@key_environment':empty()),
+        {ok, Snapshot} = 'albedo_sdk@auth_accounts':auth_snapshot(Home,[L],'albedo_sdk@key_environment':empty()),
         #{<<"providers">> := [#{<<"id">> := <<"zed">>, <<"flows">> := [<<"browser">>]}]} = json:decode(Snapshot),
         {Id, Initial} = start(Home),
         %% Input while waiting only wakes a device flow; it never confirms.
@@ -436,7 +436,7 @@ confirmation_cases() ->
         [#{<<"access_token">> := <<"editor-test-secret">>, <<"_albedo_account_id">> := PublicId}] = ?CREDS:values(A,<<"zed">>),
         clean_home_inference(Home, PublicId),
         ok = write_json(filename:join(Home,<<"config.json">>),#{<<"providers">> => #{}}),
-        {ok,nil} = 'albedo@harness@sdk@auth_accounts':remove_account(Home,[L],PublicId,'albedo@harness@sdk@key_environment':empty()), no_accounts(Home),
+        {ok,nil} = 'albedo_sdk@auth_accounts':remove_account(Home,[L],PublicId,'albedo_sdk@key_environment':empty()), no_accounts(Home),
         {Cancelled, CancelInitial} = start(Home),
         callback(CancelInitial, <<"43">>, CancelInitial, <<"localhost">>),
         _ = await_state(Home,Cancelled,<<"confirming">>),

@@ -413,6 +413,11 @@ func (m LoginModel) acceptRename() (LoginModel, tea.Cmd) {
 	if m.RenameAccountID != "" {
 		id, label := m.RenameAccountID, to
 		m.Step = StepSaving
+		m.focus = rowAccount + id
+		if !m.advanced {
+			m.listBusy = "renaming " + m.Name + "…"
+			m.buildChoosePicker()
+		}
 		m.RenameAccountID = ""
 		return m, m.reloadCmd(func(ctx context.Context) error { _, err := daemon.RenameAccount(ctx, m.Conn, id, label); return err })
 	}

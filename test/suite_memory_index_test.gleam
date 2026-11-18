@@ -1,7 +1,7 @@
 //// The memory startup block is a bounded topic index of own and linked
 //// notes, while reads and search keep every full note.
 
-import albedo/harness/extensions/memory/files
+import albedo_ext_memory/files
 import gleam/dynamic.{type Dynamic}
 import gleam/int
 import gleam/io

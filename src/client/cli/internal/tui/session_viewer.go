@@ -129,7 +129,7 @@ func NewSessionViewer(workspace string) SessionViewer {
 func sessionViewerActions(workspace string) []PickerItem {
 	return []PickerItem{
 		{ID: "new", Label: "New session", Detail: workspace},
-		{ID: "login", Label: "Accounts", Detail: "add or select a provider"},
+		{ID: "login", Label: "Accounts", Detail: "sign in, rotation, sign-out"},
 		{ID: "archive", Label: "Archive", Detail: "browse archived sessions"},
 	}
 }
