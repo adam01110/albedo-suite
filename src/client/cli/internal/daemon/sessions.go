@@ -127,8 +127,18 @@ func glancesValue(glances []protocol.Glance) []PageGlance {
 	for _, glance := range glances {
 		values = append(values, *glanceValue(glance))
 	}
-	slices.SortFunc(values, func(first, second PageGlance) int { return strings.Compare(first.Title, second.Title) })
+	slices.SortFunc(values, func(first, second PageGlance) int {
+		return strings.Compare(glanceOrder(first.Title), glanceOrder(second.Title))
+	})
 	return values
+}
+
+// glanceOrder sorts glances by title, except that the mcp list follows skills.
+func glanceOrder(title string) string {
+	if title == "mcp" {
+		return "skills\x00mcp"
+	}
+	return title
 }
 func decodeSession(data []byte) (Session, error) {
 	var wire protocol.Session
