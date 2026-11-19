@@ -93,16 +93,30 @@ type sidebarGlance struct {
 
 func (g sidebarGlance) count() int { return max(g.total, len(g.Rows)) }
 
-// activeGlances lists nonempty extensions, background jobs, then activity.
+// agentsGlance is the extension glance of the session's open children
+// (albedo-suite), which the sidebar lists under background jobs.
+const agentsGlance = "agents"
+
+// activeGlances lists nonempty extensions, background jobs, agents, then
+// activity.
 func (m ChatModel) activeGlances() []sidebarGlance {
 	var glances []sidebarGlance
+	var agents *sidebarGlance
 	for _, g := range m.Glances {
-		if len(g.Rows) > 0 {
-			glances = append(glances, sidebarGlance{PageGlance: g})
+		if len(g.Rows) == 0 {
+			continue
 		}
+		if g.Title == agentsGlance {
+			agents = &sidebarGlance{PageGlance: g}
+			continue
+		}
+		glances = append(glances, sidebarGlance{PageGlance: g})
 	}
 	if rows := m.jobRows(); len(rows) > 0 {
 		glances = append(glances, sidebarGlance{PageGlance: PageGlance{Title: "background jobs", Rows: rows}})
+	}
+	if agents != nil {
+		glances = append(glances, *agents)
 	}
 	if rows := m.activityRows(); len(rows) > 0 {
 		glances = append(glances, sidebarGlance{PageGlance: PageGlance{Title: "activity", Rows: rows}, total: m.activityCount()})

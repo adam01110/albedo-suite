@@ -132,6 +132,8 @@
             gleam run -m suite_memory_index_test
             cp ${../../test/suite_lazy_mcp_test.gleam} test/suite_lazy_mcp_test.gleam
             gleam run -m suite_lazy_mcp_test
+            cp ${../../test/suite_agents_glance_test.gleam} test/suite_agents_glance_test.gleam
+            gleam run -m suite_agents_glance_test
           '';
         postInstall =
           (old.postInstall or "")
@@ -185,6 +187,7 @@
             go test ./internal/tui -run '^(TestOpenCodeGo|TestZed)' -count=1 -v
             go test ./internal/tui -run '^TestToolImages' -count=1 -v
             go test ./internal/tui -run '^TestActivity' -count=1 -v
+            go test ./internal/tui -run '^TestAgentsGlance' -count=1 -v
             go test ./internal/tui -run '^TestTurnNotify' -count=1 -v
             go test ./internal/tui -run '^TestZoxide' -count=1 -v
             go test ./internal/terminal -run '^TestSuiteInline' -count=1 -v

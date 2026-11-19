@@ -33,6 +33,7 @@ providers, skills and SOPS declarations stay in Infra.
 | [Provider availability](docs/provider-availability.md) | Disable or re-enable saved profiles with Ctrl+T under `/accounts` advanced setups. |
 | CLI resume | `albedo resume` without an ID reopens the newest non-archived session in the current directory. |
 | [Vim editing](docs/vim.md) | Modal composer motions and edits, with the current mode in the footer. |
+| [Agents sidebar](docs/agents-sidebar.md) | List open child agents, working or idle, directly under background jobs. |
 | [TUI activity](docs/activity-sidebar.md) | Show passive current and recent tool activity below background jobs. |
 | [Turn notifications](docs/turn-notifications.md) | Raise a desktop notification through the terminal when a turn ends while it is unfocused. |
 | [Inline redraw](docs/development.md#terminal-ux) | Keep the inline TUI from stacking stale header rows when the terminal narrows. |

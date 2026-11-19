@@ -32,6 +32,8 @@
     "apps/albedo/src/albedo_ext_zed/wire.gleam",
     "apps/albedo/test/albedo/history/bedrock_replay_preflight_test.gleam",
     "docs/openapi.yaml",
+    "extensions/agents/src/albedo_ext_agents/extension.gleam",
+    "extensions/agents/src/albedo_ext_agents/sidebar.gleam",
     "extensions/files/src/albedo_ext_files/extension.gleam",
     "extensions/files/src/albedo_fff.erl",
     "extensions/mcp/src/albedo_ext_mcp/extension.gleam",

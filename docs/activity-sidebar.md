@@ -1,6 +1,7 @@
 # TUI activity sidebar
 
-The chat sidebar shows `activity` after extension glances and background jobs.
+The chat sidebar shows `activity` after extension glances, background jobs and
+[agents](agents-sidebar.md).
 It uses existing stream events, tool progress and bounded transcript history;
 there is no model-maintained plan, extra request, setting or persistent log.
 
