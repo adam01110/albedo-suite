@@ -177,26 +177,11 @@
         postCheck =
           (old.postCheck or "")
           + ''
-            go test ./internal/app ./internal/cli ./internal/webui -count=1
             # The whole daemon package: a test without a name filter cannot be
             # left out of every check.
-            go test ./internal/daemon -count=1
-            go test ./internal/tui -run '^TestBase16' -count=1 -v
-            go test ./internal/tui -run '^(TestVim|TestSessionViewerTotalCostTopRight|TestSessionListCostLeftOfAge)' -count=1 -v
-            go test ./internal/tui -run '^TestComposerScope' -count=1 -v
-            go test ./internal/tui -run '^TestContext' -count=1 -v
-            go test ./internal/tui -run '^TestQuota' -count=1 -v
-            go test ./internal/tui -run '^TestProviderAvailability' -count=1 -v
-            go test ./internal/tui -run '^TestSuiteEscape' -count=1 -v
-            go test ./internal/tui -run '^(TestOpenCodeGo|TestZed)' -count=1 -v
-            go test ./internal/tui -run '^TestToolImages' -count=1 -v
-            go test ./internal/tui -run '^TestActivity' -count=1 -v
-            go test ./internal/tui -run '^TestAgentsGlance' -count=1 -v
-            go test ./internal/tui -run '^TestTurnNotify' -count=1 -v
-            go test ./internal/tui -run '^TestZoxide' -count=1 -v
-            go test ./internal/tui -run '^TestUsage' -count=1 -v
-            go test ./internal/terminal -run '^TestSuiteInline' -count=1 -v
-            ${pkgs.lib.optionalString showDiffs "go test ./internal/tui -run '^TestDefaultDiffVisibility$' -count=1 -v"}
+            go test ./internal/app ./internal/cli ./internal/daemon ./internal/webui -count=1
+            # One run links each test binary once; every prefix names tests in one package.
+            go test ./internal/terminal ./internal/tui -run '^(TestActivity|TestAgentsGlance|TestBase16|TestComposerScope|TestContext|TestOpenCodeGo|TestProviderAvailability|TestQuota|TestSessionListCostLeftOfAge|TestSessionViewerTotalCostTopRight|TestSuiteEscape|TestSuiteInline|TestToolImages|TestTurnNotify|TestUsage|TestVim|TestZed|TestZoxide${pkgs.lib.optionalString showDiffs "|TestDefaultDiffVisibility$"})' -count=1 -v
           '';
       }));
 
