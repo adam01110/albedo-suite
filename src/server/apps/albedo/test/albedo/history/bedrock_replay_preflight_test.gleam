@@ -173,6 +173,7 @@ fn state(home: String, host: runtime.Runtime) -> session_state.State(Nil) {
     kernel: None,
     released: None,
     prepared: None,
+    composing_context: False,
     rest_token: 0,
     home: home,
     self: process.new_subject(),

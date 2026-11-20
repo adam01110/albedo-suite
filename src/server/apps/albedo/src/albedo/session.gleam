@@ -544,6 +544,9 @@ pub type Message {
   KernelOpened(Int, Result(runtime.Session, python.Error))
   /// The runtime answered this session's request for a kernel-free composition.
   PreparedOpened(Int, Result(runtime.Prepared, python.Error))
+  /// The runtime answered a context read's request for a kernel-free
+  /// composition (albedo-suite); see `context_read`.
+  ContextComposed(Result(runtime.Prepared, python.Error))
   /// The model wait a rest timer measured has passed; see `arm_rest`.
   RestKernel(String, Int)
   /// The kernel went unused for `idle_release_ms` since the timer `token`
@@ -773,6 +776,7 @@ pub fn start(
         kernel: None,
         released: None,
         prepared: None,
+        composing_context: False,
         rest_token: 0,
         home: home,
         self: self,
@@ -2140,6 +2144,7 @@ fn handle(
           ))
         False -> actor.continue(state)
       }
+    ContextComposed(result) -> actor.continue(context_composed(state, result))
     AcquireKernel(id, reply) -> acquire_kernel(state, id, reply)
     RestKernel(id, token) ->
       case token == state.rest_token && turn.live(state.activity, id) {
@@ -3356,7 +3361,12 @@ fn handle(
               kernel: None,
               released: Some(kernel),
               releasing: None,
-              context: session_state.unprepared(),
+              // A turn resting on its model still sends the request this
+              // snapshot shows (albedo-suite); only a resting session drops it.
+              context: case turn.running(state.activity) {
+                Some(_) -> state.context
+                None -> session_state.unprepared()
+              },
             )
               |> session_namespace.noted(session_namespace.released_text(
                 saved,
@@ -6923,10 +6933,111 @@ fn context_read(state: State) -> #(State, context_snapshot.Snapshot) {
           }
           #(session_state.State(..state, context: snapshot), snapshot)
         }
-        #(state, None) -> #(state, state.context)
+        #(state, None) -> compose_for_context(state)
       }
     _, _, _ -> #(state, state.context)
   }
+}
+
+/// A resting session that holds no composition, as after a daemon restart,
+/// cannot rebuild its last request: ask for one without a kernel and tell
+/// readers to read again once it arrives (albedo-suite).
+fn compose_for_context(state: State) -> #(State, context_snapshot.Snapshot) {
+  case session_state.composition(state), state.composing_context {
+    Some(composition), _ -> preview_context(state, composition)
+    None, True -> #(state, composing_context())
+    None, False -> {
+      let self = state.self
+      runtime.prepare_session_async(
+        state.host,
+        state.info.id,
+        state.info.cwd,
+        fn(result) { process.send(self, ContextComposed(result)) },
+      )
+      #(
+        session_state.State(..state, composing_context: True),
+        composing_context(),
+      )
+    }
+  }
+}
+
+/// What a session that has sent nothing would send first: its instructions
+/// and tools around an empty conversation (albedo-suite). Kept like a rebuilt
+/// request until the first turn records the real one. A session whose last
+/// turn used another model stays pending: an empty conversation would
+/// misstate it.
+fn preview_context(
+  state: State,
+  composition: runtime.Prepared,
+) -> #(State, context_snapshot.Snapshot) {
+  let unsent = fn(reason) { #(state, context_snapshot.pending(reason)) }
+  case requests.last_turn(runtime.ledger(state.host), state.info.id) {
+    Ok(None) ->
+      case session_provider.configured_client(state) {
+        Error(reason) -> unsent("cannot preview the first request: " <> reason)
+        Ok(#(state, upstream)) ->
+          case
+            loop.rebuild_observed(
+              state.host,
+              composition,
+              state.info.model,
+              upstream.resolved_effort,
+              state.pin,
+              upstream,
+              [],
+              None,
+            )
+          {
+            Error(reason) -> #(
+              state,
+              context_snapshot.pending(
+                "cannot preview the first request: " <> reason,
+              ),
+            )
+            Ok(#(request, _, observation)) -> {
+              let snapshot =
+                context_snapshot.from_request(
+                  Some(usage.now()),
+                  state.info.provider,
+                  conversation.protocol(upstream.protocol),
+                  upstream.protocol,
+                  request,
+                  observation,
+                )
+              #(session_state.State(..state, context: snapshot), snapshot)
+            }
+          }
+      }
+    _ ->
+      unsent(
+        "no provider request to rebuild: the last turn used another model or provider",
+      )
+  }
+}
+
+fn composing_context() -> context_snapshot.Snapshot {
+  context_snapshot.pending(
+    "preparing the session's composition to rebuild its last request",
+  )
+}
+
+/// Keeps the composition a context read asked for, unless a kernel or turn
+/// brought one meanwhile, and has readers read again.
+fn context_composed(
+  state: State,
+  result: Result(runtime.Prepared, python.Error),
+) -> State {
+  let state = session_state.State(..state, composing_context: False)
+  case result, session_state.composition(state) {
+    Ok(prepared), None if prepared.cwd == state.info.cwd ->
+      session_state.State(..state, prepared: Some(prepared))
+    _, _ -> state
+  }
+  |> session_state.invalidate(
+    view.StaleContext,
+    "/sessions/" <> state.info.id <> "/context",
+  )
 }
 
 /// A snapshot rebuilt for a session without a kernel goes with its history.

@@ -77,6 +77,9 @@ pub type State(message) {
     /// The composition the runtime prepared without a kernel, for a turn
     /// that starts while the session holds none.
     prepared: Option(runtime.Prepared),
+    /// A context read asked for `prepared` and the runtime has not answered
+    /// yet (albedo-suite).
+    composing_context: Bool,
     /// Bumped at each model request and tool call; a rest timer armed under
     /// an older value is stale.
     rest_token: Int,

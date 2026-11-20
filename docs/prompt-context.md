@@ -71,13 +71,32 @@ lists and code blocks use the chat renderer; complete JSON objects and arrays
 are indented; extension wrapper tags stay visible. Long generated instruction
 lines have paragraph spacing, and formatted text wraps at at most 100 columns.
 
+A section reads as one document. The daemon still serves bounded pages; the
+reader fetches all of them (about a millisecond each from a local daemon) and
+joins them, so a page boundary no longer splits the view or the formatting.
+Arrows scroll, `pgup`/`pgdn` and space jump a screen, and `home`/`end` (or
+`g`/`G`) go to either end. The header shows the source, byte count, view and
+how far down the section you are.
+
 Press `r` to toggle between formatted and raw views. Raw view shows the original
-page text with terminal-width wrapping, not Markdown rendering or JSON changes.
-The header identifies the current view. Switching views resets the scroll to the
-start of the current page; arrow/hjkl navigation and page jumps are unchanged.
-Formatting is local to the CLI and never changes the prepared request, its byte
-counts or the model's context. Pages remain bounded; incomplete JSON at a page
-boundary stays literal rather than being reconstructed.
+text with terminal-width wrapping, not Markdown rendering or JSON changes.
+Switching views resets the scroll to the start. Formatting is local to the CLI
+and never changes the prepared request, its byte counts or the model's context.
+
+Above the section list, a bar shows how the request fills its window:
+instructions, tools and conversation in their own colors, free space in grey,
+and the reserve past the compaction trigger in a muted yellow. The legend
+under it gives each part's tokens and share. The total is the request's
+measured or estimated size; parts are split from it by section bytes, so their
+counts are approximate.
+
+The daemon keeps a running turn's snapshot when the turn's idle kernel is
+released while it waits on the model, so `/context` stays ready mid-turn. A
+resting session without a composition, as after a daemon restart, prepares one
+without a kernel to rebuild its last request; the inspector reads a pending
+snapshot again every second until it is ready. A session that has sent nothing
+yet shows a preview of its first request: the instructions and tools that will
+be sent, without the conversation.
 
 ## Verification boundary
 

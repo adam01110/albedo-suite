@@ -13,6 +13,7 @@ import tempfile
 from pathlib import Path
 
 SUITE_CASES = (
+    "context_inspection_e2e_test.py",
     "formatter_e2e_test.py",
     "kernel_workspace_e2e_test.py",
     "lazy_mcp_test.py",
