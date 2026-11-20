@@ -19,6 +19,7 @@ SUITE_CASES = (
     "lazy_mcp_test.py",
     "lsp_e2e_test.py",
     "model_catalogs_test.py",
+    "monitor_e2e_test.py",
     "provider_availability_e2e_test.py",
     "prompt_context_e2e_test.py",
     "session_cost_e2e_test.py",
@@ -123,6 +124,9 @@ def prepare_source(upstream, destination, suite):
     )
     for name in SUITE_CASES:
         shutil.copyfile(suite / "test" / name, cases_directory / name)
+    shutil.copyfile(
+        suite / "scripts/albedo-monitor.py", cases_directory / "albedo_monitor.py"
+    )
     shutil.copytree(
         suite / "test/fixtures", cases_directory / "fixtures", dirs_exist_ok=True
     )

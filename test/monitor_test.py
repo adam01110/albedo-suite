@@ -27,7 +27,7 @@ class MonitorTest(unittest.TestCase):
         self.home = Path(self.temp.name)
         self.requests = []
         self.server_value = {
-            "protocol": 3,
+            "protocol": 4,
             "state": "ready",
             "instance_id": "test",
             "quota": [],
@@ -77,7 +77,7 @@ class MonitorTest(unittest.TestCase):
         self.addCleanup(self.server.server_close)
         self.addCleanup(self.server.shutdown)
         self.discovery = {
-            "version": 3,
+            "version": 4,
             "pid": os.getpid(),
             "port": self.server.server_port,
             "token": "credential-canary",

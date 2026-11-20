@@ -111,7 +111,7 @@ def discover(home):
             or not 1 <= value["port"] <= 65535
             or type(value.get("pid")) is not int
             or value["pid"] <= 0
-            or value.get("version") != 3
+            or value.get("version") != 4
             or type(value.get("version")) is not int
             or not isinstance(value.get("token"), str)
             or not value["token"]
@@ -411,7 +411,7 @@ def snapshot(home, timeout=5.0, start=False):
         discovery = discover(home)
         client = Client(discovery, max(0, deadline - time.monotonic()))
         server = client.get("/server")
-        if server.get("protocol") != 3 or server.get("state") != "ready":
+        if server.get("protocol") != 4 or server.get("state") != "ready":
             raise MonitorError("incompatible_daemon")
         for saved, observed in (
             ("instance_id", "instance_id"),

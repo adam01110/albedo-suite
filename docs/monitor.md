@@ -55,7 +55,7 @@ Running the source script directly uses `albedo` from PATH.
 }
 ```
 
-- `online` means `/server` returned a ready protocol-3 daemon whose available
+- `online` means `/server` returned a ready protocol-4 daemon whose available
   identity fields match discovery. Later errors can leave `online: true` with
   partial arrays; consumers must check `error` before showing aggregate counts.
 - Session status is `working` for preparing, generating, running, compacting or
