@@ -2,7 +2,6 @@
 
 import json
 import threading
-import time
 import unittest
 
 from harness import Albedo, Provider, exclusive, python, text, wait_until
@@ -40,8 +39,11 @@ class ContextInspectionTests(unittest.TestCase):
     def test_a_resting_turn_keeps_its_prepared_request(self):
         self.app.prompt(self.session, "hold the kernel").close()
         wait_until(lambda: len(self.provider.requests) >= 2, 20, "tool result not sent")
-        # rest_ms is 3s; the release lands shortly after it.
-        time.sleep(5)
+        # The idle kernel rests (checkpoints its state) while the reply is held.
+        state = self.app.home / "kernels" / f"{self.session}.state"
+        wait_until(state.exists, 20, "the kernel never rested during the held reply")
+        with self.app.api(f"/sessions/{self.session}?tail=0") as response:
+            self.assertNotEqual(json.load(response)["status"]["phase"], "idle")
         snapshot = self.read()
         self.release.set()
         self.app.idle(self.session)
