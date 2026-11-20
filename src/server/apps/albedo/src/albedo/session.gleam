@@ -547,6 +547,8 @@ pub type Message {
   /// The runtime answered a context read's request for a kernel-free
   /// composition (albedo-suite); see `context_read`.
   ContextComposed(Result(runtime.Prepared, python.Error))
+  /// A context read's rebuild of the last request finished (albedo-suite).
+  ContextRebuilt(context_snapshot.Snapshot)
   /// The model wait a rest timer measured has passed; see `arm_rest`.
   RestKernel(String, Int)
   /// The kernel went unused for `idle_release_ms` since the timer `token`
@@ -2145,6 +2147,7 @@ fn handle(
         False -> actor.continue(state)
       }
     ContextComposed(result) -> actor.continue(context_composed(state, result))
+    ContextRebuilt(snapshot) -> actor.continue(context_rebuilt(state, snapshot))
     AcquireKernel(id, reply) -> acquire_kernel(state, id, reply)
     RestKernel(id, token) ->
       case token == state.rest_token && turn.live(state.activity, id) {
@@ -6909,6 +6912,10 @@ fn release_kernel(
 /// (its actor keeps no request sections), so the last turn call is rebuilt from
 /// the transcript, as the cache warmer does after a restart, and kept until the
 /// next release or history eviction so a polling client does not rebuild it.
+/// The rebuild projects the whole history and can outlast a reader's wait, so
+/// it runs beside the actor and readers see a pending snapshot until it lands
+/// (albedo-suite). A session without a composition, as after a daemon
+/// restart, asks for one first.
 fn context_read(state: State) -> #(State, context_snapshot.Snapshot) {
   case
     context_snapshot.identity(state.context),
@@ -6916,49 +6923,66 @@ fn context_read(state: State) -> #(State, context_snapshot.Snapshot) {
     state.kernel
   {
     None, None, None ->
-      case session_last_call.restore_context(state) {
-        #(state, Some(#(request, observation, protocol))) -> {
-          let rebuilt =
-            context_snapshot.from_request(
-              Some(usage.now()),
-              state.info.provider,
-              conversation.protocol(protocol),
-              protocol,
-              request,
-              observation,
-            )
-          let snapshot = case state.latest_usage {
-            Some(metadata) -> context_snapshot.with_usage(rebuilt, metadata)
-            None -> rebuilt
-          }
-          #(session_state.State(..state, context: snapshot), snapshot)
+      case state.composing_context, session_state.composition(state) {
+        True, _ -> #(state, rebuilding_context())
+        False, Some(composition) -> #(
+          rebuild_context(state, composition),
+          rebuilding_context(),
+        )
+        False, None -> {
+          let self = state.self
+          runtime.prepare_session_async(
+            state.host,
+            state.info.id,
+            state.info.cwd,
+            fn(result) { process.send(self, ContextComposed(result)) },
+          )
+          #(
+            session_state.State(..state, composing_context: True),
+            rebuilding_context(),
+          )
         }
-        #(state, None) -> compose_for_context(state)
       }
     _, _, _ -> #(state, state.context)
   }
 }
 
-/// A resting session that holds no composition, as after a daemon restart,
-/// cannot rebuild its last request: ask for one without a kernel and tell
-/// readers to read again once it arrives (albedo-suite).
-fn compose_for_context(state: State) -> #(State, context_snapshot.Snapshot) {
-  case session_state.composition(state), state.composing_context {
-    Some(composition), _ -> preview_context(state, composition)
-    None, True -> #(state, composing_context())
-    None, False -> {
-      let self = state.self
-      runtime.prepare_session_async(
-        state.host,
-        state.info.id,
-        state.info.cwd,
-        fn(result) { process.send(self, ContextComposed(result)) },
-      )
-      #(
-        session_state.State(..state, composing_context: True),
-        composing_context(),
-      )
+fn rebuilding_context() -> context_snapshot.Snapshot {
+  context_snapshot.pending("rebuilding the last request; reading again shortly")
+}
+
+/// Rebuilds the last request, or previews the first, in a process of its own
+/// that answers with `ContextRebuilt`. The worker's copy of the state is its
+/// own: the history it loads and any credentials it refreshes go with it.
+fn rebuild_context(state: State, composition: runtime.Prepared) -> State {
+  let self = state.self
+  process.spawn_unlinked(fn() {
+    process.send(self, ContextRebuilt(rebuilt_context(state, composition)))
+  })
+  session_state.State(..state, composing_context: True)
+}
+
+fn rebuilt_context(
+  state: State,
+  composition: runtime.Prepared,
+) -> context_snapshot.Snapshot {
+  case session_last_call.restore_context(state) {
+    #(state, Some(#(request, observation, protocol))) -> {
+      let rebuilt =
+        context_snapshot.from_request(
+          Some(usage.now()),
+          state.info.provider,
+          conversation.protocol(protocol),
+          protocol,
+          request,
+          observation,
+        )
+      case state.latest_usage {
+        Some(metadata) -> context_snapshot.with_usage(rebuilt, metadata)
+        None -> rebuilt
+      }
     }
+    #(state, None) -> preview_context(state, composition)
   }
 }
 
@@ -6970,12 +6994,14 @@ fn compose_for_context(state: State) -> #(State, context_snapshot.Snapshot) {
 fn preview_context(
   state: State,
   composition: runtime.Prepared,
-) -> #(State, context_snapshot.Snapshot) {
-  let unsent = fn(reason) { #(state, context_snapshot.pending(reason)) }
+) -> context_snapshot.Snapshot {
+  let unsent = fn(reason) {
+    context_snapshot.pending("cannot preview the first request: " <> reason)
+  }
   case requests.last_turn(runtime.ledger(state.host), state.info.id) {
     Ok(None) ->
       case session_provider.configured_client(state) {
-        Error(reason) -> unsent("cannot preview the first request: " <> reason)
+        Error(reason) -> unsent(reason)
         Ok(#(state, upstream)) ->
           case
             loop.rebuild_observed(
@@ -6989,36 +7015,40 @@ fn preview_context(
               None,
             )
           {
-            Error(reason) -> #(
-              state,
-              context_snapshot.pending(
-                "cannot preview the first request: " <> reason,
-              ),
-            )
-            Ok(#(request, _, observation)) -> {
-              let snapshot =
-                context_snapshot.from_request(
-                  Some(usage.now()),
-                  state.info.provider,
-                  conversation.protocol(upstream.protocol),
-                  upstream.protocol,
-                  request,
-                  observation,
-                )
-              #(session_state.State(..state, context: snapshot), snapshot)
-            }
+            Error(reason) -> unsent(reason)
+            Ok(#(request, _, observation)) ->
+              context_snapshot.from_request(
+                Some(usage.now()),
+                state.info.provider,
+                conversation.protocol(upstream.protocol),
+                upstream.protocol,
+                request,
+                observation,
+              )
           }
       }
     _ ->
-      unsent(
+      context_snapshot.pending(
         "no provider request to rebuild: the last turn used another model or provider",
       )
   }
 }
 
-fn composing_context() -> context_snapshot.Snapshot {
-  context_snapshot.pending(
-    "preparing the session's composition to rebuild its last request",
+/// Keeps a rebuilt snapshot unless a turn, a kernel or another snapshot came
+/// meanwhile, and has readers read again.
+fn context_rebuilt(state: State, snapshot: context_snapshot.Snapshot) -> State {
+  let state = session_state.State(..state, composing_context: False)
+  case
+    context_snapshot.identity(state.context),
+    turn.running(state.activity),
+    state.kernel
+  {
+    None, None, None -> session_state.State(..state, context: snapshot)
+    _, _, _ -> state
+  }
+  |> session_state.invalidate(
+    view.StaleContext,
+    "/sessions/" <> state.info.id <> "/context",
   )
 }
 

@@ -383,12 +383,14 @@ func (m ContextInspectorModel) emptyText() string {
 // sections, at exactly width × height.
 func (m ContextInspectorModel) list(width, height int) []string {
 	// The window's bar comes first and keeps at least six rows for the
-	// sections; the facts and note fit in what is left.
+	// sections; the facts and note fit in what is left. A rule like the
+	// pane's separates each part (albedo-suite).
 	full := height
+	rule := DefaultStyles.Decor.Render(strings.Repeat("─", max(1, width-2)))
 	var block []string
 	if usage, ok := usageOf(m.Snapshot); ok {
 		if block = usage.block(width-2, height-7); block != nil {
-			block = append(block, "")
+			block = append(block, rule)
 		}
 	}
 	height -= len(block)
@@ -397,8 +399,10 @@ func (m ContextInspectorModel) list(width, height int) []string {
 	// sections when the list is short, as it is with the pane stacked below.
 	if height >= len(head)+8 {
 		head = append(head, paneNote("read-only · transcript and request-only context are separate", width-2)...)
-		head = append(head, "")
-	} else if height < len(head)+4 {
+		head = append(head, rule)
+	} else if height >= len(head)+5 {
+		head = append(head, rule)
+	} else {
 		head = nil
 	}
 	head = append(block, head...)

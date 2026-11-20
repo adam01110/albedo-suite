@@ -292,7 +292,7 @@ func (u contextUsage) block(width, height int) []string {
 	if height < 2 {
 		return nil
 	}
-	head := []string{DefaultStyles.Bold.Render(ansi.Truncate(u.headline(), width, "…")), u.bar(min(width, 64))}
+	head := []string{DefaultStyles.Bold.Render(ansi.Truncate(u.headline(), width, "…")), u.bar(width)}
 	legend := u.legend(width)
 	if height < len(head)+1+len(legend) {
 		return head
