@@ -76,6 +76,9 @@ pub type Event {
     position: Int,
     images: List(types.Image),
     failed: Bool,
+    /// The session's committed tool results, this one included, or None when
+    /// the ledger could not be read (albedo-suite).
+    tool_calls: Option(Int),
   )
   Note(entry_id: String, origin: String, text: String, mail: Option(json.Json))
   Retry(run_id: String, attempt: Int, reason: String, delay_ms: Int)
@@ -230,11 +233,40 @@ pub fn encode(session: String, sequence: Int, event: Event) -> json.Json {
     )
     Tool(call, output, trace, progress_id, position, failed) -> #(
       "tool",
-      tool(session, call, output, trace, progress_id, position, [], failed),
+      tool(
+        session,
+        call,
+        output,
+        trace,
+        progress_id,
+        position,
+        [],
+        failed,
+        None,
+      ),
     )
-    ToolWithImages(call, output, trace, progress_id, position, images, failed) -> #(
+    ToolWithImages(
+      call,
+      output,
+      trace,
+      progress_id,
+      position,
+      images,
+      failed,
+      tool_calls,
+    ) -> #(
       "tool",
-      tool(session, call, output, trace, progress_id, position, images, failed),
+      tool(
+        session,
+        call,
+        output,
+        trace,
+        progress_id,
+        position,
+        images,
+        failed,
+        tool_calls,
+      ),
     )
     Note(id, origin, text, letter) -> #(
       "note",
@@ -348,6 +380,7 @@ fn tool(
   position: Int,
   images: List(types.Image),
   failed: Bool,
+  tool_calls: Option(Int),
 ) -> json.Json {
   // A large completed argument document is fetched from its durable entry;
   // live publication never parses it merely to discard the value.
@@ -369,6 +402,7 @@ fn tool(
     && size <= 65_536 + int.min(snapshot_bytes, 262_144)
   json.object([
     #("entry_id", json.string(int.to_string(position))),
+    #("session_tool_calls", json.nullable(tool_calls, json.int)),
     #(
       "images",
       json.array(
@@ -892,7 +926,7 @@ pub fn observe(
         _ -> projection
       }
     }
-    Tool(_, output, _, _, _, _) | ToolWithImages(_, output, _, _, _, _, _) -> {
+    Tool(_, output, _, _, _, _) | ToolWithImages(_, output, _, _, _, _, _, _) -> {
       let text =
         json.parse(
           output,

@@ -7,6 +7,7 @@ import albedo_sdk/session_info
 
 import albedo/history/conversation
 import albedo/history/image_fit
+import albedo/history/tool_count
 import albedo/history/tool_results
 import albedo/kernel/journal
 import albedo/kernel/result_view as python_view
@@ -993,6 +994,7 @@ fn run_tool(
                 position,
                 images,
                 failed,
+                tool_count.total(runtime.ledger(state.host), state.session),
               ))
             None ->
               state.publish(view.Failure(

@@ -73,6 +73,9 @@ type Session struct {
 	MovePending *SessionMovePending `json:"-"`
 	// SessionCostUSD is the daemon's estimate; nil when it cannot price the session.
 	SessionCostUSD *float64 `json:"-"`
+	// SessionToolCalls counts the whole session's tool results, history the
+	// client never loaded included; nil when the daemon cannot say.
+	SessionToolCalls *int `json:"-"`
 	// SideQuestion is the session's latest side question exchange, if any.
 	SideQuestion *SideQuestion `json:"-"`
 	wire         protocol.Session
@@ -113,6 +116,7 @@ func sessionValue(wire protocol.Session) Session {
 	session.Moved = movedValue(wire.Moved)
 	session.MovePending = movePendingValue(wire.MovePending)
 	session.SessionCostUSD = wire.SessionCostUsd
+	session.SessionToolCalls = intPointer(wire.SessionToolCalls)
 	if wire.SideQuestion != nil {
 		question := *wire.SideQuestion
 		session.SideQuestion = &question

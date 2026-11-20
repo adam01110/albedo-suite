@@ -102,6 +102,9 @@ type ChatModel struct {
 	activityRemainder PageRow
 	// activityTools counts tool calls in loaded history and live work.
 	activityTools int
+	// sessionTools is the daemon's whole-session tool count, which history
+	// outside the loaded pages cannot change; nil falls back to activityTools.
+	sessionTools  *int
 	eventChan     chan streamDelivery
 	streamStopped bool
 	// Images and Pastes are what was pasted into the composer as markers.

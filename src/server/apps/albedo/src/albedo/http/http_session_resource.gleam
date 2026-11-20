@@ -4,6 +4,7 @@ import albedo/commands/shell_commands
 import albedo/composition/capability_catalog
 import albedo/composition/selection
 import albedo/history/conversation
+import albedo/history/tool_count
 import albedo/http/http_acp
 import albedo/http/http_active_output
 import albedo/http/http_configuration
@@ -218,6 +219,10 @@ pub fn encode(
       http_wire.summary_fields(capture),
       list.append(acp_field(ledger, capture.info.id), [
         #("session_cost_usd", json.nullable(cost, json.float)),
+        #(
+          "session_tool_calls",
+          json.nullable(tool_count.total(ledger, capture.info.id), json.int),
+        ),
         ..moves.moved_field(ledger, capture.info.id)
       ]),
     )

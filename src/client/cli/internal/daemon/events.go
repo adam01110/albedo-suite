@@ -277,6 +277,9 @@ type StreamEvent struct {
 	Code string
 	// Outcome is how a turn ended, for a turn_completed event.
 	Outcome TurnOutcome
+	// SessionToolCalls is the session's tool result count a live tool event
+	// carried, that result included; nil when the daemon sent none.
+	SessionToolCalls *int
 	// Replayed marks an event from the transcript snapshot that follows a
 	// reset: history, which says nothing about what the session does now.
 	Replayed       bool

@@ -134,6 +134,8 @@
             gleam run -m suite_lazy_mcp_test
             cp ${../../test/suite_agents_glance_test.gleam} test/suite_agents_glance_test.gleam
             gleam run -m suite_agents_glance_test
+            cp ${../../test/suite_tool_count_test.gleam} test/suite_tool_count_test.gleam
+            gleam run -m suite_tool_count_test
           '';
         postInstall =
           (old.postInstall or "")

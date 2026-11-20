@@ -185,6 +185,7 @@ func decodeChatEnvelope(envelope sessionEventEnvelope, wireBytes int, content *e
 		}
 		event.ToolName, event.ProgressCallID = data.Name, data.ProgressCallID
 		event.EntryID = data.EntryID
+		event.SessionToolCalls = intPointer(data.SessionToolCalls)
 		for _, image := range data.Images {
 			event.Images = append(event.Images, ImageMetadata{MimeType: ImageMimeType(image.MimeType), Width: int(image.Width), Height: int(image.Height), Bytes: int(image.OriginalBytes), Reference: image.Reference.URL})
 		}
@@ -337,16 +338,17 @@ func decodeChatEnvelope(envelope sessionEventEnvelope, wireBytes int, content *e
 }
 
 type toolEventData struct {
-	EntryID         string                     `json:"entry_id"`
-	Images          []protocol.ImageMetadata   `json:"images"`
-	Status          string                     `json:"status"`
-	Reference       *protocol.ContentReference `json:"reference"`
-	ToolCallID      string                     `json:"tool_call_id"`
-	ProgressCallID  string                     `json:"progress_call_id"`
-	Name            string                     `json:"name"`
-	Title           *string                    `json:"title,omitempty"`
-	Arguments       json.RawMessage            `json:"arguments"`
-	Result          json.RawMessage            `json:"result"`
-	Trace           json.RawMessage            `json:"trace"`
-	ContentComplete bool                       `json:"content_complete"`
+	EntryID          string                     `json:"entry_id"`
+	Images           []protocol.ImageMetadata   `json:"images"`
+	Status           string                     `json:"status"`
+	Reference        *protocol.ContentReference `json:"reference"`
+	ToolCallID       string                     `json:"tool_call_id"`
+	ProgressCallID   string                     `json:"progress_call_id"`
+	Name             string                     `json:"name"`
+	Title            *string                    `json:"title,omitempty"`
+	Arguments        json.RawMessage            `json:"arguments"`
+	Result           json.RawMessage            `json:"result"`
+	Trace            json.RawMessage            `json:"trace"`
+	ContentComplete  bool                       `json:"content_complete"`
+	SessionToolCalls *int64                     `json:"session_tool_calls"`
 }

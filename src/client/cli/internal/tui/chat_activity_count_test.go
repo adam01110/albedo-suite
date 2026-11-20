@@ -34,6 +34,43 @@ func TestActivityCountBeyondVisibleRows(t *testing.T) {
 	}
 }
 
+func TestActivityCountFollowsDaemonSessionTotal(t *testing.T) {
+	m := activityChat(t)
+	// Re-entry loads one page of three calls from a session of 111.
+	activityEvent(&m, daemon.StreamEvent{Type: daemon.EventReset, Snapshot: &daemon.Session{SessionToolCalls: new(111)}})
+	for i := range 3 {
+		activityEvent(&m, daemon.StreamEvent{Type: daemon.EventTool, EntryID: fmt.Sprint("page", i), ToolName: "python", Replayed: true})
+	}
+	if got := m.activityCount(); got != 111 {
+		t.Fatalf("snapshot count: %d", got)
+	}
+	m.loadingOlder = true
+	m, _ = m.Update(ChatOlderLoadedMsg{SessionID: m.SessionID, Generation: m.Generation, Page: &daemon.HistoryPage{Events: []daemon.StreamEvent{
+		{Type: daemon.EventTool, EntryID: "older", ToolName: "python", Replayed: true},
+	}}})
+	if got := m.activityCount(); got != 111 {
+		t.Fatalf("older page recounted: %d", got)
+	}
+	activityEvent(&m, daemon.StreamEvent{Type: daemon.EventTool, EntryID: "live", ToolName: "python", SessionToolCalls: new(112)})
+	// A settled turn has no working phase to add.
+	activityEvent(&m, daemon.StreamEvent{Type: daemon.EventTurnCompleted})
+	if got := m.activityCount(); got != 112 {
+		t.Fatalf("live count: %d", got)
+	}
+	// A live call whose count could not be read still adds itself.
+	activityEvent(&m, daemon.StreamEvent{Type: daemon.EventTool, EntryID: "unread", ToolName: "python"})
+	activityEvent(&m, daemon.StreamEvent{Type: daemon.EventTurnCompleted})
+	if got := m.activityCount(); got != 113 {
+		t.Fatalf("unread count: %d", got)
+	}
+	// A daemon without the count falls back to loaded history.
+	activityEvent(&m, daemon.StreamEvent{Type: daemon.EventReset, Snapshot: &daemon.Session{}})
+	activityEvent(&m, daemon.StreamEvent{Type: daemon.EventTool, EntryID: "fallback", ToolName: "python", Replayed: true})
+	if got := m.activityCount(); got != 1 {
+		t.Fatalf("fallback count: %d", got)
+	}
+}
+
 func TestActivityCountRetentionAndFooter(t *testing.T) {
 	m := activityChat(t)
 	m.History.MaxEntries = 10

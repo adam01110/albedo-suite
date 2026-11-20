@@ -62,10 +62,14 @@ func (m ChatModel) activityRows() []PageRow {
 	return rows
 }
 
-// activityCount totals the session's loaded tool calls, so turn boundaries,
-// history eviction and the six-row display limit do not stop the counter.
+// activityCount totals the session's tool calls, so turn boundaries, history
+// eviction, re-entry and the six-row display limit do not change the counter.
+// Without the daemon's count it falls back to the calls in loaded history.
 func (m ChatModel) activityCount() int {
 	completed := m.activityTools
+	if m.sessionTools != nil {
+		completed = *m.sessionTools
+	}
 	pending := len(m.progressOrder)
 	if pending == 0 && (m.activityRemainder.Text != "" ||
 		(m.Status.Running && !m.Status.Idle && !m.Stopped && !m.TurnFailed && !m.activityEnded)) {
@@ -113,13 +117,27 @@ func (m *ChatModel) countOlderActivity(msg ChatOlderLoadedMsg) {
 }
 
 // Only retain counts of calls, not a second event log. Replayed tools count
-// because a snapshot reset rebuilds the session total from loaded history.
+// because a snapshot reset rebuilds the loaded total from loaded history; the
+// snapshot and each live tool event carry the daemon's session total.
 func (m *ChatModel) observeActivity(evt daemon.StreamEvent) {
 	switch evt.Type {
 	case daemon.EventReset:
 		m.activityTools = 0
+		m.sessionTools = nil
+		if evt.Snapshot != nil {
+			m.sessionTools = evt.Snapshot.SessionToolCalls
+		}
 	case daemon.EventTool:
 		m.activityTools++
+		if evt.Replayed {
+			break
+		}
+		if evt.SessionToolCalls != nil {
+			m.sessionTools = new(*evt.SessionToolCalls)
+		} else if m.sessionTools != nil {
+			// A failed ledger read still adds this call to the known total.
+			m.sessionTools = new(*m.sessionTools + 1)
+		}
 	}
 	if evt.Replayed && evt.Type != daemon.EventReset {
 		return

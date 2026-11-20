@@ -3329,12 +3329,15 @@ type Session struct {
 	Selection SessionSelection `json:"selection"`
 
 	// SessionCostUsd Session-wide estimated USD at catalog rates, excluding child sessions; null when any request is unpriced or unmetered.
-	SessionCostUsd *float64       `json:"session_cost_usd,omitempty" nullable:"true"`
-	ShellCommands  []ShellCommand `json:"shell_commands"`
-	SideQuestion   *SideQuestion  `json:"side_question,omitempty" nullable:"true"`
-	StartedBy      *ID            `json:"started_by" nullable:"true"`
-	Status         SessionStatus  `json:"status"`
-	Usage          Usage          `json:"usage"`
+	SessionCostUsd *float64 `json:"session_cost_usd,omitempty" nullable:"true"`
+
+	// SessionToolCalls Committed tool results in the whole session, including history outside any loaded page; null when the ledger could not be read.
+	SessionToolCalls *int64         `json:"session_tool_calls,omitempty" nullable:"true"`
+	ShellCommands    []ShellCommand `json:"shell_commands"`
+	SideQuestion     *SideQuestion  `json:"side_question,omitempty" nullable:"true"`
+	StartedBy        *ID            `json:"started_by" nullable:"true"`
+	Status           SessionStatus  `json:"status"`
+	Usage            Usage          `json:"usage"`
 
 	// Workspace Canonical daemon-host location, local or SSH. Clients do not resolve this path locally.
 	Workspace       Workspace        `json:"workspace"`
@@ -3757,9 +3760,12 @@ type SessionSummary struct {
 	RootID ID `json:"root_id"`
 
 	// SessionCostUsd Session-wide estimated USD at catalog rates, excluding child sessions; null when any request is unpriced or unmetered.
-	SessionCostUsd *float64      `json:"session_cost_usd,omitempty" nullable:"true"`
-	StartedBy      *ID           `json:"started_by" nullable:"true"`
-	Status         SessionStatus `json:"status"`
+	SessionCostUsd *float64 `json:"session_cost_usd,omitempty" nullable:"true"`
+
+	// SessionToolCalls Committed tool results in the whole session, including history outside any loaded page; null when the ledger could not be read.
+	SessionToolCalls *int64        `json:"session_tool_calls,omitempty" nullable:"true"`
+	StartedBy        *ID           `json:"started_by" nullable:"true"`
+	Status           SessionStatus `json:"status"`
 
 	// Workspace Canonical daemon-host location, local or SSH. Clients do not resolve this path locally.
 	Workspace Workspace `json:"workspace"`
@@ -3810,6 +3816,9 @@ type SessionToolEvent struct {
 
 		// Result Explicit domain payload: tool arguments, tool results, provider-private state, or extension data. JSON values of any type are allowed; no core resource uses this as its envelope.
 		Result DynamicJSON `json:"result"`
+
+		// SessionToolCalls Committed tool results in the session, this one included; null when the ledger could not be read.
+		SessionToolCalls *int64 `json:"session_tool_calls,omitempty" nullable:"true"`
 
 		// Status Outcome of the whole call. progress_call_id equals the call_id of any progress for this call, is unique within the session, and exists even when no progress was sent. Always sent by daemons with capability acp_attachment.
 		Status *string `json:"status,omitempty"`

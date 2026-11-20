@@ -2,18 +2,27 @@
 
 The chat sidebar shows `activity` after extension glances, background jobs and
 [agents](agents-sidebar.md).
-It uses existing stream events, tool progress and bounded transcript history;
-there is no model-maintained plan, extra request, setting or persistent log.
+It uses stream events, tool progress, bounded transcript history and the
+daemon's session tool count; there is no model-maintained plan, extra request,
+setting or persistent log.
 
 Up to six content rows show the current phase or three active calls plus an
 additional-call count, followed by the most recent tool invocations across
-turns. The activity counter totals every tool call in the session's loaded
-history plus live calls, not just the six visible rows or the latest turn, and
-is also used in the narrow-screen footer. New messages, mail and wakes add to
-it rather than resetting it. A snapshot reset rebuilds the count from the
-replayed history window, and loading older history pages adds their calls, so
-calls older than the loaded window are not counted. Replayed settled tools
-reconstruct recent rows, but replayed progress never becomes live work.
+turns. The activity counter totals every tool call in the session plus live
+calls, not just the six visible rows, the latest turn or the loaded history
+window, and is also used in the narrow-screen footer. New messages, mail and
+wakes add to it rather than resetting it.
+
+The daemon supplies the total, so leaving and re-entering a session keeps the
+same count. The session snapshot carries `session_tool_calls`, the committed
+tool results in the session's transcript, and each live `tool` event carries
+the updated total including that result (suite-only fields in
+`src/server/docs/openapi.yaml`, counted by `albedo/history/tool_count.gleam`).
+If a live event's ledger read fails, the client adds that one call to the last
+total. A daemon without the field falls back to counting loaded history: a
+snapshot reset rebuilds the count from the replayed window and older pages add
+their calls. Replayed settled tools reconstruct recent rows, but replayed
+progress never becomes live work.
 
 Rows show the agent's cell title without a tool-name or status prefix. Titles
 describe activity, not verified accomplishments. Active work retains its active
@@ -41,7 +50,10 @@ activity · 3
 ○ inspect inputs
 ```
 
-Regression tests cover stream reduction, concurrency, neutral subprocess
-outcomes, errors, interruption, reset/replay, recovery, turn/session/generation
-boundaries, sanitization, clipping and equal-row-count frame-cache updates.
+`test/suite_tool_count_test.gleam` checks the server count, and
+`TestActivityCountFollowsDaemonSessionTotal` and `TestSessionToolCallsDecode`
+check the client. Regression tests also cover stream reduction, concurrency,
+neutral subprocess outcomes, errors, interruption, reset/replay, recovery,
+turn/session/generation boundaries, sanitization, clipping and equal-row-count
+frame-cache updates.
 Both package variants run `go test ./internal/tui -run '^TestActivity'`.

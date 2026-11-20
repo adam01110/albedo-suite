@@ -11784,6 +11784,14 @@ components:
             - type: number
               minimum: 0
             - type: 'null'
+        session_tool_calls:
+          description:
+            Committed tool results in the whole session, including history
+            outside any loaded page; null when the ledger could not be read.
+          anyOf:
+            - type: integer
+              minimum: 0
+            - type: 'null'
       description:
         Session live fields and cursor are captured together. ACP attachment
         metadata is read separately. Extra response fields may be ignored.
@@ -17591,6 +17599,14 @@ components:
             reference:
               anyOf:
                 - $ref: '#/components/schemas/ContentReference'
+                - type: 'null'
+            session_tool_calls:
+              description:
+                Committed tool results in the session, this one included; null
+                when the ledger could not be read.
+              anyOf:
+                - type: integer
+                  minimum: 0
                 - type: 'null'
             status:
               type: string
