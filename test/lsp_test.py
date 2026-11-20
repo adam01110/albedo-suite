@@ -300,6 +300,26 @@ class LspTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(manager.idle_timer)
         self.assertEqual(manager.idle_tasks, set())
 
+    async def test_rejected_close_keeps_idle_shutdown_armed(self):
+        manager = self.manager()
+        await manager.diagnostics("test.nix")
+        self.assertIsNotNone(manager.idle_timer)
+        with self.assertRaisesRegex(LspError, "unknown LSP server"):
+            await manager.close("typo")
+        self.assertEqual(manager.servers()[0]["state"], "loaded")
+        self.assertIsNotNone(
+            manager.idle_timer, "a rejected close disarmed idle shutdown"
+        )
+        self.assertFalse(manager.idle_timer.cancelled())
+        # The retained client still shuts itself down when that grace expires.
+        with patch.object(albedo_lsp, "IDLE_SECONDS", 0.05):
+            manager.cancel_idle()
+            manager.arm_idle()
+            proc = manager.clients["fixture"].proc
+            await asyncio.wait_for(proc.wait(), 3)
+            await asyncio.gather(*manager.idle_tasks)
+        self.assertEqual(manager.clients, {})
+
     async def test_lazy_refresh_and_navigation(self):
         manager = self.manager()
         self.assertEqual(manager.servers()[0]["state"], "unloaded")

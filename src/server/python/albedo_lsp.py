@@ -769,10 +769,13 @@ class Lsp:
 
     async def close(self, server=None):
         self.cancel_idle()
-        await _finish_cleanup(self._close(server))
-        if self.idle_tasks:
-            await asyncio.gather(*self.idle_tasks)
-        self.arm_idle()
+        try:
+            await _finish_cleanup(self._close(server))
+            if self.idle_tasks:
+                await asyncio.gather(*self.idle_tasks)
+        finally:
+            # A rejected close must not disarm shutdown for the clients it kept.
+            self.arm_idle()
 
     async def _close(self, server, *, idle=False):
         async with self.guard:
