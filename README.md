@@ -31,11 +31,14 @@ providers, skills and SOPS declarations stay in Infra.
 | [RTK and FFF](docs/tool-parity.md) | Filter supported commands through RTK and replace file search with FFF. |
 | [Zed provider](docs/zed.md) | Native hosted-model streaming with tool choice, thinking, effort and usage. |
 | [Provider availability](docs/provider-availability.md) | Disable or re-enable saved profiles with Ctrl+T under `/accounts` advanced setups. |
-| CLI resume | `albedo resume` without an ID reopens the newest non-archived session in the current directory. |
+| [Session cost](docs/session-cost.md) | Estimate USD per session in the footer and session list, with a total over every stored session. |
+| [Quota display](docs/development.md#quota-display) | Show `/quota` readings as the share remaining rather than the share used. |
+| CLI resume | `albedo resume` without an ID reopens the root session with the newest reply in the current directory, skipping archived sessions, and fails when none has run there. |
 | [Vim editing](docs/vim.md) | Modal composer motions and edits, with the current mode in the footer. |
 | [Agents sidebar](docs/agents-sidebar.md) | List open child agents, working or idle, directly under background jobs. |
 | [TUI activity](docs/activity-sidebar.md) | Show passive current and recent tool activity below background jobs. |
 | [Turn notifications](docs/turn-notifications.md) | Raise a desktop notification through the terminal when a turn ends while it is unfocused. |
+| [Zoxide folders](docs/development.md#zoxide-folder-suggestions) | Suggest zoxide directories in `/cd` when zoxide is installed. |
 | [Inline redraw](docs/development.md#terminal-ux) | Keep the inline TUI from stacking stale header rows when the terminal narrows. |
 | [Image previews](docs/tool-images.md) | Display attachments and tool-returned images in supported terminals. |
 | [Prompt context](docs/prompt-context.md) | Keep startup references compact and retrieve full API docs explicitly. |
@@ -74,7 +77,8 @@ Import the module into Home Manager:
 }
 ```
 
-The runtime directory defaults to `~/.local/share/albedo`. The module does not
+The runtime directory defaults to `$XDG_DATA_HOME/albedo` (`~/.local/share/albedo`
+unless Home Manager's `xdg.dataHome` is changed). The module does not
 move existing data. Stop the daemon before activation. The settings helper
 refuses to write while it is running.
 

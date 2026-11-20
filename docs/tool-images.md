@@ -10,12 +10,13 @@ Image rows are excluded from text selection and copying.
 
 Previews use Kitty Unicode placeholders in Kitty and Ghostty,
 including tmux with `set -g allow-passthrough on`. Other terminals retain image
-metadata without receiving graphics escapes. Sixel is not implemented.
+metadata without receiving graphics escapes.
 PNG and JPEG previews decode locally; WebP currently retains metadata only.
 
 Only the latest 24 image resources are cached per session. Expanding an older
 block prioritizes its images. Fetching is asynchronous and serial, with a
-15-second timeout, a 5 MiB resource limit and a 16-megapixel decode limit.
+15-second timeout, a 5 MiB resource limit and a decode limit of 16 Mi
+(16 × 1024 × 1024) pixels.
 Resizing invalidates cached placements; old resources are freed on eviction or
 leaving the session. Live output and history replay use the same durable image
 URLs, not local filesystem paths or base64 in transcript rows.

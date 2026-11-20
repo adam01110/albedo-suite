@@ -29,8 +29,7 @@ thinking. Generic tools fall back to their name. The transcript remains the
 place to inspect detailed evidence. Existing narrow/short-screen omission and
 footer counts apply.
 
-A deterministic example produced by `TestActivityRenderedExample` through the
-actual sidebar renderer (32 columns):
+An illustrative sidebar at 32 columns:
 
 ```text
 background jobs · 1

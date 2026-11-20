@@ -64,8 +64,10 @@ another credential or account.
 `/login zed` browser sign-in, saved in the daemon's native credential store
 `creds.json` (mode `0600`), is the only Zed credential. That store holds the
 `cloud.zed.dev` account and its inference JWT; the JWT is renewed under the
-settings lock before it expires, at most one refresh and one retry happen before
-any model output, and a partial response is never replayed. A Zed profile has no
+settings lock before it expires, and an error response carrying
+`x-zed-expired-token` or `x-zed-outdated-token` is treated as a 401 so it takes
+the same renewal path; at most one refresh and one retry happen before any model
+output, and a partial response is never replayed. A Zed profile has no
 `apiKey` and the daemon has no `ZED_TOKEN` for it. Both are refused with a message
 naming the leftover field or variable and never its value, so a profile that still
 carries `apiKey`, or a daemon environment that still sets `ZED_TOKEN`, fails with
@@ -143,8 +145,7 @@ loopback test endpoints.
 
 The provider requires Zed's status-envelope NDJSON protocol. It waits for
 `stream_ended` after the native model finishes, so a late failure or truncated
-stream cannot be reported as success. Transport bounds, UTF-8 validation,
-cancellation and timeout handling are shared with existing providers.
+stream cannot be reported as success.
 
 ## Wire parity with the editor
 
@@ -194,8 +195,7 @@ integration does not carry:
   compatible addition rather than a fabricated field.
 - Claude `cache_control` is not sent. The Anthropic encoder is shared with the
   Bedrock route, where the top-level breakpoint is unverified, so prompt caching
-  stays with the provider's defaults. Cache usage is still reported whenever a
-  provider caches.
+  stays with the provider's defaults.
 - Claude `max_tokens` is the request's limit, or 8192 when the harness has none,
   where the editor uses the catalog's `max_output_tokens`. `stream: true` is
   part of the provider body because this integration calls Anthropic directly;
@@ -222,7 +222,7 @@ With the `zed` extension enabled, `/quota` lists each signed-in Zed account as
 `zed · <account label>` with one row. **Edit predictions** is account-level
 edit-prediction usage from `GET /client/users/me`, read with the same stored
 credential the request path uses. A numeric plan limit is shown as the share of
-that limit used; an `unlimited` plan is a reading with no percentage, not a full
+that limit left; an `unlimited` plan is a reading with no percentage, not a full
 bar. Zed reports no window and no reset time for this reading, so the row shows
 neither and none is inferred. A credential that was rejected or has expired
 fails the poll with a message naming `/login zed`; no other credential stands in.
@@ -231,9 +231,6 @@ This row is not a token budget. Hosted-model USD spend is not available through
 Albedo's native Zed account credential, so it is not displayed. The separate
 `/zed-budget` command has been removed: it required a manually supplied browser
 billing cookie whose identity could not be linked to the selected account.
-Polling uses the daemon's ordinary quota polling: one poll per account at a
-time, backoff on failure, readings recorded as reported, and the existing quota
-settings disable it.
 
 ## Verification and sources
 

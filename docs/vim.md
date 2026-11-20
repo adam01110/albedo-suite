@@ -32,9 +32,7 @@ messages.
 | `Enter` | Submit using the existing composer rules, in either mode. |
 | `Shift+Enter` | Insert a newline, in either mode. |
 
-Arrows, transcript paging, menus and external-editor integration retain their
-application behavior. `Ctrl+s` opens sessions, `Ctrl+o` opens agents, and
-`Ctrl+j` toggles diffs in either input mode; other control/Alt shortcuts remain.
+Keys not listed here keep their existing behavior in either mode.
 `Ctrl+r` in Normal mode performs Vim-style redo. Unsupported unmodified
 Normal-mode keys
 are generally consumed without inserting text; they do not invoke Vim features.
@@ -46,10 +44,8 @@ already delivered to the agent and newer uncancelled inputs are not restored.
 
 ## Navigation outside the composer
 
-NORMAL/INSERT modes apply only to the chat input. Lists and search fields accept
-text immediately; use arrows and the existing control-key shortcuts to navigate.
-Agents, forms and transcript scrolling retain upstream behavior. There is no
-Space leader, workspace launcher, global keyboard reference or transcript mode.
+NORMAL/INSERT modes apply only to the chat input. The suite adds no Space
+leader, workspace launcher, global keyboard reference or transcript mode.
 
 ## Motions
 
@@ -146,6 +142,7 @@ language-aware, and does not provide all Vim text-object edge-case semantics.
 - [Pure motions and operator ranges](../src/client/cli/internal/tui/vim_motions.go).
 - [Literal arguments and text objects](../src/client/cli/internal/tui/vim_arguments.go).
 - [Editor actions](../src/client/cli/internal/tui/vim_commands.go).
+- [Cancelled queue restoration](../src/client/cli/internal/tui/queue_restore.go).
 
 The `TestVim*` regressions cover parser counts/cancellation, motions and operators,
 literal arguments, text objects, undo/redo, attachment/input lifecycle and footer

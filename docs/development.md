@@ -8,7 +8,7 @@ adds. Edit them as ordinary Gleam, Erlang, Python and Go source.
 
 Upstream is a Gleam workspace: the daemon is `apps/albedo`, extensions are
 packages under `extensions/`, shared libraries under `packages/`, and kernel
-Python under `python/` (shipped as the daemon's `priv/python`). A suite file goes
+Python under `python/`. A suite file goes
 in the package whose dependencies it already uses: package manifests are not
 changed, because NUR checks the daemon's `manifest.toml` against its vendored
 copy. Suite-only providers and extensions that need core modules live in the
@@ -68,8 +68,17 @@ the terminal rewrapped. Without it, Ghostty's reflow of a full-width row, for
 example when Hyprland narrows an unfocused window by one column, leaves one
 stale header above the frame per narrowing. Go builds the replaced module from
 `vendor/`, so `packages.nix` installs the overlay there after configure.
+Alternate-screen frames and GNU screen (`STY` set), which truncates rather than
+rewraps, are left alone.
 `go test ./internal/terminal -run '^TestSuiteInline'` covers it. Drop the
 overlay when upstream's vendored Bubble Tea contains an equivalent fix.
+
+## Quota display
+
+`/quota` rows, bars, details and projections show the share of each limit left
+(`40% left`, `empty in ~2h`, `ends near 10% left`) instead of upstream's share
+used. Values are clamped to 0-100%. The daemon's `used_percent` data is
+unchanged; only `cli/internal/tui/quota_view.go` inverts it for display.
 
 ## Daemon tests
 
@@ -239,13 +248,15 @@ required by either layer; their settings are additive public configuration.
 
 ## Provider and web integration
 
-The pristine upstream provider handles OpenCode Go OAuth, account rotation and
-protocol selection. Suite wire/catalog additions preserve SDK-metadata routing;
-package checks exercise rotation, OAuth organization headers and all four wire
-routes. The native Responses bridge replaces the old local adapter; its narrow
+For OpenCode Go, the suite-only `albedo_ext_opencode_go/routing.gleam` and the
+wire/catalog replacements let cached models.dev SDK metadata choose the protocol
+before the documented defaults. Package checks exercise all four wire routes.
+The native Responses bridge replaces the old local adapter; its narrow
 reasoning-detail extension preserves encrypted items in both existing histories
 and new turns, without changing native sparse tool-call indices.
 `test/suite_bridge_test.gleam` checks both replay paths and index correlation.
+The `albedo_openai/request.gleam` replacement sends Chat Completions tool-result
+images in call and attachment order; the pinned upstream reverses them.
 See [provider configuration](configuration.md#opencode-go).
 
 `upstream/pin.json` records the current Albedo revision; `flake.lock` records
@@ -277,7 +288,8 @@ upstream file is a trivial merge retaining ours. Suite-only additions remain
 unchanged. Conflicts, missing baselines, upstream deletions/possible renames,
 file/directory collisions, symlinks, executable mode changes and changed binary
 files require manual review. Renames are deliberately reported as deletions or
-type changes, not guessed by similarity. No conflict markers are written.
+type changes, not applied by similarity; the report's `renameHints` only
+suggests candidate destinations by shared identifiers. No conflict markers are written.
 By default all plans must resolve before any source, checksum or pin is written;
 write errors roll back. No files outside the existing overlay are copied into
 `src`.
@@ -287,8 +299,11 @@ conflicts is applied in full: clean merges, NUR lock, pin and both manifests
 are written, and each conflicted replacement receives `git merge-file --diff3`
 markers labelled `suite`, `old-upstream` and `new-upstream`. Resolve the markers
 in place; `scripts/validate-upstream.sh` refuses to build while any remain in
-`src` or `test`. Missing baselines, deletions, renames, collisions, symlinks,
-mode and binary changes still write nothing.
+`src` or `test`. Replacements whose upstream file was deleted, renamed or
+collides with a suite-only addition are set aside: removed from `src` and
+copied to `<report>-review/set-aside/` with a `.patch` describing the suite
+delta to port. Missing baselines, symlinks, mode and binary changes still
+write nothing.
 
 The manifests are generated from pristine candidate bytes. The existing
 `sourceFiles` inventory continues to list the server overlay (including its
@@ -310,7 +325,8 @@ with `--report /absolute/path/report.json` outside the checkout. Exit status is
 0 for updated/no-change, 2 for unresolved merges or written conflicts, and 1 for
 operational errors. The report lists old/candidate NUR and Albedo identities and
 their realized `oldSource`/`candidateSource` store paths, automatically merged
-paths, unresolved reasons, `conflicts`, `noDelta` and `upstreamChanges` counts.
+paths, unresolved reasons, `conflicts`, `setAside`, `renameHints`, `noDelta` and
+`upstreamChanges` counts.
 `noDelta` names replacements whose merged bytes equal the candidate upstream
 file: retire them (delete the replacement and its baseline line) unless a test
 documents why they stay. The sibling `<report>-review/` directory holds each

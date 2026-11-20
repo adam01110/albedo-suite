@@ -12,7 +12,11 @@ and wc invocations) execute through RTK's argument-vector CLI,
 without evaluating a shell string. Unsupported invocations retain ordinary
 execution. Explicit executable paths preserve their identity rather than being
 replaced by a different executable that RTK resolves by name. Toolchain/global
-selectors, machine-readable output and unsupported flags remain unfiltered.
+selectors, unsupported flags and machine-readable output flags (`--json`,
+`--null`, `-0`, `-z`, `--null-data`, `--message-format*`, `--porcelain*`)
+remain unfiltered; other structured modes such as `go test -json` are routed.
+Supplied `stdin` keeps a command unrouted, except `rg`, which RTK reads stdin for.
+`src/server/python/albedo_rtk.py` holds the supported subcommand grammar.
 Internal protocol jobs bypass RTK so JSON and transport streams are not
 compressed.
 

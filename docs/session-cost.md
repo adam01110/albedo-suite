@@ -47,7 +47,5 @@ that lost requests is priced again from its first request. The first page of
 every `GET /sessions` listing also carries `total_cost` (`usd` and `partial`),
 computed over the whole ledger regardless of the listing's filters.
 
-Upstream separately reports provider-named spend (`usage.spent`, such as
-gateway charges or plan allowances). Few providers report it, so the footer
-shows only the suite estimate; `usage.spent` remains in the HTTP API and
-events unchanged.
+The footer shows only this estimate; `usage.spent` remains unchanged in the
+HTTP API and events.

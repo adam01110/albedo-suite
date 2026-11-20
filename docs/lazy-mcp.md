@@ -3,8 +3,6 @@
 Set `programs.albedo.mcp.lazy = true` to defer connections until requested.
 The Home Manager option defaults to true. Without Home Manager, Albedo keeps
 upstream eager discovery when `mcp.lazy` is absent or false in `extensions.json`.
-Upstream now exposes MCP operations only through Python in either mode; eager
-startup context lists operation names, not remote schemas or descriptions.
 
 ## Discovering and using servers
 
@@ -47,17 +45,6 @@ await mcp.call("docs/search", query="Nix")   # Load if needed and call once.
 
 There is no `unload`: servers close through their idle timeout, and a session
 reload or close stops every server.
-
-ACP editor servers share the native `mcp` Python binding through separate
-`editor_mcp` routes. Listing, searching, describing and calling editor operations
-does not load a configured server. Their lifecycle remains owned by the editor;
-`servers()` and `load()` manage configured servers only.
-
-Loading a server does not add its tool definitions to subsequent model requests.
-The model receives descriptions and schemas only as results of the Python
-operations it requests. Existing tool filters, credential handling, transport
-restrictions and timeouts still apply. Disabled servers and servers excluded by
-capability selection cannot load.
 
 ## Connections and failures
 
@@ -103,8 +90,7 @@ retrying.
 
 One manager runs load and call operations sequentially within a session.
 Concurrent first loads start one client. Idle cleanup cannot interrupt a
-dispatched call, and MCP calls in that session do not run in parallel. The limit is 512
-loaded operations across servers.
+dispatched call, and MCP calls in that session do not run in parallel.
 
 Queued requests belong to their requesting Erlang process. If it dies before
 execution, the manager discards the request without loading or calling a
@@ -126,7 +112,3 @@ stdio fixtures.
 `scripts/test-e2e.py` prepares the cases and fixtures and runs them with the
 supplied binaries. It also runs upstream's eager compatibility cases. All
 fixtures use temporary homes.
-
-The `/mcp` save form still validates connections eagerly. Use Nix definitions,
-or the settings API with `validate_connection: false`, if saving configuration
-must not start a server. Lazy mode does not alter this explicit validation.

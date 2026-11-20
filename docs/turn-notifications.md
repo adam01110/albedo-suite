@@ -20,7 +20,8 @@ body:  Done in 4m 12s · 18 tools — Root cause was the retry timer racing clos
 
 The title is the session name. The body is one line, because terminals drop
 control characters inside an OSC string. The reply preview is the first
-nonblank line without leading Markdown marks or emphasis, cut to 100 cells.
+nonblank line without leading Markdown block marks (`#`, `>`, `*`, `-`, `+`) and
+with `**`, `__` and backticks removed, cut to 100 cells.
 
 A notification is sent only when:
 
@@ -36,7 +37,7 @@ Set `ALBEDO_NOTIFY` before starting the client to change this:
 | Value | Effect |
 | --- | --- |
 | unset, `on` | Notify with the reply preview. |
-| `brief` | Notify without reply or error text. |
+| `brief` | Notify without reply text; a failed turn still shows its error. |
 | `off`, `0`, `false`, `no` | Never notify. |
 
 Session names, replies and errors are untrusted: escape sequences and control

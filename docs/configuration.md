@@ -24,12 +24,7 @@ you declare profiles, `activeProvider` must name one of them.
 
 ### OpenCode Go
 
-Select **OpenCode Go** in the first-startup or `/login` provider chooser to
-enter an API key, or use `/login opencode-go` for native OpenCode Console device
-OAuth. The default base URL is `https://opencode.ai/inference/go/v1`, not the
-pay-as-you-go Zen URL. Existing `https://opencode.ai/zen/go/v1` profiles remain
-supported. `OPENCODE_GO_API_KEY` and `OPENCODE_API_KEY` are also supported when
-the profile has no saved key.
+A Home Manager profile for the upstream OpenCode Go provider:
 
 ```nix
 programs.albedo = {
@@ -43,23 +38,10 @@ programs.albedo = {
 };
 ```
 
-Use bare API model IDs, not OpenCode's `opencode-go/` prefix. The saved protocol
-is a compatibility field; the server selects the wire format per model:
-Chat Completions for GLM/Kimi/MiMo/DeepSeek/Qwen, Messages for MiniMax M2.7/Claude,
-Responses for GPT/Grok/Muse Spark, and Gemini for Gemini models. Cached
-models.dev per-model
-SDK metadata takes precedence over the documented routing defaults. `/model`
-can switch between these formats within one profile; native portable Chat
-Completions replay keeps history compatible across routes.
-
-The picker discovers IDs from Go's `/models` endpoint and uses models.dev for
-limits and modalities. Discovery caches are endpoint-specific, refresh after an
-hour, and survive failed fetches. `/reload models` forces discovery refresh and
-reports failures. Authentication stays in runtime credentials, not Nix.
-Claude-only beta headers and context-management fields are not sent to Go's
-Messages endpoint; its non-Claude models do not receive Claude adaptive-effort
-settings. Native account/key rotation tries sibling Go credentials on limits, without
-rotating to paid Zen. OAuth organization headers and refresh remain native.
+The suite changes its protocol routing and Messages requests. Cached models.dev
+per-model SDK metadata chooses the wire format before upstream's model-family
+defaults, and Go's non-Claude Messages models do not receive Claude
+adaptive-effort settings. Authentication stays in runtime credentials, not Nix.
 
 ## MCP servers
 
@@ -166,10 +148,6 @@ data.
 
 ## Skill preferences
 
-Skills can be enabled or disabled through global choices in `capabilities.json`.
-These are separate from extension settings. A personal skill with the same name
-replaces a bundled skill after activation and `/reload session`.
-
 For custom activation entries, `albedo-configure HOME DEFAULTS capabilities.json`
 merges this document under the same daemon lock as the other settings. Defaults
 use this shape:
@@ -179,7 +157,6 @@ use this shape:
 ```
 
 The helper preserves other choices and refuses invalid capability groups.
-Session-specific overrides still take precedence over global choices.
 
 ## Terminal colors
 

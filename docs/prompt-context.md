@@ -30,31 +30,15 @@ that capability or advertising an unavailable retrieval API.
 
 ## Skills and memory
 
-Skill descriptions appear once in the skills catalog. The suite keeps upstream's
-skills instruction, which tells agents to load skills with `skills.read` or
-`commands.<method>()`; those calls record the load for the TUI skills sidebar. Upstream now groups skill
-commands in one short command-catalog row; the suite no longer replaces that
-renderer. Full catalog metadata,
-activation, arguments and resource paging are unchanged. Printed skill pages
+Skill descriptions appear once in the skills catalog. Printed skill pages
 show readable content and source/encoding, plus continuation information when
 truncated; dictionary fields and JSON serialization remain unchanged.
 
 The memory startup block is an explicitly incomplete topic index: up to 12
 recent paragraphs per workspace, using at most 120 characters of each first
-line, within a shared 1600-character topic budget. Workspace headings identify
-linked sources. `memory.search()` and `memory.grep()` still search full notes
-and journals across linked workspaces; `memory.read(max_chars=...)` reads the
-current workspace's notes. No memory is deleted or rewritten by indexing.
-Required instructions still belong in instruction files, never in memory.
-
-Upstream places this memory context in a synthetic user/assistant opening,
-separate from the shared instructions. Codex also moves workspace instructions
-into an opening developer message. The suite retains these native layouts.
-Memory writes do not regenerate a running session's startup block. Explicit
-reloads, capability changes, compaction and normal upstream cache expiration
-retain their existing behavior. Adopting changed startup instructions can
-require a new cache fill; this change does not reload existing sessions or
-activate a package automatically.
+line, within a shared 1600-character topic budget. Each workspace has a heading,
+the current workspace first, then linked sources. Searches still cover full
+notes; no memory is deleted or rewritten by indexing.
 
 ## MCP discovery
 
