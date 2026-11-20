@@ -142,7 +142,9 @@ func TestContextReaderReadsTheWholeSection(t *testing.T) {
 	if cmd == nil || m.Detail == nil {
 		t.Fatal("enter did not open the section")
 	}
-	m, _ = m.Update(cmd())
+	for cmd != nil {
+		m, cmd = m.Update(cmd())
+	}
 	if m.Detail.Value == nil {
 		t.Fatalf("section not loaded: %+v", m.Detail)
 	}
@@ -180,5 +182,47 @@ func TestContextInspectorReadsAPendingSnapshotAgain(t *testing.T) {
 	}
 	if _, cmd = m.Update(contextRetryMsg{Gen: m.Generation - 1}); cmd != nil {
 		t.Fatal("stale retry ran")
+	}
+}
+
+func TestContextReaderShowsTheFirstPageAndFormatsOnlyWhatItShows(t *testing.T) {
+	block := strings.Repeat("assistant: a line of the conversation\n", 40) + "\n"
+	m := contextModel(100, 30)
+	m.Cursor = 2
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	first := daemon.ContextPage{Content: strings.Repeat(block, 20), Pages: 3}
+	m, cmd := m.Update(contextPageLoadedMsg{Gen: m.Generation, SectionID: "history", Data: &first})
+	if cmd == nil {
+		t.Fatal("the next page was not asked for")
+	}
+	view := ansi.Strip(m.View())
+	if !strings.Contains(view, "a line of the conversation") || !strings.Contains(view, "loading 1/3 pages") {
+		t.Fatalf("first page not shown while the rest load:\n%s", view)
+	}
+	d := m.Detail
+	if d.wrappedTo >= len(d.Value.Content) {
+		t.Fatal("formatted the whole page for one screen")
+	}
+	for page := 1; page < 3; page++ {
+		next := daemon.ContextPage{Content: strings.Repeat(block, 20), Page: page, Pages: 3}
+		m, _ = m.Update(contextPageLoadedMsg{Gen: m.Generation, SectionID: "history", Page: page, Data: &next})
+	}
+	if !d.complete() || len(d.Value.Content) != 3*len(first.Content) {
+		t.Fatal("pages were not appended in order")
+	}
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnd})
+	if !d.formatted() || d.Scroll == 0 || !strings.Contains(ansi.Strip(m.View()), "100%") {
+		t.Fatalf("end did not reach the bottom: scroll %d of %d rows", d.Scroll, len(d.wrapped))
+	}
+}
+
+func TestContextFormattingKeepsATagRunInOneBlock(t *testing.T) {
+	content := "<skills>\n  <skill>\n    <name>nix</name>\n    <description>Use when a long\nline wraps.</description>\n  </skill>\n</skills>\n\nAfter the catalog."
+	markdown := contextMarkdown(content)
+	if n := strings.Count(markdown, "```text"); n != 1 {
+		t.Fatalf("%d code blocks for one tag run:\n%s", n, markdown)
+	}
+	if !strings.Contains(markdown, "    <description>Use when a long\nline wraps.</description>") || !strings.Contains(markdown, "After the catalog.") {
+		t.Fatalf("tag run lost its text:\n%s", markdown)
 	}
 }

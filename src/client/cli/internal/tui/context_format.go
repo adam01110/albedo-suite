@@ -19,35 +19,46 @@ func contextMarkdown(content string) string {
 	}
 	var out strings.Builder
 	var fence string
+	// tags is a run of wrapper-tag lines, kept as one code block so a catalog
+	// of tags reads as one listing rather than a frame per line
+	// (albedo-suite). A line that leaves a tag's text open continues it.
+	var tags []string
+	flush := func() {
+		if len(tags) > 0 {
+			out.WriteString("\n" + contextCode(strings.Join(tags, "\n"), "text") + "\n")
+			tags = nil
+		}
+	}
 	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		open := len(tags) > 0 && trimmed != "" && !strings.HasSuffix(strings.TrimSpace(tags[len(tags)-1]), ">")
+		if fence == "" && (open || strings.HasPrefix(trimmed, "<") && strings.Contains(trimmed, ">")) {
+			tags = append(tags, line)
+			continue
+		}
+		flush()
 		next := fenceAfter(fence, line)
 		if fence != "" || next != "" {
 			out.WriteString(line + "\n")
 			fence = next
 			continue
 		}
-		trimmed := strings.TrimSpace(line)
-		switch {
-		case strings.HasPrefix(trimmed, "<") && strings.HasSuffix(trimmed, ">"):
-			// Keep wrapper tags visible; Markdown otherwise treats them as HTML.
-			out.WriteString("\n" + contextCode(line, "text") + "\n")
-		default:
-			if pretty, ok := contextJSON(line); ok {
-				out.WriteString("\n" + contextCode(pretty, "json") + "\n")
-				continue
-			}
-			out.WriteString(line)
-			if trimmed != "" && line == strings.TrimLeft(line, " \t") {
-				out.WriteString("  ")
-			}
+		if pretty, ok := contextJSON(line); ok {
+			out.WriteString("\n" + contextCode(pretty, "json") + "\n")
+			continue
+		}
+		out.WriteString(line)
+		if trimmed != "" && line == strings.TrimLeft(line, " \t") {
+			out.WriteString("  ")
+		}
+		out.WriteByte('\n')
+		// Generated instructions put independent rules on long physical lines.
+		// Separate those rules without splitting soft-wrapped Markdown prose.
+		if len(line) > 160 && opensBlock(line) {
 			out.WriteByte('\n')
-			// Generated instructions put independent rules on long physical lines.
-			// Separate those rules without splitting soft-wrapped Markdown prose.
-			if len(line) > 160 && opensBlock(line) {
-				out.WriteByte('\n')
-			}
 		}
 	}
+	flush()
 	return strings.TrimSuffix(out.String(), "\n")
 }
 

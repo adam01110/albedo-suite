@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 	"time"
@@ -16,48 +17,141 @@ import (
 	"golang.org/x/text/message"
 )
 
-// ContextDetail is one section's content, read whole and scrolled line by
-// line (albedo-suite). The daemon serves it in pages; the reader fetches every
-// page before it draws, so Value holds the whole section.
+// ContextDetail is one section's content, read as one document and scrolled
+// line by line (albedo-suite). Pages stream in after the first and are
+// appended to Value, so reading starts at once; formatting runs in chunks cut
+// at blank lines outside code fences, only as far as the view has scrolled,
+// because Markdown over a whole long section takes seconds.
 type ContextDetail struct {
 	Value   *daemon.ContextPage
 	Error   string
 	Section daemon.ContextSection
 	Scroll  int
 	Raw     bool
+	// loaded counts the pages appended to Value.
+	loaded int
 	// visible is the body rows the last frame drew; page jumps move by it.
 	visible int
-	// wrapped is wrappedFrom's content at wrappedWidth, kept because every
-	// scroll step reads it and a page can be long.
+	// wrapped holds the rows formatted so far from wrappedFrom's content, at
+	// wrappedWidth; wrappedTo is how many bytes of it they cover and ends
+	// marks, per chunk, its last row and the content offset it reached.
 	wrapped      []string
 	wrappedWidth int
 	wrappedFrom  *daemon.ContextPage
 	wrappedRaw   bool
+	wrappedTo    int
+	ends         []chunkEnd
 }
 
-// rows is the page's content wrapped to width.
+type chunkEnd struct{ row, offset int }
+
+// chunkBytes is about how much content one formatting step takes: a page's
+// worth, which formats in about 10 ms.
+const chunkBytes = 8000
+
+// complete reports whether every page has arrived.
+func (d *ContextDetail) complete() bool {
+	return d.Value != nil && d.loaded >= max(1, d.Value.Pages)
+}
+
+// rows is the whole content wrapped to width.
 func (d *ContextDetail) rows(width int) []string {
+	return d.rowsTo(width, math.MaxInt)
+}
+
+// rowsTo formats chunks until at least need rows exist or the loaded content
+// runs out, and returns the rows so far.
+func (d *ContextDetail) rowsTo(width, need int) []string {
 	if d.Value == nil {
 		return nil
 	}
-	if d.wrappedFrom != d.Value || d.wrappedWidth != width || d.wrappedRaw != d.Raw {
-		if d.Raw {
-			d.wrapped = wrapContextContent(d.Value.Content, width)
-		} else {
-			d.wrapped = formattedContextRows(d.Value.Content, min(width, 100))
-		}
+	if d.wrappedFrom != d.Value || d.wrappedWidth != width || d.wrappedRaw != d.Raw || len(d.Value.Content) < d.wrappedTo {
+		d.wrapped, d.wrappedTo, d.ends = nil, 0, nil
 		d.wrappedWidth, d.wrappedFrom, d.wrappedRaw = width, d.Value, d.Raw
+	}
+	content := d.Value.Content
+	complete := d.complete() || d.loaded == 0
+	if d.Raw {
+		// Raw wrapping is cheap; redo the loaded content when it grew.
+		if d.wrappedTo != len(content) {
+			d.wrapped = wrapContextContent(content, width)
+			d.wrappedTo = len(content)
+			d.ends = []chunkEnd{{len(d.wrapped), len(content)}}
+		}
+		return d.wrapped
+	}
+	for len(d.wrapped) < need && d.wrappedTo < len(content) {
+		end, ok := chunkEnding(content, d.wrappedTo, complete)
+		if !ok {
+			break
+		}
+		if len(d.wrapped) > 0 {
+			d.wrapped = append(d.wrapped, "")
+		}
+		d.wrapped = append(d.wrapped, formattedContextRows(strings.Trim(content[d.wrappedTo:end], "\n"), min(width, 100))...)
+		d.wrappedTo = end
+		d.ends = append(d.ends, chunkEnd{len(d.wrapped), end})
 	}
 	return d.wrapped
 }
 
-// scroll moves the content by lines, within the rows the last frame showed.
-func (d *ContextDetail) scroll(by int) {
-	d.Scroll = min(max(0, d.Scroll+by), max(0, len(d.wrapped)-d.visible))
+// chunkEnding is where the chunk starting at from ends: the first blank line
+// outside a code fence past chunkBytes, or the content's end once it is
+// complete. False when the loaded content holds no such point yet.
+func chunkEnding(content string, from int, complete bool) (int, bool) {
+	fence := ""
+	at := from
+	for at < len(content) {
+		next := strings.IndexByte(content[at:], '\n')
+		if next < 0 {
+			break
+		}
+		line := content[at : at+next]
+		fence = fenceAfter(fence, line)
+		at += next + 1
+		if fence == "" && strings.TrimSpace(line) == "" && at-from >= chunkBytes {
+			return at, true
+		}
+	}
+	if complete {
+		return len(content), true
+	}
+	return 0, false
 }
 
-// list is the reader's body at exactly width × height: where the page comes
-// from, any warning, then the scrolled rows.
+// formatted reports whether every row of the content exists.
+func (d *ContextDetail) formatted() bool {
+	return d.Value != nil && d.complete() && d.wrappedTo >= len(d.Value.Content)
+}
+
+// scroll moves the content by lines, formatting what the move reaches.
+func (d *ContextDetail) scroll(by int) {
+	if d.wrappedWidth == 0 {
+		return
+	}
+	rows := d.rowsTo(d.wrappedWidth, d.Scroll+by+d.visible)
+	d.Scroll = min(max(0, d.Scroll+by), max(0, len(rows)-d.visible))
+}
+
+// position is how far down the bottom row is, by content bytes until every
+// row exists.
+func (d *ContextDetail) position(bottom int) int {
+	if d.formatted() {
+		return 100 * min(len(d.wrapped), bottom) / max(1, len(d.wrapped))
+	}
+	total := max(1, d.Section.ByteCount, len(d.Value.Content))
+	offset := 0
+	for _, end := range d.ends {
+		offset = end.offset
+		if end.row >= bottom {
+			break
+		}
+	}
+	return min(99, 100*offset/total)
+}
+
+// list is the reader's body at exactly width × height: where the content
+// comes from, any warning, then the scrolled rows.
 func (d *ContextDetail) list(width, height int) []string {
 	sec := d.Section
 	mode := "formatted"
@@ -71,19 +165,24 @@ func (d *ContextDetail) list(width, height int) []string {
 	case d.Error != "":
 		notes = append(notes, DefaultStyles.Error.Render(d.Error))
 	case d.Value == nil:
-		notes = append(notes, DefaultStyles.Faint.Render("loading "+contextCount(sec.Pages, "page")+" of prepared content…"))
+		notes = append(notes, DefaultStyles.Faint.Render("loading prepared content…"))
 	default:
 		if d.Value.Omitted != "" {
 			notes = append(notes, DefaultStyles.Warning.Render("omitted: "+d.Value.Omitted))
 		}
 		notes = append(notes, "")
-		rows = d.rows(max(1, width-2))
 	}
 	room := max(0, height-1-len(notes))
 	d.visible = room
+	if d.Value != nil && d.Error == "" {
+		rows = d.rowsTo(max(1, width-2), d.Scroll+room)
+	}
 	d.Scroll = min(d.Scroll, max(0, len(rows)-room))
-	if len(rows) > room {
-		facts = append(facts, fmt.Sprintf("%d%%", 100*min(len(rows), d.Scroll+room)/len(rows)))
+	if !d.complete() && d.Value != nil {
+		facts = append(facts, fmt.Sprintf("loading %d/%d pages", d.loaded, d.Value.Pages))
+	}
+	if len(rows) > room || !d.formatted() && d.Value != nil {
+		facts = append(facts, fmt.Sprintf("%d%%", d.position(d.Scroll+room)))
 	}
 	head := append([]string{DefaultStyles.Faint.Render(strings.Join(facts, " · "))}, notes...)
 
@@ -108,7 +207,8 @@ type contextSnapshotLoadedMsg struct {
 	Gen      int
 }
 
-// contextPageLoadedMsg carries a whole section, its pages joined in order.
+// contextPageLoadedMsg carries one page of a section; the reader appends
+// pages in order and asks for the next.
 type contextPageLoadedMsg struct {
 	Err       error
 	Data      *daemon.ContextPage
@@ -181,34 +281,39 @@ func (m ContextInspectorModel) loadSnapshotCmd(gen int) tea.Cmd {
 	}
 }
 
-// loadSectionCmd reads every page of a section and joins them: pages split
-// the content at arbitrary points, so the join is the section's exact text.
-// A local daemon serves each page in about a millisecond.
-func (m ContextInspectorModel) loadSectionCmd(sec daemon.ContextSection, gen int) tea.Cmd {
+// loadPageCmd reads one page of a section. A local daemon serves each in
+// about a millisecond; the reader asks for the next as each arrives.
+func (m ContextInspectorModel) loadPageCmd(sec daemon.ContextSection, page, gen int) tea.Cmd {
 	conn, session, snapshot := m.Conn, m.SessionID, m.Snapshot.SnapshotID
 	return func() tea.Msg {
 		if conn == nil {
-			return contextPageLoadedMsg{SectionID: sec.ID, Err: errors.New("daemon connection unavailable"), Gen: gen}
+			return contextPageLoadedMsg{SectionID: sec.ID, Page: page, Err: errors.New("daemon connection unavailable"), Gen: gen}
 		}
-		var content strings.Builder
-		var omitted []string
-		whole := daemon.ContextPage{SnapshotID: snapshot, Section: sec.ID, Pages: sec.Pages}
-		for page := 0; page < whole.Pages; page++ {
-			data, err := daemon.GetContextPage(context.Background(), conn, session, snapshot, sec.ID, page)
-			if err != nil {
-				return contextPageLoadedMsg{SectionID: sec.ID, Err: fmt.Errorf("page %d of %d: %w", page+1, whole.Pages, err), Gen: gen}
-			}
-			content.WriteString(data.Content)
-			whole.Pages = data.Pages
-			for _, reason := range strings.Split(data.Omitted, "; ") {
-				if reason != "" && !slices.Contains(omitted, reason) {
-					omitted = append(omitted, reason)
-				}
-			}
+		data, err := daemon.GetContextPage(context.Background(), conn, session, snapshot, sec.ID, page)
+		if err != nil {
+			err = fmt.Errorf("page %d of %d: %w", page+1, max(1, sec.Pages), err)
+			return contextPageLoadedMsg{SectionID: sec.ID, Page: page, Err: err, Gen: gen}
 		}
-		whole.Content, whole.Omitted = content.String(), strings.Join(omitted, "; ")
-		return contextPageLoadedMsg{SectionID: sec.ID, Data: &whole, Gen: gen}
+		return contextPageLoadedMsg{SectionID: sec.ID, Page: page, Data: &data, Gen: gen}
 	}
+}
+
+// appendPage adds the next page to the document: the content after what came
+// before, and any omission not already noted.
+func (d *ContextDetail) appendPage(page daemon.ContextPage) {
+	if d.Value == nil {
+		whole := page
+		d.Value = &whole
+	} else {
+		d.Value.Content += page.Content
+		d.Value.Pages = page.Pages
+		for _, reason := range strings.Split(page.Omitted, "; ") {
+			if reason != "" && !strings.Contains(d.Value.Omitted, reason) {
+				d.Value.Omitted = strings.TrimPrefix(d.Value.Omitted+"; "+reason, "; ")
+			}
+		}
+	}
+	d.loaded++
 }
 
 func retryCmd(gen int) tea.Cmd {
@@ -458,10 +563,17 @@ func (m ContextInspectorModel) Update(msg tea.Msg) (ContextInspectorModel, tea.C
 		if msg.Gen != m.Generation || m.Detail == nil || m.Detail.Section.ID != msg.SectionID {
 			return m, nil
 		}
+		d := m.Detail
 		if msg.Err != nil {
-			m.Detail.Error = msg.Err.Error()
-		} else {
-			m.Detail.Value, m.Detail.Error = msg.Data, ""
+			d.Error = msg.Err.Error()
+			return m, nil
+		}
+		if msg.Page != d.loaded || msg.Data == nil {
+			return m, nil
+		}
+		d.appendPage(*msg.Data)
+		if !d.complete() {
+			return m, m.loadPageCmd(d.Section, d.loaded, m.Generation)
 		}
 		return m, nil
 
@@ -496,7 +608,11 @@ func (m ContextInspectorModel) readerKey(msg tea.KeyPressMsg) (ContextInspectorM
 	case "home", "g":
 		d.Scroll = 0
 	case "end", "G":
-		d.scroll(len(d.wrapped))
+		// The end needs every row: format the rest of what has arrived.
+		if d.wrappedWidth > 0 {
+			d.rowsTo(d.wrappedWidth, math.MaxInt)
+			d.scroll(len(d.wrapped))
+		}
 	}
 	return m, nil
 }
@@ -509,7 +625,7 @@ func (m ContextInspectorModel) sectionsKey(msg tea.KeyPressMsg) (ContextInspecto
 		if sec, ok := m.current(); ok && sec.Pages > 0 {
 			m.Detail = &ContextDetail{Section: sec}
 			m.Generation = nextPageGeneration()
-			return m, m.loadSectionCmd(sec, m.Generation)
+			return m, m.loadPageCmd(sec, 0, m.Generation)
 		}
 		return m, nil
 	case "ctrl+r":

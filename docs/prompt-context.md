@@ -72,8 +72,10 @@ are indented; extension wrapper tags stay visible. Long generated instruction
 lines have paragraph spacing, and formatted text wraps at at most 100 columns.
 
 A section reads as one document. The daemon still serves bounded pages; the
-reader fetches all of them (about a millisecond each from a local daemon) and
-joins them, so a page boundary no longer splits the view or the formatting.
+reader shows the first as soon as it arrives and appends the rest as they
+stream in, so a page boundary no longer splits the view. Formatting a long
+section whole takes seconds, so it is formatted in chunks cut at blank lines
+outside code fences, only as far as you have scrolled; `end` formats the rest.
 Arrows scroll, `pgup`/`pgdn` and space jump a screen, and `home`/`end` (or
 `g`/`G`) go to either end. The header shows the source, byte count, view and
 how far down the section you are.
