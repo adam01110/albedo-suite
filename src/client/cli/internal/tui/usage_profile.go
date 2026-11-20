@@ -416,14 +416,16 @@ func usageMonths(cal usageCalendar) string {
 	}
 	var labels []label
 	last := time.Month(0)
+	end := usageGutter + cal.weeks*usageCellW
 	for col := range cal.weeks {
 		_, _, monday := cal.week(col)
 		if month := monday.AddDate(0, 0, 6).Month(); month != last {
-			labels = append(labels, label{usageGutter + col*usageCellW, month.String()[:3]})
+			// A month in the newest column ends its name at the grid's edge.
+			labels = append(labels, label{min(usageGutter+col*usageCellW, end-3), month.String()[:3]})
 			last = month
 		}
 	}
-	line := []rune(strings.Repeat(" ", usageGutter+cal.weeks*usageCellW))
+	line := []rune(strings.Repeat(" ", end))
 	for i, l := range labels {
 		if i+1 < len(labels) && labels[i+1].at-l.at < 5 {
 			continue

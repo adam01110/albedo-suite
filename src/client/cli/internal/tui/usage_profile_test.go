@@ -198,3 +198,27 @@ func TestUsageDuration(t *testing.T) {
 		}
 	}
 }
+
+// A month that begins in the newest week keeps its whole name at the end of
+// the calendar instead of losing its last letter past the grid.
+func TestUsageMonthsKeepWholeNamesAtTheEnd(t *testing.T) {
+	end := time.Date(2024, 3, 3, 0, 0, 0, 0, time.UTC)
+	var days []daemon.UsageDay
+	for back := usageProfileDays - 1; back >= 0; back-- {
+		days = append(days, daemon.UsageDay{Start: end.AddDate(0, 0, -back)})
+	}
+	cal, _ := newUsageCalendar(daemon.UsageSummary{Days: days}, 120)
+	months := ansi.Strip(usageMonths(cal))
+	names := strings.Fields(months)
+	if len(names) == 0 || names[len(names)-1] != "Mar" {
+		t.Fatalf("newest label: %q", months)
+	}
+	for _, name := range names {
+		if len(name) != 3 {
+			t.Fatalf("cut label %q in %q", name, months)
+		}
+	}
+	if width := ansi.StringWidth(months); width > usageGutter+cal.weeks*usageCellW {
+		t.Fatalf("labels run %d cells past a %d-cell grid", width, usageGutter+cal.weeks*usageCellW)
+	}
+}
