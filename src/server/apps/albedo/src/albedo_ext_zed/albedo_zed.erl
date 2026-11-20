@@ -210,6 +210,12 @@ wrap(Body, Session, Provider, Model) ->
         {ok, iolist_to_binary(json:encode(Payload))}
     catch _:_ -> {error, <<"invalid Zed provider request">>} end.
 
+%% A failure status carries its message only when the envelope states it as
+%% text; any other shape is still a failure, not an exception and not a detail
+%% the caller's String cannot hold.
+failure_message(#{<<"message">> := Message}) when is_binary(Message) -> Message;
+failure_message(_) -> <<"Zed stream failed">>.
+
 unwrap(Line) ->
     try json:decode(Line) of
         #{<<"event">> := Event} when is_map(Event) -> {ok, iolist_to_binary(json:encode(Event))};
@@ -217,7 +223,7 @@ unwrap(Line) ->
         #{<<"status">> := <<"started">>} -> {ok, <<>>};
         #{<<"status">> := #{<<"queued">> := _}} -> {ok, <<>>};
         #{<<"status">> := #{<<"failed">> := Failure}} ->
-            {error, maps:get(<<"message">>, Failure, <<"Zed stream failed">>)};
+            {error, failure_message(Failure)};
         %% The status enum has a catch-all, and the editor maps an unrecognised
         %% status to no event: a new status name is not a failed turn.
         #{<<"status">> := _} ->

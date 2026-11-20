@@ -490,6 +490,13 @@ fn reduction() {
   let assert [_] = turn.output
   reducer.feed("{\"status\":{\"failed\":{\"message\":\"quota exhausted\"}}}")
   |> should.equal(Error(types.Refused(types.Failed, None, "quota exhausted")))
+  // A failed status whose message is not text is still a failure the daemon
+  // can report: never an exception out of the decoder, and never a detail the
+  // error text cannot concatenate.
+  reducer.feed("{\"status\":{\"failed\":{\"message\":42}}}")
+  |> should.equal(Error(types.Refused(types.Failed, None, "Zed stream failed")))
+  reducer.feed("{\"status\":{\"failed\":\"boom\"}}")
+  |> should.equal(Error(types.Refused(types.Failed, None, "Zed stream failed")))
   reducer.feed("not JSON") |> should.be_error
 }
 
