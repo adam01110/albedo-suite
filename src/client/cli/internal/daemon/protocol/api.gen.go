@@ -4528,6 +4528,25 @@ type UsageLine struct {
 	ReasoningTokens     Counter `json:"reasoning_tokens"`
 }
 
+// UsageProfile Every recorded provider call regardless of `days`, `provider` and `account`, counted in the client's days. Tokens are input plus output.
+type UsageProfile struct {
+	ActiveDays        Counter `json:"active_days"`
+	CurrentStreakDays Counter `json:"current_streak_days"`
+
+	// FirstDay Midnight of the first day with use.
+	FirstDay          *Timestamp `json:"first_day" nullable:"true"`
+	LifetimeCalls     Counter    `json:"lifetime_calls"`
+	LifetimeTokens    Counter    `json:"lifetime_tokens"`
+	LongestStreakDays Counter    `json:"longest_streak_days"`
+
+	// LongestTurnMs The longest completed turn still recorded.
+	LongestTurnMs *Counter `json:"longest_turn_ms" nullable:"true"`
+
+	// PeakDay Midnight of the day with the most tokens.
+	PeakDay       *Timestamp `json:"peak_day" nullable:"true"`
+	PeakDayTokens Counter    `json:"peak_day_tokens"`
+}
+
 // UsageScope One provider and account that used the window, named as `lines` names them.
 type UsageScope struct {
 	// Account Null for a provider without an account pool.
@@ -4548,6 +4567,9 @@ type UsageSummary struct {
 
 	// LinesTruncated Whether more profile, account and model lines matched than `lines` lists.
 	LinesTruncated bool `json:"lines_truncated"`
+
+	// Profile Every recorded provider call regardless of `days`, `provider` and `account`, counted in the client's days. Tokens are input plus output.
+	Profile *UsageProfile `json:"profile,omitempty"`
 
 	// Scopes Every provider and account with use in the window, before `provider` and `account` narrow the totals, so a client can offer what it is not showing. At most 200, sorted by provider then account.
 	Scopes []UsageScope `json:"scopes"`

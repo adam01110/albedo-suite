@@ -1446,7 +1446,7 @@ paths:
           schema:
             type: integer
             minimum: 1
-            maximum: 90
+            maximum: 371
             default: 7
         - name: utc_offset_minutes
           in: query
@@ -11216,6 +11216,8 @@ components:
           description:
             Whether more provider and account scopes used the window than
             `scopes` lists.
+        profile:
+          $ref: '#/components/schemas/UsageProfile'
       required:
         [
           generated_at,
@@ -11225,6 +11227,52 @@ components:
           scopes,
           lines_truncated,
           scopes_truncated,
+        ]
+      additionalProperties: false
+    UsageProfile:
+      type: object
+      description:
+        Every recorded provider call regardless of `days`, `provider` and
+        `account`, counted in the client's days. Tokens are input plus output.
+      properties:
+        lifetime_tokens:
+          $ref: '#/components/schemas/Counter'
+        lifetime_calls:
+          $ref: '#/components/schemas/Counter'
+        active_days:
+          $ref: '#/components/schemas/Counter'
+        first_day:
+          description: Midnight of the first day with use.
+          anyOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+        peak_day:
+          description: Midnight of the day with the most tokens.
+          anyOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+        peak_day_tokens:
+          $ref: '#/components/schemas/Counter'
+        longest_streak_days:
+          $ref: '#/components/schemas/Counter'
+        current_streak_days:
+          $ref: '#/components/schemas/Counter'
+        longest_turn_ms:
+          description: The longest completed turn still recorded.
+          anyOf:
+            - $ref: '#/components/schemas/Counter'
+            - type: 'null'
+      required:
+        [
+          lifetime_tokens,
+          lifetime_calls,
+          active_days,
+          first_day,
+          peak_day,
+          peak_day_tokens,
+          longest_streak_days,
+          current_streak_days,
+          longest_turn_ms,
         ]
       additionalProperties: false
     StorageSession:

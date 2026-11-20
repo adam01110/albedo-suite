@@ -1,0 +1,15 @@
+{
+  "usage_test.py": {
+    "sha256": "79a70e684ac50a5b8d44ea2fd6a58c4dca0a95d935e395f6104a17c17d7b588f",
+    "replacements": [
+      [
+        "self.assertEqual(len(self.usage(\"?days=90\")[\"days\"]), 90)",
+        "self.assertEqual(len(self.usage(\"?days=371\")[\"days\"]), 371)"
+      ],
+      [
+        "\"?days=91\",",
+        "\"?days=372\","
+      ]
+    ]
+  }
+}

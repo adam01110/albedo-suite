@@ -31,6 +31,7 @@ providers, skills and SOPS declarations stay in Infra.
 | [RTK and FFF](docs/tool-parity.md) | Filter supported commands through RTK and replace file search with FFF. |
 | [Zed provider](docs/zed.md) | Native hosted-model streaming with tool choice, thinking, effort and usage. |
 | [Provider availability](docs/provider-availability.md) | Disable or re-enable saved profiles with Ctrl+T under `/accounts` advanced setups. |
+| [Usage profile](docs/usage-profile.md) | Add a `/usage` profile tab with lifetime stats, streaks and a year-long token calendar. |
 | [Session cost](docs/session-cost.md) | Estimate USD per session in the footer and session list, with a total over every stored session. |
 | [Quota display](docs/development.md#quota-display) | Show `/quota` readings as the share remaining rather than the share used. |
 | CLI resume | `albedo resume` without an ID reopens the root session with the newest reply in the current directory, skipping archived sessions, and fails when none has run there. |

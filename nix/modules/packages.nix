@@ -136,6 +136,8 @@
             gleam run -m suite_agents_glance_test
             cp ${../../test/suite_tool_count_test.gleam} test/suite_tool_count_test.gleam
             gleam run -m suite_tool_count_test
+            cp ${../../test/suite_usage_profile_test.gleam} test/suite_usage_profile_test.gleam
+            gleam run -m suite_usage_profile_test
           '';
         postInstall =
           (old.postInstall or "")
@@ -192,6 +194,7 @@
             go test ./internal/tui -run '^TestAgentsGlance' -count=1 -v
             go test ./internal/tui -run '^TestTurnNotify' -count=1 -v
             go test ./internal/tui -run '^TestZoxide' -count=1 -v
+            go test ./internal/tui -run '^TestUsage' -count=1 -v
             go test ./internal/terminal -run '^TestSuiteInline' -count=1 -v
             ${pkgs.lib.optionalString showDiffs "go test ./internal/tui -run '^TestDefaultDiffVisibility$' -count=1 -v"}
           '';

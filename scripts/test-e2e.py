@@ -23,6 +23,7 @@ SUITE_CASES = (
     "provider_availability_e2e_test.py",
     "prompt_context_e2e_test.py",
     "session_cost_e2e_test.py",
+    "usage_profile_e2e_test.py",
     "opencode_go_e2e_test.py",
     "tool_backends_e2e_test.py",
     "tool_images_e2e_test.py",
@@ -91,17 +92,18 @@ def synchronize_kernel_upgrade_fixture(
 
 
 def synchronize_typed_response_fixtures(directory, specifications):
-    """Keep native text assertions while accepting typed Responses content."""
+    """Apply reviewed replacements to pinned upstream cases: typed Responses
+    content, and the suite's 371-day usage window."""
     writes = {}
     for name, spec in specifications.items():
         path = directory / name
         original = path.read_bytes()
         if hashlib.sha256(original).hexdigest() != spec["sha256"]:
-            raise RuntimeError(f"typed Responses fixture changed: {name}")
+            raise RuntimeError(f"patched upstream fixture changed: {name}")
         source = original.decode()
         for old, new in spec["replacements"]:
             if old not in source:
-                raise RuntimeError(f"typed Responses fixture pattern changed: {name}")
+                raise RuntimeError(f"patched upstream fixture pattern changed: {name}")
             source = source.replace(old, new)
         writes[path] = source
     for path, source in writes.items():
@@ -121,6 +123,10 @@ def prepare_source(upstream, destination, suite):
     synchronize_typed_response_fixtures(
         cases_directory,
         json.loads((suite / "test/fixtures/typed-response-fixtures.json").read_text()),
+    )
+    synchronize_typed_response_fixtures(
+        cases_directory,
+        json.loads((suite / "test/fixtures/usage-window-fixtures.json").read_text()),
     )
     for name in SUITE_CASES:
         shutil.copyfile(suite / "test" / name, cases_directory / name)
