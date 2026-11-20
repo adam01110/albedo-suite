@@ -177,8 +177,10 @@ cannot satisfy it: strict requires every object level to set
 `additionalProperties: false` and to list every property as required, and the
 built-in tools take optional parameters. "Every object level" means every schema
 reachable through `properties`, `patternProperties`, `additionalProperties`,
-`items`, `prefixItems`, `anyOf`, `oneOf`, `allOf`, `not`, `if`/`then`/`else`,
-`dependentSchemas`, `$defs` and `definitions`; a schema that nests an object
+`unevaluatedProperties`, `propertyNames`, `items`, `prefixItems`,
+`additionalItems`, `contains`, `unevaluatedItems`, `anyOf`, `oneOf`, `allOf`,
+`not`, `if`/`then`/`else`, `dependentSchemas`, `dependencies`, `$defs` and
+`definitions`; a schema that nests an object
 behind one of those keywords and omits the rule is sent non-strict. The claim is
 emitted only when the schema meets those rules, so a provider that enforces them
 no longer refuses the whole request (`Invalid schema for function 'python': ...

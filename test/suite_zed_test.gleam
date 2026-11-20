@@ -312,7 +312,10 @@ fn strict_traversal() {
 
   // additionalProperties is traversed too, but a schema there already leaves its
   // parent unclosed, so only these keywords can hide the first violation.
-  let schema_keywords = ["items", "not", "if", "then", "else"]
+  let schema_keywords = [
+    "items", "additionalItems", "contains", "unevaluatedItems",
+    "unevaluatedProperties", "propertyNames", "not", "if", "then", "else",
+  ]
   list.each(schema_keywords, fn(key) {
     let schema = nested_under(key, open_object())
     sent_bool(single_tool_body(schema), [Key("tools"), Index(0), Key("strict")])
@@ -322,6 +325,7 @@ fn strict_traversal() {
   let map_keywords = [
     "patternProperties",
     "dependentSchemas",
+    "dependencies",
     "$defs",
     "definitions",
   ]
