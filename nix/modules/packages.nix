@@ -106,6 +106,7 @@
         "suite_quota_poll_test"
         "suite_quota_startup_test"
         "suite_quota_test"
+        "suite_session_cost_test"
         "suite_tool_count_test"
         "suite_usage_profile_test"
         "suite_zed_login_test"

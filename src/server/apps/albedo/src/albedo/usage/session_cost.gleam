@@ -48,6 +48,7 @@ pub fn total(ledger: store.Store, session: String) -> Option(Float) {
 
 /// `total` for a page of sessions with one ledger read and one price lookup.
 /// A session without requests costs zero; a failed read prices none of them.
+/// A session named twice is priced once.
 pub fn totals(
   ledger: store.Store,
   sessions: List(String),
@@ -55,7 +56,7 @@ pub fn totals(
   let priced = case sessions {
     [] -> Ok(dict.new())
     _ ->
-      estimates(ledger, "SELECT value FROM json_each(?)", [
+      estimates(ledger, "SELECT DISTINCT value FROM json_each(?)", [
         sqlight.text(json.to_string(json.array(sessions, json.string))),
       ])
       |> result.map(fn(found) {
