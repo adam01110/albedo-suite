@@ -9,7 +9,13 @@ import gleam/list
 import gleam/string
 
 pub fn main() -> Nil {
-  let home = "/tmp/albedo-suite-memory-" <> int.to_string(unique())
+  let home =
+    "/tmp/albedo-suite-memory-"
+    <> int.to_string(list_to_integer(getpid()))
+    <> "-"
+    <> int.to_string(unique())
+  // The OS reuses process ids, so a crashed run's home can carry this name.
+  let _ = del_dir_r(home)
   set_env("ALBEDO_HOME", home)
   let own = "/workspace/own"
   let linked = "host:/workspace/linked"
@@ -66,6 +72,12 @@ fn charlist(text: String) -> List(Int)
 
 @external(erlang, "file", "del_dir_r")
 fn del_dir_r(path: String) -> Dynamic
+
+@external(erlang, "os", "getpid")
+fn getpid() -> List(Int)
+
+@external(erlang, "erlang", "list_to_integer")
+fn list_to_integer(chars: List(Int)) -> Int
 
 @external(erlang, "erlang", "unique_integer")
 fn unique() -> Int
