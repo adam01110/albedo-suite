@@ -78,12 +78,18 @@ fn summarise(
 ) -> Profile {
   let start = fn(day) { day * day_ms - offset_ms }
   let empty = Profile(0, 0, 0, None, None, 0, 0, 0, longest_turn)
-  let #(profile, last, run) =
-    list.fold(days, #(empty, -2, 0), fn(state, active) {
-      let #(p, previous, run) = state
+  // The current streak is the run as of the last day up to today: an hour
+  // stamped later (a clock set back since) cannot extend or replace it.
+  let #(profile, _, _, #(last, run)) =
+    list.fold(days, #(empty, -2, 0, #(-2, 0)), fn(state, active) {
+      let #(p, previous, run, current) = state
       let run = case active.day == previous + 1 {
         True -> run + 1
         False -> 1
+      }
+      let current = case active.day <= today {
+        True -> #(active.day, run)
+        False -> current
       }
       let #(peak_ms, peak_tokens) = case active.tokens > p.peak_day_tokens {
         True -> #(Some(start(active.day)), active.tokens)
@@ -105,6 +111,7 @@ fn summarise(
         ),
         active.day,
         run,
+        current,
       )
     })
   case last >= today - 1 {

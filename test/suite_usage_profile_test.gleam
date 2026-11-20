@@ -95,6 +95,19 @@ pub fn main() -> Nil {
   assert tomorrow.current_streak_days == 1
   let assert Ok(later) = usage_profile.read(ledger, now + 2 * day, 0)
   assert later.current_streak_days == 0
+  // An hour stamped tomorrow (a clock set back since) is not today's streak:
+  // the run ending today is still one day long.
+  let assert Ok(_) =
+    store.write(
+      ledger,
+      "INSERT INTO usage_hours VALUES(?,'p','prov','','m','turn',1,0,1,0,0,1,0)",
+      [sqlight.int(101 * day + 9 * hour)],
+    )
+  let assert Ok(skewed) = usage_profile.read(ledger, now, 0)
+  assert skewed.current_streak_days == 1
+  assert skewed.active_days == 6
   store.close(ledger)
-  io.println("Usage profile: client days, streaks, completed turns passed")
+  io.println(
+    "Usage profile: client days, streaks, future-stamped days, completed turns passed",
+  )
 }
