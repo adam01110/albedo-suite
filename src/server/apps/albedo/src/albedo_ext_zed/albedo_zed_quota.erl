@@ -52,5 +52,6 @@ body(Connection, Deadline, Acc, Size) ->
 %% The credential rides in a header, so each part is one printable run of its
 %% own: no space, no control byte, no separator.
 safe(B) when is_binary(B), byte_size(B) > 0, byte_size(B) =< 16384 ->
-    re:run(B, <<"^[!-~]+$">>, [{capture, none}]) =:= match;
+    %% dollar_endonly keeps $ from also matching before a final newline.
+    re:run(B, <<"^[!-~]+$">>, [{capture, none}, dollar_endonly]) =:= match;
 safe(_) -> false.

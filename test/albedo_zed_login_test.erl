@@ -15,6 +15,7 @@ run() ->
     Server = spawn_link(fun() -> fixture(Listen) end),
     try
         crypto_cases(),
+        credential_cases(),
         callback_cases(),
         identity_cases(),
         status_cases(),
@@ -24,7 +25,7 @@ run() ->
         confirmation_cases(),
         refresh_cases(),
         transport_cases(),
-        io:format("Zed login: crypto, callback contract, identity, status envelopes, catalog token refresh, confirmation, persistence/logout, refresh isolation/concurrency, retry and bounded redirect refusal passed~n")
+        io:format("Zed login: crypto, credential validation, callback contract, identity, status envelopes, catalog token refresh, confirmation, persistence/logout, refresh isolation/concurrency, retry and bounded redirect refusal passed~n")
     after unlink(Server), exit(Server, kill), gen_tcp:close(Listen), ets:delete(Table) end,
     nil.
 
@@ -186,6 +187,29 @@ crypto_cases() ->
 
 encrypt(Public, Token) -> base64:encode(public_key:encrypt_public(Token, Public,
     [{rsa_padding,rsa_pkcs1_oaep_padding},{rsa_oaep_md,sha256},{rsa_mgf1_md,sha256}]), #{mode=>urlsafe}).
+
+%% A credential the transport cannot send is not a credential, as
+%% albedo_zed:usable/1 states for the inference token. A `$`-anchored printable
+%% run also matches before a final newline, so every validator must still refuse
+%% one: the decrypted callback token, the account the poller lists, and the
+%% reading that puts the stored token in a header.
+credential_cases() ->
+    K = public_key:generate_key({rsa,2048,65537}),
+    P = #'RSAPublicKey'{modulus=K#'RSAPrivateKey'.modulus, publicExponent=65537},
+    {ok, {<<"42">>, <<"editor-test-secret">>}} =
+        albedo_zed_auth:decrypt(K, <<"42">>, encrypt(P, <<"editor-test-secret">>)),
+    {error, _} = albedo_zed_auth:decrypt(K, <<"42">>, encrypt(P, <<"editor-test-secret\n">>)),
+    {error, <<"Zed account credential is unusable">>} =
+        albedo_zed_quota:read(<<"42">>, <<"quota-fixture-secret\n">>),
+    {error, <<"Zed account credential is unusable">>} =
+        albedo_zed_quota:read(<<"42\n">>, <<"quota-fixture-secret">>),
+    Home = home(),
+    try
+        Good = credential(<<"61">>, <<"good-account">>),
+        Bad = (credential(<<"62">>, <<"newline-account">>))#{<<"access_token">> => <<"editor-test-secret\n">>},
+        configure(Home, [Good, Bad], #{<<"one">> => profile(<<"good-account">>)}),
+        [#{<<"accountId">> := <<"61">>}] = albedo_zed_auth:accounts(Home)
+    after file:del_dir_r(Home) end.
 
 %% The callback path and its extra parameters are not part of the contract, and
 %% the browser is answered with zed.dev's success page, as the editor is.
