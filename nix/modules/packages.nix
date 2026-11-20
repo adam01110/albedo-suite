@@ -91,7 +91,25 @@
         meta = unwrapped.meta // {inherit license;};
       };
 
-    withServerSources = package:
+    withServerSources = package: let
+      suiteTests = [
+        # keep-sorted start
+        "suite_agents_glance_test"
+        "suite_bridge_test"
+        "suite_catalog_prices_test"
+        "suite_codex_error_test"
+        "suite_lazy_mcp_test"
+        "suite_memory_index_test"
+        "suite_opencode_go_test"
+        "suite_prompt_docs_test"
+        "suite_quota_test"
+        "suite_tool_count_test"
+        "suite_usage_profile_test"
+        "suite_zed_login_test"
+        "suite_zed_test"
+        # keep-sorted end
+      ];
+    in
       withSuiteNotices (package.overrideAttrs (old: {
         # The daemon builds in apps/albedo, but the overlay mirrors the whole
         # source tree, outside the writable source root. Fail on upstream drift
@@ -111,33 +129,25 @@
         postCheck =
           (old.postCheck or "")
           + ''
-            cp ${../../test/suite_quota_test.gleam} test/suite_quota_test.gleam
-            cp ${../../test/suite_codex_error_test.gleam} test/suite_codex_error_test.gleam
-            cp ${../../test/suite_opencode_go_test.gleam} test/suite_opencode_go_test.gleam
-            cp ${../../test/suite_prompt_docs_test.gleam} test/suite_prompt_docs_test.gleam
-            gleam run -m suite_prompt_docs_test
-            gleam run -m suite_quota_test
-            gleam run -m suite_codex_error_test
-            gleam run -m suite_opencode_go_test
-            cp ${../../test/suite_bridge_test.gleam} test/suite_bridge_test.gleam
-            gleam run -m suite_bridge_test
-            cp ${../../test/suite_zed_test.gleam} test/suite_zed_test.gleam
-            gleam run -m suite_zed_test
-            cp ${../../test/suite_zed_login_test.gleam} test/suite_zed_login_test.gleam
+            ${pkgs.lib.concatMapStrings (module: "cp ${../../test + "/${module}.gleam"} test/${module}.gleam\n") suiteTests}
             cp ${../../test/albedo_zed_login_test.erl} test/albedo_zed_login_test.erl
-            gleam run -m suite_zed_login_test
-            cp ${../../test/suite_catalog_prices_test.gleam} test/suite_catalog_prices_test.gleam
-            gleam run -m suite_catalog_prices_test
-            cp ${../../test/suite_memory_index_test.gleam} test/suite_memory_index_test.gleam
-            gleam run -m suite_memory_index_test
-            cp ${../../test/suite_lazy_mcp_test.gleam} test/suite_lazy_mcp_test.gleam
-            gleam run -m suite_lazy_mcp_test
-            cp ${../../test/suite_agents_glance_test.gleam} test/suite_agents_glance_test.gleam
-            gleam run -m suite_agents_glance_test
-            cp ${../../test/suite_tool_count_test.gleam} test/suite_tool_count_test.gleam
-            gleam run -m suite_tool_count_test
-            cp ${../../test/suite_usage_profile_test.gleam} test/suite_usage_profile_test.gleam
-            gleam run -m suite_usage_profile_test
+            # One dev build compiles every suite module; the mains then run in
+            # separate VMs at once, and their logs print in list order.
+            gleam build
+            modules=(${toString suiteTests})
+            for module in "''${modules[@]}"; do
+              erl -pa build/dev/erlang/*/ebin -noshell -eval "albedo@@main:run($module)" >"$TMPDIR/$module.log" 2>&1 &
+              pids+=("$!")
+            done
+            failed=0
+            for i in "''${!modules[@]}"; do
+              status=0
+              wait "''${pids[$i]}" || status=$?
+              echo "''${modules[$i]} exited with $status"
+              cat "$TMPDIR/''${modules[$i]}.log"
+              ((status == 0)) || failed=1
+            done
+            ((failed == 0))
           '';
         postInstall =
           (old.postInstall or "")
