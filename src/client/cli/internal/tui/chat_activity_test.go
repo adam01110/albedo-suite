@@ -184,3 +184,19 @@ func TestActivityDescriptionOnly(t *testing.T) {
 		t.Fatalf("settled: %#v", rows)
 	}
 }
+
+func TestActivityLabelIgnoresInvisibleTitles(t *testing.T) {
+	for _, tc := range []struct{ name, title, want string }{
+		{"", "", "tool"},
+		{"", "\n", "tool"},
+		{"", " \t ", "tool"},
+		{"", "\x1b[31m", "tool"},
+		{"read_file", "   ", "read_file"},
+		{"read_file", "\x1b[1m\t\x1b[0m", "read_file"},
+		{"read_file", "\x1b[1minspect inputs\x1b[0m", "inspect inputs"},
+	} {
+		if got := activityLabel(tc.name, tc.title); got != tc.want {
+			t.Fatalf("activityLabel(%q, %q) = %q, want %q", tc.name, tc.title, got, tc.want)
+		}
+	}
+}

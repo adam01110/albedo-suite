@@ -13,9 +13,10 @@ const activityLimit = 6
 
 // Activity labels deliberately exclude code, arguments and results. A cell title
 // describes the invocation, not an independently verified accomplishment.
+// A title with no visible text is not a label, so the name or the default wins.
 func activityLabel(name, title string) string {
-	label := cmp.Or(title, name, "tool")
-	return ansi.Truncate(oneLine(ansi.Strip(label)), 160, "…")
+	label := cmp.Or(oneLine(ansi.Strip(title)), oneLine(ansi.Strip(name)), "tool")
+	return ansi.Truncate(label, 160, "…")
 }
 
 func (m ChatModel) activityRows() []PageRow {
