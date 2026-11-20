@@ -40,6 +40,10 @@ func TestVimLiteralArguments(t *testing.T) {
 		{"yank object", "one two", 0, []string{"y", "i", "w", "P"}, "oneone two", 2, "NORMAL"},
 		{"undo object", "one two", 0, []string{"d", "a", "w", "u"}, "one two", 0, "NORMAL"},
 		{"missing pair", "one two", 0, []string{"d", "i", "("}, "one two", 0, "NORMAL"},
+		{"around last word keeps line", "one two\nrest", 4, []string{"d", "a", "w"}, "one\nrest", 2, "NORMAL"},
+		{"inside trailing space keeps line", "one \nrest", 3, []string{"d", "i", "w"}, "one\nrest", 2, "NORMAL"},
+		{"around WORD keeps line", "a b\nc", 2, []string{"d", "a", "W"}, "a\nc", 0, "NORMAL"},
+		{"word on empty line", "one\n\nrest", 4, []string{"d", "a", "w"}, "one\n\nrest", 4, "NORMAL"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := newTestChatModel(t, &daemon.Session{ID: "s"})

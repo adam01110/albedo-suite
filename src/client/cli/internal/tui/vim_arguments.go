@@ -110,6 +110,11 @@ func vimTextObject(text []rune, pos int, object rune, around bool, count int) (v
 	}
 	a, b := pos, pos
 	if object == 'w' || object == 'W' {
+		// Words, their whitespace and counts stay on the cursor's logical line.
+		start, end := vimBounds(text, pos)
+		if pos == end {
+			return vimRange{}, false
+		}
 		class := func(r rune) int {
 			if object == 'W' && !unicode.IsSpace(r) {
 				return 1
@@ -117,37 +122,37 @@ func vimTextObject(text []rune, pos int, object rune, around bool, count int) (v
 			return vimClass(r)
 		}
 		c := class(text[pos])
-		for a > 0 && class(text[a-1]) == c {
+		for a > start && class(text[a-1]) == c {
 			a--
 		}
 		b = pos + 1
-		for b < len(text) && class(text[b]) == c {
+		for b < end && class(text[b]) == c {
 			b++
 		}
 		for range count - 1 {
-			for b < len(text) && unicode.IsSpace(text[b]) {
+			for b < end && unicode.IsSpace(text[b]) {
 				b++
 			}
-			if b == len(text) {
+			if b == end {
 				break
 			}
 			c = class(text[b])
-			for b < len(text) && class(text[b]) == c {
+			for b < end && class(text[b]) == c {
 				b++
 			}
 		}
-		if around && class(text[pos]) == 0 && b < len(text) {
+		if around && class(text[pos]) == 0 && b < end {
 			c = class(text[b])
-			for b < len(text) && class(text[b]) == c {
+			for b < end && class(text[b]) == c {
 				b++
 			}
 		} else if around {
 			old := b
-			for b < len(text) && unicode.IsSpace(text[b]) {
+			for b < end && unicode.IsSpace(text[b]) {
 				b++
 			}
 			if b == old {
-				for a > 0 && unicode.IsSpace(text[a-1]) {
+				for a > start && unicode.IsSpace(text[a-1]) {
 					a--
 				}
 			}

@@ -104,10 +104,11 @@ For example: `diw`, `ci"`, `ya(` and `d2iW`.
 | `<`, `>` | Inside / including angle brackets; not HTML/XML tag parsing. |
 | Single quote, double quote, backtick | Inside / including a quoted pair on the current logical line. |
 
-Word objects accept counts. Paired delimiters support nesting: a count selects
-an enclosing outer pair, such as `d2a(`. Quote objects accept only a single pair;
-counts greater than one do nothing. Delimiter matching is textual, not
-language-aware, and does not provide all Vim text-object edge-case semantics.
+Word objects accept counts and stay on the cursor's logical line. Paired
+delimiters support nesting: a count selects an enclosing outer pair, such as
+`d2a(`. Quote objects accept only a single pair; counts greater than one do
+nothing. Delimiter matching is textual, not language-aware, and does not provide
+all Vim text-object edge-case semantics.
 
 ## Counts and compatibility limits
 
