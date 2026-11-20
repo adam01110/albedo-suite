@@ -201,6 +201,40 @@ class MonitorTest(unittest.TestCase):
             self.assertIsNone(row["windows"][0]["resets_at_epoch"])
             json.dumps(row, allow_nan=False)
 
+    def test_unparseable_quota_timestamps_are_null(self):
+        for value in ("yesterday", "2026-05-02", "", 42, "x" * 5000):
+            with self.subTest(value=str(value)[:12]):
+                window = monitor.account_rows(
+                    [
+                        {
+                            "provider": "p",
+                            "account_id": "a",
+                            "used_percent": 50,
+                            "status": "ok",
+                            "observed_at": value,
+                            "resets_at": value,
+                        }
+                    ]
+                )[0]["windows"][0]
+                self.assertIsNone(window["observed_at"])
+                self.assertIsNone(window["resets_at"])
+        observed = "2026-05-02T12:00:00Z"
+        window = monitor.account_rows(
+            [
+                {
+                    "provider": "p",
+                    "account_id": "a",
+                    "used_percent": 50,
+                    "status": "ok",
+                    "observed_at": observed,
+                    "resets_at": observed,
+                }
+            ]
+        )[0]["windows"][0]
+        self.assertEqual(
+            (window["observed_at"], window["resets_at"]), (observed, observed)
+        )
+
     def test_discovery_absent_and_invalid(self):
         (self.home / "daemon.json").unlink()
         self.assertEqual(self.snapshot()["error"], "daemon_not_running")

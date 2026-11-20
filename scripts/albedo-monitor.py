@@ -229,9 +229,13 @@ def account_rows(readings):
                 or text(reading.get("label"))
                 or text(reading.get("limit_id")),
                 "remaining_percent": remaining,
-                "resets_at": text(reading.get("resets_at"), None),
+                "resets_at": text(reading.get("resets_at"), None)
+                if resets is not None
+                else None,
                 "resets_at_epoch": resets,
-                "observed_at": text(reading.get("observed_at"), None),
+                "observed_at": text(reading.get("observed_at"), None)
+                if observed is not None
+                else None,
                 "observed_at_epoch": observed,
                 "stale_reason": reason,
                 "status": status,
