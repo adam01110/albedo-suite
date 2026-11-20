@@ -12,6 +12,14 @@
 
     suitePackages = self.packages.${pkgs.stdenv.hostPlatform.system};
     runtime = suitePackages.albedo-defaults;
+
+    # Pinned upstream python with the suite overlay, assembled as the server
+    # build assembles priv/python, without waiting for the package builds.
+    pythonSources = runCommand "albedo-python-sources" {} ''
+      cp -r ${runtime.server.src}/python $out
+      chmod -R u+w $out
+      cp -r --no-preserve=mode ${../../src/server/python}/. $out
+    '';
   in {
     checks.upstream-update =
       runCommand "albedo-upstream-update-tests" {
@@ -143,7 +151,7 @@
         ];
       } ''
         export PYTHONDONTWRITEBYTECODE=1
-        export PYTHONPATH=${runtime}/lib/albedo/albedo/priv/python
+        export PYTHONPATH=${pythonSources}
         export ALBEDO_E2E_RUNNER=${../../scripts/test-e2e.py}
         export ALBEDO_FORMATTER_SOURCE=$PYTHONPATH
         export ALBEDO_LSP_SOURCE=$PYTHONPATH
@@ -152,21 +160,39 @@
         export ALBEDO_FFF_SOURCE=$PYTHONPATH
         export ALBEDO_FFF_COMMAND=${suitePackages.albedo-fff}/bin/albedo-fff
         export ALBEDO_FFF_ERLANG=${../../src/server/extensions/files/src/albedo_fff.erl}
+        export ALBEDO_FFF_SCRIPT=$PYTHONPATH/albedo_fff.mjs
         export PATH=${pkgs.rtk}/bin:${pkgs.ripgrep}/bin:${pkgs.python311Packages.pytest}/bin:$PATH
         export ALBEDO_PYTHON_SOURCE=$PYTHONPATH
-        python3 -m unittest discover -s ${../../test} -p formatter_python_test.py -v
-        python3 -m unittest discover -s ${../../test} -p files_check_test.py -v
-        python3 ${../../test}/e2e_runner_test.py -v
-        python3 ${../../test}/prompt_context_python_test.py -v
-        python3 -m unittest discover -s ${../../test} -p lazy_mcp_python_test.py -v
-        python3 ${../../test}/lsp_test.py -v
-        python3 ${../../test}/remote_path_test.py -v
-        python3 ${../../test}/remote_staging_test.py -v
-        python3 -m unittest discover -s ${../../test} -p rtk_python_test.py -v
-        python3 -m unittest discover -s ${../../test} -p rtk_e2e_test.py -v
-        python3 ${../../test}/fff_test.py -v
-        export ALBEDO_FFF_SCRIPT=$PYTHONPATH/albedo_fff.mjs
-        python3 ${../../test}/fff_stdio_test.py -v
+        # Each file keeps its own temporary state, so they run at once; their
+        # logs print in list order.
+        tests=(
+          "-m unittest discover -s ${../../test} -p formatter_python_test.py -v"
+          "-m unittest discover -s ${../../test} -p files_check_test.py -v"
+          "${../../test}/e2e_runner_test.py -v"
+          "${../../test}/prompt_context_python_test.py -v"
+          "-m unittest discover -s ${../../test} -p lazy_mcp_python_test.py -v"
+          "${../../test}/lsp_test.py -v"
+          "${../../test}/remote_path_test.py -v"
+          "${../../test}/remote_staging_test.py -v"
+          "-m unittest discover -s ${../../test} -p rtk_python_test.py -v"
+          "-m unittest discover -s ${../../test} -p rtk_e2e_test.py -v"
+          "${../../test}/fff_test.py -v"
+          "${../../test}/fff_stdio_test.py -v"
+        )
+        for i in "''${!tests[@]}"; do
+          # shellcheck disable=SC2086
+          python3 ''${tests[$i]} >"$TMPDIR/test-$i.log" 2>&1 &
+          pids+=("$!")
+        done
+        failed=0
+        for i in "''${!tests[@]}"; do
+          status=0
+          wait "''${pids[$i]}" || status=$?
+          echo "python3 ''${tests[$i]} exited with $status"
+          cat "$TMPDIR/test-$i.log"
+          ((status == 0)) || failed=1
+        done
+        ((failed == 0))
         touch $out
       '';
   };
