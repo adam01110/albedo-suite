@@ -119,18 +119,24 @@ Raw exceptions and HTTP error bodies are never included in JSON.
 
 Identity matching follows the pinned upstream store semantics: Claude uses
 `accountId` or email, Codex stored email or `accountId`, Antigravity email, and
-OpenCode Go email/org/account label. Token-derived fallback identities and JWT
-claims are deliberately not computed. Missing/ambiguous mappings remain unknown;
-no single-account or label-similarity guess is made. API-key-only provider profiles
-outside native account inventory are not listed. Revisit this adapter when
-upstream exposes the quota identity directly in its public account API.
+OpenCode Go email/org/account label. API-key accounts (`/auth` kind `key`) match
+the quota row filed under a profile that selects or rotates them, because the
+daemon polls key profiles under the profile name. Token-derived fallback
+identities and JWT claims are deliberately not computed. Missing/ambiguous
+mappings remain unknown; no single-account or label-similarity guess is made.
+API-key-only provider profiles outside native account inventory are not listed.
+Revisit this adapter when upstream exposes the quota identity directly in its
+public account API.
 
 Upstream builds the quota core with Zig's baseline CPU target rather than the
 build host's native instruction set. This prevents cached builds from crashing
 with an illegal instruction on machines without the builder's CPU features
 (for example AVX-512). A failed poll replaces the current account report with an
 error; previous samples remain in history. The monitor cannot force provider
-polls. A fresh snapshot must not be treated as a fresh provider observation.
+polls. A fresh snapshot must not be treated as a fresh provider observation:
+windows are only as recent as the daemon's last poll, which runs every
+`quota.pollSeconds` (default 600) or `quota.busyPollSeconds` (default 120) near
+a limit, both read from `extensions.json`.
 
 ## Poller recovery
 

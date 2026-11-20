@@ -557,6 +557,75 @@ class MonitorTest(unittest.TestCase):
         self.assertEqual(account["windows"][0]["remaining_percent"], 60)
         self.assertEqual(result["accounts_error"], "")
 
+    def test_key_accounts_match_quota_by_profile_name(self):
+        self.auth_value["accounts"] = [
+            {
+                "id": "go",
+                "provider": "opencode-go",
+                "label": "opencode-go",
+                "kind": "key",
+                "selected_by_profiles": ["go-profile"],
+            },
+            {
+                "id": "router",
+                "provider": "openai",
+                "label": "openrouter",
+                "kind": "key",
+                "selected_by_profiles": ["openrouter"],
+            },
+        ]
+        self.write(
+            "creds.json",
+            {
+                "accounts": {
+                    "opencode-go": {
+                        "_albedo_account_id": "go",
+                        "type": "key",
+                        "apiKey": "credential-canary",
+                    }
+                }
+            },
+        )
+        # Key-profile quota is filed under the profile name, not the key.
+        self.server_value["quota"] = [
+            {
+                "provider": "opencode-go",
+                "account_id": "go-profile",
+                "used_percent": used,
+                "status": "ok",
+                "limit_id": limit,
+                "observed_at": "2099-01-01T00:00:00Z",
+            }
+            for limit, used in (("rolling", 43), ("weekly", 28))
+        ]
+        result = self.snapshot()
+        go, router = result["accounts"]
+        self.assertEqual(go["error"], "")
+        self.assertEqual(
+            [window["remaining_percent"] for window in go["windows"]], [57, 72]
+        )
+        self.assertEqual(router["error"], "quota_unavailable")
+        self.assertNotIn("credential-canary", json.dumps(result))
+
+    def test_key_accounts_sharing_a_profile_are_ambiguous(self):
+        auth = {
+            "accounts": [
+                {
+                    "id": key,
+                    "provider": "opencode-go",
+                    "label": key,
+                    "kind": "key",
+                    "rotated_by_profiles": ["pool"],
+                }
+                for key in ("one", "two")
+            ]
+        }
+        reading = [
+            {"provider": "opencode-go", "account_id": "pool", "used_percent": 20}
+        ]
+        rows = monitor.connected_accounts(auth, reading, {})
+        self.assertTrue(all(row["error"] == "quota_identity_ambiguous" for row in rows))
+
     def test_identity_error_survives_quota_truncation_warning(self):
         self.auth_value["accounts"] = [
             {"id": "pub1", "provider": "codex", "label": "ChatGPT"}

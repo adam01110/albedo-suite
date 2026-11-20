@@ -307,7 +307,18 @@ def connected_accounts(auth, readings, identities):
         raw = object_value(raw)
         provider = text(raw.get("provider"))
         canonical = aliases.get(provider, provider)
-        keys.append((canonical, identities.get((canonical, text(raw.get("id"))))))
+        if raw.get("kind") == "key":
+            # Key-profile quota is filed under the polling profile's name.
+            profiles = array(raw.get("selected_by_profiles", [])) + array(
+                raw.get("rotated_by_profiles", [])
+            )
+            identity = next(
+                (text(name) for name in profiles if (canonical, text(name)) in samples),
+                None,
+            )
+        else:
+            identity = identities.get((canonical, text(raw.get("id"))))
+        keys.append((canonical, identity))
     result = []
     for raw, key in zip(inventory, keys):
         provider = text(raw.get("provider"))
@@ -327,6 +338,7 @@ def connected_accounts(auth, readings, identities):
                     if sample
                     else "quota_identity_unavailable"
                     if not key[1]
+                    and raw.get("kind") != "key"
                     and key[0]
                     in {
                         "anthropic",
