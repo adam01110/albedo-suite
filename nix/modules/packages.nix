@@ -126,14 +126,33 @@
         doCheck = true;
         # The lazy MCP test drives upstream's Python fake stdio server.
         nativeCheckInputs = (old.nativeCheckInputs or []) ++ [pkgs.python3];
+        # The suite's dev build runs in a copy, so it overlaps the shipment
+        # export instead of waiting for its build lock.
+        buildPhase = let
+          export = "\ngleam export erlang-shipment\n";
+        in
+          assert pkgs.lib.hasInfix export old.buildPhase;
+            builtins.replaceStrings [export] [
+              ''
+
+                suite="$TMPDIR/suite-source"
+                cp -a ../.. "$suite"
+                ${pkgs.lib.concatMapStrings (module: "cp ${../../test + "/${module}.gleam"} \"$suite/apps/albedo/test/${module}.gleam\"\n") suiteTests}
+                cp ${../../test/albedo_zed_login_test.erl} "$suite/apps/albedo/test/albedo_zed_login_test.erl"
+                (cd "$suite/apps/albedo" && gleam build) >"$TMPDIR/suite-build.log" 2>&1 &
+                suiteBuild=$!
+                ${export}''
+            ]
+            old.buildPhase;
         postCheck =
           (old.postCheck or "")
           + ''
-            ${pkgs.lib.concatMapStrings (module: "cp ${../../test + "/${module}.gleam"} test/${module}.gleam\n") suiteTests}
-            cp ${../../test/albedo_zed_login_test.erl} test/albedo_zed_login_test.erl
-            # One dev build compiles every suite module; the mains then run in
-            # separate VMs at once, and their logs print in list order.
-            gleam build
+            status=0
+            wait "$suiteBuild" || status=$?
+            cat "$TMPDIR/suite-build.log"
+            ((status == 0))
+            # The mains run in separate VMs at once; their logs print in list order.
+            pushd "$suite/apps/albedo" >/dev/null
             modules=(${toString suiteTests})
             for module in "''${modules[@]}"; do
               erl -pa build/dev/erlang/*/ebin -noshell -eval "albedo@@main:run($module)" >"$TMPDIR/$module.log" 2>&1 &
@@ -148,6 +167,7 @@
               ((status == 0)) || failed=1
             done
             ((failed == 0))
+            popd >/dev/null
           '';
         postInstall =
           (old.postInstall or "")
