@@ -33,11 +33,15 @@ class ToolBackendsTests(unittest.TestCase):
 
         self.provider = Provider(script)
         self.addCleanup(self.provider.close)
-        self.app = Albedo(self.provider, protocol="responses")
+        self.app = Albedo(
+            self.provider,
+            protocol="responses",
+            prepare=lambda app: app.write_extensions(
+                {"enabled": {"formatter": False, "lsp": False}}
+            ),
+        )
         self.app.__enter__()
         self.addCleanup(self.app.__exit__, None, None, None)
-        self.app.write_extensions({"enabled": {"formatter": False, "lsp": False}})
-        self.app.restart()
         self.session = self.app.session()
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
