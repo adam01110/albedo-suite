@@ -104,13 +104,19 @@ func (m *ChatModel) turnDetail(end mood) string {
 		return ""
 	}
 	entries := m.History.Entries()
+	// The signoff is the entry being described. An older signoff ends the turn
+	// before it, whose reply or error is not this turn's.
+	signoff := true
 	for i := len(entries) - 1; i >= 0; i-- {
 		e := entries[i]
 		switch e.Kind {
 		case EntryUser:
 			return ""
 		case EntryTurnEnd:
-			continue
+			if !signoff {
+				return ""
+			}
+			signoff = false
 		case EntryError:
 			if end == moodFailed {
 				return notifyText(e.Text, notifyPreviewLimit)

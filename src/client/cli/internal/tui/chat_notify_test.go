@@ -193,3 +193,28 @@ func TestTurnNotifyMode(t *testing.T) {
 		}
 	}
 }
+
+// A turn whose reply is not in history may not borrow the previous turn's.
+func TestTurnNotifyPreviewStaysInTurn(t *testing.T) {
+	start := time.Now().Add(-time.Hour).UnixMilli()
+	m := notifyChat(t, start)
+	notifyReply(&m, start+30_000, "first reply")
+	m.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventTurnCompleted})
+	if m.notifyPending == "" {
+		t.Fatal("the first turn did not notify")
+	}
+	m.notifyPending = ""
+
+	// A turn joined while its tools ran: no message of its own and no reply.
+	m.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventTool, EntryID: "tool-1", ToolName: "python"})
+	if turn := m.transcript.turn; turn != nil {
+		turn.start -= 60_000
+	}
+	m.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventTurnCompleted})
+	if m.notifyPending == "" {
+		t.Fatal("the second turn did not notify")
+	}
+	if strings.Contains(m.notifyPending, "first reply") {
+		t.Fatalf("the second turn borrowed the first turn's reply: %q", m.notifyPending)
+	}
+}
