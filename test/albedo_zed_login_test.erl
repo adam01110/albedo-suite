@@ -27,6 +27,7 @@ run() ->
         confirmation_cases(),
         refresh_cases(),
         transport_cases(),
+        home_cases(),
         io:format("Zed login: crypto, credential validation, callback contract, identity, status envelopes, catalog token refresh, malformed catalog entries, confirmation, persistence/logout, refresh isolation/concurrency, retry and bounded redirect refusal passed~n")
     after unlink(Server), exit(Server, kill), gen_tcp:close(Listen), ets:delete(Table) end,
     nil.
@@ -44,7 +45,7 @@ install_transport() ->
     {ok, albedo_zed_fixture_transport, Binary} = compile:forms(Renamed, [binary, report_errors]),
     {module, _} = code:load_binary(albedo_zed_fixture_transport, "albedo_zed_fixture_transport.erl", Binary),
     Exports = [E || E = {Name, _} <- albedo_http:module_info(exports), Name =/= module_info],
-    Temp = filename:join("/tmp", "zed-login-transport-" ++ integer_to_list(erlang:unique_integer([positive])) ++ ".erl"),
+    Temp = transport_temp(),
     Head = ["-module(albedo_http).\n-export([", lists:join(",", [io_lib:format("~p/~B", [N,A]) || {N,A} <- Exports]), "]).\n"],
     Special = "open_method(O, M, <<\"https://cloud.zed.dev\", Path/binary>>, H, B, T) -> P = persistent_term:get(zed_login_fixture_port), U = iolist_to_binary([\"http://127.0.0.1:\", integer_to_binary(P), Path]), albedo_zed_fixture_transport:open_method(O,M,U,H,B,T); open_method(_,_,_,_,_,_) -> error(untrusted_origin).\n",
     Open = "open(O,U,H,B,T) -> open_method(O,<<\"POST\">>,U,H,B,T).\n",
@@ -425,9 +426,33 @@ catalog_account_retry_cases() ->
     end, [account, profile, route]).
 
 home() ->
-    Home = list_to_binary(filename:join("/tmp", "zed-login-home-" ++ integer_to_list(erlang:unique_integer([positive])))),
+    prepare_home(list_to_binary(filename:join("/tmp", "zed-login-home-" ++ os:getpid() ++ "-" ++ integer_to_list(erlang:unique_integer([positive]))))).
+
+%% A run that died leaves its home behind at the name a later run reuses.
+prepare_home(Home) ->
+    _ = file:del_dir_r(Home),
     ok = filelib:ensure_dir(filename:join(Home, <<"dummy">>)),
     Home.
+
+%% Compiling the wrapper needs a scratch file of its own: two runs writing the
+%% same path would delete each other's source mid-compile.
+transport_temp() ->
+    filename:join("/tmp", "zed-login-transport-" ++ os:getpid() ++ "-" ++ integer_to_list(erlang:unique_integer([positive])) ++ ".erl").
+
+%% Two runs of this fixture never share a home or a scratch file: erlang's
+%% counter is only unique inside one runtime, so a neighbouring VM picks the
+%% same name.
+home_cases() ->
+    Home = home(),
+    true = string:find(binary_to_list(Home), os:getpid()) =/= nomatch,
+    Temp = transport_temp(),
+    true = string:find(Temp, os:getpid()) =/= nomatch,
+    Stale = filename:join(Home, <<"sessions.json">>),
+    ok = file:write_file(Stale, <<"{}">>),
+    Home = prepare_home(Home),
+    false = filelib:is_file(Stale),
+    _ = file:del_dir_r(Home),
+    nil.
 
 login() -> {login, <<"zed">>, <<"Zed">>, <<"browser">>, model, <<"zed">>, {device, fun albedo_zed_auth:start/0},
             fun(_) -> <<>> end, fun(_,_,_) -> {error,unused} end, fun albedo_zed_auth:account/1, none}.
