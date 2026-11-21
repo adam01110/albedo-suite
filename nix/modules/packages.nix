@@ -250,6 +250,16 @@
               chmod u+w vendor/charm.land/bubbletea/v2
               install -m644 ${clientSources}/cli/third_party/bubbletea/cursed_renderer.go vendor/charm.land/bubbletea/v2/cursed_renderer.go
             '';
+          # Tests keep buildPhase's -trimpath, so they reuse its objects instead
+          # of recompiling every package without it.
+          checkPhase = let
+            strip = ''
+              # We do not set trimpath for tests, in case they reference test assets
+              export GOFLAGS=''${GOFLAGS//-trimpath/}
+            '';
+          in
+            assert pkgs.lib.hasInfix strip old.checkPhase;
+              builtins.replaceStrings [strip] [""] old.checkPhase;
           postCheck =
             (old.postCheck or "")
             + ''
