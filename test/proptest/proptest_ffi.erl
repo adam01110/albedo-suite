@@ -1,5 +1,5 @@
 -module(proptest_ffi).
--export([getenv/1, putenv/2, bump/1, counts/0, reset/0, undefined/0, write_file/3, unique/0, remove_tree/1]).
+-export([getenv/1, putenv/2, bump/1, counts/0, reset/0, undefined/0, write_file/3, unique/0, remove_tree/1, models_table/0, put_models/3, clear_models/1, models/2]).
 
 -include_lib("kernel/include/file.hrl").
 
@@ -52,3 +52,18 @@ vm() ->
     end.
 
 remove_tree(Path) -> _ = file:del_dir_r(Path), nil.
+
+%% A public table for generated model lists, so one runtime can list the ids
+%% the current case put there instead of publishing a runtime per case.
+models_table() -> ets:new(proptest_models, [public, set]).
+
+put_models(Table, Key, Models) ->
+    true = ets:insert(Table, {Key, Models}), nil.
+
+clear_models(Table) -> true = ets:delete_all_objects(Table), nil.
+
+models(Table, Key) ->
+    case ets:lookup(Table, Key) of
+        [{_, Models}] -> Models;
+        [] -> []
+    end.
