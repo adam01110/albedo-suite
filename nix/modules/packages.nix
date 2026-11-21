@@ -110,7 +110,35 @@
         # keep-sorted end
       ];
     in
-      withSuiteNotices (package.overrideAttrs (old: {
+      withSuiteNotices (package.overrideAttrs (old: let
+        esqliteVersion = "0.9.0";
+        esqliteChecksum = "CCF72258A4EE152EC7AD92AA9A03552EB6CA1B06B65C93AD5B6E55C302E05855";
+        # The NIF builds once with the server's tools, at the shipment's own
+        # path and in Gleam's rebar3 environment, so suite edits never
+        # recompile sqlite3.c. The server's fixup strips the installed copy.
+        esqlite = pkgs.stdenv.mkDerivation {
+          pname = "esqlite-nif";
+          version = esqliteVersion;
+          src = pkgs.fetchurl {
+            url = "https://repo.hex.pm/tarballs/esqlite-${esqliteVersion}.tar";
+            sha256 = pkgs.lib.toLower esqliteChecksum;
+          };
+          inherit (old) nativeBuildInputs;
+          unpackPhase = ''
+            dir="$NIX_BUILD_TOP/${old.sourceRoot}/build/prod/erlang/esqlite"
+            mkdir -p "$dir"
+            tar -xOf "$src" contents.tar.gz | tar -xz -C "$dir"
+            cd "$dir"
+          '';
+          buildPhase = ''
+            export HOME="$TMPDIR/home"
+            ERL_LIBS='../*/ebin' REBAR_BARE_COMPILER_OUTPUT_DIR="$PWD" REBAR_PROFILE=prod REBAR_SKIP_PROJECT_PLUGINS=true TERM=dumb \
+              rebar3 bare compile --paths '../*/ebin'
+          '';
+          installPhase = "install -Dm755 priv/esqlite3_nif.so $out/priv/esqlite3_nif.so";
+          dontFixup = true;
+        };
+      in {
         # The daemon builds in apps/albedo, but the overlay mirrors the whole
         # source tree, outside the writable source root. Fail on upstream drift
         # before installing editable source files.
@@ -135,6 +163,15 @@
             builtins.replaceStrings [export] [
               ''
 
+                # Both Gleam builds copy the staged package, then run rebar3 on
+                # it; without its pc hook, rebar3 compiles only the Erlang
+                # modules and keeps the prebuilt NIF.
+                grep -q '^  { name = "esqlite", version = "${esqliteVersion}", .*outer_checksum = "${esqliteChecksum}" },$' manifest.toml
+                pushd build/packages/esqlite >/dev/null
+                mv rebar.config.script rebar.config.pc.script
+                echo '{ok, Config} = file:script("rebar.config.pc.script"), lists:keydelete(provider_hooks, 1, Config).' >rebar.config.script
+                install -Dm755 ${esqlite}/priv/esqlite3_nif.so priv/esqlite3_nif.so
+                popd >/dev/null
                 suite="$TMPDIR/suite-source"
                 cp -a ../.. "$suite"
                 ${pkgs.lib.concatMapStrings (module: "cp ${../../test + "/${module}.gleam"} \"$suite/apps/albedo/test/${module}.gleam\"\n") suiteTests}
