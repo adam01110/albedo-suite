@@ -104,7 +104,7 @@ lookup(Home, Endpoint, Id) ->
                     %% encoder can request reasoning the model does not support.
                     Efforts = case maps:get(<<"supports_thinking">>, M, true) of
                         false -> [];
-                        _ -> [V || #{<<"value">> := V} <- maps:get(<<"supported_effort_levels">>, M, []), is_binary(V)]
+                        _ -> [V || #{<<"value">> := V} <- effort_levels(M), is_binary(V)]
                     end,
                     {some, {model_info, Id, <<"zed">>, positive(maps:get(<<"max_token_count">>, M, 0)),
                         positive(maps:get(<<"max_token_count_in_max_mode">>, M, 0)),
@@ -118,6 +118,14 @@ lookup(Home, Endpoint, Id) ->
 
 positive(N) when is_integer(N), N > 0 -> {some, N};
 positive(_) -> none.
+
+%% A catalog entry's effort levels are what the account's model offers; an
+%% entry that states them as anything but a list offers none.
+effort_levels(M) ->
+    case maps:get(<<"supported_effort_levels">>, M, []) of
+        Levels when is_list(Levels) -> Levels;
+        _ -> []
+    end.
 
 reload(Home) ->
     Targets = [Name || {Name, #{<<"extension">> := <<"zed">>}} <- maps:to_list(profiles(Home))],

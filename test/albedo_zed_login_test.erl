@@ -21,11 +21,12 @@ run() ->
         status_cases(),
         quota_cases(),
         catalog_cases(),
+        catalog_effort_level_cases(),
         catalog_account_retry_cases(),
         confirmation_cases(),
         refresh_cases(),
         transport_cases(),
-        io:format("Zed login: crypto, credential validation, callback contract, identity, status envelopes, catalog token refresh, confirmation, persistence/logout, refresh isolation/concurrency, retry and bounded redirect refusal passed~n")
+        io:format("Zed login: crypto, credential validation, callback contract, identity, status envelopes, catalog token refresh, malformed catalog entries, confirmation, persistence/logout, refresh isolation/concurrency, retry and bounded redirect refusal passed~n")
     after unlink(Server), exit(Server, kill), gen_tcp:close(Listen), ets:delete(Table) end,
     nil.
 
@@ -101,6 +102,13 @@ fixture_request(Socket) ->
             {200, <<>>, <<"{\"plan\":{\"usage\":{\"edit_predictions\":{\"used\":25,\"limit\":100}}}}">>};
         models_denied when Path =:= <<"/models">> -> {401, <<>>, <<"denied">>};
         models_failing when Path =:= <<"/models">> -> {500, <<>>, <<"catalog unavailable">>};
+        models_levels_not_a_list when Path =:= <<"/models">> ->
+            {200, <<>>, json:encode(#{<<"models">> => [
+                #{<<"id">> => <<"levels-not-a-list">>, <<"provider">> => <<"anthropic">>,
+                  <<"supported_effort_levels">> => <<"low">>},
+                #{<<"id">> => <<"levels-fixture-model">>, <<"provider">> => <<"anthropic">>,
+                  <<"supports_thinking">> => true,
+                  <<"supported_effort_levels">> => [#{<<"value">> => <<"low">>}]}]})};
         models_unauthorized when Path =:= <<"/models">> ->
             case ets:update_counter(zed_login_fixture, models_attempt, {2, 1}, {models_attempt, 0}) of
                 1 -> {401, <<>>, <<"stale token">>};
@@ -341,6 +349,27 @@ catalog_cases() ->
         true = binary:match(Failing, <<"HTTP 500">>) =/= nomatch,
         mode(normal),
         ets:insert(zed_login_fixture, {models_attempt, 0})
+    after mode(normal), file:del_dir_r(Home) end.
+
+%% The catalog is remote data. An entry that states its effort levels as
+%% anything but a list offers none of them, the way an entry with no levels at
+%% all does; it does not take the model lookup down with it.
+catalog_effort_level_cases() ->
+    Home = home(),
+    try
+        Exp = erlang:system_time(second) + 3600,
+        C = (credential(<<"77">>, <<"catalog-levels">>))#{<<"jwt">> => jwt(Exp, 1, <<"77">>), <<"jwt_expires">> => Exp},
+        configure(Home, [C], #{<<"levels">> => profile(<<"catalog-levels">>)}),
+        mode(models_levels_not_a_list),
+        {ok, {_, Token}} = albedo_zed:access(Home, <<"levels">>),
+        %% The same catalog, reachable three ways: no crash, no efforts.
+        {some, Info} = albedo_zed:lookup(Home, <<"https://cloud.zed.dev">>, <<"levels-not-a-list">>),
+        [] = element(11, Info),
+        {some, Listed} = albedo_zed:lookup(Home, <<"https://cloud.zed.dev">>, <<"levels-fixture-model">>),
+        [low] = element(11, Listed),
+        {ok, <<"anthropic">>} = albedo_zed:route(Home, <<"https://cloud.zed.dev">>, Token, <<"levels-not-a-list">>),
+        {ok, Models} = albedo_zed:models(Home, <<"https://cloud.zed.dev">>),
+        true = lists:member(<<"levels-not-a-list">>, Models)
     after mode(normal), file:del_dir_r(Home) end.
 
 catalog_account_retry_cases() ->
