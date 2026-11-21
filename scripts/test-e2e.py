@@ -112,13 +112,17 @@ def synchronize_typed_response_fixtures(directory, specifications):
         path.write_text(source)
 
 
-def prepare_source(upstream, destination, suite):
-    shutil.copytree(upstream, destination)
-    for entry in destination.rglob("*"):
+def owner_writable(tree):
+    for entry in tree.rglob("*"):
         if not entry.is_symlink():
             owner_permissions = 0o200 | (0o100 if entry.is_dir() else 0)
             entry.chmod(entry.stat().st_mode | owner_permissions)
-    destination.chmod(0o700)
+    tree.chmod(0o700)
+
+
+def prepare_source(upstream, destination, suite):
+    shutil.copytree(upstream, destination)
+    owner_writable(destination)
 
     cases_directory = destination / "e2e"
     synchronize_kernel_upgrade_fixture(cases_directory / "kernel_upgrade_test.py")
@@ -138,6 +142,8 @@ def prepare_source(upstream, destination, suite):
     shutil.copytree(
         suite / "test/fixtures", cases_directory / "fixtures", dirs_exist_ok=True
     )
+    # A store-path suite copies read-only, like the upstream tree above.
+    owner_writable(destination)
 
 
 def retry_targets(log):
