@@ -189,6 +189,56 @@ sys.exit(int(os.environ.get('FAIL', '0')))
         self.assertFalse(self.log.exists())
         self.assertFalse(plugin.active)
 
+    def record_hooks(self, answer=None):
+        asked: list[tuple[str, dict[str, Any]]] = []
+
+        def host_now(method: str, args: dict[str, Any]) -> dict[str, object]:
+            asked.append((method, args))
+            return dict(answer or {}) if method == "hook.call" else {}
+
+        state = patch.object(plugin.hook, "host_now", host_now)
+        state.start()
+        self.addCleanup(state.stop)
+        return asked
+
+    def assert_hooks_heard(self, asked, error):
+        self.assertEqual([method for method, _ in asked], ["hook.call", "hook.called"])
+        (_, call), (_, outcome) = asked
+        self.assertEqual(outcome["call"]["id"], call["id"])
+        self.assertIn(error, outcome["output"])
+
+    async def test_hooks_hear_missing_rtk_refusal(self):
+        self.fixture()
+        asked = self.record_hooks()
+        real_which = shutil.which
+        with patch(
+            "albedo_rtk.shutil.which",
+            side_effect=lambda program, **kwargs: (
+                None if program == "rtk" else real_which(program, **kwargs)
+            ),
+        ):
+            with self.assertRaisesRegex(FileNotFoundError, "rtk is required"):
+                plugin.run("cargo", "test", env=self.env)
+        self.assert_hooks_heard(asked, "FileNotFoundError")
+
+    async def test_hooks_hear_late_pipe_refusal(self):
+        self.fixture()
+        job = plugin.run("cargo", "check", env=self.env)
+        await job
+        asked = self.record_hooks()
+        with self.assertRaisesRegex(RuntimeError, "attach the pipe before launch"):
+            job.pipe("wc", "-l", env=self.env)
+        self.assert_hooks_heard(asked, "RuntimeError")
+
+    async def test_hook_rewrite_to_nothing_is_not_a_routing_error(self):
+        asked = self.record_hooks({"arguments": json.dumps({"command": ""})})
+        job = plugin.run("true", env=self.env)
+        # Routing leaves an empty argv to the native spawn, as without RTK.
+        self.assertFalse(job._routed)
+        self.assertEqual(job.requested_argv, [])
+        await job
+        self.assertEqual([method for method, _ in asked][:1], ["hook.call"])
+
     async def test_real_ls_spaces_literal_metacharacters_and_nonzero_exit(self):
         name = "literal ; $() [x] space"
         (self.root / name).write_text("hello\n")

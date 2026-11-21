@@ -1285,16 +1285,21 @@ def run(
     command = hooked.arguments.get("command")
     if isinstance(command, str) and command != line:
         argv = shlex.split(command)
-    executed = albedo_rtk.route(argv, environment, stdin=stdin is not None)
-    job = start(
-        executed,
-        timeout,
-        cwd=directory,
-        env=environment,
-        stdin=stdin,
-        service=service,
-        requested_argv=argv,
-    )
+    try:
+        executed = albedo_rtk.route(argv, environment, stdin=stdin is not None)
+        job = start(
+            executed,
+            timeout,
+            cwd=directory,
+            env=environment,
+            stdin=stdin,
+            service=service,
+            requested_argv=argv,
+        )
+    except Exception as error:
+        # Routing can refuse after the hooks saw the call; they hear how it ended.
+        hook.after(hooked, f"{type(error).__name__}: {error}")
+        raise
     job._hooked = hooked
     return job
 

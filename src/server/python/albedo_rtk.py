@@ -35,6 +35,8 @@ SUBCOMMANDS = {
 
 def supported(argv: list[str], *, stdin: bool = False) -> bool:
     """Whether RTK can preserve this invocation's executable and input semantics."""
+    if not argv:
+        return False
     program, *args = argv
     if program == "rtk" or os.path.basename(program) != program:
         return False
