@@ -157,8 +157,6 @@
         doCheck = true;
         # The lazy MCP test drives upstream's Python fake stdio server.
         nativeCheckInputs = (old.nativeCheckInputs or []) ++ [pkgs.python3];
-        # The suite's dev build runs in a copy, so it overlaps the shipment
-        # export instead of waiting for its build lock.
         buildPhase = let
           export = "\ngleam export erlang-shipment\n";
         in
@@ -166,7 +164,7 @@
             builtins.replaceStrings [export] [
               ''
 
-                # Both Gleam builds copy the staged package, then run rebar3 on
+                # The Gleam build copies the staged package, then runs rebar3 on
                 # it; without its pc hook, rebar3 compiles only the Erlang
                 # modules and keeps the prebuilt NIF.
                 grep -q '^  { name = "esqlite", version = "${esqliteVersion}", .*outer_checksum = "${esqliteChecksum}" },$' manifest.toml
@@ -175,29 +173,36 @@
                 echo '{ok, Config} = file:script("rebar.config.pc.script"), lists:keydelete(provider_hooks, 1, Config).' >rebar.config.script
                 install -Dm755 ${esqlite}/priv/esqlite3_nif.so priv/esqlite3_nif.so
                 popd >/dev/null
-                suite="$TMPDIR/suite-source"
-                cp -a ../.. "$suite"
-                ${pkgs.lib.concatMapStrings (module: "cp ${../../test + "/${module}.gleam"} \"$suite/apps/albedo/test/${module}.gleam\"\n") suiteTests}
-                # A helper a listed module imports needs no main of its own.
-                cp ${../../test + "/suite_quota_fixtures.gleam"} "$suite/apps/albedo/test/suite_quota_fixtures.gleam"
-                cp ${../../test/albedo_zed_login_test.erl} "$suite/apps/albedo/test/albedo_zed_login_test.erl"
-                (cd "$suite/apps/albedo" && gleam build) >"$TMPDIR/suite-build.log" 2>&1 &
-                suiteBuild=$!
                 ${export}''
             ]
             old.buildPhase;
+        # The suite and upstream tests compile as their own package against the
+        # shipment's build, with gleeunit (a dev dependency), so the workspace
+        # never compiles a second time.
         postCheck =
           (old.postCheck or "")
           + ''
-            status=0
-            wait "$suiteBuild" || status=$?
-            cat "$TMPDIR/suite-build.log"
-            ((status == 0))
+            lib="$TMPDIR/suite-lib"
+            tests="$TMPDIR/suite-tests"
+            mkdir -p "$lib" "$tests/src" "$tests/test"
+            ln -s "$PWD"/build/prod/erlang/* "$lib"
+            # The tests depend on the daemon and on its direct dependencies.
+            grep -q '^name = "albedo"$' gleam.toml
+            grep -q '^\[dependencies\]$' gleam.toml
+            sed -e 's/^name = "albedo"$/name = "albedo_suite_tests"/' -e 's/^\[dependencies\]$/&\nalbedo = ">= 0.0.0"/' gleam.toml >"$tests/gleam.toml"
+            # Upstream's tests only compile here, against the overlaid source;
+            # the suite's copies go in after them, so a shared name keeps the suite's.
+            cp -r test/. "$tests/test"
+            ${pkgs.lib.concatMapStrings (module: "cp ${../../test + "/${module}.gleam"} \"$tests/test/${module}.gleam\"\n") suiteTests}
+            # A helper a listed module imports needs no main of its own.
+            cp ${../../test + "/suite_quota_fixtures.gleam"} "$tests/test/suite_quota_fixtures.gleam"
+            cp ${../../test/albedo_zed_login_test.erl} "$tests/test/albedo_zed_login_test.erl"
+            gleam compile-package --target erlang --package build/packages/gleeunit --out "$lib/gleeunit" --lib "$lib"
+            gleam compile-package --target erlang --package "$tests" --out "$lib/albedo_suite_tests" --lib "$lib"
             # The mains run in separate VMs at once; their logs print in list order.
-            pushd "$suite/apps/albedo" >/dev/null
             modules=(${toString suiteTests})
             for module in "''${modules[@]}"; do
-              erl -pa build/dev/erlang/*/ebin -noshell -eval "albedo@@main:run($module)" >"$TMPDIR/$module.log" 2>&1 &
+              erl -pa "$lib"/*/ebin -noshell -eval "albedo@@main:run($module)" >"$TMPDIR/$module.log" 2>&1 &
               pids+=("$!")
             done
             failed=0
@@ -209,7 +214,6 @@
               ((status == 0)) || failed=1
             done
             ((failed == 0))
-            popd >/dev/null
           '';
         postInstall =
           (old.postInstall or "")
