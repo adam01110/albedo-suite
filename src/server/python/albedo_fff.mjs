@@ -1,5 +1,4 @@
 import { createRequire } from "node:module";
-import readline from "node:readline";
 import { Worker } from "node:worker_threads";
 const { FileFinder } = createRequire(import.meta.url)("@ff-labs/fff-node");
 if (process.argv[2] !== "--stdio")
@@ -191,8 +190,9 @@ function deadlineMs(name, fallback) {
 const idleMs = deadlineMs("ALBEDO_FFF_IDLE_MS", 60000);
 const callMs = deadlineMs("ALBEDO_FFF_CALL_DEADLINE_MS", 30000);
 let idle = setTimeout(shutdown, idleMs);
-const input = readline.createInterface({ input: process.stdin });
-input.on("line", (line) => {
+// Requests end at "\n" only: readline also splits on "\r", U+2028 and
+// U+2029, which JSON leaves unescaped inside strings.
+function answer(line) {
   clearTimeout(idle);
   queue = queue.then(async () => {
     Atomics.store(deadline, 0, BigInt(Date.now() + callMs));
@@ -217,5 +217,12 @@ input.on("line", (line) => {
       idle = setTimeout(shutdown, idleMs);
     }
   });
+}
+let pending = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => {
+  const lines = (pending + chunk).split("\n");
+  pending = lines.pop();
+  for (const line of lines) answer(line);
 });
-input.on("close", shutdown);
+process.stdin.on("end", shutdown);

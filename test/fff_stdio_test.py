@@ -61,6 +61,7 @@ exports.FileFinder = { create: () => {
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
         )
         assert self.worker.stdin is not None
         assert self.worker.stdout is not None
@@ -76,7 +77,7 @@ exports.FileFinder = { create: () => {
             if stream is not None:
                 stream.close()
 
-    def send(self, query="needle", protocol=1, root=None, limit=10):
+    def send(self, query="needle", protocol=1, root=None, limit=10, ascii=True):
         self.stdin.write(
             json.dumps(
                 {
@@ -88,7 +89,8 @@ exports.FileFinder = { create: () => {
                     "hidden": False,
                     "limit": limit,
                     "context": 0,
-                }
+                },
+                ensure_ascii=ascii,
             )
             + "\n"
         )
@@ -136,6 +138,15 @@ exports.FileFinder = { create: () => {
                     self.assertIn(message, error["error"])
                 self.send()
                 self.assertTrue(self.reply()["ok"])
+
+    def test_line_separators_inside_strings_stay_in_one_request(self):
+        # Erlang's json:encode leaves U+2028 and U+2029 unescaped, as JSON allows.
+        for text in ("a\u2028b", "a\u2029b"):
+            with self.subTest(repr(text)):
+                self.send(text, root=f"root-{text}", ascii=False)
+                self.assertTrue(self.reply()["ok"])
+                ready, _, _ = select.select([self.stdout], [], [], 0.5)
+                self.assertFalse(ready, "one request produced more than one reply")
 
     def test_stdin_close_ends_worker(self):
         self.send()
