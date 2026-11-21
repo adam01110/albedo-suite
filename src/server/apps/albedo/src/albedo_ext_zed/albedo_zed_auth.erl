@@ -140,14 +140,31 @@ decrypt(Private, Id, Cipher) ->
     catch _:_ -> {error, <<"Invalid Zed callback">>} end.
 
 %% Current servers encrypt with OAEP-SHA256; the editor still accepts the older
-%% PKCS#1 v1.5 format, so both decrypt.
+%% PKCS#1 v1.5 format, so both decrypt. OpenSSL answers a block whose type 2
+%% padding does not check out with an implicit rejection message rather than an
+%% error, so the unpadded block is checked here: a random ciphertext otherwise
+%% reached the flow as a token whenever its rejection was short and printable.
 token(Bytes, Private) ->
     try
         public_key:decrypt_private(Bytes, Private,
             [{rsa_padding, rsa_pkcs1_oaep_padding}, {rsa_oaep_md, sha256}, {rsa_mgf1_md, sha256}])
     catch _:_ ->
-        public_key:decrypt_private(Bytes, Private, [{rsa_padding, rsa_pkcs1_padding}])
+        type2(public_key:decrypt_private(Bytes, Private, [{rsa_padding, rsa_no_padding}]))
     end.
+
+%% The message of a PKCS#1 v1.5 type 2 block: 00 02, at least eight padding
+%% bytes, a zero separator, then a nonempty message.
+type2(<<0, 2, Rest/binary>>) ->
+    case separator(Rest, 0) of
+        {Padding, Message} when Padding >= 8, Message =/= <<>> -> Message;
+        _ -> error(invalid_padding)
+    end;
+type2(_) ->
+    error(invalid_padding).
+
+separator(<<0, Message/binary>>, Padding) -> {Padding, Message};
+separator(<<_, Rest/binary>>, Padding) -> separator(Rest, Padding + 1);
+separator(<<>>, _) -> error(no_separator).
 
 safe(B) when is_binary(B), byte_size(B) > 0, byte_size(B) =< 16384 ->
     %% dollar_endonly keeps $ from also matching before a final newline.

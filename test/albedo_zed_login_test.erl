@@ -16,6 +16,7 @@ run() ->
     try
         crypto_cases(),
         credential_cases(),
+        forgery_cases(),
         callback_cases(),
         identity_cases(),
         status_cases(),
@@ -263,6 +264,55 @@ port_of(Flow) ->
     #{<<"url">> := Url} = json:decode(Flow),
     #{query := Query} = uri_string:parse(Url),
     binary_to_integer(maps:get(<<"native_app_port">>, maps:from_list(uri_string:dissect_query(Query)))).
+
+% A callback token must be impossible to forge without the listener's key.
+% OpenSSL answers a block whose PKCS#1 v1.5 padding does not check out with an
+% implicit rejection message instead of an error, so the legacy path accepted a
+% random ciphertext as a token whenever the rejection happened to be short and
+% printable. The key and ciphertext below are one such pair, kept as fixtures
+% because the rejection is deterministic for them.
+forgery_cases() ->
+    Key = binary_to_term(base64:decode(forgery_fixture(forgery_key))),
+    {error, _} = albedo_zed_auth:decrypt(Key, <<"7">>, list_to_binary(forgery_fixture(forgery_cipher))),
+    % The same hole over fresh ciphertexts, so a fix cannot special-case one.
+    Accepted = lists:foldl(fun(_, Count) ->
+        Cipher = base64:encode(crypto:strong_rand_bytes(256), #{mode => urlsafe, padding => false}),
+        case albedo_zed_auth:decrypt(Key, <<"7">>, Cipher) of
+            {error, _} -> Count;
+            {ok, _} -> Count + 1
+        end
+    end, 0, lists:seq(1, 500)),
+    0 = Accepted.
+
+forgery_fixture(forgery_key) ->
+            "g2gLdw1SU0FQcml2YXRlS2V5dwl0d28tcHJpbWVvAAABAAB9hGO+JCutrgYqHiWGEceyOMXXy/CY"
+            "ijd5qmCkFi7ddiF3PjhPCspJECBGxIgd447b5rGNWyrW3hTL6GRPBVMXmDnm4wPxfC5R9SjW7Sm6"
+            "2yUtXWzxWlSM1EqB7LBh8UImbKyudGrRp5Zq++fdEWJJMPS0FJssWGwLNRyCXnnrkFarh1J55alo"
+            "qJG+/v3/Cd7PxxEqfAqLQqQQcIqVFnA7cia+FYaaZpWsgaLQL5SaBgDdDtAvnykUBp4PNYk4vSuo"
+            "fxkXnS+AZUZu8vIvNCde1g+Lr4w24o3mtRqyVQiHFmyrEsWzTfxMMeiSvf9VSdzltoCKYmQhTdSM"
+            "J6c3/JWfYgABAAFvAAABAACRcm5+fXS/uEPRtoYH+TnuT+U47ckW2T+AomY1igM2s4HmV3GslGBL"
+            "eK1PLIEvZFaoTkiEph8p9jz9SKwHa2u3wWvqsS1YKurdf2A43OQ7ANDRN6ZXwnwR9MdaX8wD4JPu"
+            "na9Wy2PutOJmrBs7p0pdpBK8EilARmgSheQJp552ZXzPmBFeK2Dny8yfmzxgaIM5fXtc2cgxl+nD"
+            "cIhHF5+dNMHZIfbfW45uJg4RqNt2xhZ4mI6ck1AMPK+BW8DbYnBLmtiV9bUs1SfTVDqoAkddxtTP"
+            "kaAL4d2WqI2HXC1oVDyQzsjRoAzOuosNUmm4/IyMCC3mQdctZBvYCr3Zc0kBboAAdSzVsWhKK8ve"
+            "5yCPqdMiUVhlgktdWxLp4rWBeYbgvj2fvZZUFum+6Z5aWRX38Fu2OhNW63i7M9h7iVsK6jNeAsOO"
+            "2GUBVf0qfDssqUmA57QrgjRo8hEsNAD3MVKrQq3TD6Ia8FGjvjTznZ1dH8eBhRzF0T3EIG58FYZY"
+            "9TqIB9JugADpFtxJh1QqEkFGt+ZSVrxvUqKxnnDF4Q3upXXNL+l7SS98sQtLqrvnz02KMXUqBUXo"
+            "gkeQr5lSZCrjxjmLZme3/ADS2Du7bqRMOFaLhW2ahL848NwhCCsFqVNSnwKlAm5+2ZUE7JNyVvd6"
+            "MIC5+cIz6IIojvj6cDKyS+/6BfqDwm6AAAUDXyVWJsprSXsdcFnloBkChSlADd7JD4nf98VbeK3i"
+            "vi2EkrI1LcM2fGrLje9D+2POCpNSWbt5ZTk1//UNJRX8rWF4cC3wZva36oNDzFkqo6ESLOYiEBcj"
+            "V8jcgxRdDG9jPQTTkRIfz1daf2mvynWqMqs2Loogxq4UUmXbahYtboAAcbFiSZ1c6teEOQeJ3cNf"
+            "BHT9tC1ZfJD/PAQYpO56URaPZX1NJLWHx3RXP/huy3ymAp6hN5eA9RMaCfErk4dFVAYrDowSbYIp"
+            "n25qpAdQIYeYeR8tDnBBk4h0y3bI0rQt4Cp48MtTlAwQcsRSHD10M0cOo8P07OJZXvZcPveSKx9u"
+            "gABrjUbnGhuwDAXs/2CeLHRlLW+4Y43ejPkMToP1Cvce3+t2E5PdCm3qared9MVJfmmDSP1Oxe8k"
+            "sl4Zxl89H+RJUtUxErUST/I6LvAbCYA+kWlbw5q/B6IEA5d/Y0RL8GwTUdtdklMcOhTnkFA7erMJ"
+            "PlP7flEP0ScphwuCX4WVMHcMYXNuMV9OT1ZBTFVF";
+forgery_fixture(forgery_cipher) ->
+            "TGnU9sOrqouCML1tnQO13jF2Hv2MEyiWH-EOwChvR8Vp5IaQobSDT5hnhF6Fz3RE9vhNK4Z7kpUl"
+            "pEqeQ3t1upBXqUBB6_BYPIoHgCYwcF4vM1p1pYoAxEc78DulpHGsy7wS_Im9ZFLm9BsdFdwBlWG9"
+            "MzmTfbt77n6lRlzxxNW0XWIl8Qp8VLaMYkedebZ2qaXdHAxPf4X4AqriE7AaUcpPm2ECJKl-7TsJ"
+            "-Bzpd--wKBQQGKDg7D5d1_pLiFBvrK6FqJTWcr2rAGOcyGzh9NByPWWplZDo31FFXnOFo2dbYvPG"
+            "871YQy0cFayR7bWrdkqvMXqUc6KQ6vZbDf9wQw".
 
 identity_cases() ->
     R = identity_response(42),
