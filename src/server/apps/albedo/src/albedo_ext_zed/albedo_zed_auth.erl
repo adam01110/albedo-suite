@@ -91,7 +91,15 @@ accept([Listen | Rest], Wait) ->
 %% The callback path and its extra query parameters are not part of the
 %% contract; only the encrypted user_id/access_token pair is.
 serve(Socket, Private, Port) ->
-    Result = case gen_tcp:recv(Socket, 0, 1000) of
+    Result = try read_callback(Socket, Private, Port) catch _:_ -> {error, invalid_callback} end,
+    respond(Socket, Result),
+    Result.
+
+%% A Host that is not this attempt's loopback authority, a callback without the
+%% encrypted pair and unreadable headers all raise here, and the caller answers
+%% every one of them with 404.
+read_callback(Socket, Private, Port) ->
+    case gen_tcp:recv(Socket, 0, 1000) of
         {ok, {http_request, 'GET', {abs_path, Target}, _}} ->
             Headers = headers(Socket, 32, #{}),
             true = loopback(maps:get(<<"host">>, Headers, <<>>), Port),
@@ -100,9 +108,7 @@ serve(Socket, Private, Port) ->
             #{<<"user_id">> := Id, <<"access_token">> := Cipher} = Params,
             decrypt(Private, Id, Cipher);
         _ -> {error, invalid_callback}
-    end,
-    respond(Socket, Result),
-    Result.
+    end.
 
 loopback(Host, Port) ->
     P = integer_to_binary(Port),

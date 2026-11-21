@@ -18,6 +18,7 @@ run() ->
         credential_cases(),
         forgery_cases(),
         callback_cases(),
+        rejected_callback_cases(),
         identity_cases(),
         status_cases(),
         quota_cases(),
@@ -475,6 +476,47 @@ catalog_account_retry_cases() ->
         after mode(normal), file:del_dir_r(Home) end
     end, [account, profile, route]).
 
+%% Every refusal is answered, as docs/zed.md promises: a Host that is not this
+%% attempt's loopback authority and a callback without the encrypted pair are
+%% rejected with 404 instead of a silently closed connection, and the attempt
+%% keeps waiting for the real callback.
+rejected_callback_cases() ->
+    Home = home(), L = login(),
+    {Id, Flow} = start(Home),
+    try
+        Port = port_of(Flow), P = integer_to_binary(Port),
+        Query = callback_query(Flow, <<"42">>),
+        lists:foreach(fun(Host) ->
+            <<"HTTP/1.1 404", _/binary>> = raw_callback(Port, Host, <<"/">>, Query)
+        end, [<<"evil.invalid:", P/binary>>, none, <<"127.0.0.1">>,
+              <<"127.0.0.1:", (integer_to_binary(Port + 1))/binary>>]),
+        <<"HTTP/1.1 404", _/binary>> = raw_callback(Port, <<"127.0.0.1:", P/binary>>, <<"/">>, <<"user_id=42">>),
+        <<"waiting">> = state(get(Home, Id)),
+        callback(Flow, <<"42">>),
+        _ = await_state(Home, Id, <<"confirming">>)
+    after cancel_identified(Home, Id, [L]), file:del_dir_r(Home) end.
+
+callback_query(KeyFlow, User) ->
+    #{<<"url">> := KeyUrl} = json:decode(KeyFlow),
+    #{query := KeyQuery} = uri_string:parse(KeyUrl),
+    KeyParams = maps:from_list(uri_string:dissect_query(KeyQuery)),
+    Public = public_key:der_decode('RSAPublicKey', base64:decode(maps:get(<<"native_app_public_key">>, KeyParams), #{mode=>urlsafe})),
+    Cipher = encrypt(Public, <<"editor-test-secret">>),
+    uri_string:compose_query([{<<"user_id">>,User},{<<"access_token">>,Cipher}]).
+
+%% A callback request whose Host header is written verbatim, or left out.
+raw_callback(Port, none, Target, Query) ->
+    raw_request(Port, ["GET ", Target, "?", Query, " HTTP/1.1\r\n\r\n"]);
+raw_callback(Port, Host, Target, Query) ->
+    raw_request(Port, ["GET ", Target, "?", Query, " HTTP/1.1\r\nHost: ", Host, "\r\n\r\n"]).
+
+raw_request(Port, Request) ->
+    {ok, Socket} = gen_tcp:connect({127,0,0,1}, Port, [binary, {active, false}], 1000),
+    ok = gen_tcp:send(Socket, Request),
+    Reply = response(Socket, <<>>),
+    gen_tcp:close(Socket),
+    Reply.
+
 home() ->
     prepare_home(list_to_binary(filename:join("/tmp", "zed-login-home-" ++ os:getpid() ++ "-" ++ integer_to_list(erlang:unique_integer([positive]))))).
 
@@ -531,16 +573,8 @@ callback(Flow, User, KeyFlow, Host) ->
     Port.
 
 callback(Flow, User, KeyFlow, Host, Address, Target, Extra) ->
-    #{<<"url">> := Url} = json:decode(Flow),
-    #{query := Q} = uri_string:parse(Url),
-    Params = maps:from_list(uri_string:dissect_query(Q)),
-    Port = binary_to_integer(maps:get(<<"native_app_port">>,Params)),
-    #{<<"url">> := KeyUrl} = json:decode(KeyFlow),
-    #{query := KeyQuery} = uri_string:parse(KeyUrl),
-    KeyParams = maps:from_list(uri_string:dissect_query(KeyQuery)),
-    Public = public_key:der_decode('RSAPublicKey', base64:decode(maps:get(<<"native_app_public_key">>, KeyParams), #{mode=>urlsafe})),
-    Cipher = encrypt(Public, <<"editor-test-secret">>),
-    Query = uri_string:compose_query([{<<"user_id">>,User},{<<"access_token">>,Cipher}]),
+    Port = port_of(Flow),
+    Query = callback_query(KeyFlow, User),
     {ok, Socket} = gen_tcp:connect(Address,Port,[binary,{active,false}],1000),
     gen_tcp:send(Socket,["GET ",Target,"?",Query," HTTP/1.1\r\nHost: ",Host,":",integer_to_binary(Port),"\r\n",Extra,"\r\n"]),
     Reply = response(Socket, <<>>),
