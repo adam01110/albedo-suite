@@ -111,6 +111,7 @@
         "suite_tool_count_test"
         "suite_usage_profile_overflow_test"
         "suite_usage_profile_test"
+        "suite_zed_callback_prop_test"
         "suite_zed_login_test"
         "suite_zed_test"
         # keep-sorted end
@@ -200,6 +201,7 @@
             # A helper a listed module imports needs no main of its own.
             cp ${../../test + "/suite_quota_fixtures.gleam"} "$tests/test/suite_quota_fixtures.gleam"
             cp ${../../test/albedo_zed_login_test.erl} "$tests/test/albedo_zed_login_test.erl"
+            cp ${../../test/albedo_zed_callback_prop.erl} "$tests/test/albedo_zed_callback_prop.erl"
             gleam compile-package --target erlang --package build/packages/gleeunit --out "$lib/gleeunit" --lib "$lib"
             gleam compile-package --target erlang --package "$tests" --out "$lib/albedo_suite_tests" --lib "$lib"
             # The mains run in separate VMs at once; their logs print in list order.
