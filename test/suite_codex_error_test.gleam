@@ -16,6 +16,12 @@ pub fn main() -> Nil {
         "{\"type\":\"error\",\"message\":\"flat\",\"error\":{\"message\":\"nested\",\"code\":\"usage_limit_reached\"}}",
         "nested",
       ),
+      // A top-level message names the failure better than the nested error's
+      // code, so the detail keeps the message.
+      #(
+        "{\"type\":\"error\",\"message\":\"rate limited, try again shortly\",\"error\":{\"code\":\"usage_limit_reached\"}}",
+        "rate limited, try again shortly",
+      ),
       #(
         "{\"type\":\"error\",\"error\":\"upstream unavailable\"}",
         "upstream unavailable",
@@ -23,6 +29,11 @@ pub fn main() -> Nil {
       #(
         "{\"type\":\"error\",\"error\":{\"code\":\"usage_limit_reached\"}}",
         "usage_limit_reached",
+      ),
+      // An empty message names nothing, so the code still answers.
+      #(
+        "{\"type\":\"error\",\"message\":\"\",\"error\":{\"code\":\"server_error\"}}",
+        "server_error",
       ),
       #("{\"type\":\"error\",\"code\":\"server_error\"}", "server_error"),
       #(

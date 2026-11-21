@@ -426,6 +426,15 @@ fn provider_error(value: dynamic.Dynamic) -> Result(a, types.Error) {
   provider_failure(value, "error")
 }
 
+/// A name a provider actually said: an empty one names nothing.
+fn said() -> decode.Decoder(String) {
+  use text <- decode.then(decode.string)
+  case string.trim(text) {
+    "" -> decode.failure(text, "non-empty string")
+    _ -> decode.success(text)
+  }
+}
+
 /// An event of an unknown shape is reported by its decode error rather than
 /// its raw payload.
 fn provider_failure(
@@ -433,9 +442,13 @@ fn provider_failure(
   context: String,
 ) -> Result(a, types.Error) {
   // Codex may name its failure only as a bare string or a code; neither shape,
-  // nor an unknown one, has its raw payload dumped.
+  // nor an unknown one, has its raw payload dumped. Messages come before codes
+  // at either level: the refusal decoder reads a message only from the nested
+  // error object, so a top-level message is preferred over a nested code.
   let fallback =
-    decode.one_of(decode.at(["error"], decode.string), or: [
+    decode.one_of(decode.at(["error", "message"], said()), or: [
+      decode.at(["message"], said()),
+      decode.at(["error"], said()),
       decode.at(["error", "code"], decode.string),
       decode.at(["code"], decode.string),
     ])
