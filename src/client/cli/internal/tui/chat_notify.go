@@ -138,12 +138,17 @@ func replyPreview(text string) string {
 }
 
 // notifyText makes untrusted text one safe OSC 777 field: escape sequences and
-// control runes go, ";" (the field separator) becomes ",", and the Markup a
-// notification server may render is escaped. It is cut to limit cells.
+// control runes go, ";" (the field separator) becomes ",", and the markup
+// characters become lookalikes. It is cut to limit cells.
+//
+// Entities cannot be used: each ends in ";", the field separator, and servers
+// parse a bare "&lt" differently (Pango rejects it, others show it literally).
+// The lookalikes are mapped before truncation so the limit counts their width.
+var notifyReplacer = strings.NewReplacer(";", ",", "&", "＆", "<", "‹", ">", "›")
+
 func notifyText(text string, limit int) string {
 	text = titleText(oneLine(ansi.Strip(text)), 0)
-	text = ansi.Truncate(strings.ReplaceAll(text, ";", ","), limit, "…")
-	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;").Replace(text)
+	return ansi.Truncate(notifyReplacer.Replace(text), limit, "…")
 }
 
 // notificationSequence is the OSC 777 notification and a bell. Inside tmux

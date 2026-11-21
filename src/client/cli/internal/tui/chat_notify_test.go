@@ -57,7 +57,7 @@ func TestTurnNotifyCompletedWhileBlurred(t *testing.T) {
 	m.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventTool, EntryID: "tool-1", ToolName: "python"})
 	notifyReply(&m, start+252_000, "## **Root cause** was the `retry` timer; fixed <now> & tested")
 	m.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventTurnCompleted, Outcome: daemon.OutcomeCompleted})
-	want := "\x1b]777;notify;albedo · fix flaky upload tests;Done in 4m 12s · 1 tool — Root cause was the retry timer, fixed &lt;now&gt; &amp; tested\x1b\\\a"
+	want := "\x1b]777;notify;albedo · fix flaky upload tests;Done in 4m 12s · 1 tool — Root cause was the retry timer, fixed ‹now› ＆ tested\x1b\\\a"
 	if m.notifyPending != want {
 		t.Fatalf("got %q\nwant %q", m.notifyPending, want)
 	}
@@ -191,6 +191,31 @@ func TestTurnNotifyMode(t *testing.T) {
 		if got := turnNotifyMode(); got != want {
 			t.Fatalf("%q: %v", value, got)
 		}
+	}
+}
+
+// A field may not carry the separator, so an escaped field stays one field even
+// when its text holds markup characters.
+func TestTurnNotifyMarkupKeepsOneField(t *testing.T) {
+	start := time.Now().Add(-time.Hour).UnixMilli()
+	m := notifyChat(t, start)
+	m.notifyTitle = func() string { return "a & b <c>" }
+	notifyReply(&m, start+60_000, "if a < b && c > d")
+	m.handleStreamEvent(daemon.StreamEvent{Type: daemon.EventTurnCompleted})
+	payload := strings.TrimSuffix(strings.TrimPrefix(m.notifyPending, "\x1b]777;notify;"), "\x1b\\\a")
+	if got := strings.Count(payload, ";"); got != 1 {
+		t.Fatalf("payload has %d separators: %q", got, m.notifyPending)
+	}
+	if strings.ContainsAny(payload, "&<") {
+		t.Fatalf("payload holds markup: %q", m.notifyPending)
+	}
+	title := payload[:strings.Index(payload, ";")]
+	body := payload[strings.Index(payload, ";")+1:]
+	if title != "albedo · a ＆ b ‹c›" {
+		t.Fatalf("title %q", title)
+	}
+	if body != "Done in 1m 0s — if a ‹ b ＆＆ c › d" {
+		t.Fatalf("body %q", body)
 	}
 }
 

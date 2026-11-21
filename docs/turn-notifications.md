@@ -42,10 +42,15 @@ Set `ALBEDO_NOTIFY` before starting the client to change this:
 
 Session names, replies and errors are untrusted: escape sequences and control
 characters are removed, `;` (the OSC field separator) becomes `,`, and `&`, `<`
-and `>` are escaped for notification servers that render markup. Inside tmux
-the OSC is wrapped for passthrough, which needs `set -g allow-passthrough on`;
-the bell stays outside the wrapper for tmux's own bell handling. Other
-multiplexers may swallow the sequence.
+and `>` become the lookalikes `＆`, `‹` and `›`. Each text stays one field with
+no markup characters. Entities are not an option: every entity ends in `;`,
+which would split the field, and servers treat an unterminated `&lt`
+differently (Plasma rewrites it, GNOME shows it literally, mako and dunst
+reject the markup).
+
+Inside tmux the OSC is wrapped for passthrough, which needs
+`set -g allow-passthrough on`; the bell stays outside the wrapper for tmux's own
+bell handling. Other multiplexers may swallow the sequence.
 
 The icon and application name come from the terminal. The sequence carries no
 urgency, actions or replacement ID, so each turn is a separate notification.
