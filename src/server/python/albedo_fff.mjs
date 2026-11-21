@@ -180,12 +180,21 @@ new Worker(
   `,
   { eval: true, workerData: deadline.buffer },
 ).unref();
-let idle = setTimeout(shutdown, 60000);
+// Tests shorten a deadline; anything but a positive integer keeps the default.
+function deadlineMs(name, fallback) {
+  const value = Number(process.env[name]);
+  return Number.isSafeInteger(value) && value > 0
+    ? Math.max(100, Math.min(value, fallback))
+    : fallback;
+}
+const idleMs = deadlineMs("ALBEDO_FFF_IDLE_MS", 60000);
+const callMs = deadlineMs("ALBEDO_FFF_CALL_DEADLINE_MS", 30000);
+let idle = setTimeout(shutdown, idleMs);
 const input = readline.createInterface({ input: process.stdin });
 input.on("line", (line) => {
   clearTimeout(idle);
   queue = queue.then(async () => {
-    Atomics.store(deadline, 0, BigInt(Date.now() + 30000));
+    Atomics.store(deadline, 0, BigInt(Date.now() + callMs));
     try {
       if (Buffer.byteLength(line) > 1048576)
         throw new Error("FFF request exceeds 1 MiB bound");
@@ -204,7 +213,7 @@ input.on("line", (line) => {
       );
     } finally {
       Atomics.store(deadline, 0, 0n);
-      idle = setTimeout(shutdown, 60000);
+      idle = setTimeout(shutdown, idleMs);
     }
   });
 });

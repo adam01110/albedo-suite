@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+import re
 import select
 import subprocess
 import tempfile
@@ -49,6 +50,8 @@ exports.FileFinder = { create: () => {
             "NODE_PATH": str(modules),
             "HOME": self.temp.name,
             "XDG_CACHE_HOME": str(Path(self.temp.name) / "cache"),
+            "ALBEDO_FFF_IDLE_MS": "1500",
+            "ALBEDO_FFF_CALL_DEADLINE_MS": "2000",
         }
         self.worker = subprocess.Popen(
             ["node", SCRIPT, "--stdio"],
@@ -142,7 +145,7 @@ exports.FileFinder = { create: () => {
 
     def test_native_call_cannot_block_deadline(self):
         self.send("hang")
-        self.assertEqual(self.worker.wait(timeout=33), -9)
+        self.assertEqual(self.worker.wait(timeout=5), -9)
 
     def test_native_destroy_cannot_block_shutdown(self):
         self.send("hang-destroy")
@@ -153,7 +156,20 @@ exports.FileFinder = { create: () => {
     def test_idle_worker_exits(self):
         self.send()
         self.reply()
-        self.assertEqual(self.worker.wait(timeout=65), 0)
+        self.assertEqual(self.worker.wait(timeout=5), 0)
+
+
+class DefaultsTests(unittest.TestCase):
+    """The injectable deadlines keep their production defaults."""
+
+    def test_default_deadlines_stay_a_minute_and_half_a_minute(self):
+        defaults = dict(
+            re.findall(
+                r'"ALBEDO_FFF_(IDLE_MS|CALL_DEADLINE_MS)",\s*(\d+)\)',
+                Path(SCRIPT).read_text(),
+            )
+        )
+        self.assertEqual(defaults, {"IDLE_MS": "60000", "CALL_DEADLINE_MS": "30000"})
 
 
 if __name__ == "__main__":
