@@ -59,6 +59,21 @@
         touch $out
       '';
 
+    checks.overlay-tree =
+      runCommand "albedo-overlay-tree-tests" {
+        nativeBuildInputs = [
+          # keep-sorted start
+          pkgs.bash
+          pkgs.python311
+          # keep-sorted end
+        ];
+      } ''
+        export PYTHONDONTWRITEBYTECODE=1
+        export ALBEDO_OVERLAY_TREE=${../../scripts/overlay-tree.sh}
+        python3 -m unittest discover -s ${../../test} -p overlay_tree_test.py -v
+        touch $out
+      '';
+
     checks.helpers = runCommand "albedo-helper-tests" {nativeBuildInputs = [pkgs.python311];} ''
       export PYTHONDONTWRITEBYTECODE=1
       export ALBEDO_CONFIGURE=${suitePackages.albedo-configure}/bin/albedo-configure

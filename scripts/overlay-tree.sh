@@ -33,6 +33,19 @@ markers='^(<<<<<<<|\|\|\|\|\|\|\||>>>>>>>) '
 sync_tree() {
   # Overlays mirror the unpacked source, which may contain the build directory.
   root=$(cat "$dir/.root")
+  # Restore or drop what an earlier overlay added and this one no longer has,
+  # so the tree keeps matching pristine plus the overlay. A restored file is
+  # plain pristine: edits the package's postPatch made to it are gone.
+  if [ -f "$dir/.overlay" ]; then
+    while IFS= read -r name; do
+      if [ -e "src/$component/$name" ] || [ -L "src/$component/$name" ]; then continue; fi
+      if [ -f "$(cat "$dir/.src")/$name" ]; then
+        install -D -m644 "$(cat "$dir/.src")/$name" "$root/$name"
+      else
+        rm -f "$root/$name"
+      fi
+    done <"$dir/.overlay"
+  fi
   cp -r --no-preserve=mode "src/$component/." "$root/"
   # Unresolved files compile as pristine upstream so other owners can build.
   { grep -rlIE --exclude-dir=__pycache__ "$markers" "src/$component" || true; } | while read -r file; do
@@ -40,6 +53,14 @@ sync_tree() {
     install -m644 "$(cat "$dir/.src")/$name" "$root/$name"
     echo "pristine (unresolved): $name" >&2
   done
+  # Go builds the replaced Bubble Tea module from vendor/, as the package's
+  # postConfigure installs it.
+  vendored=$root/cli/vendor/charm.land/bubbletea/v2
+  if [ "$component" = client ] && [ -d "$vendored" ]; then
+    chmod u+w "$vendored"
+    install -m644 src/client/cli/third_party/bubbletea/cursed_renderer.go "$vendored/cursed_renderer.go"
+  fi
+  (cd "src/$component" && find . \( -type f -o -type l \) -printf '%P\n' | LC_ALL=C sort) >"$dir/.overlay"
   echo "tree: $(cat "$dir/.tree")"
 }
 
