@@ -146,7 +146,9 @@ func (m *ChatModel) observeActivity(evt daemon.StreamEvent) {
 	switch evt.Type {
 	case daemon.EventReset:
 		m.activityRemainder = PageRow{}
-		m.activityEnded = evt.Snapshot == nil
+		// An idle snapshot says the turn is over, so a call that reports
+		// afterwards is history rather than work happening now.
+		m.activityEnded = evt.Snapshot == nil || evt.Snapshot.Status.Idle
 	case daemon.EventUser:
 		if evt.Source == "" || evt.Source == "chat" || m.transcript.turn == nil {
 			m.activityRemainder = PageRow{}
