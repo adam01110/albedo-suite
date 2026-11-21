@@ -1,6 +1,7 @@
 """Session cost uses durable requests and the same wire field on every view."""
 
 import json
+import os
 import unittest
 
 from harness import Albedo, Provider, Reply, error, exclusive, text
@@ -93,12 +94,17 @@ class SessionCostTests(unittest.TestCase):
         self.app.idle(self.session)
         self.assertAlmostEqual(self.cost(), 0.00022)
         self.assertAlmostEqual(self.listed_cost(), 0.00022)
-        (self.app.home / "models.json").write_text(json.dumps({
+        catalog = self.app.home / "models.json"
+        written = catalog.stat().st_mtime
+        catalog.write_text(json.dumps({
             "openai": {"models": {"fixture-model": {
                 "id": "fixture-model", "limit": {"context": 1000000},
                 "cost": {"input": 4, "output": 20}
             }}}
         }))
+        # A catalog's revision is its size and mtime in seconds, so a
+        # same-size rewrite within the second would keep the old prices.
+        os.utime(catalog, (written + 2, written + 2))
         self.assertAlmostEqual(self.cost(), 0.00044)
         self.assertAlmostEqual(self.listed_cost(), 0.00044)
 
