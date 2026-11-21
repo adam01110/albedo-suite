@@ -27,8 +27,10 @@ import gleam/string
 
 pub fn main() -> Nil {
   host_install.install()
-  let home = "/tmp/albedo-suite-lazy-mcp-" <> int.to_string(unique())
-  let _ = make_dir(home)
+  let home = home_name()
+  assert_run_is_private(home)
+  prepare_home(home)
+  assert_reused_home_starts_clean(home)
   set_env("ALBEDO_HOME", home)
   let assert Ok(ledger) =
     store.start(home <> "/preferences.db", "", core_store.tables())
@@ -50,6 +52,48 @@ pub fn main() -> Nil {
   io.println(
     "Lazy MCP: validation, startup, adoption, single load, no replay, sidebar, per-server idle, drift, dropped transport and owner death passed",
   )
+}
+
+/// This run's own home: the OS process id separates neighbouring runs, because
+/// erlang's counter only distinguishes calls inside one runtime.
+fn home_name() -> String {
+  "/tmp/albedo-suite-lazy-mcp-"
+  <> int.to_string(list_to_integer(getpid()))
+  <> "-"
+  <> int.to_string(unique())
+}
+
+/// A run that died leaves its home and database behind at the name a later run
+/// reuses.
+fn prepare_home(home: String) -> Nil {
+  let _ = del_dir_r(home)
+  let _ = make_dir(home)
+  Nil
+}
+
+fn assert_run_is_private(home: String) -> Nil {
+  assert string.contains(home, int.to_string(list_to_integer(getpid())))
+}
+
+fn assert_reused_home_starts_clean(home: String) -> Nil {
+  let assert Ok(stale) =
+    store.start(home <> "/preferences.db", "", core_store.tables())
+  let stale_scope = storage.host(stale)
+  let assert Ok(Nil) =
+    storage.query(stale_scope, fn(db) {
+      storage.exec(db, "CREATE TABLE sessions(id TEXT PRIMARY KEY);")
+    })
+  store.close(stale)
+  prepare_home(home)
+  let assert Ok(ledger) =
+    store.start(home <> "/preferences.db", "", core_store.tables())
+  let scope = storage.host(ledger)
+  let assert Ok(Nil) =
+    storage.query(scope, fn(db) {
+      storage.exec(db, "CREATE TABLE sessions(id TEXT PRIMARY KEY);")
+    })
+  store.close(ledger)
+  prepare_home(home)
 }
 
 fn descriptions_are_validated(scope: storage.Storage) -> Nil {
@@ -477,6 +521,12 @@ fn is_utf8(bytes: BitArray) -> Bool {
 
 @external(erlang, "gleam_stdlib", "identity")
 fn coerce(value: a) -> b
+
+@external(erlang, "os", "getpid")
+fn getpid() -> List(Int)
+
+@external(erlang, "erlang", "list_to_integer")
+fn list_to_integer(chars: List(Int)) -> Int
 
 @external(erlang, "erlang", "unique_integer")
 fn unique() -> Int
