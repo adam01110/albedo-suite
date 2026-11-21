@@ -207,6 +207,40 @@ def _class_regex(part, start):
     return j, regex
 
 
+_QUERY_SEPARATORS = set(" \t\v\f/\"'")
+# Escaped characters FFF's query parser strips the backslash from or splits on.
+_QUERY_ESCAPED = _QUERY_SEPARATORS | set("*!")
+
+
+def _query_hex(char: str) -> str:
+    return f"\\x{{{ord(char):x}}}"
+
+
+def _fff_query(pattern: str) -> str:
+    """Rewrite a pattern so FFF's query parser cannot reinterpret it.
+
+    FFF splits terms on whitespace and strips a token-initial backslash
+    before `*`, `/` or `!`, so separators and those escaped characters are
+    passed in hex form, which means the same to the regex engine. Every other
+    escape, such as `\\d` or the word boundary `\\<`, is kept verbatim.
+    """
+    query = []
+    index = 0
+    while index < len(pattern):
+        char = pattern[index]
+        if char == "\\" and index + 1 < len(pattern):
+            escaped = pattern[index + 1]
+            if escaped in _QUERY_ESCAPED or escaped.isspace():
+                query.append(_query_hex(escaped))
+            else:
+                query.append(char + escaped)
+            index += 2
+            continue
+        query.append(_query_hex(char) if char in _QUERY_SEPARATORS else char)
+        index += 1
+    return "".join(query)
+
+
 def _path_regex(pattern):
     """Segment-aware root-relative globs; ** crosses directory boundaries."""
     rooted = "/" in pattern
@@ -857,13 +891,8 @@ class Files:
             )
         if "\n" in pattern or "\r" in pattern:
             raise ValueError("FFF line search does not support multiline patterns")
-        # Escape query-parser constraints as hex in regex mode, not plain mode.
-        query = re.escape(pattern) if literal else pattern
-        for char in " \t\v\f":
-            query = query.replace("\\" + char, char).replace(
-                char, rf"\x{ord(char):02x}"
-            )
-        query = query.replace("/", r"\x2f").replace('"', r"\x22").replace("'", r"\x27")
+        # Hex-escape FFF query separators, keeping the caller's own escapes.
+        query = _fff_query(re.escape(pattern) if literal else pattern)
         if (max_results + 1) * (context * 2 + 1) * LINE_WIDTH * 4 > 4 * 1024 * 1024:
             raise ValueError(
                 "FFF result exceeds 4 MiB bound; reduce max_results or context"

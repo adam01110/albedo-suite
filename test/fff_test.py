@@ -209,6 +209,36 @@ class FffTests(unittest.IsolatedAsyncioTestCase):
             set(ordered), {str(self.root / "root.txt"), str(self.root / "src/main.txt")}
         )
 
+    async def test_escaped_characters_survive_the_query_rewrite(self):
+        target = self.root / "escaped.txt"
+        target.write_text('* lead\na/b\nit\'s\nsay "hi"\n7 items\n')
+        (self.root / "hex.txt").write_text("a\\x2fb\n")
+        # A literal needle starting with a quantifier used to be handed to FFF
+        # as a query beginning `\*`, which FFF refuses as an invalid regex.
+        rows = await self.files.find("* lead", str(target), literal=True)
+        self.assertEqual([row.line for row in rows], [1])
+        # An escaped separator means the character. The old rewrite turned
+        # `\/` into a literal backslash followed by `\x2f`.
+        for pattern, line in ((r"a\/b", 2), (r"it\'s", 3), (r'\"hi\"', 4)):
+            with self.subTest(pattern=pattern):
+                rows = await self.files.find(pattern, str(target))
+                self.assertEqual([row.line for row in rows], [line])
+        self.assertEqual(
+            [row.path for row in await self.files.find(r"a\/b", str(self.root))],
+            [str(target)],
+        )
+        # Escapes that carry regex meaning are left alone.
+        self.assertEqual(
+            [row.line for row in await self.files.find(r"\d items", str(target))],
+            [5],
+        )
+        words = self.root / "words.txt"
+        words.write_text("<word> here\nwordy\n")
+        self.assertEqual(
+            [row.line for row in await self.files.find(r"\<wor", str(words))],
+            [1, 2],
+        )
+
     async def test_wildcard_paths_match_case_sensitively(self):
         # `files.paths` wildcards are exact globs: case-sensitive, like `glob=`
         # and `files.ls(pattern=)`.
