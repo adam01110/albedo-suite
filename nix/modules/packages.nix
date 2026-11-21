@@ -224,6 +224,26 @@
             substituteInPlace "$out/lib/albedo/entrypoint.sh" --replace-fail \
               '-eval "$PACKAGE@@main:run($PACKAGE)"' \
               '-eval "code:set_path(code:get_path() -- [\".\"], cache), code:add_pathz(\".\")" -eval "$PACKAGE@@main:run($PACKAGE)"'
+            # OTP's own modules load first during VM start, before the cache,
+            # so the shipment goes after them; that matches -pa only while no
+            # shipped module or application shares an OTP one's name.
+            # Dirs given with -pa in ERL_FLAGS or ERL_AFLAGS now precede it too.
+            otp=$(erl -noshell -eval 'io:format("~s", [code:root_dir()]), halt().')
+            names() { find -L "$1" -path '*/ebin/*' \( -name '*.beam' -o -name '*.app' \) -printf '%f\n' | sort -u; }
+            names "$out/lib/albedo" >"$TMPDIR/shipped-names"
+            names "$otp/lib" >"$TMPDIR/otp-names"
+            if ! grep -Fqx lists.beam "$TMPDIR/otp-names" || ! grep -Fqx kernel.app "$TMPDIR/otp-names" \
+              || ! grep -Fqx albedo@@main.beam "$TMPDIR/shipped-names" || ! grep -Fqx albedo.app "$TMPDIR/shipped-names"; then
+              echo "The OTP shadowing guard found no modules to compare" >&2
+              exit 1
+            fi
+            comm -12 "$TMPDIR/shipped-names" "$TMPDIR/otp-names" >"$TMPDIR/shadowed-names"
+            if [[ -s "$TMPDIR/shadowed-names" ]]; then
+              echo "Shipped modules or applications shadow OTP's:" >&2
+              cat "$TMPDIR/shadowed-names" >&2
+              exit 1
+            fi
+            substituteInPlace "$out/lib/albedo/entrypoint.sh" --replace-fail '-pa "$BASE"/*/ebin' '-pz "$BASE"/*/ebin'
           '';
         # Seal after fixup rewrites the installed application.
         postFixup =
