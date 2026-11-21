@@ -253,6 +253,24 @@ class FffTests(unittest.IsolatedAsyncioTestCase):
             },
         )
 
+    async def test_non_ascii_whitespace_is_searched_as_itself(self):
+        target = self.root / "spaces.txt"
+        target.write_text("x\u00a0y\nx y\nx\u2009y\nx\u2028y\n")
+        # FFF collapses non-ASCII whitespace into a space, so a no-break space
+        # needle used to match the ASCII-space line instead of its own.
+        for needle, line in (("x\u00a0y", 1), ("x\u2009y", 3), ("x\u2028y", 4)):
+            with self.subTest(needle=needle):
+                rows = await self.files.find(needle, str(target), literal=True)
+                self.assertEqual([row.line for row in rows], [line])
+        rows = await self.files.find("x y", str(target), literal=True)
+        self.assertEqual([row.line for row in rows], [2])
+        # An escaped no-break space in a regex means the character too.
+        # After an escaped backslash it stays a plain no-break space.
+        for pattern, lines in (("x\\\u00a0y", [1]), ("x\\\\\u00a0", [])):
+            with self.subTest(pattern=pattern):
+                rows = await self.files.find(pattern, str(target))
+                self.assertEqual([row.line for row in rows], lines)
+
     async def test_external_changes_edits_deletion_and_index_reuse(self):
         await self.files.paths(path=str(self.root))
         worker_pid = module._fff.worker_pid

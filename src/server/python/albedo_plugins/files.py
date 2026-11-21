@@ -893,6 +893,14 @@ class Files:
             raise ValueError("FFF line search does not support multiline patterns")
         # Hex-escape FFF query separators, keeping the caller's own escapes.
         query = _fff_query(re.escape(pattern) if literal else pattern)
+        # FFF collapses non-ASCII whitespace into a space and cannot carry
+        # U+2028/U+2029 on its line protocol, so pass them as hex, replacing
+        # the caller's escaping backslash if there is one.
+        query = re.sub(
+            r"(?<!\\)((?:\\\\)*)\\?([^\S\x00-\x7f])",
+            lambda match: match[1] + f"\\x{{{ord(match[2]):x}}}",
+            query,
+        )
         if (max_results + 1) * (context * 2 + 1) * LINE_WIDTH * 4 > 4 * 1024 * 1024:
             raise ValueError(
                 "FFF result exceeds 4 MiB bound; reduce max_results or context"
