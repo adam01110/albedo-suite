@@ -35,10 +35,20 @@ longest completed `input_turns` row still kept; upstream prunes turns of
 deleted sessions. The profile tab reads the year only when it is first opened
 and on `ctrl+r`, so the days tab costs what it did.
 
+The profile sums the hours itself instead of with SQLite's `SUM()`, which
+raises `integer overflow` once a day leaves the int64 range; an hour whose
+upstream trigger already added past int64 holds a REAL, read as the integer it
+approximates. Totals are exact below the int64 ceiling, and
+`lifetime_tokens`, `lifetime_calls`, `peak_day_tokens` and `longest_turn_ms`
+saturate at 9223372036854775807 rather than refuse. The peak day is chosen on
+the exact totals. Upstream's window (`days`, `lines`, `scopes`) still refuses
+with 503 when its own sums overflow, and then the profile is not sent either.
+
 Source: `apps/albedo/src/albedo/usage/usage_profile.gleam`, the
 `http/http_resources.gleam` overlay, `cli/internal/daemon/usage.go`,
 `cli/internal/tui/usage_profile.go` and the `usage.go`/`usage_view.go`
 overlays. Tests: `test/suite_usage_profile_test.gleam`,
+`test/suite_usage_profile_overflow_test.gleam`,
 `test/usage_profile_e2e_test.py`, `TestUsage*` and `TestGetUsageDecodesTheProfile`.
 The E2E runner patches upstream `e2e/usage_test.py` for the 371-day cap
 (`test/fixtures/usage-window-fixtures.json`).
