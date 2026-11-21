@@ -81,4 +81,7 @@ capacity and multi-file conflicts. `test/formatter_python_test.py` retains real
 treefmt, process cleanup and staged-publish regressions.
 `test/formatter_e2e_test.py` checks that an explicit `files.check()` is the only
 formatter trigger and that disabled formatting leaves the turn alone.
+`test/files_check_property_test.py` is a discovery harness: a model-based state
+machine over pending tracking, adoption, conflicts and publishing, run with
+hypothesis outside `nix flake check`.
 Tests use isolated homes, fake providers and local fixtures, not live accounts.
