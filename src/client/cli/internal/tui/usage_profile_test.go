@@ -199,6 +199,62 @@ func TestUsageDuration(t *testing.T) {
 	}
 }
 
+// A day's tokens are the daemon's own sum of what the providers reported, so
+// a model or a weekday can carry a count that is not one: a negative count, or
+// one large enough that multiplying it by the bar's width overflows. The
+// profile's bar is a share of the busiest row, and drawing such a count
+// repeated a negative or an absurd number of cells: the screen panicked on the
+// repeat, or asked for terabytes of them.
+func TestUsageProfileBarOnACountThatIsNotOne(t *testing.T) {
+	monday := time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC)
+	days := make([]daemon.UsageDay, 0, 7)
+	for i := range 7 {
+		totals := daemon.UsageTotals{}
+		switch i {
+		case 0:
+			totals = daemon.UsageTotals{Calls: 1, InputTokens: 10}
+		case 1:
+			totals = daemon.UsageTotals{Calls: 1, InputTokens: -100}
+		}
+		days = append(days, daemon.UsageDay{Start: monday.AddDate(0, 0, i), UsageTotals: totals})
+	}
+	year := daemon.UsageSummary{
+		GeneratedAt: monday.AddDate(0, 0, 6),
+		Days:        days,
+		Lines: []daemon.UsageLine{
+			{Model: "spent", Profile: "work", UsageTotals: daemon.UsageTotals{Calls: 1, InputTokens: 10}},
+			{Model: "refunded", Profile: "work", UsageTotals: daemon.UsageTotals{Calls: 1, InputTokens: -100}},
+		},
+	}
+	p := usageProfile{year: year}
+	for _, line := range p.profileLines(120, 40) {
+		plain := ansi.Strip(line)
+		if got := ansi.StringWidth(plain); got > 120 {
+			t.Fatalf("row of %d cells: %q", got, plain)
+		}
+		// The count with no share of the busiest row draws no bar, and the
+		// busiest one still does.
+		switch {
+		case strings.HasPrefix(plain, "Tue "):
+			if strings.Contains(plain, "━") {
+				t.Fatalf("a negative weekday drew a bar: %q", plain)
+			}
+		case strings.HasPrefix(plain, "Mon "):
+			if !strings.Contains(plain, "━") {
+				t.Fatalf("the busiest weekday drew no bar: %q", plain)
+			}
+		case strings.Contains(plain, "refunded "):
+			if strings.Contains(plain, "━") {
+				t.Fatalf("a negative model drew a bar: %q", plain)
+			}
+		case strings.Contains(plain, "spent "):
+			if !strings.Contains(plain, "━") {
+				t.Fatalf("the busiest model drew no bar: %q", plain)
+			}
+		}
+	}
+}
+
 // A profile with active days but no tokens has no peak day: every call of it
 // failed without usage, so the daemon reports a null peak. The facts line must
 // not print the zero stamp as a date in year 1.

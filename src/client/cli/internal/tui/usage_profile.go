@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 	"time"
@@ -478,14 +479,13 @@ func (p usageProfile) detailLine(cal usageCalendar, w int) string {
 
 // usageHBar is n of top as a thin bar of w cells.
 func usageHBar(n, top int64, w int) string {
-	if top <= 0 || w <= 0 {
+	if top <= 0 || w <= 0 || n <= 0 {
 		return strings.Repeat(" ", max(0, w))
 	}
-	// A thin rule reads as a measure beside the numbers, not a block of colour.
-	cells := int((n*int64(w) + top/2) / top)
-	if n > 0 {
-		cells = max(1, cells)
-	}
+	// The share is taken in floats and kept inside the row: a count that is
+	// not one, or one large enough that n*w overflows, would otherwise repeat
+	// a negative or an absurd number of cells.
+	cells := min(w, max(1, int(math.Round(float64(n)/float64(top)*float64(w)))))
 	return strings.Repeat("━", cells) + strings.Repeat(" ", w-cells)
 }
 
