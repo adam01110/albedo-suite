@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import bisect
 import codecs
+import collections
 import fnmatch
 import hashlib
 import os
@@ -452,6 +454,229 @@ def _scan_read(
         text = decoder.decode(chunk, final=at_eof)
 
 
+HELD_CHARS = 1024 * 1024
+
+
+_ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+
+
+def _ascii_folded(text: str) -> str:
+    return text.translate(_ASCII_LOWER)
+
+
+def _python_boundaries(pattern: str) -> str:
+    """FFF's start and end of word escapes, `\\<` and `\\>`, as Python lookarounds."""
+    out = []
+    index = 0
+    while index < len(pattern):
+        pair = pattern[index : index + 2]
+        if pair == "\\<":
+            out.append(r"\b(?=\w)")
+        elif pair == "\\>":
+            out.append(r"\b(?<=\w)")
+        elif pair.startswith("\\"):
+            out.append(pair)
+        else:
+            out.append(pattern[index])
+            index += 1
+            continue
+        index += 2
+    return "".join(out)
+
+
+def _part_test(
+    pattern: str, literal: bool, case_sensitive: bool | None
+) -> Callable[[str], bool] | None:
+    """Which read lines of a widened FFF line hold the match.
+
+    A literal folds ASCII case alone, as FFF's unicode(false) engine does.
+    Python approximates FFF's regex engine; a pattern it cannot compile names
+    the first read line of each widened FFF line instead."""
+    if literal:
+        if case_sensitive is False:
+            needle = _ascii_folded(pattern)
+            return lambda text: needle in _ascii_folded(text)
+        return lambda text: pattern in text
+    flags = re.ASCII | (re.IGNORECASE if case_sensitive is False else 0)
+    try:
+        compiled = re.compile(_python_boundaries(pattern), flags)
+    except (re.error, OverflowError):
+        return None
+    return lambda text: compiled.search(text) is not None
+
+
+def _hits_in_read_numbering(
+    name: str,
+    hits: set[int],
+    context: int,
+    holds: Callable[[str], bool] | None,
+    room: int,
+) -> tuple[list[Match], bool]:
+    """Matches and context for FFF's hit lines, numbered and cut as `read` does.
+
+    FFF splits on "\n" alone, while `read` splits on every separator, so one
+    FFF line can hold several read lines. A single pass stops after the last
+    hit's context and counts past FFF lines far from any hit without
+    splitting them. A one-line FFF hit is a match as is; a widened one reports
+    the read lines `holds` accepts, or its first read line. Returns the rows
+    and whether `room` cut matches off; OSError propagates."""
+    order = sorted(hits)
+    rows: dict[int, Match] = {}
+    width = LINE_WIDTH * 4
+    before: collections.deque[tuple[int, str]] = collections.deque(maxlen=context)
+    state = {
+        "fff": 1,
+        "read": 1,
+        "first": True,
+        "picked_here": False,
+        "after": 0,
+        "count": 0,
+        "dropped": False,
+    }
+    # First read line of a widened hit, its context, and following lines,
+    # kept until the FFF line ends without a read line `holds` accepts.
+    provisional: list = []
+
+    def context_row(number: int, text: str) -> None:
+        rows.setdefault(number, Match(name, number, text[:width], True))
+
+    def report(number: int, text: str, preceding, following=()) -> bool:
+        if state["count"] >= room:
+            state["dropped"] = True
+            return False
+        for row in preceding:
+            context_row(*row)
+        rows[number] = Match(name, number, text[:width])
+        for row in following:
+            context_row(*row)
+        state["count"] += 1
+        state["after"] = max(state["after"], context - len(following))
+        return True
+
+    def settle() -> None:
+        if provisional and not state["picked_here"]:
+            number, text, preceding, following = provisional
+            report(number, text, preceding, following)
+        provisional.clear()
+
+    def line(text: str, ends_fff: bool) -> None:
+        number, in_hit = state["read"], state["fff"] in hits
+        picked = False
+        if in_hit and (
+            (state["first"] and ends_fff) or (holds is not None and holds(text))
+        ):
+            picked = report(number, text, before)
+            state["picked_here"] = state["picked_here"] or picked
+            if picked:
+                provisional.clear()
+        elif in_hit and state["first"]:
+            provisional[:] = [number, text, list(before), []]
+        if not picked:
+            if state["after"]:
+                context_row(number, text)
+                state["after"] -= 1
+            if provisional and provisional[0] != number and len(provisional[3]) < context:
+                provisional[3].append((number, text))
+        before.append((number, text))
+        state["read"] += 1
+        state["first"] = ends_fff
+        if ends_fff:
+            if in_hit:
+                settle()
+            state["picked_here"] = False
+            state["fff"] += 1
+
+    def finished() -> bool:
+        return bool(state["dropped"]) or (
+            state["fff"] > order[-1] and not state["after"] and not provisional
+        )
+
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    fragment: list[str] = []
+    held = 0
+
+    def hold(piece: str) -> None:
+        nonlocal held
+        fragment.append(piece[: max(0, HELD_CHARS - held)])
+        held += len(piece)
+
+    def skip(text: str, position: int) -> int:
+        """Count past FFF lines that hold no hit context, without splitting them.
+
+        Every FFF line holds a read line, so the context of the next hit lies in
+        FFF lines from `upcoming - context` on."""
+        nonlocal fragment, held
+        index = bisect.bisect_left(order, state["fff"])
+        if state["after"] or provisional or index == len(order):
+            return position
+        lines = order[index] - context - state["fff"]
+        if lines <= 0:
+            return position
+        end = len(text)
+        if text.count("\n", position) >= lines:
+            end = position - 1
+            for _ in range(lines):
+                end = text.find("\n", end + 1)
+            end += 1
+        segment = text[position:end]
+        boundaries = sum(segment.count(sep) for sep in LINE_SEPARATORS)
+        boundaries -= segment.count("\r\n")
+        if boundaries:
+            last = max(segment.rfind(sep) for sep in LINE_SEPARATORS)
+            fragment, held = [], 0
+            hold(segment[last + 1 :])
+            state["read"] += boundaries
+            state["fff"] += segment.count("\n")
+            state["first"] = segment[last] == "\n"
+            state["picked_here"] = False
+            before.clear()
+        else:
+            hold(segment)
+        return end
+
+    carry = ""
+    with open(name, "rb") as source:
+        while not finished():
+            chunk = source.read(READ_CHUNK_BYTES)
+            at_eof = not chunk
+            text = carry + decoder.decode(chunk, final=at_eof)
+            carry = ""
+            if not at_eof and text.endswith("\r"):
+                # A CRLF split across chunks stays one boundary.
+                text, carry = text[:-1], "\r"
+            position = skip(text, 0)
+            while not finished():
+                boundary = LINE_BOUNDARIES.search(text, position)
+                if boundary is None:
+                    hold(text[position:])
+                    break
+                hold(text[position : boundary.start()])
+                line("".join(fragment), "\n" in boundary.group())
+                fragment, held = [], 0
+                position = skip(text, boundary.end())
+            if at_eof:
+                if held:
+                    line("".join(fragment), True)
+                settle()
+                break
+    return sorted(rows.values(), key=lambda m: m.line), state["dropped"]
+
+
+def _fff_rows(name: str, items: list[dict]) -> list[Match]:
+    """FFF's own rows and numbers, for a file that can no longer be read."""
+    rows: dict[int, Match] = {}
+    width = LINE_WIDTH * 4
+    for item in items:
+        number = item["lineNumber"]
+        before = item.get("contextBefore", [])
+        for n, text in enumerate(before, number - len(before)):
+            rows.setdefault(n, Match(name, n, text[:width], True))
+        rows[number] = Match(name, number, item["lineContent"][:width])
+        for n, text in enumerate(item.get("contextAfter", []), number + 1):
+            rows.setdefault(n, Match(name, n, text[:width], True))
+    return list(rows.values())
+
+
 _check_lock = None
 _check_loop = None
 
@@ -851,9 +1076,10 @@ class Files:
     ) -> Search[Rows]:
         """Content search through the native FFF index, with a rescan barrier.
         `path` may be one path or a list; `context=N` adds N lines around each
-        match. A missing path raises. Ignore files and hidden files are skipped
-        always; hidden=True and ignored=True are unsupported and raise. An empty result says what was
-        searched and skipped. Await it: `await files.find(pattern)`."""
+        match. Lines and their numbers are the ones `read` shows. A missing path
+        raises. Ignore files and hidden files are skipped always; hidden=True
+        and ignored=True are unsupported and raise. An empty result says what
+        was searched and skipped. Await it: `await files.find(pattern)`."""
         if not 0 <= context <= 50:
             raise ValueError("0 <= context <= 50")
         return Search(
@@ -928,34 +1154,39 @@ class Files:
             for item in result["items"]:
                 if len(found) < max_results:
                     found.append((target, item))
-        lines = {}
+        found_by_file: dict[str, list[dict]] = {}
         for target, item in found:
             name = str(
                 target if target.is_file() else target / item["relativePath"]
             ).removeprefix("./")
-            if _secret(name):
-                continue
-            number = item["lineNumber"]
-            for n, text in enumerate(
-                item.get("contextBefore", []),
-                number - len(item.get("contextBefore", [])),
-            ):
-                lines.setdefault(
-                    (name, n), Match(name, n, text[: LINE_WIDTH * 4], True)
+            if not _secret(name):
+                found_by_file.setdefault(name, []).append(item)
+        lines: list[Match] = []
+        matched = 0
+        dropped = False
+        holds = _part_test(pattern, literal, case_sensitive)
+        for name, items in found_by_file.items():
+            try:
+                rows, cut = _hits_in_read_numbering(
+                    name,
+                    {item["lineNumber"] for item in items},
+                    context,
+                    holds,
+                    max_results - matched,
                 )
-            lines[(name, number)] = Match(
-                name, number, item["lineContent"][: LINE_WIDTH * 4]
-            )
-            for n, text in enumerate(item.get("contextAfter", []), number + 1):
-                lines.setdefault(
-                    (name, n), Match(name, n, text[: LINE_WIDTH * 4], True)
-                )
+            except OSError:
+                # A file gone since FFF indexed it keeps FFF's own numbers.
+                rows, cut = _fff_rows(name, items), False
+            lines.extend(rows)
+            matched += sum(not row.context for row in rows)
+            dropped = dropped or cut
+
         skipped = ["FFF ignore rules", "binary files", "files above 1 GiB"]
         if not hidden:
             skipped.append("hidden files")
         return Rows(
-            sorted(lines.values(), key=lambda m: (m.path, m.line)),
-            truncated=total > max_results,
+            sorted(lines, key=lambda m: (m.path, m.line)),
+            truncated=dropped or total > max_results,
             note=_empty_note(pattern, targets, searched, skipped, glob, [])
             if not lines
             else "",

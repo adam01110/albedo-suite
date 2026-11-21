@@ -414,6 +414,74 @@ class FffTests(unittest.IsolatedAsyncioTestCase):
                 )
         self.assertEqual(len(await self.files.find("a.*b|#tag", str(target))), 4)
 
+    async def test_line_numbers_follow_read_numbering(self):
+        """FFF splits on "\n" alone, so the plugin reports read's line numbers."""
+
+        def assert_read_rows(path, rows):
+            listed = path.read_bytes().decode("utf-8").splitlines()
+            for row in rows:
+                self.assertEqual(row.text, listed[row.line - 1][:640], f"{path.name}:{row.line}")
+                window = str(
+                    self.files.read(str(path), start_line=row.line, end_line=row.line)
+                )
+                self.assertIn(f"{row.line:>6} | {row.text}", window)
+
+        cases = {
+            "plain.txt": ("alpha\nneedle one\nneedle two\ntail\n", (2, 3)),
+            "crlf.txt": ("alpha\r\nneedle\r\ntail\r\n", (2,)),
+            "cr.txt": ("alpha\rneedle one\rneedle two\rtail\r", (2, 3)),
+            "vertical.txt": ("alpha\x0bneedle\x0bbeta", (2,)),
+            "form-feed.txt": ("alpha\x0cneedle\x1cbeta\x1dneedle", (2, 4)),
+            "next-line.txt": ("alpha\x85needle\x85beta", (2,)),
+            "line-separator.txt": ("alpha\u2028needle\u2029beta", (2,)),
+            "shifted.txt": ("alpha\rbeta\nneedle\n", (3,)),
+            # Old Mac files are one FFF line; hits past FFF's 640-character
+            # line preview still name their read lines.
+            "mac.txt": (
+                "\r".join("needle" if n in (5, 150, 299) else "x" * 40 for n in range(1, 301)),
+                (5, 150, 299),
+            ),
+        }
+        for name, (text, expected) in cases.items():
+            with self.subTest(name=name):
+                path = self.root / name
+                path.write_text(text, encoding="utf-8", newline="")
+                rows = await self.files.find("needle", str(path), literal=True)
+                self.assertEqual([row.line for row in rows], list(expected))
+                assert_read_rows(path, rows)
+        path = self.root / "regex.txt"
+        path.write_text("alpha\rbeta\rgamma\ndelta\n", encoding="utf-8", newline="")
+        rows = await self.files.find("ga.ma", str(path))
+        self.assertEqual([(row.line, row.text) for row in rows], [(3, "gamma")])
+        # FFF's word-start escape picks the read line inside a widened FFF line.
+        path = self.root / "boundary.txt"
+        path.write_text("\x0c0\n", encoding="utf-8", newline="")
+        rows = await self.files.find(r"\<", str(path))
+        self.assertEqual([row.line for row in rows], [2])
+        path = self.root / "context.txt"
+        path.write_text("head\nneedle\rtail\nend\n", encoding="utf-8", newline="")
+        context = await self.files.find("needle", str(path), literal=True, context=1)
+        self.assertEqual(
+            [(row.line, row.text, row.context) for row in context],
+            [(1, "head", True), (2, "needle", False), (3, "tail", True)],
+        )
+        # Many chunks: a CRLF split across a chunk edge, stray separators far
+        # from the hit, and context around a hit deep in the file.
+        lead = "a" * (64 * 1024 - 1) + "\r\n"
+        body = "".join(
+            f"row {n}\r" if n % 997 == 0 else f"row {n}\r\n" for n in range(1, 60000)
+        )
+        path = self.root / "large.txt"
+        path.write_text(lead + body + "needle here\r\nlast\r\n", encoding="utf-8", newline="")
+        rows = await self.files.find("needle here", str(path), literal=True, context=2)
+        listed = path.read_bytes().decode("utf-8").splitlines()
+        hit = listed.index("needle here") + 1
+        self.assertEqual(
+            [(row.line, row.context) for row in rows],
+            [(hit - 2, True), (hit - 1, True), (hit, False), (hit + 1, True)],
+        )
+        assert_read_rows(path, rows)
+
     async def test_multiple_roots_paging_literal_spaces_and_single_file(self):
         (self.root / "src/main.txt").write_text("phrase with spaces\n" * 300)
         rows = await self.files.find(

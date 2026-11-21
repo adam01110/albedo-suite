@@ -62,6 +62,20 @@ IPC uses a versioned protocol so incompatible remote workers fail explicitly.
 Search limits are
 1-10000 matches, up to 50 context lines, with explicit response-size budgets.
 
+`files.find()` reports lines in `files.read()` numbering: every row's line
+number and text are the ones `read(path, start_line=N, end_line=N)` shows, and
+`context=N` counts read lines. FFF splits files on `\n` alone, while `read`
+also ends lines at `\r`, `\v`, `\f`, `\x1c`-`\x1e`, `\x85`, U+2028 and
+U+2029 (CRLF is one boundary). FFF still finds the matching files and lines;
+the plugin then rescans each file with a hit once, stopping after the last
+hit's context and counting past regions far from any hit without splitting
+them. A hit FFF line that holds several read lines reports each read line the
+match is in: literal patterns compare exactly (ASCII case folding for
+`case_sensitive=False`), regular expressions use Python's `re` as an
+approximation of FFF's engine, and when neither identifies a line, the first
+read line of the FFF line is reported. The comparison sees at most 1 MiB of
+each read line. A file that cannot be reopened keeps FFF's own numbering.
+
 ## Packaging and updates
 
 `albedo-defaults` and `albedo-patched` put RTK and `albedo-fff` on the daemon's
