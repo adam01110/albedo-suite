@@ -225,32 +225,41 @@
         filter = path: _: showDiffs || !(builtins.elem (baseNameOf path) ["default_diffs_test.go"]);
       };
     in
-      withSuiteNotices (package.overrideAttrs (old: {
-        nativeCheckInputs = (old.nativeCheckInputs or []) ++ [pkgs.zoxide];
-        postPatch =
-          ''
-            sha256sum --check ${../../upstream/client.sha256}
-            cp -r --no-preserve=mode ${clientSources}/. .
-            ${pkgs.lib.optionalString (!showDiffs) ''substituteInPlace cli/internal/tui/chat.go --replace-fail "DisplayFlags{Diffs: true}" "DisplayFlags{}"''}
-          ''
-          + (old.postPatch or "");
-        # Go builds the replaced Bubble Tea module from vendor/, not third_party/.
-        postConfigure =
-          (old.postConfigure or "")
-          + ''
-            chmod u+w vendor/charm.land/bubbletea/v2
-            install -m644 ${clientSources}/cli/third_party/bubbletea/cursed_renderer.go vendor/charm.land/bubbletea/v2/cursed_renderer.go
-          '';
-        postCheck =
-          (old.postCheck or "")
-          + ''
-            # The whole daemon package: a test without a name filter cannot be
-            # left out of every check.
-            go test ./internal/app ./internal/cli ./internal/daemon ./internal/webui -count=1
-            # One run links each test binary once; every prefix names tests in one package.
-            go test ./internal/terminal ./internal/tui -run '^(TestActivity|TestAgentsGlance|TestBase16|TestComposerScope|TestContext|TestOpenCodeGo|TestProviderAvailability|TestQuota|TestSessionListCostLeftOfAge|TestSessionViewerTotalCostTopRight|TestSuiteEscape|TestSuiteInline|TestToolImages|TestTurnNotify|TestUsage|TestVim|TestZed|TestZoxide${pkgs.lib.optionalString showDiffs "|TestDefaultDiffVisibility$"})' -count=1 -v
-          '';
-      }));
+      # Only cmd/albedo's tests run in this derivation; the suite adds the rest.
+      # The readers of ALBEDO_TEST_DAEMON are cli/internal/storage and
+      # cli/test/e2e, which no derivation here builds, so the client does not
+      # wait for the server.
+      assert package ? ALBEDO_TEST_DAEMON;
+      assert package.subPackages == ["cmd/albedo"];
+        withSuiteNotices (package.overrideAttrs (old: {
+          ALBEDO_TEST_DAEMON = "";
+          nativeCheckInputs = (old.nativeCheckInputs or []) ++ [pkgs.zoxide];
+          postPatch =
+            ''
+              sha256sum --check ${../../upstream/client.sha256}
+              cp -r --no-preserve=mode ${clientSources}/. .
+              ${pkgs.lib.optionalString (!showDiffs) ''substituteInPlace cli/internal/tui/chat.go --replace-fail "DisplayFlags{Diffs: true}" "DisplayFlags{}"''}
+              # The packages tested here must not need the daemon blanked above.
+              if grep -rl ALBEDO_TEST_DAEMON cli/cmd cli/internal/{app,cli,daemon,webui,terminal,tui}; then exit 1; fi
+            ''
+            + (old.postPatch or "");
+          # Go builds the replaced Bubble Tea module from vendor/, not third_party/.
+          postConfigure =
+            (old.postConfigure or "")
+            + ''
+              chmod u+w vendor/charm.land/bubbletea/v2
+              install -m644 ${clientSources}/cli/third_party/bubbletea/cursed_renderer.go vendor/charm.land/bubbletea/v2/cursed_renderer.go
+            '';
+          postCheck =
+            (old.postCheck or "")
+            + ''
+              # The whole daemon package: a test without a name filter cannot be
+              # left out of every check.
+              go test ./internal/app ./internal/cli ./internal/daemon ./internal/webui -count=1
+              # One run links each test binary once; every prefix names tests in one package.
+              go test ./internal/terminal ./internal/tui -run '^(TestActivity|TestAgentsGlance|TestBase16|TestComposerScope|TestContext|TestOpenCodeGo|TestProviderAvailability|TestQuota|TestSessionListCostLeftOfAge|TestSessionViewerTotalCostTopRight|TestSuiteEscape|TestSuiteInline|TestToolImages|TestTurnNotify|TestUsage|TestVim|TestZed|TestZoxide${pkgs.lib.optionalString showDiffs "|TestDefaultDiffVisibility$"})' -count=1 -v
+            '';
+        }));
 
     suiteAlbedo = showDiffs:
       assert albedo-git.src.outputHash == pin.narHash;
