@@ -21,6 +21,7 @@ run() ->
         status_cases(),
         quota_cases(),
         catalog_cases(),
+        catalog_provider_less_cases(),
         catalog_effort_level_cases(),
         catalog_account_retry_cases(),
         confirmation_cases(),
@@ -109,6 +110,10 @@ fixture_request(Socket) ->
                 #{<<"id">> => <<"levels-fixture-model">>, <<"provider">> => <<"anthropic">>,
                   <<"supports_thinking">> => true,
                   <<"supported_effort_levels">> => [#{<<"value">> => <<"low">>}]}]})};
+        models_entry_without_provider when Path =:= <<"/models">> ->
+            {200, <<>>, json:encode(#{<<"models">> => [
+                #{<<"id">> => <<"provider-less-model">>, <<"max_token_count">> => 1000},
+                #{<<"id">> => <<"provider-fixture-model">>, <<"provider">> => <<"anthropic">>}]})};
         models_unauthorized when Path =:= <<"/models">> ->
             case ets:update_counter(zed_login_fixture, models_attempt, {2, 1}, {models_attempt, 0}) of
                 1 -> {401, <<>>, <<"stale token">>};
@@ -370,6 +375,25 @@ catalog_effort_level_cases() ->
         {ok, <<"anthropic">>} = albedo_zed:route(Home, <<"https://cloud.zed.dev">>, Token, <<"levels-not-a-list">>),
         {ok, Models} = albedo_zed:models(Home, <<"https://cloud.zed.dev">>),
         true = lists:member(<<"levels-not-a-list">>, Models)
+    after mode(normal), file:del_dir_r(Home) end.
+
+%% The catalog is remote data. An entry that names no provider names no wire
+%% protocol, so routing refuses it with the answer it gives a provider it
+%% cannot send, instead of ending in a case clause.
+catalog_provider_less_cases() ->
+    Home = home(),
+    try
+        Exp = erlang:system_time(second) + 3600,
+        C = (credential(<<"78">>, <<"catalog-provider">>))#{<<"jwt">> => jwt(Exp, 1, <<"78">>), <<"jwt_expires">> => Exp},
+        configure(Home, [C], #{<<"provider">> => profile(<<"catalog-provider">>)}),
+        mode(models_entry_without_provider),
+        {ok, {_, Token}} = albedo_zed:access(Home, <<"provider">>),
+        {ok, Models} = albedo_zed:models(Home, <<"https://cloud.zed.dev">>),
+        true = lists:member(<<"provider-less-model">>, Models),
+        {error, Message} = albedo_zed:route(Home, <<"https://cloud.zed.dev">>, Token, <<"provider-less-model">>),
+        <<"model uses a provider this integration does not send">> = Message,
+        %% A routable entry beside it still routes.
+        {ok, <<"anthropic">>} = albedo_zed:route(Home, <<"https://cloud.zed.dev">>, Token, <<"provider-fixture-model">>)
     after mode(normal), file:del_dir_r(Home) end.
 
 catalog_account_retry_cases() ->

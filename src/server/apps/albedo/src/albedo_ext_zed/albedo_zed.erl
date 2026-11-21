@@ -252,6 +252,8 @@ route(Home, Endpoint, Token, Id) ->
                         true -> {ok, P};
                         false -> {error, <<"model uses a provider this integration does not send">>}
                     end;
+                %% An entry that names no provider names no wire protocol.
+                [_ | _] -> {error, <<"model uses a provider this integration does not send">>};
                 [] -> {error, <<"model is not in the Zed catalog for this account">>}
             end;
         Error -> Error
