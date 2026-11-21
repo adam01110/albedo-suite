@@ -116,10 +116,21 @@ fn of(status: Int, body: String) -> Report {
   }
 }
 
+/// A count a percentage can be computed from: a float holds integers up to
+/// 2^53 exactly, and Erlang's integer-to-float conversion raises beyond its
+/// own range, so a larger count is a payload no reading can be made of.
+const largest_count = 9_007_199_254_740_992
+
 fn report(body: String) -> Report {
   case json.parse(body, usage_at()) {
-    Ok(Usage(used, Counted(limit))) if limit > 0 && used >= 0 ->
-      counted(used, limit)
+    // A reading is a count within a positive limit, and within what a float
+    // holds: converting a larger count raises instead of answering.
+    Ok(Usage(used, Counted(limit)))
+      if limit > 0
+      && used >= 0
+      && used <= largest_count
+      && limit <= largest_count
+    -> counted(used, limit)
     Ok(Usage(_, Counted(_))) ->
       failure(
         "Zed reported edit-prediction usage that is not a count within a positive limit; no percentage is implied",

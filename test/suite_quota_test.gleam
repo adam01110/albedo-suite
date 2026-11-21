@@ -158,6 +158,25 @@ fn zed_readings() -> Nil {
     assert report.error != None
   })
 
+  // A count no percentage can be computed from is no reading either: it is
+  // past what a float holds, so converting it would crash the worker instead
+  // of answering with the account's failure.
+  let enormous = list.fold(list.repeat(10, 400), 1, fn(acc, _) { acc * 10 })
+  list.each(
+    [
+      #(
+        "a count beyond a float",
+        zed_body(json.int(enormous), json.string("120")),
+      ),
+      #("a limit beyond a float", zed_body(json.int(3), json.int(enormous))),
+    ],
+    fn(entry) {
+      let report = read_zed(entry.1)
+      assert report.limits == []
+      assert report.error != None
+    },
+  )
+
   // A rejected credential is a reading's failure, and says what to do about it.
   let expired = read_zed_status(401)
   assert expired.limits == []
