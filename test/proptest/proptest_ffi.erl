@@ -1,5 +1,5 @@
 -module(proptest_ffi).
--export([getenv/1, putenv/2, bump/1, counts/0, reset/0, undefined/0, write_file/3, unique/0, remove_tree/1, models_table/0, put_models/3, clear_models/1, models/2]).
+-export([getenv/1, putenv/2, bump/1, counts/0, reset/0, undefined/0, write_file/3, unique/0, remove_tree/1, models_table/0, put_models/3, clear_models/1, models/2, escript/0]).
 
 -include_lib("kernel/include/file.hrl").
 
@@ -66,4 +66,13 @@ models(Table, Key) ->
     case ets:lookup(Table, Key) of
         [{_, Models}] -> Models;
         [] -> []
+    end.
+
+%% The absolute path of this runtime's escript, so a test can start a stand-in
+%% worker without relying on PATH.
+escript() ->
+    Path = filename:join([code:root_dir(), "bin", "escript"]),
+    case filelib:is_regular(Path) of
+        true -> {ok, unicode:characters_to_binary(Path)};
+        false -> {error, nil}
     end.
