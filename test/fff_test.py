@@ -8,6 +8,7 @@ import asyncio
 import importlib.util
 import os
 import json
+import re
 import shlex
 import shutil
 from pathlib import Path
@@ -391,6 +392,44 @@ class FffTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen, [("files.fff", {"op": "paths", "_fff_target": "local"})])
         self.assertEqual(payload, {"op": "paths"})
         self.assertEqual(adapter.worker_pid, 42)
+
+
+class GlobCharacterClassTests(unittest.TestCase):
+    """Glob classes follow shell member rules and never reach the worker invalid."""
+
+    def matches(self, pattern, name):
+        return re.fullmatch(module._path_regex(pattern), name) is not None
+
+    def test_class_members_follow_shell_rules(self):
+        self.assertTrue(self.matches("[]]", "]"))
+        self.assertFalse(self.matches("[]]", "a"))
+        self.assertTrue(self.matches("[]a]", "]"))
+        self.assertTrue(self.matches("[]a]", "a"))
+        self.assertFalse(self.matches("[]a]", "b"))
+        self.assertTrue(self.matches("[!]]", "a"))
+        self.assertFalse(self.matches("[!]]", "]"))
+
+    def test_negated_class_stays_inside_one_segment(self):
+        self.assertFalse(self.matches("0[!0]0", "0/0"))
+        self.assertTrue(self.matches("0[!0]0", "040"))
+
+    def test_escapes_inside_a_class_are_refused(self):
+        for pattern in ("[\\d]", "[a\\-z]", "[{]"):
+            with self.subTest(pattern=pattern):
+                with self.assertRaisesRegex(
+                    ValueError, "braces and escapes are unsupported"
+                ):
+                    module._path_regex(pattern)
+
+    def test_class_patterns_stay_compilable(self):
+        for pattern in ("[]]", "[]a]", "[!]]", "[[]", "[a-z]", "[!a-z]", "[a-]"):
+            with self.subTest(pattern=pattern):
+                re.compile(module._path_regex(pattern))
+        for pattern in ("[9-0]", "[z-a]"):
+            with self.subTest(pattern=pattern):
+                with self.assertRaisesRegex(ValueError, "invalid glob character class"):
+                    module._path_regex(pattern)
+
 
 
 if __name__ == "__main__":

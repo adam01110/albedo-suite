@@ -173,6 +173,39 @@ class _FFF:
 
 _fff = _FFF()
 
+GLOB_ERROR = (
+    "FFF compatibility glob supports *, ?, [], **; braces and escapes are unsupported"
+)
+
+
+def _class_regex(part, start):
+    """Translate one [...] class; a leading ']' is a member, as in a shell."""
+    j = start + 1
+    negate = part[j : j + 1] in ("!", "^")
+    if negate:
+        j += 1
+    members = []
+    if part[j : j + 1] == "]":
+        members.append(r"\]")
+        j += 1
+    while j < len(part) and part[j] != "]":
+        char = part[j]
+        if char in "{}\\":
+            raise ValueError(GLOB_ERROR)
+        # '-' stays a range operator only between two members.
+        is_range = char == "-" and members and part[j + 1 : j + 2] not in ("", "]")
+        members.append(char if is_range else re.escape(char))
+        j += 1
+    if j >= len(part):
+        raise ValueError("unclosed glob character class")
+    # A negated class still cannot cross a directory separator.
+    regex = "[" + ("^/" if negate else "") + "".join(members) + "]"
+    try:
+        re.compile(regex)
+    except re.error:
+        raise ValueError(f"invalid glob character class in {part}") from None
+    return j, regex
+
 
 def _path_regex(pattern):
     """Segment-aware root-relative globs; ** crosses directory boundaries."""
@@ -195,20 +228,10 @@ def _path_regex(pattern):
                 elif char == "?":
                     body += "[^/]"
                 elif char == "[":
-                    end = part.find("]", j + 1)
-                    if end < 0:
-                        raise ValueError("unclosed glob character class")
-                    value = part[j + 1 : end]
-                    body += (
-                        "["
-                        + ("^" + value[1:] if value.startswith("!") else value)
-                        + "]"
-                    )
-                    j = end
+                    j, translated = _class_regex(part, j)
+                    body += translated
                 elif char in "{}\\":
-                    raise ValueError(
-                        "FFF compatibility glob supports *, ?, [], **; braces and escapes are unsupported"
-                    )
+                    raise ValueError(GLOB_ERROR)
                 else:
                     body += re.escape(char)
                 j += 1
