@@ -45,6 +45,8 @@ class DaemonRpc:
 
     async def start(self, directory):
         self.directory = directory
+        # The registry's search timeout for the next calls.
+        self.timeout_ms = 30_000
         self.launcher = directory / "albedo-fff"
         command = os.environ.get("ALBEDO_FFF_COMMAND") or shutil.which("albedo-fff")
         if not command:
@@ -70,8 +72,8 @@ loop() ->
     case io:get_line(standard_io, "") of
         eof -> halt(0);
         Line ->
-            Args = json:decode(list_to_binary(Line)),
-            Result = case albedo_fff:search(local, [], none, Args) of
+            [Timeout, Args] = json:decode(list_to_binary(Line)),
+            Result = case albedo_fff:search(local, [], none, Args, Timeout) of
                 {ok, Value} -> #{ok => true, value => json:decode(Value)};
                 {error, Why} -> #{ok => false, error => Why}
             end,
@@ -117,7 +119,7 @@ loop() ->
     async def __call__(self, method, payload):
         assert method == "files.fff"
         async with self.lock:
-            self.stdin.write((json.dumps(payload) + "\n").encode())
+            self.stdin.write((json.dumps([self.timeout_ms, payload]) + "\n").encode())
             await self.stdin.drain()
             line = await asyncio.wait_for(self.stdout.readline(), 35)
             if not line:
@@ -250,8 +252,13 @@ class FffTests(unittest.IsolatedAsyncioTestCase):
         self.rpc.configure(
             [sys.executable, "-c", "import sys; sys.stdin.buffer.read()"]
         )
+        self.rpc.timeout_ms = 0
+        with self.assertRaisesRegex(ValueError, "invalid FFF arguments"):
+            await self.files.paths(path=str(self.root))
+        self.rpc.timeout_ms = 1500
         with self.assertRaisesRegex(ValueError, "request timed out"):
             await self.files.paths(path=str(self.root))
+        self.rpc.timeout_ms = 30_000
         self.rpc.configure(self.rpc.command)
         self.assertTrue(await self.files.paths(path=str(self.root)))
 

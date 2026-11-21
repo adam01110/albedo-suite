@@ -1,24 +1,28 @@
 -module(albedo_fff).
 -behaviour(gen_server).
--export([search/4, remote/1, init/1, handle_call/3, handle_cast/2, handle_info/2]).
+-export([search/4, search/5, remote/1, init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -define(TIMEOUT, 30000).
 -define(BOUND, 8388608).
 
 search(Key, Argv, Auth, Args) when is_map(Args) ->
-    Deadline = erlang:monotonic_time(millisecond) + ?TIMEOUT,
+    search(Key, Argv, Auth, Args, ?TIMEOUT);
+search(_, _, _, _) -> {error, <<"invalid FFF arguments">>}.
+
+search(Key, Argv, Auth, Args, Timeout) when is_map(Args), is_integer(Timeout), Timeout > 0 ->
+    Deadline = erlang:monotonic_time(millisecond) + Timeout,
     try
         Payload = iolist_to_binary(json:encode((maps:remove(<<"_fff_target">>, Args))#{<<"protocol">> => 1})),
         true = byte_size(Payload) =< 1048576,
         HostKey = case Argv of [] -> local; _ -> {remote, Key} end,
         Worker = gen_server:call(ensure(), {worker, HostKey, Argv, Auth}),
-        gen_server:call(Worker, {search, Payload, Deadline}, ?TIMEOUT + 2000)
+        gen_server:call(Worker, {search, Payload, Deadline}, Timeout + 2000)
     catch
         error:{badmatch, false} -> {error, <<"FFF request exceeds 1 MiB bound">>};
         exit:{timeout, _} -> {error, <<"FFF request timed out">>};
         _:_ -> {error, <<"FFF worker unavailable">>}
     end;
-search(_, _, _, _) -> {error, <<"invalid FFF arguments">>}.
+search(_, _, _, _, _) -> {error, <<"invalid FFF arguments">>}.
 
 %% The files package cannot import core's ssh module, so its host lookup is
 %% resolved when called: {Target, ssh argv, agent socket} or a hosts failure.
