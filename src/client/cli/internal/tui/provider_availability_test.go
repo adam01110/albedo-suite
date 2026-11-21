@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/x/ansi"
+
+	"albedo/cli/internal/config"
 )
 
 func TestProviderAvailabilityTogglePatchesOnlyEnabledWithValidator(t *testing.T) {
@@ -132,6 +134,38 @@ func providersDaemon(t *testing.T) (LoginModel, <-chan providerPatch) {
 	m.Conn = conn
 	m.Profiles.ETag = `"providers-1"`
 	return m, patches
+}
+
+// A list read issued before a toggle must not reinstate the state it replaced:
+// the daemon already holds the flipped flag, and the read's older validator
+// would turn the next toggle into a conflict.
+func TestProviderAvailabilityToggleSupersedesPendingRead(t *testing.T) {
+	on := config.Settings{ProfileName: "work", Extension: "openai", Model: "gpt-5", BaseURL: "https://api.openai.com/v1", Protocol: "responses", HasKey: true}
+	off, disabled := on, false
+	off.Enabled = &disabled
+	before := config.Profiles{Active: "work", Providers: map[string]config.Settings{"work": on}, ETag: `"providers-1"`}
+	after := config.Profiles{Active: "work", Providers: map[string]config.Settings{"work": off}, ETag: `"providers-2"`}
+
+	m := loginModel(100, 24)
+	m.Profiles = before
+	showSetups(&m)
+	focusLoginRow(&m, "use:work")
+	readGen := m.Generation
+	next, cmd := pressCtrl(m, 't')
+	if cmd == nil || next.Step != StepSaving {
+		t.Fatalf("toggle did not save: %v", next.Step)
+	}
+	toggled, _ := next.Update(providerAvailabilityMsg{Result: signInsLoadedMsg{Gen: next.Generation, Loaded: true, Profiles: &after}, Name: "work"})
+	if toggled.Profiles.Providers["work"].IsEnabled() || toggled.Profiles.ETag != after.ETag {
+		t.Fatalf("toggle result not applied: %+v", toggled.Profiles)
+	}
+	stale, _ := toggled.Update(signInsLoadedMsg{Gen: readGen, Loaded: true, Profiles: &before})
+	if stale.Profiles.Providers["work"].IsEnabled() || stale.Profiles.ETag != after.ETag {
+		t.Fatalf("a list read issued before the toggle reinstated %+v", stale.Profiles)
+	}
+	if !slices.Contains(stale.hints(), hint{"ctrl+t", "enable"}) {
+		t.Fatalf("row lost the disabled state: %v", stale.hints())
+	}
 }
 
 // A disabled saved profile has no enter action: its row offers ctrl+t alone,

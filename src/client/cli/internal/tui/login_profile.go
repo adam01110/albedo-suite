@@ -323,6 +323,9 @@ func (m *LoginModel) toggleProvider() tea.Cmd {
 	etag := m.Profiles.ETag
 	m.Error = ""
 	m.Step = StepSaving
+	// The toggle supersedes any list read still in flight, whose answer would
+	// put back the flag and validator from before it.
+	m.Generation = nextPageGeneration()
 	reload := m.reloadCmd(func(ctx context.Context) error {
 		return daemon.SetProviderEnabled(ctx, m.Conn, name, enabled, etag)
 	})

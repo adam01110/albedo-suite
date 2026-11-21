@@ -406,7 +406,9 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 		case m.Step == StepRemove:
 			return m, m.confirmKey(msg)
 		case m.Step == StepAdvanced && key == "ctrl+t":
-			return m, m.toggleProvider()
+			// Build the command first: it moves the screen to a new generation.
+			cmd := m.toggleProvider()
+			return m, cmd
 		case m.Step == StepAdvanced && (key == "ctrl+d" || key == "ctrl+x"):
 			if item, ok := m.ChoosePicker.Highlighted(); ok {
 				if account, accountOK := m.accountAt(item.ID); accountOK {
