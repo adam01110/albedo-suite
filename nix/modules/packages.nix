@@ -215,6 +215,15 @@
           (old.postInstall or "")
           + ''
             wrapProgram "$out/bin/albedo-daemon" --prefix PATH : ${toolPath}
+            # Each module load otherwise probes every ebin directory on the
+            # path; store paths never change, so their listings are cached,
+            # while "." stays last and uncached. The cache lasts until
+            # boot_code.prepare republishes the path (production, ALBEDO_PRELOAD
+            # unset), so it mainly speeds test daemons (ALBEDO_PRELOAD=0) and
+            # the start of production boots.
+            substituteInPlace "$out/lib/albedo/entrypoint.sh" --replace-fail \
+              '-eval "$PACKAGE@@main:run($PACKAGE)"' \
+              '-eval "code:set_path(code:get_path() -- [\".\"], cache), code:add_pathz(\".\")" -eval "$PACKAGE@@main:run($PACKAGE)"'
           '';
         # Seal after fixup rewrites the installed application.
         postFixup =
