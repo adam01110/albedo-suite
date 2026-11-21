@@ -410,9 +410,14 @@ fn close_all(state: State) -> Nil {
   })
 }
 
-/// Whether `server` has a timeout and has been unused for it.
+/// Whether `server` has a timeout and its live transport has been unused for
+/// it. A transport that already died is not idle cleanup: cleanup would have
+/// closed it, and a call must be refused rather than reach a fresh server.
 fn expired(server: Loaded, now: Int) -> Bool {
-  !server.idle && server.idle_ms > 0 && now - server.last_used >= server.idle_ms
+  !server.idle
+  && server.idle_ms > 0
+  && now - server.last_used >= server.idle_ms
+  && process.is_alive(endpoint.pid(server.endpoint))
 }
 
 /// Idle cleanup closes the transport and keeps its schemas; only a new
@@ -433,10 +438,15 @@ fn expire_idle(state: State) -> State {
 }
 
 /// Milliseconds until the next connected server falls idle, or None when
-/// nothing can.
+/// nothing can. A transport that died is not cleanup's to close, so it must
+/// not hold the manager on a deadline that has already passed.
 fn idle_wait(state: State) -> option.Option(Int) {
   dict.values(state.loaded)
-  |> list.filter(fn(server) { !server.idle && server.idle_ms > 0 })
+  |> list.filter(fn(server) {
+    !server.idle
+    && server.idle_ms > 0
+    && process.is_alive(endpoint.pid(server.endpoint))
+  })
   |> list.map(fn(server) { server.last_used + server.idle_ms })
   |> list.reduce(int.min)
   |> option.from_result

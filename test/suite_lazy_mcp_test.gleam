@@ -46,6 +46,7 @@ pub fn main() -> Nil {
   descriptions_are_validated(scope)
   startup_contacts_nothing_and_loads_once(home, scope)
   idle_cleanup_reconnects_and_refuses_drift(home, scope)
+  dead_idle_transport_refuses_calls(home, scope)
   owner_death_ends_the_manager(scope)
   store.close(ledger)
   let _ = del_dir_r(home)
@@ -295,6 +296,51 @@ fn idle_cleanup_reconnects_and_refuses_drift(
   assert string.contains(changed, "catalogue changed")
   assert seen(control, "tools/call") == 1
   let assert Error(_) = lazy.call(source, tool, "{\"message\":\"x\"}")
+  assert seen(control, "tools/call") == 1
+  lazy.close(manager)
+  mcp_owner_support.kill_wait(runtime.pid)
+}
+
+/// A transport that dies before its idle deadline stays a dropped
+/// transport: the deadline passing is not cleanup, so a call is refused
+/// instead of silently reaching a fresh server.
+fn dead_idle_transport_refuses_calls(
+  home: String,
+  scope: storage.Storage,
+) -> Nil {
+  let control = home <> "/dead-idle"
+  let _ = make_dir(control)
+  let runtime = mcp_owner_support.start_runtime()
+  let assert Ok(#(manager, _)) =
+    lazy.prepare(
+      config([#("a", idle_server(Ok(control), 150))], 0),
+      preferences,
+      scope,
+      "dead",
+      extension.preparation_owner(runtime.pid),
+    )
+  let assert Ok(Nil) =
+    mcp_owner_support.on_runtime(runtime, fn() { lazy.adopt(manager) })
+  let source = lazy.Managed(manager)
+  let assert Ok(definitions) = lazy.load(source, "a")
+  let assert Ok([tool]) =
+    json.parse(definitions, decode.list(decode.at(["name"], decode.string)))
+  let pid = server_pid(control)
+  kill(pid)
+  await_dead(pid, 50)
+  await_state(source, [#("a", True, False)], 50)
+  // Outlast the idle deadline, so the manager's own cleanup has run.
+  process.sleep(400)
+  assert state(source) == [#("a", True, False)]
+  // The call is refused rather than redialling the dead transport.
+  let assert Error(dropped) = lazy.call(source, tool, "{\"message\":\"hi\"}")
+  assert string.contains(dropped, "mcp.load")
+  assert seen(control, "initialize") == 1
+  assert seen(control, "tools/call") == 0
+  // An explicit load still redials, and its call dispatches once.
+  let assert Ok(_) = lazy.load(source, "a")
+  let assert Ok(_) = lazy.call(source, tool, "{\"message\":\"again\"}")
+  assert seen(control, "initialize") == 2
   assert seen(control, "tools/call") == 1
   lazy.close(manager)
   mcp_owner_support.kill_wait(runtime.pid)
