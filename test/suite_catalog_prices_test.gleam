@@ -17,7 +17,13 @@ const source =
   "{\"p\":{\"api\":\"https://p.example/v1\",\"npm\":\"@ai-sdk/openai\",\"models\":{\"m\":{\"id\":\"m\",\"provider\":{\"npm\":\"@ai-sdk/anthropic\"},\"cost\":{\"input\":1.5,\"output\":6,\"cache_read\":0.15},\"limit\":{\"context\":8000,\"output\":1000}},\"free\":{\"id\":\"free\",\"cost\":\"none\"},\"plain\":{\"id\":\"plain\"}}}}"
 
 pub fn main() -> Nil {
-  let directory = "/tmp/albedo-suite-prices-" <> int.to_string(unique())
+  let directory =
+    "/tmp/albedo-suite-prices-"
+    <> int.to_string(list_to_integer(getpid()))
+    <> "-"
+    <> int.to_string(unique())
+  // The OS reuses process ids, so a crashed run's directory can carry this name.
+  let _ = del_dir_r(directory)
   let assert Ok(cost) =
     json.parse(
       "{\"input\":1.5,\"output\":6,\"cache_read\":0.15}",
@@ -151,6 +157,12 @@ fn ensure_dir(path: String) -> Dynamic
 
 @external(erlang, "file", "del_dir_r")
 fn del_dir_r(path: String) -> Dynamic
+
+@external(erlang, "os", "getpid")
+fn getpid() -> List(Int)
+
+@external(erlang, "erlang", "list_to_integer")
+fn list_to_integer(chars: List(Int)) -> Int
 
 @external(erlang, "erlang", "unique_integer")
 fn unique() -> Int
