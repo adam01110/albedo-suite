@@ -99,6 +99,7 @@
         "suite_catalog_prices_test"
         "suite_codex_error_test"
         "suite_lazy_mcp_test"
+        "suite_memory_headings_test"
         "suite_memory_index_test"
         "suite_opencode_go_test"
         "suite_prompt_docs_test"

@@ -136,7 +136,9 @@ fn index_sections(parts: List(#(String, String)), budget: Int) -> String {
   case parts {
     [] -> ""
     _ if budget <= 0 ->
+      // The budget stops topics, not the headings that name each workspace.
       "\n[more topics omitted; search spans all linked workspaces]"
+      <> string.concat(list.map(parts, fn(part) { "\n## " <> part.0 <> "\n" }))
     [#(where, text), ..rest] -> {
       let body =
         topics(text)
