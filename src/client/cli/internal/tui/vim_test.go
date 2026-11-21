@@ -6,6 +6,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"strings"
 	"testing"
+	"time"
 )
 
 func vimKeys(m *ChatModel, keys ...string) {
@@ -46,6 +47,33 @@ func TestVimModesAndUndo(t *testing.T) {
 	vimKeys(&m, "i", "z", "esc", "u")
 	if m.TextArea.Value() != "bc" {
 		t.Fatal(m.TextArea.Value())
+	}
+}
+
+// Positioning moves by logical lines: a narrow composer that soft-wraps a
+// line with wide runes must still land on the requested row and column.
+func TestVimPositionOnWrappedLines(t *testing.T) {
+	for _, focused := range []bool{true, false} {
+		m := newTestChatModel(t, &daemon.Session{ID: "s"})
+		m.SetSize(15, 24)
+		// The cursor starts on the last line, so positioning must move up first.
+		m.TextArea.SetValue("é(.日.é.a_a\nab \"(é ()_(a日.aa.é.日a)a(\")b.\" ba_.a\"\nend")
+		if !focused {
+			m.TextArea.Blur()
+		}
+		done := make(chan vimSnapshot)
+		go func() {
+			m.vimPosition(18)
+			done <- m.vimSnapshot()
+		}()
+		select {
+		case got := <-done:
+			if got.pos != 18 || m.TextArea.Line() != 1 || m.TextArea.Column() != 7 {
+				t.Fatalf("focused %v: got pos %d at %d:%d, want 18 at 1:7", focused, got.pos, m.TextArea.Line(), m.TextArea.Column())
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("focused %v: vimPosition did not return", focused)
+		}
 	}
 }
 

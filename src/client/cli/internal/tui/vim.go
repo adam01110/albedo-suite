@@ -53,8 +53,12 @@ func (m *ChatModel) vimPosition(pos int) {
 			col++
 		}
 	}
-	m.TextArea, _ = m.TextArea.Update(tea.KeyPressMsg{Code: tea.KeyHome, Mod: tea.ModCtrl})
+	m.TextArea.MoveToBegin()
+	// CursorDown steps wrapped display rows and can stall on wide runes; from
+	// a line's end the cursor is on its last wrapped row, where it always
+	// reaches the next logical line.
 	for m.TextArea.Line() < row {
+		m.TextArea.CursorEnd()
 		m.TextArea.CursorDown()
 	}
 	m.TextArea.SetCursorColumn(col)
