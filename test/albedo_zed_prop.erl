@@ -18,10 +18,18 @@ run() ->
     persistent_term:put(zed_prop_port, Port),
     install_transport(),
     try
-        Counts = {unwrap_cases(), organization_cases(), catalog_cases(), retry_cases()},
-        {U, O, C, R} = Counts,
-        io:format("Zed properties passed: ~B unwrap, ~B organization, ~B catalog groups, ~B retry cases~n",
-                  [U, O, C, R])
+        %% Each group runs on its own, so one defect does not hide the rest.
+        Groups = [{unwrap, fun unwrap_cases/0},
+                  {organization, fun organization_cases/0},
+                  {catalog, fun catalog_cases/0},
+                  {retry, fun retry_cases/0}],
+        Counts = lists:map(fun({Name, Group}) ->
+            try Group() of Count -> {Name, Count}
+            catch Class:Reason -> {Name, {Class, Reason}} end
+        end, Groups),
+        Failures = [F || {_, V} = F <- Counts, not is_integer(V)],
+        Failures =:= [] orelse fail(properties, Failures),
+        io:format("Zed properties passed: ~p~n", [Counts])
     after unlink(Server), exit(Server, kill), gen_tcp:close(Listen), ets:delete(?FIXTURE) end,
     nil.
 
@@ -104,20 +112,31 @@ fixture_headers(Socket, Acc) ->
             fixture_headers(Socket, Acc#{Key => Value})
     end.
 
+%% A staged catalog body answers /models verbatim, so a property can serve a
+%% generated payload; otherwise the fixture names the token's own model.
 fixture_response(_M, <<"/models">>, Auth) ->
+    case ets:lookup(?FIXTURE, catalog) of
+        [{catalog, Bytes}] -> {200, Bytes};
+        [] -> default_catalog(Auth)
+    end;
+fixture_response(_M, <<"/client/llm_tokens">>, Auth) ->
+    llm_token(Auth);
+fixture_response(_, _, _) ->
+    {404, <<"missing">>}.
+
+default_catalog(Auth) ->
     Token = case binary:split(Auth, <<" ">>) of [_, T] -> T; _ -> <<>> end,
     Models = [#{<<"id">> => catalog_model(Token), <<"provider">> => <<"anthropic">>,
                 <<"max_token_count">> => 1000, <<"supports_thinking">> => false}],
-    {200, json:encode(#{<<"models">> => Models})};
-fixture_response(_M, <<"/client/llm_tokens">>, Auth) ->
+    {200, json:encode(#{<<"models">> => Models})}.
+
+llm_token(Auth) ->
     case auth_id(Auth) of
         <<>> -> {401, <<"denied">>};
         Id ->
             N = ets:update_counter(?FIXTURE, {llm_tokens, Id}, {2, 1}, {{llm_tokens, Id}, 0}),
             {200, json:encode(#{<<"token">> => jwt(erlang:system_time(second) + 3600, N, Id)})}
-    end;
-fixture_response(_, _, _) ->
-    {404, <<"missing">>}.
+    end.
 
 auth_id(Auth) ->
     case binary:split(Auth, <<" ">>) of [Id, _] -> Id; _ -> <<>> end.
@@ -268,45 +287,44 @@ failed_message_shape() ->
      end || Message <- [42, null, [<<"a">>], #{<<"nested">> => 1}, -1.5, true]].
 
 %% organization/2, reached through the sign-in identity check
-%% The editor's account carries a default organization and a list. Sign-in uses
-%% the default when the list confirms it, else the account's only personal
-%% organization, else its only organization; anything else must fail closed
-%% with a binary reason rather than pick one.
+%% The account document's organization choice is documented as: the default
+%% organization stands when it names one of the account's organizations, else
+%% the account's only personal organization, else its only organization; any
+%% other shape fails closed with a binary reason rather than picking one. The
+%% oracle below is an independent reading of that sentence. The payloads are
+%% generated: several organizations, missing, null and mistyped fields, non-map
+%% entries, and every shape of default_organization_id.
 
 organization_cases() ->
-    Organisations = [
-        [],
-        [org(<<"a">>, true)],
-        [org(<<"a">>, false)],
-        [org(<<"a">>, true), org(<<"b">>, false)],
-        [org(<<"a">>, true), org(<<"b">>, true)],
-        [org(<<"a">>, false), org(<<"b">>, false)],
-        [org(<<"a">>, true), org(<<"b">>, false), org(<<"c">>, false)],
-        [org(<<"a">>, false), org(<<"b">>, true), org(<<"c">>, true)],
-        [#{<<"name">> => <<"nameless">>}],
-        [org(<<"a">>, true), #{<<"name">> => <<"nameless">>}],
-        [#{<<"id">> => 7, <<"is_personal">> => true}],
-        [org(<<"a">>, <<"true">>)]
-    ],
-    %% The same organization listed twice is not an account document the API
-    %% produces; the decoder's choice is recorded, not asserted.
-    Duplicates = [[org(<<"a">>, true), org(<<"a">>, true)],
-                  [org(<<"a">>, false), org(<<"a">>, false)],
-                  [org(<<"a">>, true), org(<<"b">>, true), org(<<"b">>, true)]],
-    Defaults = [absent, null, <<>>, <<"a">>, <<"b">>, <<"c">>, <<"missing">>, 7],
-    Cases = [{Default, Orgs} || Default <- Defaults, Orgs <- Organisations],
-    [organization_case(Default, Orgs) || {Default, Orgs} <- Cases],
+    Family = lists:flatmap(fun(Seed) ->
+        seed(Seed),
+        [organization_payload() || _ <- lists:seq(1, 24)]
+    end, ?SEEDS),
+    put(org_coverage, #{generated => 0, default_confirmed => 0, default_stranger => 0,
+                        personal_only => 0, sole_organization => 0, no_choice => 0,
+                        malformed_list => 0, duplicate_ids => 0}),
+    erase(org_violations),
+    lists:foreach(fun(Payload) -> organization_case(Payload) end, Family),
+    io:format("organization coverage: ~p~n", [get(org_coverage)]),
+    erase(org_coverage),
+    org_report(),
     %% The identity check keeps the credential's ids printable ASCII, so an
     %% organization id outside that alphabet is refused there, not chosen here.
     unconstrained(non_ascii_organization,
         #{result => albedo_zed_auth:identity(<<"42">>, <<"identity-token">>,
               response(<<>>, [org(unicode_key(), true)]))}),
+    %% The same organization listed twice is not an account document the API
+    %% produces; the decoder's choice is recorded, not asserted.
+    Duplicates = [[org(<<"a">>, true), org(<<"a">>, true)],
+                  [org(<<"a">>, false), org(<<"a">>, false)],
+                  [org(<<"a">>, true), org(<<"b">>, true), org(<<"b">>, true)]],
     [unconstrained(duplicate_organizations,
         #{default => Default, organizations => Orgs,
           result => albedo_zed_auth:identity(<<"42">>, <<"identity-token">>,
               response(Default, Orgs))})
      || Default <- [absent, <<"c">>], Orgs <- Duplicates],
-    length(Cases).
+    account_selection_cases(),
+    length(Family).
 
 org(Id, Personal) -> #{<<"id">> => Id, <<"is_personal">> => Personal}.
 
@@ -315,39 +333,210 @@ response(Default, Orgs) ->
                  <<"organizations">> => Orgs},
     case Default of absent -> Response; _ -> Response#{<<"default_organization_id">> => Default} end.
 
-organization_case(Default, Orgs) ->
-    Result = albedo_zed_auth:identity(<<"42">>, <<"identity-token">>, response(Default, Orgs)),
-    Expected = organization_expected(Default, Orgs),
-    case {Expected, Result} of
-        {{ok, Id}, {ok, Credential}} ->
-            Id =:= maps:get(<<"organization_id">>, Credential)
-                orelse fail(organization_chosen, #{default => Default, organizations => Orgs,
-                                                   expected => Id, result => Result});
-        {error, {ok, _}} -> fail(organization_chosen, #{default => Default, organizations => Orgs, result => Result});
-        {error, {error, Reason}} when is_binary(Reason) -> ok;
-        {error, Other} -> fail(organization_failure_not_binary, #{default => Default, organizations => Orgs, result => Other});
-        _ -> fail(organization_choice, #{default => Default, organizations => Orgs,
-                                        expected => Expected, result => Result})
-    end,
-    ok.
+%% A generated account document. `organizations` is absent when the key is
+%% missing, which the schema documents as an optional list.
+organization_payload() ->
+    Orgs = org_entries(),
+    #{default => org_default(Orgs), organizations => Orgs}.
 
-%% An independent reading of the sign-in contract, over distinct organization
-%% ids: the list is the account's set, not a sequence.
-organization_expected(Default, Orgs) ->
-    Ids = lists:usort([Id || #{<<"id">> := Id} <- Orgs, is_binary(Id)]),
-    Personal = lists:usort([Id || #{<<"id">> := Id, <<"is_personal">> := true} <- Orgs, is_binary(Id)]),
-    case is_binary(Default) andalso Default =/= <<>> of
-        true -> case Ids =:= [] orelse lists:member(Default, Ids) of
-                    true -> {ok, Default};
-                    false -> error
-                end;
-        false -> case Personal of
-                     [Only] -> {ok, Only};
-                     [] -> case Ids of [Only] -> {ok, Only}; _ -> error end;
-                     _ -> error
-                 end
+org_entries() ->
+    case rand:uniform(10) of
+        1 -> absent;
+        2 -> pick([null, #{}, <<"none">>, 42]);
+        _ -> [org_entry() || _ <- lists:seq(1, rand:uniform(5) - 1)]
     end.
 
+org_entry() ->
+    Id = pick([<<"a">>, <<"b">>, <<"c">>, <<"org-1">>, <<"">>, unicode_key()]),
+    Personal = pick([true, false]),
+    case rand:uniform(9) of
+        1 -> #{<<"id">> => Id};
+        2 -> #{<<"is_personal">> => Personal};
+        3 -> #{<<"id">> => pick([null, 7, true, [], #{<<"n">> => 1}]),
+               <<"is_personal">> => Personal};
+        4 -> #{<<"id">> => Id, <<"is_personal">> => pick([null, <<"true">>, 1, 0, []])};
+        5 -> pick([null, 42, <<"not a map">>, [], [1, 2]]);
+        6 -> #{<<"id">> => Id, <<"is_personal">> => Personal, <<"name">> => <<"extra">>};
+        _ -> #{<<"id">> => Id, <<"is_personal">> => Personal}
+    end.
+
+org_default(Orgs) ->
+    Present = case Orgs of
+                  L when is_list(L) -> [Id || #{<<"id">> := Id} <- L, is_binary(Id), Id =/= <<>>];
+                  _ -> []
+              end,
+    case rand:uniform(10) of
+        1 -> null;
+        2 -> <<>>;
+        3 -> pick([7, [], #{}, true, 1.5]);
+        4 when Present =/= [] -> pick(Present);
+        5 -> pick([<<"a">>, <<"b">>, <<"stranger">>]);
+        _ -> absent
+    end.
+
+organization_case(Payload) ->
+    Response = case Payload of
+                   #{default := absent, organizations := absent} -> response(absent, []);
+                   #{default := absent, organizations := Orgs} when Orgs =/= absent ->
+                       Base = response(absent, []), Base#{<<"organizations">> => Orgs};
+                   #{default := Default, organizations := absent} -> response(Default, []);
+                   #{default := Default, organizations := Orgs} ->
+                       response(Default, Orgs)
+               end,
+    Result = safe_call(fun() -> albedo_zed_auth:identity(<<"42">>, <<"identity-token">>, Response) end),
+    {Branch, Expected} = organization_expected(Payload),
+    Ambiguous = organization_ambiguous(Payload),
+    cover_organization(Branch, Ambiguous),
+    Context = #{payload => Payload, expected => Expected, result => Result, ambiguous => Ambiguous},
+    case {Expected, Result} of
+        {{ok, Id}, {ok, Credential}} when is_map(Credential) ->
+            case maps:get(<<"organization_id">>, Credential, undefined) of
+                Id -> ok;
+                Other -> record(org_violations, organization_chosen, Context#{chosen => Other})
+            end;
+        {{ok, _}, {error, Reason}} when is_binary(Reason) ->
+            Ambiguous orelse record(org_violations, organization_refused, Context);
+        {error, {error, Reason}} when is_binary(Reason) -> ok;
+        {error, {error, Reason}} ->
+            record(org_violations, organization_failure_not_binary, Context#{reason => Reason});
+        {error, {ok, _}} ->
+            Ambiguous orelse record(org_violations, organization_chosen_without_choice, Context);
+        _ ->
+            record(org_violations, organization_result, Context)
+    end.
+
+%% An independent reading of the documented choice chain, over the account's
+%% distinct organization ids.
+organization_expected(#{organizations := Orgs}) when Orgs =/= absent, not is_list(Orgs) ->
+    {malformed_list, error};
+organization_expected(#{default := Default, organizations := Orgs}) ->
+    Entries = case Orgs of absent -> []; List -> [E || E <- List, is_map(E)] end,
+    Ids = [Id || #{<<"id">> := Id} <- Entries, is_binary(Id)],
+    Personal = [Id || #{<<"id">> := Id, <<"is_personal">> := true} <- Entries, is_binary(Id)],
+    {Branch, Choice} = case is_binary(Default) andalso Default =/= <<>> of
+        true ->
+            case lists:usort(Ids) of
+                [] -> {default_confirmed, Default};
+                All -> case lists:member(Default, All) of
+                           true -> {default_confirmed, Default};
+                           false -> {default_stranger, error}
+                       end
+            end;
+        false ->
+            case lists:usort(Personal) of
+                [Only] -> {personal_only, Only};
+                [] -> case lists:usort(Ids) of
+                          [Single] -> {sole_organization, Single};
+                          _ -> {no_choice, error}
+                      end;
+                _ -> {no_choice, error}
+            end
+    end,
+    {Branch, case Choice of
+                 error -> error;
+                 Id -> case credential_id(Id) of
+                           true -> {ok, Id};
+                           false -> error
+                       end
+             end}.
+
+%% The identity check keeps the credential's ids printable ASCII.
+credential_id(Id) ->
+    is_binary(Id) andalso byte_size(Id) > 0 andalso
+        lists:all(fun(C) -> C >= 16#21 andalso C =< 16#7e end, binary_to_list(Id)).
+
+%% Duplicate ids matter only where the chain counts entries rather than testing
+%% membership: a default naming a listed id is unaffected.
+organization_ambiguous(#{default := Default, organizations := Orgs}) when is_list(Orgs) ->
+    case is_binary(Default) andalso Default =/= <<>> of
+        true -> false;
+        false ->
+            Entries = [E || E <- Orgs, is_map(E)],
+            Ids = [Id || #{<<"id">> := Id} <- Entries, is_binary(Id)],
+            length(Ids) =/= length(lists:usort(Ids))
+    end;
+organization_ambiguous(_) -> false.
+
+cover_organization(Branch, Ambiguous) ->
+    Stats = get(org_coverage),
+    Key = case Ambiguous of true -> duplicate_ids; false -> Branch end,
+    put(org_coverage, Stats#{generated := maps:get(generated, Stats) + 1,
+                             Key := maps:get(Key, Stats) + 1}).
+
+org_report() ->
+    case get(org_violations) of
+        undefined -> ok;
+        [] -> ok;
+        Violations -> fail(organization_properties, lists:sublist(lists:reverse(Violations), 30))
+    end.
+
+%% Selection by saved account id: the post-login model picker names the public
+%% account identity it was saved for, and exactly one stored account carries
+%% it; zero or several is unavailable rather than another account's token.
+account_selection_cases() ->
+    Home = home(),
+    try
+        Family = lists:flatmap(fun(Seed) ->
+            seed(Seed),
+            [account_payload() || _ <- lists:seq(1, 12)]
+        end, ?SEEDS),
+        erase(account_violations),
+        lists:foreach(fun(Payload) -> account_selection_case(Home, Payload) end, Family),
+        account_report(),
+        length(Family)
+    after file:del_dir_r(Home) end.
+
+account_payload() ->
+    Publics = [pick([<<"p1">>, <<"p2">>, <<"p3">>]) || _ <- lists:seq(1, rand:uniform(4))],
+    {[account_value(P) || P <- Publics], pick([<<"p1">>, <<"p2">>, <<"p3">>, <<"nobody">>])}.
+
+account_value(Public) ->
+    Expiry = erlang:system_time(second) + 3600,
+    Base = #{<<"user_id">> => <<"42">>, <<"access_token">> => <<"access-token">>,
+             <<"github_login">> => <<"user">>, <<"organization_id">> => <<"org-42">>,
+             <<"jwt">> => jwt(Expiry, Public, <<"42">>), <<"jwt_expires">> => Expiry},
+    case rand:uniform(6) of
+        1 -> Base;
+        2 -> Base#{<<"_albedo_account_id">> => null};
+        _ -> Base#{<<"_albedo_account_id">> => Public}
+    end.
+
+account_selection_case(Home, {Values, Wanted}) ->
+    ok = write_accounts(Home, Values),
+    Result = safe_call(fun() -> albedo_zed_auth:access_account(Home, Wanted) end),
+    Expected = case [C || C <- Values, maps:get(<<"_albedo_account_id">>, C, null) =:= Wanted] of
+                   [C] -> {ok, maps:get(<<"jwt">>, C)};
+                   _ -> unavailable
+               end,
+    Context = #{wanted => Wanted, stored => [maps:get(<<"_albedo_account_id">>, C, null) || C <- Values],
+                expected => Expected, result => Result},
+    case {Expected, Result} of
+        {{ok, Jwt}, {ok, Jwt}} -> ok;
+        {unavailable, {error, Reason}} when is_binary(Reason) -> ok;
+        _ -> record(account_violations, account_selection, Context)
+    end.
+
+account_report() ->
+    case get(account_violations) of
+        undefined -> ok;
+        [] -> ok;
+        Violations -> fail(account_selection_properties, lists:sublist(lists:reverse(Violations), 20))
+    end.
+
+write_accounts(Home, Values) ->
+    {ok, nil} = ?CREDS:write(filename:join(Home, <<"creds.json">>),
+        #{<<"accounts">> => #{<<"zed">> => Values}}),
+    ok.
+
+%% Violations are collected so one defect does not hide the rest.
+record(Key, Tag, Context) ->
+    case get(Key) of
+        undefined -> put(Key, [{Tag, Context}]);
+        Stored -> put(Key, lists:sublist([{Tag, Context} | Stored], 200))
+    end.
+
+safe_call(Fun) ->
+    try Fun() catch Class:Reason -> {raised, Class, Reason} end.
 
 %% catalog_token cache: keying and expiry
 %% The catalog cache is a file per (endpoint, token) with an hour's validity.
@@ -363,7 +552,8 @@ catalog_cases() ->
                 {expiry, fun expiry/1},
                 {unusable_entries, fun unusable_entries/1},
                 {cache_file_invariant, fun cache_file_invariant/1},
-                {forced_reload, fun forced_reload/1}],
+                {forced_reload, fun forced_reload/1},
+                {generated_catalogs, fun generated_catalogs/1}],
     try
         %% Each section either passes or raises; either way the others still
         %% run, so one defect reports on its own.
@@ -511,6 +701,339 @@ write_cache(Home, Endpoint, Token, Value) ->
 read_cache(Home, Endpoint, Token) ->
     {ok, Bytes} = file:read_file(cache_path(Home, Endpoint, Token)),
     json:decode(Bytes).
+
+
+%% A generated /models payload exercises the cache, the model list, lookup and
+%% routing. The oracles below are an independent reading of the documented
+%% projection: an entry is usable when it is an object with a text id; a
+%% disabled entry stays in the cache but is left out of the model list and out
+%% of lookup, while routing names the reason it cannot be selected.
+
+generated_catalogs(Home) ->
+    Family = lists:flatmap(fun(Seed) ->
+        seed(Seed),
+        [catalog_payload() || _ <- lists:seq(1, 14)]
+    end, ?SEEDS),
+    put(catalog_coverage, #{generated => 0, entries => 0, usable_entries => 0,
+                            disabled_entries => 0, unknown_providers => 0,
+                            duplicate_ids => 0, malformed => 0, empty_catalog => 0}),
+    erase(catalog_violations),
+    lists:foldl(fun({N, Payload}, _) -> catalog_case(Home, N, Payload) end, 0,
+                lists:zip(lists:seq(1, length(Family)), Family)),
+    io:format("catalog coverage: ~p~n", [get(catalog_coverage)]),
+    erase(catalog_coverage),
+    catalog_report(),
+    future_dated_case(Home),
+    ok.
+
+catalog_payload() ->
+    Value = case rand:uniform(8) of
+        1 -> pick([[], <<"text">>, 42, null, true]);
+        2 -> #{<<"models">> => pick([null, <<"none">>, 42, #{}, []])};
+        3 -> #{<<"other">> => <<"field">>};
+        _ -> #{<<"models">> => [model_entry() || _ <- lists:seq(1, rand:uniform(5) - 1)]}
+    end,
+    case rand:uniform(12) of
+        1 -> {raw, pick([<<"not json">>, <<"{">>, <<"[]">>, <<"">>, <<"{\"models\":">>])};
+        _ -> {json, Value}
+    end.
+
+model_entry() ->
+    Id = pick([<<"alpha">>, <<"beta">>, <<"gamma">>, <<"">>, unicode_key()]),
+    Base = #{<<"id">> => Id,
+             <<"provider">> => pick([<<"anthropic">>, <<"open_ai">>, <<"google">>, <<"x_ai">>,
+                                     <<"mistral">>, <<"">>])},
+    With = case rand:uniform(8) of
+        1 -> Base;
+        2 -> Base#{<<"max_token_count">> => pick([0, -5, 1000, <<"big">>, 8192.5])};
+        3 -> Base#{<<"supports_thinking">> => pick([true, false, <<"true">>, null, 0]),
+                    <<"supported_effort_levels">> => pick([[],
+                        [#{<<"value">> => pick([<<"low">>, <<"high">>, <<"bogus">>, <<"none">>, <<"max">>])}],
+                        [#{<<"value">> => 3}], [#{}]])};
+        4 -> Base#{<<"supports_images">> => pick([true, false, <<"yes">>])};
+        5 -> Base#{<<"supported_effort_levels">> => pick([[], [#{<<"value">> => <<"low">>}], 7, <<"low">>])};
+        6 -> Base#{<<"max_output_tokens">> => pick([4000, 0, -1, <<"x">>]),
+                    <<"max_token_count_in_max_mode">> => pick([2000, 0, null])};
+        7 -> maps:remove(<<"provider">>, Base);
+        _ -> Base
+    end,
+    case rand:uniform(9) of
+        1 -> With#{<<"is_disabled">> => true,
+                   <<"disabled_reason">> => pick([<<"plan does not include this model">>, <<"">>, 42])};
+        2 -> With#{<<"is_disabled">> => pick([false, <<"true">>, null])};
+        3 -> maps:remove(<<"id">>, With);
+        4 -> With#{<<"id">> => pick([null, 7, true])};
+        5 -> pick([null, 7, <<"flat">>, [1, 2]]);
+        _ -> With
+    end.
+
+catalog_case(Home, N, Payload) ->
+    Tag = integer_to_binary(N),
+    Id = <<"cat-", Tag/binary>>,
+    Expiry = erlang:system_time(second) + 3600,
+    Token = jwt(Expiry, N, Id),
+    Account = #{<<"user_id">> => <<"42">>, <<"access_token">> => <<"access-token">>,
+                <<"github_login">> => <<"user">>, <<"organization_id">> => <<"org-42">>,
+                <<"jwt">> => Token, <<"jwt_expires">> => Expiry,
+                <<"_albedo_account_id">> => Id},
+    ok = write_accounts(Home, [Account]),
+    Endpoint = <<"albedo:zed:account:", Id/binary>>,
+    Body = case Payload of
+               {json, Value} -> iolist_to_binary(json:encode(Value));
+               {raw, Bytes} -> Bytes
+           end,
+    ets:insert(?FIXTURE, {catalog, Body}),
+    try
+        {Branch, ExpectedModels, Valid} = catalog_expected(Payload),
+        cover_catalog(Branch, Valid),
+        fixture_reset(),
+        Models = safe_call(fun() -> albedo_zed:models(Home, Endpoint) end),
+        Context = #{payload => Payload, expected => ExpectedModels, result => Models},
+        case {ExpectedModels, Models} of
+            {{ok, Ids}, {ok, Ids}} -> cache_reuse(Home, Endpoint, Ids, Context);
+            {{ok, _}, _} -> record(catalog_violations, model_list, Context);
+            {error, {error, Reason}} when is_binary(Reason) -> ok;
+            {error, _} -> record(catalog_violations, fetch_error, Context)
+        end,
+        Fetched = case Models of
+                      {ok, _} -> listed;
+                      {error, FetchReason} -> {failed, FetchReason};
+                      _ -> {raised, Models}
+                  end,
+        Probes = catalog_probes(Valid),
+        lists:foreach(fun(Probe) -> lookup_check(Home, Endpoint, Fetched, Valid, Probe) end, Probes),
+        lists:foreach(fun(Probe) -> route_check(Home, Token, Fetched, Valid, Probe) end, Probes)
+    after ets:delete(?FIXTURE, catalog) end.
+
+catalog_expected({raw, _}) -> {malformed, error, []};
+catalog_expected({json, Value}) ->
+    case Value of
+        #{<<"models">> := Entries} when is_list(Entries) ->
+            Valid = catalog_valid(Entries),
+            case Valid of
+                [] -> {empty_catalog, {ok, []}, []};
+                _ -> {catalog, {ok, [maps:get(<<"id">>, E) || E <- Valid, enabled(E)]}, Valid}
+            end;
+        _ -> {malformed, error, []}
+    end.
+
+%% A usable entry is an object with a text id; nothing else is kept.
+catalog_valid(Entries) ->
+    [E || E <- Entries, is_map(E), is_binary(maps:get(<<"id">>, E, undefined))].
+
+enabled(M) -> maps:get(<<"is_disabled">>, M, false) =/= true.
+
+cover_catalog(malformed, _) ->
+    put(catalog_coverage, (get(catalog_coverage))#{generated := 1 +
+        maps:get(generated, get(catalog_coverage)), malformed := 1 +
+        maps:get(malformed, get(catalog_coverage))});
+cover_catalog(Branch, Valid) ->
+    Stats = get(catalog_coverage),
+    Disabled = length([E || E <- Valid, not enabled(E)]),
+    Unknown = length([E || E <- Valid, enabled(E),
+                           not lists:member(maps:get(<<"provider">>, E, undefined),
+                               [<<"anthropic">>, <<"open_ai">>, <<"google">>, <<"x_ai">>])]),
+    Ids = [maps:get(<<"id">>, E) || E <- Valid],
+    Extra = case Branch of empty_catalog -> #{empty_catalog => 1}; _ -> #{} end,
+    put(catalog_coverage, maps:merge(Stats#{generated := maps:get(generated, Stats) + 1,
+                                            entries := maps:get(entries, Stats) + length(Valid),
+                                            usable_entries := maps:get(usable_entries, Stats) + length(Valid),
+                                            disabled_entries := maps:get(disabled_entries, Stats) + Disabled,
+                                            unknown_providers := maps:get(unknown_providers, Stats) + Unknown,
+                                            duplicate_ids := maps:get(duplicate_ids, Stats) +
+                                                case length(Ids) =/= length(lists:usort(Ids)) of
+                                                    true -> 1; false -> 0
+                                                end}, Extra)).
+
+%% A second call within the hour answers from the cache with the same list.
+cache_reuse(Home, Endpoint, Ids, Context) ->
+    fixture_reset(),
+    case safe_call(fun() -> albedo_zed:models(Home, Endpoint) end) of
+        {ok, Ids} ->
+            case fixture_requests() of
+                0 -> ok;
+                N -> record(catalog_violations, cache_missed, Context#{requests => N})
+            end;
+        Other -> record(catalog_violations, cache_reuse, Context#{second => Other})
+    end.
+
+%% Ids worth asking about: a disabled or unroutable entry first, then the rest
+%% of what the payload offers, then a name the catalog does not hold.
+catalog_probes(Valid) ->
+    All = lists:usort([maps:get(<<"id">>, E) || E <- Valid]),
+    Special = lists:usort([maps:get(<<"id">>, E) || E <- Valid,
+                           not enabled(E) orelse not maps:is_key(<<"provider">>, E)]),
+    Rest = [Id || Id <- All, not lists:member(Id, Special)],
+    lists:sublist(Special, 3) ++ lists:sublist(Rest, 2) ++ [<<"absent-model">>].
+
+ambiguous_id(Valid, Id) ->
+    length([E || E <- Valid, maps:get(<<"id">>, E) =:= Id]) > 1.
+
+catalog_lookup(Valid, Endpoint, Id) ->
+    Matches = [E || E <- Valid, maps:get(<<"id">>, E) =:= Id],
+    case Matches of
+        [] -> none;
+        _ -> case ambiguous_id(Valid, Id) of
+                 true -> ambiguous;
+                 false -> case [E || E <- Matches, enabled(E)] of
+                              [] -> none;
+                              [E | _] -> expected_info(Endpoint, E)
+                          end
+             end
+    end.
+
+lookup_check(Home, Endpoint, Fetched, Valid, Id) ->
+    Expected = case Fetched of
+                   listed -> catalog_lookup(Valid, Endpoint, Id);
+                   _ -> none
+               end,
+    Result = safe_call(fun() -> albedo_zed:lookup(Home, Endpoint, Id) end),
+    Context = #{id => Id, expected => Expected, result => Result},
+    case Result of
+        {raised, _, _} -> record(catalog_violations, lookup_crashed, Context);
+        _ when Expected =:= ambiguous -> ok;
+        none when Expected =:= none -> ok;
+        {some, Info} when Expected =/= none ->
+            case lookup_matches(Expected, Info) of
+                true -> ok;
+                false -> record(catalog_violations, lookup_projection, Context)
+            end;
+        _ -> record(catalog_violations, lookup_shape, Context)
+    end.
+
+%% The documented projection of one catalog entry into the harness's model
+%% info: positive limits only, image support adds a modality, a model without
+%% thinking offers no effort, and the efforts the entry names are deduplicated
+%% and ordered lowest first.
+expected_info(Endpoint, E) ->
+    Levels = case maps:get(<<"supported_effort_levels">>, E, []) of
+                 L when is_list(L) -> L;
+                 _ -> []
+             end,
+    EffortNames = case maps:get(<<"supports_thinking">>, E, true) of
+                      false -> [];
+                      _ -> effort_names([V || #{<<"value">> := V} <- Levels, is_binary(V)])
+                  end,
+    {info, #{id => maps:get(<<"id">>, E),
+             max_tokens => expect_positive(maps:get(<<"max_token_count">>, E, 0)),
+             max_tokens_max => expect_positive(maps:get(<<"max_token_count_in_max_mode">>, E, 0)),
+             max_output => expect_positive(maps:get(<<"max_output_tokens">>, E, 0)),
+             modalities => case maps:get(<<"supports_images">>, E, false) of
+                               true -> [<<"text">>, <<"image">>];
+                               _ -> [<<"text">>]
+                           end,
+             efforts => EffortNames,
+             endpoint => Endpoint}}.
+
+expect_positive(N) when is_integer(N), N > 0 -> {some, N};
+expect_positive(_) -> none.
+
+%% The names the catalog offers, deduplicated and ordered lowest first. Only the
+%% naming is borrowed from the model module; which names survive is the model's
+%% own list.
+effort_names(Names) ->
+    Known = [<<"none">>, <<"minimal">>, <<"low">>, <<"medium">>, <<"high">>, <<"xhigh">>, <<"max">>],
+    Unique = lists:usort([N || N <- Names, lists:member(N, Known)]),
+    Ranked = lists:sort([{rank(N, Known, 1), N} || N <- Unique]),
+    [N || {_, N} <- Ranked].
+
+rank(N, [N | _], I) -> I;
+rank(N, [_ | Rest], I) -> rank(N, Rest, I + 1).
+
+lookup_matches({info, Exp}, Info) when is_tuple(Info), tuple_size(Info) =:= 14,
+                                       element(1, Info) =:= model_info ->
+    element(2, Info) =:= maps:get(id, Exp)
+        andalso element(3, Info) =:= <<"zed">>
+        andalso element(4, Info) =:= maps:get(max_tokens, Exp)
+        andalso element(5, Info) =:= maps:get(max_tokens_max, Exp)
+        andalso element(6, Info) =:= maps:get(max_output, Exp)
+        andalso element(7, Info) =:= maps:get(modalities, Exp)
+        andalso element(8, Info) =:= {some, maps:get(endpoint, Exp)}
+        andalso element(9, Info) =:= []
+        andalso element(10, Info) =:= <<"Zed /models">>
+        andalso effort_names_of(element(11, Info)) =:= maps:get(efforts, Exp)
+        andalso element(12, Info) =:= none
+        andalso element(13, Info) =:= <<"provider">>
+        andalso element(14, Info) =:= none;
+lookup_matches(_, _) -> false.
+
+effort_names_of(Efforts) when is_list(Efforts) -> [albedo_model:effort_name(E) || E <- Efforts];
+effort_names_of(_) -> invalid.
+
+catalog_route(Valid, Id) ->
+    case [E || E <- Valid, maps:get(<<"id">>, E) =:= Id] of
+        [] -> {error, absent};
+        [First | _] ->
+            case ambiguous_id(Valid, Id) of
+                true -> ambiguous;
+                false -> route_first(First)
+            end
+    end.
+
+route_first(#{<<"is_disabled">> := true, <<"disabled_reason">> := Reason})
+        when is_binary(Reason), Reason =/= <<>> ->
+    {error, {disabled, Reason}};
+route_first(#{<<"is_disabled">> := true}) -> {error, disabled};
+route_first(#{<<"provider">> := Provider}) ->
+    case lists:member(Provider, [<<"anthropic">>, <<"open_ai">>, <<"google">>, <<"x_ai">>]) of
+        true -> {ok, Provider};
+        false -> {error, unsupported_provider}
+    end;
+route_first(_) -> {error, unroutable}.
+
+route_check(Home, Token, Fetched, Valid, Id) ->
+    %% An unavailable catalog is reported as such, whatever model was asked for.
+    Expected = case Fetched of
+                   listed -> catalog_route(Valid, Id);
+                   {failed, Reason} -> {error, {catalog, Reason}};
+                   _ -> {error, {catalog, any}}
+               end,
+    Result = safe_call(fun() -> albedo_zed:route(Home, ?ENDPOINT, Token, Id) end),
+    Context = #{id => Id, expected => Expected, result => Result},
+    case {Expected, Result} of
+        {ambiguous, _} -> ok;
+        {_, {raised, _, _}} -> record(catalog_violations, route_crashed, Context);
+        {{ok, Provider}, {ok, Provider}} -> ok;
+        {{ok, _}, _} -> record(catalog_violations, route_provider, Context);
+        {{error, Category}, {error, Message}} when is_binary(Message) ->
+            case route_message_matches(Category, Message) of
+                true -> ok;
+                false -> record(catalog_violations, route_message, Context)
+            end;
+        _ -> record(catalog_violations, route_shape, Context)
+    end.
+
+route_message_matches({disabled, Reason}, Message) ->
+    Message =:= <<"model is disabled for this Zed account: ", Reason/binary>>;
+route_message_matches(disabled, Message) ->
+    Message =:= <<"model is disabled for this Zed account">>;
+route_message_matches(unsupported_provider, Message) ->
+    Message =:= <<"model uses a provider this integration does not send">>;
+route_message_matches(absent, Message) ->
+    Message =:= <<"model is not in the Zed catalog for this account">>;
+route_message_matches(unroutable, _Message) -> true;
+route_message_matches({catalog, Reason}, Message) -> Message =:= Reason;
+route_message_matches({catalog, any}, Message) -> is_binary(Message).
+
+%% Known ambiguity, counted rather than reported: a cache entry stamped in the
+%% future stays fresh to the current rule for as long as its stamp leads the
+%% clock.
+future_dated_case(Home) ->
+    Token = <<"future-token">>,
+    At = erlang:system_time(second) + 86400,
+    ok = write_cache(Home, ?ENDPOINT, Token, #{<<"at">> => At, <<"models">> =>
+        [#{<<"id">> => <<"future-only">>, <<"provider">> => <<"anthropic">>}]}),
+    fixture_reset(),
+    Result = safe_call(fun() -> albedo_zed:route(Home, ?ENDPOINT, Token, <<"future-only">>) end),
+    unconstrained(future_dated_cache, #{result => Result, requests => fixture_requests()}),
+    ok.
+
+catalog_report() ->
+    case get(catalog_violations) of
+        undefined -> ok;
+        [] -> ok;
+        Violations -> fail(catalog_properties, lists:sublist(lists:reverse(Violations), 30))
+    end.
 
 
 %% exchange/4: retry a rejected credential once, only before model output
