@@ -699,18 +699,15 @@ func (s *cursedRenderer) skipReflowedRows(width int) {
 	if uv.Environ(s.env).Getenv("STY") != "" {
 		return
 	}
-	rows := strings.Split(s.lastView.Content, "\n")
-	if len(rows) > s.height {
-		// Taller frames are drawn bottom-aligned.
-		rows = rows[len(rows)-s.height:]
-	}
 	_, y := s.scr.Position()
 	var reflowed int
-	for i := 0; i < y && i < len(rows); i++ {
+	for i, row := range s.drawnRows() {
+		if i >= y {
+			break
+		}
 		// A row is drawn clipped to the old width, so only that much of it can
 		// rewrap; counting the unclipped row would move above the frame.
-		row := ansi.Truncate(rows[i], s.width, "")
-		reflowed += strings.Count(ansi.Hardwrap(row, width, true), "\n")
+		reflowed += strings.Count(ansi.Hardwrap(ansi.Truncate(row, s.width, ""), width, true), "\n")
 	}
 	if reflowed > 0 {
 		// Written straight out: the renderer's own move clamps to the frame
@@ -718,6 +715,26 @@ func (s *cursedRenderer) skipReflowedRows(width int) {
 		// so its next move to the frame top stacks on this one.
 		_, _ = s.scr.WriteString(ansi.CursorUp(reflowed))
 	}
+}
+
+// drawnRows is the frame as the terminal holds it: the rows the last flush
+// drew, cut after the last cell written. A trailing cell the renderer left
+// blank is blank on the terminal too, so a rewrap carries nothing from it
+// onto the next row and counting it would move above the frame's top.
+func (s *cursedRenderer) drawnRows() []string {
+	rows := make([]string, len(s.cellbuf.Lines))
+	for i, line := range s.cellbuf.Lines {
+		end := len(line)
+		for end > 0 && line[end-1].Equal(&uv.EmptyCell) {
+			end--
+		}
+		var sb strings.Builder
+		for _, cell := range line[:end] {
+			sb.WriteString(cell.Content)
+		}
+		rows[i] = sb.String()
+	}
+	return rows
 }
 
 // clearScreen implements renderer.
