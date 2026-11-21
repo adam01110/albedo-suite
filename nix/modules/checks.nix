@@ -132,6 +132,8 @@
         test -f ${runtime}/lib/albedo/albedo/priv/python/albedo_rtk.py
         test -f ${runtime}/lib/albedo/albedo/priv/python/albedo_fff.mjs
         test -x ${suitePackages.albedo-fff}/bin/albedo-fff
+        # The python check tests this tree before the package exists.
+        diff -r -x __pycache__ ${pythonSources} ${runtime}/lib/albedo/albedo/priv/python
         if grep -E '/[^/]*-albedo-web(-|$)' ${pkgs.closureInfo {rootPaths = [runtime suitePackages.albedo-patched];}}/store-paths; then
           echo "Suite runtime closure must not include the web UI" >&2
           exit 1
