@@ -18,6 +18,7 @@ run() ->
         credential_cases(),
         forgery_cases(),
         callback_cases(),
+        listener_property_cases(),
         rejected_callback_cases(),
         identity_cases(),
         status_cases(),
@@ -475,6 +476,232 @@ catalog_account_retry_cases() ->
             [{last, {'GET', <<"/models">>, <<"Bearer ", Fresh/binary>>, <<>>}}] = ets:lookup(zed_login_fixture, last)
         after mode(normal), file:del_dir_r(Home) end
     end, [account, profile, route]).
+
+%% zed.dev sends the browser back to the literal loopback authority it was
+%% given: http://127.0.0.1:<native_app_port>/?user_id=..&access_token=.., which
+%% is why Zed's own client binds 127.0.0.1:0 and nothing else
+%% (crates/client/src/client.rs, authenticate_with_browser). The cases below pin
+%% what follows from that: what an attempt advertises, that its IPv4 authority
+%% completes whatever the IPv6 loopback does, that the Host header must name this
+%% attempt's loopback authority, that a rejected callback never ends an attempt,
+%% and that two live attempts never accept each other's callbacks.
+listener_property_cases() ->
+    rand:seed(exsss, {20261121, 51723, 9}),
+    advertised_url_cases(8),
+    ipv4_authority_cases(6),
+    host_header_cases(48),
+    malformed_callback_cases(),
+    attempt_isolation_cases(6),
+    io:format("Zed sign-in listener: advertised URL, IPv4 authority, Host/port "
+              "validation, undecryptable callbacks and attempt isolation passed~n").
+
+with_attempt(Run) ->
+    Home = home(), L = login(),
+    {Id, Flow} = start(Home),
+    try Run(Home, Id, Flow)
+    after listener_cancel(Home, Id, L), file:del_dir_r(Home) end.
+
+%% The advertised URL names zed.dev's sign-in page, this attempt's port and a
+%% fresh RSA-2048 public key, and carries no other parameter.
+advertised_url_cases(N) ->
+    Moduli = [with_attempt(fun(_, _, Flow) -> advertised_url(Flow) end) || _ <- lists:seq(1, N)],
+    N = length(lists:usort(Moduli)),
+    ok.
+
+advertised_url(Flow) ->
+    #{<<"url">> := Url} = json:decode(Flow),
+    #{scheme := <<"https">>, host := <<"zed.dev">>, path := <<"/native_app_signin">>,
+      query := Query} = uri_string:parse(Url),
+    Params = uri_string:dissect_query(Query),
+    2 = length(Params),
+    #{<<"native_app_port">> := PortBinary, <<"native_app_public_key">> := Key} = maps:from_list(Params),
+    Port = binary_to_integer(PortBinary),
+    PortBinary = integer_to_binary(Port),
+    true = Port >= 1024 andalso Port =< 65535,
+    #'RSAPublicKey'{modulus = Modulus} =
+        public_key:der_decode('RSAPublicKey', base64:decode(Key, #{mode => urlsafe})),
+    2048 = bit_size(binary:encode_unsigned(Modulus)),
+    Modulus.
+
+%% Whoever owns ::1:Port, whether this attempt, another process, or a kernel
+%% without IPv6, zed.dev's redirect to 127.0.0.1:Port must still complete.
+ipv4_authority_cases(N) ->
+    Verdicts = [with_attempt(fun(Home, Id, Flow) ->
+        Port = port_of(Flow),
+        Verdict = case gen_tcp:listen(Port, [inet6, {ip, {0,0,0,0,0,0,0,1}}, {ipv6_v6only, true},
+                                             binary, {active, false}]) of
+            {ok, Probe} -> gen_tcp:close(Probe), free;
+            {error, eaddrinuse} -> taken;
+            {error, Reason} -> {unavailable, Reason}
+        end,
+        <<"waiting">> = state(get(Home, Id)),
+        <<"HTTP/1.1 302", _/binary>> =
+            listener_request(Port, listener_host(<<"127.0.0.1">>, Port), <<"/">>, listener_query(Flow), <<>>),
+        _ = await_state(Home, Id, <<"confirming">>),
+        Verdict
+    end) || _ <- lists:seq(1, N)],
+    io:format("  ::1:~p free=~B taken=~B other=~p~n",
+        [port, length([V || V <- Verdicts, V =:= free]),
+         length([V || V <- Verdicts, V =:= taken]), [V || V <- Verdicts, not is_atom(V)]]).
+
+%% A callback is accepted exactly when its Host names this attempt's loopback
+%% authority, and a refused one leaves the attempt waiting and completable.
+host_header_cases(N) ->
+    lists:foreach(fun(_) ->
+        {Name, PortKind, Expected} = listener_host_variant(),
+        Target = element(rand:uniform(3), {<<"/">>, <<"/native_app_signin">>, <<"/callback/deep">>}),
+        Headers = element(rand:uniform(3), {<<>>, <<"Origin: https://cloud.zed.dev\r\n">>,
+                                            <<"Sec-Fetch-Site: cross-site\r\n">>}),
+        ExtraQuery = case rand:uniform(2) of 1 -> []; 2 -> [{<<"country_code">>, <<"NL">>}] end,
+        with_attempt(fun(Home, Id, Flow) ->
+            Port = port_of(Flow),
+            Header = case {Name, PortKind} of
+                {none, _} -> none;
+                {_, bare} -> Name;
+                {_, attempt} -> listener_host(Name, Port);
+                {_, other} -> listener_host(Name, listener_other_port(Port))
+            end,
+            Query = listener_query(Flow, ExtraQuery),
+            case Expected of
+                accept ->
+                    <<"HTTP/1.1 302", _/binary>> = listener_request(Port, Header, Target, Query, Headers),
+                    _ = await_state(Home, Id, <<"confirming">>);
+                reject ->
+                    listener_404(listener_request(Port, Header, Target, Query, Headers), {Name, PortKind, Port}),
+                    <<"waiting">> = state(get(Home, Id)),
+                    <<"HTTP/1.1 302", _/binary>> =
+                        listener_request(Port, listener_host(<<"127.0.0.1">>, Port), Target, Query, Headers),
+                    _ = await_state(Home, Id, <<"confirming">>)
+            end
+        end)
+    end, lists:seq(1, N)).
+
+%% Only a Host naming one of the three loopback spellings of this attempt's port
+%% is accepted; every other authority, and a missing one, is refused.
+listener_host_variant() ->
+    Accepted = {<<"127.0.0.1">>, <<"localhost">>, <<"[::1]">>},
+    Foreign = {<<"LOCALHOST">>, <<"localhost.">>, <<"127.0.0.2">>, <<"0.0.0.0">>,
+               <<"[::2]">>, <<"::1">>, <<"evil.invalid">>, <<"127.0.0.1:0">>},
+    case rand:uniform(5) of
+        1 -> {listener_pick(Accepted), attempt, accept};
+        2 -> {listener_pick(Foreign), attempt, reject};
+        3 -> {listener_pick(Accepted), other, reject};
+        4 -> {listener_pick(Accepted), bare, reject};
+        5 -> case rand:uniform(2) of
+                 1 -> {none, none, reject};
+                 2 -> {listener_pick(Foreign), other, reject}
+             end
+    end.
+
+listener_pick(Values) -> element(rand:uniform(tuple_size(Values)), Values).
+
+listener_other_port(Port) ->
+    Candidate = case rand:uniform(4) of
+        1 -> Port + 1;
+        2 -> Port - 1;
+        3 -> 80;
+        4 -> 1024 + rand:uniform(64000)
+    end,
+    case Candidate =:= Port orelse Candidate < 1 orelse Candidate > 65535 of
+        true -> listener_other_port(Port);
+        false -> Candidate
+    end.
+
+%% Every rejected callback is answered 404, never ends the attempt, and leaves
+%% it able to complete with a valid callback afterwards.
+malformed_callback_cases() ->
+    Ids = {<<"0">>, <<>>, <<"007">>, <<"12a">>, <<"1234567890123">>, <<"-3">>, <<"42">>},
+    Tokens = {empty, junk, foreign_key, random_256, control_bytes},
+    lists:foreach(fun(Id) ->
+        lists:foreach(fun(Token) -> malformed_callback(Id, Token) end, tuple_to_list(Tokens))
+    end, tuple_to_list(Ids)).
+
+malformed_callback(Id, Token) ->
+    with_attempt(fun(Home, Attempt, Flow) ->
+        Port = port_of(Flow),
+        Public = listener_key(Flow),
+        Cipher = case Token of
+            empty -> <<>>;
+            junk -> <<"not-base64-at-all">>;
+            foreign_key -> listener_cipher(listener_foreign_public(), <<"editor-test-secret">>);
+            random_256 -> base64:encode(crypto:strong_rand_bytes(256));
+            control_bytes -> listener_cipher(Public, <<"editor-test", 10, "secret">>)
+        end,
+        Query = uri_string:compose_query([{<<"user_id">>, Id}, {<<"access_token">>, Cipher}]),
+        listener_404(listener_request(Port, listener_host(<<"127.0.0.1">>, Port), <<"/">>, Query, <<>>),
+                     {Id, Token}),
+        <<"waiting">> = state(get(Home, Attempt)),
+        <<"HTTP/1.1 302", _/binary>> =
+            listener_request(Port, listener_host(<<"localhost">>, Port), <<"/">>, listener_query(Flow), <<>>),
+        _ = await_state(Home, Attempt, <<"confirming">>)
+    end).
+
+%% Two live attempts advertise distinct ports and refuse each other's callback.
+attempt_isolation_cases(N) ->
+    lists:foreach(fun(_) ->
+        Home = home(), L = login(),
+        {A, AFlow} = start(Home), {B, BFlow} = start(Home),
+        try
+            PortA = port_of(AFlow), PortB = port_of(BFlow),
+            true = PortA =/= PortB,
+            Cross = uri_string:compose_query([{<<"user_id">>, <<"42">>},
+                {<<"access_token">>, listener_cipher(listener_key(AFlow), <<"editor-test-secret">>)}]),
+            listener_404(listener_request(PortB, listener_host(<<"127.0.0.1">>, PortB), <<"/">>, Cross, <<>>),
+                         cross_attempt),
+            <<"waiting">> = state(get(Home, A)),
+            <<"waiting">> = state(get(Home, B)),
+            <<"HTTP/1.1 302", _/binary>> =
+                listener_request(PortB, listener_host(<<"127.0.0.1">>, PortB), <<"/">>, listener_query(BFlow), <<>>),
+            _ = await_state(Home, B, <<"confirming">>),
+            <<"waiting">> = state(get(Home, A)),
+            <<"HTTP/1.1 302", _/binary>> =
+                listener_request(PortA, listener_host(<<"127.0.0.1">>, PortA), <<"/">>, listener_query(AFlow), <<>>),
+            _ = await_state(Home, A, <<"confirming">>)
+        after listener_cancel(Home, A, L), listener_cancel(Home, B, L), file:del_dir_r(Home) end
+    end, lists:seq(1, N)).
+
+listener_request(Port, HostHeader, Target, Query, Extra) ->
+    Request = ["GET ", Target, "?", Query, " HTTP/1.1\r\n",
+               case HostHeader of none -> []; Header -> ["Host: ", Header, "\r\n"] end, Extra, "\r\n"],
+    {ok, Socket} = gen_tcp:connect({127,0,0,1}, Port, [binary, {active, false}], 1000),
+    ok = gen_tcp:send(Socket, Request),
+    Reply = response(Socket, <<>>),
+    gen_tcp:close(Socket),
+    Reply.
+
+%% docs/zed.md: a malformed callback is answered 404 and never ends the attempt.
+listener_404(<<"HTTP/1.1 404", _/binary>>, _) -> ok;
+listener_404(Reply, Case) -> error({callback_not_answered_404, Case, Reply}).
+
+listener_cancel(Home, Id, L) ->
+    try cancel_identified(Home, Id, [L]) catch _:_ -> ok end.
+
+listener_host(Name, Port) -> <<Name/binary, ":", (integer_to_binary(Port))/binary>>.
+
+listener_key(Flow) ->
+    #{<<"url">> := Url} = json:decode(Flow),
+    #{query := Query} = uri_string:parse(Url),
+    Key = maps:get(<<"native_app_public_key">>, maps:from_list(uri_string:dissect_query(Query))),
+    public_key:der_decode('RSAPublicKey', base64:decode(Key, #{mode => urlsafe})).
+
+listener_cipher(Public, Token) -> encrypt(Public, Token).
+
+listener_query(Flow) -> listener_query(Flow, []).
+
+listener_query(Flow, Extra) ->
+    uri_string:compose_query([{<<"user_id">>, <<"42">>},
+        {<<"access_token">>, listener_cipher(listener_key(Flow), <<"editor-test-secret">>)} | Extra]).
+
+listener_foreign_public() ->
+    case persistent_term:get(zed_listener_foreign_key, undefined) of
+        undefined ->
+            Key = public_key:generate_key({rsa, 2048, 65537}),
+            Public = #'RSAPublicKey'{modulus = Key#'RSAPrivateKey'.modulus,
+                                     publicExponent = Key#'RSAPrivateKey'.publicExponent},
+            persistent_term:put(zed_listener_foreign_key, Public),
+            Public;
+        Public -> Public
+    end.
 
 %% Every refusal is answered, as docs/zed.md promises: a Host that is not this
 %% attempt's loopback authority and a callback without the encrypted pair are
