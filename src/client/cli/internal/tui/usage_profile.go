@@ -269,7 +269,11 @@ func usageProfileFacts(prof daemon.UsageProfile, zone *time.Location) string {
 		countedText(prof.LifetimeCalls, "call"),
 		countedText(prof.ActiveDays, "active day"),
 		"since " + prof.FirstDay.In(zone).Format("2 Jan 2006"),
-		"peak " + prof.PeakDay.In(zone).Format("Mon 2 Jan"),
+	}
+	// A day whose calls all failed without usage has no peak to name, and its
+	// zero stamp would read as a date in year 1.
+	if !prof.PeakDay.IsZero() {
+		parts = append(parts, "peak "+prof.PeakDay.In(zone).Format("Mon 2 Jan"))
 	}
 	return strings.Join(parts, " · ")
 }

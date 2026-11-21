@@ -199,6 +199,29 @@ func TestUsageDuration(t *testing.T) {
 	}
 }
 
+// A profile with active days but no tokens has no peak day: every call of it
+// failed without usage, so the daemon reports a null peak. The facts line must
+// not print the zero stamp as a date in year 1.
+func TestUsageProfileFactsSkipAnUnknownPeak(t *testing.T) {
+	prof := daemon.UsageProfile{
+		LifetimeCalls: 1,
+		ActiveDays:    1,
+		FirstDay:      time.Date(2026, 11, 20, 0, 0, 0, 0, time.UTC),
+	}
+	got := usageProfileFacts(prof, time.UTC)
+	if strings.Contains(got, "peak") || strings.Contains(got, "1 Jan") {
+		t.Fatalf("an unknown peak drawn as %q", got)
+	}
+	if want := "1 call · 1 active day · since 20 Nov 2026"; got != want {
+		t.Fatalf("facts %q, want %q", got, want)
+	}
+	// A known peak keeps its place at the end.
+	prof.PeakDay = time.Date(2026, 11, 18, 0, 0, 0, 0, time.UTC)
+	if got, want := usageProfileFacts(prof, time.UTC), " · peak Wed 18 Nov"; !strings.HasSuffix(got, want) {
+		t.Fatalf("facts %q, want the peak %q", got, want)
+	}
+}
+
 // A month that begins in the newest week keeps its whole name at the end of
 // the calendar instead of losing its last letter past the grid.
 func TestUsageMonthsKeepWholeNamesAtTheEnd(t *testing.T) {
