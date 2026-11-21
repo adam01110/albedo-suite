@@ -360,7 +360,8 @@ func (m LoginModel) rowVerb(item loginItem) (string, bool) {
 	switch {
 	case strings.HasPrefix(item.ID, "use:"):
 		if !m.Profiles.Providers[strings.TrimPrefix(item.ID, "use:")].IsEnabled() {
-			return "", false
+			// The row's kind decides: a disabled profile has no enter action.
+			return "", true
 		}
 		return "use", true
 	case strings.HasPrefix(item.ID, "signin:"):

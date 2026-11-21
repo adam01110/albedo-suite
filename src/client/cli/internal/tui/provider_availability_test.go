@@ -133,3 +133,33 @@ func providersDaemon(t *testing.T) (LoginModel, <-chan providerPatch) {
 	m.Profiles.ETag = `"providers-1"`
 	return m, patches
 }
+
+// A disabled saved profile has no enter action: its row offers ctrl+t alone,
+// so the footer must not name a verb enter cannot carry out.
+func TestProviderAvailabilityDisabledRowOffersNoEnterAction(t *testing.T) {
+	off, on := false, true
+	m := loginModel(100, 24)
+	profile := m.Profiles.Providers["work"]
+	profile.Enabled = &off
+	m.Profiles.Providers["work"] = profile
+	showSetups(&m)
+	focusLoginRow(&m, "use:work")
+	if verb := m.enterVerb(); verb != "" {
+		t.Fatalf("disabled row offers enter %q", verb)
+	}
+	for _, h := range m.hints() {
+		if h.key == "enter" {
+			t.Fatalf("disabled row advertises enter: %v", m.hints())
+		}
+	}
+	if !slices.Contains(m.hints(), hint{"ctrl+t", "enable"}) {
+		t.Fatalf("disabled row lost its enable hint: %v", m.hints())
+	}
+	profile.Enabled = &on
+	m.Profiles.Providers["work"] = profile
+	showSetups(&m)
+	focusLoginRow(&m, "use:work")
+	if verb := m.enterVerb(); verb != "use" {
+		t.Fatalf("enabled row enter verb %q", verb)
+	}
+}
