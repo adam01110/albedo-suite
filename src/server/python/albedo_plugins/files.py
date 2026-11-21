@@ -260,7 +260,9 @@ def _path_regex(pattern):
                 if char == "*":
                     body += "[^/]*"
                 elif char == "?":
-                    body += "[^/]"
+                    # One character, not one UTF-16 unit: a JavaScript
+                    # regex without the u flag splits non-BMP characters.
+                    body += "(?:[\\ud800-\\udbff][\\udc00-\\udfff]|[^/\\ud800-\\udfff])"
                 elif char == "[":
                     j, translated = _class_regex(part, j)
                     body += translated

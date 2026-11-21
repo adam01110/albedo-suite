@@ -271,6 +271,23 @@ class FffTests(unittest.IsolatedAsyncioTestCase):
                 rows = await self.files.find(pattern, str(target))
                 self.assertEqual([row.line for row in rows], lines)
 
+    async def test_question_mark_matches_one_character_not_one_code_unit(self):
+        unicode_dir = self.root / "unicode"
+        unicode_dir.mkdir()
+        (unicode_dir / "😀.txt").write_text("needle\n")
+        (unicode_dir / "é.txt").write_text("needle\n")
+        (unicode_dir / "two.txt").write_text("needle\n")
+        expected = {str(unicode_dir / "😀.txt"), str(unicode_dir / "é.txt")}
+        rows = await self.files.paths("unicode/?.txt", str(self.root))
+        self.assertEqual(set(rows), expected)
+        found = await self.files.find(
+            "needle", str(self.root), glob="unicode/?.txt", literal=True
+        )
+        self.assertEqual({row.path for row in found}, expected)
+        # Two `?` are two characters, never the halves of one.
+        rows = await self.files.paths("unicode/??.txt", str(self.root))
+        self.assertNotIn(str(unicode_dir / "😀.txt"), rows)
+
     async def test_external_changes_edits_deletion_and_index_reuse(self):
         await self.files.paths(path=str(self.root))
         worker_pid = module._fff.worker_pid
