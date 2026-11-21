@@ -12,7 +12,7 @@
 # hold conflict markers are replaced by pristine upstream in the tree, with a note.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-suite=$PWD
+suite=$(pwd -P)
 sync=false
 if [ "${1-}" = sync ]; then
   sync=true
@@ -22,6 +22,7 @@ component=${1:?usage: overlay-tree.sh [sync] server|client [dir]}
 case $component in server | client) ;; *) echo "unknown component: $component" >&2 && exit 2 ;; esac
 dir=$(realpath -m "${2:-/tmp/albedo-overlay-$component}")
 case $dir/ in "$suite"/*) echo "tree must be outside the checkout" >&2 && exit 2 ;; esac
+case $suite/ in "${dir%/}"/*) echo "tree must not contain the checkout" >&2 && exit 2 ;; esac
 develop=(--no-update-lock-file ".#albedo-defaults.$component.unwrapped")
 if [ "$component" = client ]; then
   # The client's check environment names the daemon; a tree needs none, so its
@@ -69,6 +70,12 @@ if $sync; then
   exit 0
 fi
 
+# A rebuild deletes the directory, so it must be empty or an earlier tree,
+# which always has its shell wrapper or tree pointer.
+if [ -n "$(ls -A "$dir" 2>/dev/null)" ] && [ ! -f "$dir/shell" ] && [ ! -f "$dir/.tree" ]; then
+  echo "$dir is not an overlay tree; remove it or pick another directory" >&2
+  exit 2
+fi
 # Unpacked vendor trees are read-only.
 if [ -e "$dir" ]; then chmod -R u+w "$dir"; fi
 rm -rf "$dir"

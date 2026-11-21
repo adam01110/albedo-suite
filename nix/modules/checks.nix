@@ -82,6 +82,13 @@
       touch $out
     '';
 
+    checks.overlay-guard = runCommand "albedo-overlay-guard-tests" {nativeBuildInputs = [pkgs.python311];} ''
+      export PYTHONDONTWRITEBYTECODE=1
+      export ALBEDO_OVERLAY_TREE=${../../scripts/overlay-tree.sh}
+      python3 -m unittest discover -s ${../../test} -p overlay_tree_guard_test.py -v
+      touch $out
+    '';
+
     checks.home-manager =
       if homeManagerFailures != []
       then throw "Home Manager cases failed: ${builtins.toJSON homeManagerFailures}"
