@@ -43,6 +43,7 @@ pub fn main() -> Nil {
       )
     })
   let assert Ok(Nil) = loads.initialise(scope)
+  loads_keep_order_within_one_second(scope)
   descriptions_are_validated(scope)
   startup_contacts_nothing_and_loads_once(home, scope)
   idle_cleanup_reconnects_and_refuses_drift(home, scope)
@@ -51,7 +52,7 @@ pub fn main() -> Nil {
   store.close(ledger)
   let _ = del_dir_r(home)
   io.println(
-    "Lazy MCP: validation, startup, adoption, single load, no replay, sidebar, per-server idle, drift, dropped transport and owner death passed",
+    "Lazy MCP: load order, validation, startup, adoption, single load, no replay, sidebar, per-server idle, drift, dropped transport and owner death passed",
   )
 }
 
@@ -95,6 +96,27 @@ fn assert_reused_home_starts_clean(home: String) -> Nil {
     })
   store.close(ledger)
   prepare_home(home)
+}
+
+/// Loads in reverse name order, far faster than one per second: at most one
+/// second boundary falls among them, so ordering ties by name would reorder
+/// some, and the list must keep load order instead.
+fn loads_keep_order_within_one_second(scope: storage.Storage) -> Nil {
+  let assert Ok(Nil) =
+    storage.query(scope, fn(db) {
+      storage.exec(db, "INSERT INTO sessions(id) VALUES('load-order');")
+    })
+  let names = string.to_graphemes("zyxwvutsrqponmlkjihgfedcba")
+  list.each(names, fn(name) {
+    let assert Ok(Nil) = loads.record(scope, "load-order", name, True)
+  })
+  // A later record keeps the first place.
+  let assert Ok(Nil) = loads.record(scope, "load-order", "z", False)
+  let assert Ok(found) = loads.list(scope, "load-order")
+  assert list.map(found, fn(load) { load.server }) == names
+  let assert Ok(Nil) =
+    storage.query(scope, fn(db) { loads.forget(db, "load-order") })
+  Nil
 }
 
 fn descriptions_are_validated(scope: storage.Storage) -> Nil {

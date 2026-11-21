@@ -4,8 +4,8 @@
 //// reads the monotonic clock directly and has no tick message, so every
 //// time-dependent expectation is a bound measured around the request:
 //// certainly expired, certainly connected, or undetermined, and the coverage
-//// counters report how often each held. Load history ordering is checked
-//// separately because `first_at` counts whole seconds.
+//// counters report how often each held. Load history keeps load order, also
+//// within one second.
 
 import albedo/composition/mcp_owner_support
 import albedo/lifecycle/host_install
@@ -622,8 +622,7 @@ fn name() -> qcheck.Generator(String) {
 }
 
 /// Record, reset and forget over two sessions, compared with an independent
-/// model of each session's rows. Rows are compared as multisets because
-/// `first_at` counts whole seconds, so rows recorded in one second tie.
+/// model of each session's rows, in first-load order.
 fn history(scope: storage.Storage, ops: List(HistoryOp)) -> Nil {
   let sessions = [
     "h0-" <> int.to_string(proptest.unique()),
@@ -676,16 +675,16 @@ fn history(scope: storage.Storage, ops: List(HistoryOp)) -> Nil {
         |> result.unwrap([])
         |> list.map(fn(row) { #(row.server, row.loaded) })
       let expected = dict.get(model, other) |> result.unwrap([])
-      assert row_set(found) == row_set(expected)
+      assert found == expected
     })
     model
   })
   Nil
 }
 
-/// Each server keeps the place its first load gave it: rows recorded a second
-/// apart stay in insertion order across later records and a reset, even when
-/// name order differs.
+/// Each server keeps the place its first load gave it: rows recorded within
+/// one second stay in insertion order across later records and a reset, even
+/// when name order differs.
 fn first_places(scope: storage.Storage, names: List(String)) -> Nil {
   let names =
     list.unique(
@@ -698,7 +697,6 @@ fn first_places(scope: storage.Storage, names: List(String)) -> Nil {
     })
   list.each(names, fn(name) {
     let assert Ok(Nil) = loads.record(scope, session, name, True)
-    process.sleep(1100)
   })
   // Later records and a reset keep the first places and update the flags.
   list.each(list.reverse(names), fn(name) {
@@ -729,11 +727,6 @@ fn sidebar(
 fn sort_rows(
   rows: List(#(String, String, page.Tone)),
 ) -> List(#(String, String, page.Tone)) {
-  list.sort(rows, fn(left, right) { string.compare(left.0, right.0) })
-}
-
-/// The row multiset in name order.
-fn row_set(rows: List(#(String, Bool))) -> List(#(String, Bool)) {
   list.sort(rows, fn(left, right) { string.compare(left.0, right.0) })
 }
 

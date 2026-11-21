@@ -47,7 +47,8 @@ pub fn forget(db: sqlight.Connection, session: String) -> Result(Nil, String) {
 }
 
 /// Notes that `server` was loaded or unloaded; a server keeps the place its
-/// first load gave it.
+/// first load gave it. `first_at` counts whole seconds, so a new row starts
+/// past the session's latest one: loads within one second keep their order.
 pub fn record(
   handle: storage.Storage,
   session: String,
@@ -57,13 +58,14 @@ pub fn record(
   let now = albedo_clock.system_seconds()
   storage.write(
     handle,
-    "INSERT INTO mcp_loads(session,server,loaded,first_at,last_at) VALUES(?,?,?,?,?) ON CONFLICT(session,server) DO UPDATE SET loaded=excluded.loaded,last_at=excluded.last_at",
+    "INSERT INTO mcp_loads(session,server,loaded,first_at,last_at) SELECT ?,?,?,MAX(?,COALESCE(MAX(first_at)+1,0)),? FROM mcp_loads WHERE session=? ON CONFLICT(session,server) DO UPDATE SET loaded=excluded.loaded,last_at=excluded.last_at",
     [
       sqlight.text(session),
       sqlight.text(server),
       sqlight.bool(loaded),
       sqlight.int(now),
       sqlight.int(now),
+      sqlight.text(session),
     ],
   )
 }
