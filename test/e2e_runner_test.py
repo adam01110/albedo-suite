@@ -55,6 +55,15 @@ class RunnerTests(unittest.TestCase):
             {"type": "input_text", "text": "second"},
         ]}), "firstsecond")
 
+    def test_exclusive_lanes_use_spare_cores_within_the_memory_budget(self):
+        lane = 512 * 1024 * 1024
+        # Small hosts keep upstream's own lane count.
+        self.assertEqual(runner.exclusive_lanes(2, 8 * 1024**3, 2, lane), 2)
+        # Spare cores raise it to two fewer than the host's, bounded by memory.
+        self.assertEqual(runner.exclusive_lanes(12, 25 * 1024**3, 6, lane), 10)
+        # Little memory keeps upstream's plan.
+        self.assertEqual(runner.exclusive_lanes(12, 3 * 1024**3, 4, lane), 4)
+
     def test_failed_tests_map_to_upstream_targets(self):
         log = (
             "ok     zed_e2e_test.ZedTests.test_login (1.0s)\n"

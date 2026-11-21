@@ -3,6 +3,7 @@
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -170,6 +171,35 @@ def run_cases(source, environment, targets, jobs, exclusive_jobs):
     return process.wait(), "".join(log)
 
 
+def exclusive_lanes(cpus, memory, upstream, lane_memory):
+    """Return the private daemons spare cores and the memory budget allow.
+
+    Upstream's E2E half of the budget keeps half a lane for each of its shared
+    lanes (one per two exclusive daemons); each exclusive daemon gets half a
+    lane of what remains. Two cores stay free for the shared lanes and builds.
+    """
+    shared = upstream // 2
+    e2e_budget = memory * 3 // 4 // 2 - shared * (lane_memory // 2)
+    memory_bound = e2e_budget // (lane_memory // 2)
+    return max(upstream, min(cpus - 2, memory_bound))
+
+
+def widened_exclusive_lanes(path):
+    """Return upstream's lane plan widened where this host has spare capacity."""
+    specification = importlib.util.spec_from_file_location("e2e_resources", path)
+    assert specification is not None and specification.loader is not None
+    resources = importlib.util.module_from_spec(specification)
+    specification.loader.exec_module(resources)
+    cpus = resources.cpu_count(include_quota=False)
+    memory = resources.available_memory()
+    try:
+        upstream = resources.plan(cpus, memory, resources.cpu_count())["exclusive"]
+    except ValueError:
+        # Upstream refuses hosts below its memory floor; keep its own failure.
+        return None
+    return exclusive_lanes(cpus, memory, upstream, resources.E2E_LANE_MEMORY)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, required=True)
@@ -234,10 +264,13 @@ def main():
 
         source = Path(directory) / "source"
         prepare_source(args.source, source, suite)
+        exclusive_jobs = args.exclusive_jobs
+        if exclusive_jobs is None and "ALBEDO_TEST_EXCLUSIVE_JOBS" not in os.environ:
+            exclusive_jobs = widened_exclusive_lanes(source / "test" / "resources.py")
+            if exclusive_jobs:
+                print(f"exclusive lanes: {exclusive_jobs}", file=sys.stderr)
         # One invocation shares daemon boots and upstream's duration scheduling.
-        status, log = run_cases(
-            source, environment, targets, args.jobs, args.exclusive_jobs
-        )
+        status, log = run_cases(source, environment, targets, args.jobs, exclusive_jobs)
         failed = retry_targets(log)
         if status == 0 or args.no_retry or not failed:
             return status
