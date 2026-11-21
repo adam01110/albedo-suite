@@ -112,7 +112,7 @@ class FormatterTest(unittest.IsolatedAsyncioTestCase):
         formatter.configure(self.config, str(self.root))
         self.config["timeoutMs"] = 1000
         first, second = self.write(), self.write("second.py")
-        self.set_fixture("slow")
+        self.set_fixture("slow", fast="example.py", seconds=20)
         result = await formatter.finish()
         self.assertFalse(result["ok"])
         self.assertTrue(result["changed"])

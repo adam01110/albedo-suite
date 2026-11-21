@@ -33,7 +33,9 @@ elif mode == "project":
     Path(state["log"]).write_text(json.dumps(sys.argv[2:]))
     target.write_text("project")
 elif mode == "slow":
-    time.sleep(0.65)
+    # A named file publishes at once; the rest hang until the batch timeout.
+    if target.name != state.get("fast"):
+        time.sleep(state.get("seconds", 0.65))
     target.write_text("done")
 else:
     raise ValueError(f"Unknown fixture mode: {mode}")
