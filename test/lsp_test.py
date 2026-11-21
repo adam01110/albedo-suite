@@ -357,11 +357,12 @@ class LspTests(unittest.IsolatedAsyncioTestCase):
             "error",
         ):
             with self.subTest(mode=mode):
-                manager = self.manager(mode)
                 if mode == "request-timeout":
+                    manager = self.manager(mode, requestTimeoutMs=300)
                     with self.assertRaisesRegex(LspError, "timed out"):
                         await attempt(manager, mode)
                 else:
+                    manager = self.manager(mode)
                     with self.assertRaises(LspError):
                         await attempt(manager, mode)
                 self.assertEqual(manager.servers()[0]["state"], "failed")
@@ -427,6 +428,7 @@ class LspTests(unittest.IsolatedAsyncioTestCase):
             {"enabled": 1},
             {"args": "oops"},
             {"diagnosticsWaitMs": 0},
+            {"requestTimeoutMs": 0},
             {"settings": []},
             {"rootMarkers": ["../escape"]},
         ):

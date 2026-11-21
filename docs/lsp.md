@@ -22,6 +22,7 @@ stay in Infra. [Retirement notes](development.md#temporary-compatibility-layers)
         cwd = "{root}";
         rootMarkers = [".git" "flake.nix"];
         startupTimeoutMs = 45000;
+        requestTimeoutMs = 30000;
         diagnosticsWaitMs = 2000;
         initializationOptions = {};
         settings = {};
@@ -34,6 +35,9 @@ stay in Infra. [Retirement notes](development.md#temporary-compatibility-layers)
 Executables and arguments are trusted configuration, not a shell command.
 Settings are public Nix data; do not put credentials in them. Servers inherit
 the session environment. Declaration validation does not start a process.
+The millisecond timeouts bound one stage each: `startupTimeoutMs` the
+initialize handshake, `requestTimeoutMs` each `textDocument/*` request, and
+`diagnosticsWaitMs` the wait for fresh diagnostics.
 
 ## Use
 

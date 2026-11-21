@@ -95,6 +95,7 @@ def validate(config):
             raise ValueError("invalid cwd")
         for key, default, maximum in (
             ("startupTimeoutMs", 45000, 120000),
+            ("requestTimeoutMs", 30000, 120000),
             ("diagnosticsWaitMs", 2000, 30000),
         ):
             value = item.setdefault(key, default)
@@ -722,7 +723,9 @@ class Lsp:
                         params["position"] = position
                     if method == "references":
                         params["context"] = {"includeDeclaration": include_declaration}
-                    result = await client.request("textDocument/" + method, params)
+                    result = await client.request(
+                        "textDocument/" + method, params, config["requestTimeoutMs"] / 1000
+                    )
                 return {
                     "server": config["id"],
                     "path": str(path),
