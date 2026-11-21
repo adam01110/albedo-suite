@@ -56,4 +56,5 @@ check the client. Regression tests also cover stream reduction, concurrency,
 neutral subprocess outcomes, errors, interruption, reset/replay, recovery,
 turn/session/generation boundaries, sanitization, clipping and equal-row-count
 frame-cache updates.
-Both package variants run `go test ./internal/tui -run '^TestActivity'`.
+Both package variants run the `TestActivity` cases in the client check's single
+`go test` over `internal/terminal` and `internal/tui`.

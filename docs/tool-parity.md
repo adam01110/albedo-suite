@@ -48,9 +48,11 @@ stdin/stdout JSON protocol (`--stdio`). There is no Unix-socket fallback or
 per-kernel worker. Each worker caches at most four root indexes. Search refreshes
 the index before returning results; the worker does not trust watcher updates
 alone. Workers start on demand and exit after 60 seconds without a search.
-Requests, including queue time, have a 30-second worker deadline. Closing one
-session does not stop another session's worker; workers are not session
-background jobs.
+Requests, including queue time, have a 30-second worker deadline. Tests shorten
+both with `ALBEDO_FFF_IDLE_MS` and `ALBEDO_FFF_CALL_DEADLINE_MS`, from 100 ms up
+to the default, and the registry's `albedo_fff:search/5` takes an explicit
+timeout; production keeps the defaults. Closing one session does not stop
+another session's worker; workers are not session background jobs.
 
 FFF cannot include hidden or ignored files in its index. `hidden=True` and
 `ignored=True` are explicit errors, not quiet empty results. Unsupported search

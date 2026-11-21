@@ -146,6 +146,7 @@ language-aware, and does not provide all Vim text-object edge-case semantics.
 
 The `TestVim*` regressions cover parser counts/cancellation, motions and operators,
 literal arguments, text objects, undo/redo, attachment/input lifecycle and footer
-rendering. Both client package check phases run
-`go test ./internal/tui -run '^TestVim' -count=1 -v` against the overlaid pinned
-upstream source. Tests establish the supported subset, not complete Vim parity.
+rendering. Both client package check phases run them against the overlaid pinned
+upstream source, in the single `go test ./internal/terminal ./internal/tui`
+invocation that also selects the other TUI and terminal cases. Tests establish
+the supported subset, not complete Vim parity.

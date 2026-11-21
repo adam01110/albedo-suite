@@ -52,7 +52,15 @@ nix fmt
 The checks exercise Home Manager options, source checksums, package contents,
 Python formatter, LSP and MCP bindings, RTK routing and FFF search, and the
 shell helpers. The server build's check phase also runs the suite Gleam tests,
-including the lazy MCP manager lifecycle, catalog prices and memory index.
+including the lazy MCP manager lifecycle, catalog prices and memory index. It
+builds them once in a copy of the source tree and runs each test main as its own
+VM at once, so a new test also joins `suiteTests` in `nix/modules/packages.nix`;
+the esqlite NIF builds once in its own derivation. The `python` check assembles
+`priv/python` from the pinned source and the overlay and runs its files at once,
+and `package-layout` diffs that tree against the installed one. The E2E checks
+build at once, each with two private daemons. The client's own check tests only
+`cmd/albedo`, so the client does not wait for the built server; the suite's
+selections reuse the build's `-trimpath` objects.
 The files under `src/` keep upstream formatting and are excluded from the suite's
 treefmt run.
 
@@ -91,6 +99,11 @@ installed package from another pin. The runner copies the source into a
 writable temporary directory and uses the supplied binaries. `SUITE_CASES` and
 `UPSTREAM_CASES` in `scripts/test-e2e.py` are the authoritative case lists.
 Use `--case <name>` for focused work; omit it for the full upstream-update run.
+
+The packaged `entrypoint.sh` caches the daemon's code path before `main` runs,
+so a module load no longer probes every `ebin` directory; daemons booted with
+`ALBEDO_PRELOAD=0`, as test daemons are, keep the cache, while production keeps
+it until `boot_code.prepare` republishes the path.
 
 Tests use fake providers, temporary homes and local servers. They do not
 activate your configuration, read your credentials or contact live providers.
@@ -344,10 +357,13 @@ required by the existing checks. No live providers or personal credentials are
 used.
 
 `scripts/test-e2e.py` passes all selected cases to one upstream `run.py`
-invocation, so they share daemon boots and its duration-ordered scheduler
-(`-j`/`-x` set its shared and exclusive lanes; upstream defaults otherwise).
-Failed tests are rerun once, serially; a pass there is printed as `FLAKY` and
-the run succeeds. `--no-retry` keeps the first result.
+invocation, so they share daemon boots and its duration-ordered scheduler.
+`-j`/`--jobs` and `-x`/`--exclusive-jobs`, or upstream's
+`ALBEDO_TEST_EXCLUSIVE_JOBS`, set its shared and private lanes. Without either
+exclusive choice the runner widens upstream's private daemons to the spare cores
+its memory budget allows, keeping two cores free. Failed tests are rerun once,
+serially; a pass there is printed as `FLAKY` and the run succeeds. `--no-retry`
+keeps the first result.
 
 Two helpers shorten the merge loop. `scripts/regen-api.sh` reruns upstream's
 `cli/tools/apigen` on the pinned source with the suite's

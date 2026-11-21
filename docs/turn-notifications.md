@@ -52,4 +52,5 @@ urgency, actions or replacement ID, so each turn is a separate notification.
 
 Regression tests cover the sequence format, outcomes, focus, duration, replay,
 mode and sanitization rules, the status-read path and tmux wrapping. Both
-package variants run `go test ./internal/tui -run '^TestTurnNotify'`.
+package variants run them in the client check's single `go test` over
+`internal/terminal` and `internal/tui`.
