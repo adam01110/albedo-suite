@@ -179,7 +179,8 @@ fn startup_contacts_nothing_and_loads_once(
   let pid = server_pid(control)
   kill(pid)
   await_dead(pid, 50)
-  assert state(source) == [#("a", True, False), #("b", False, False)]
+  // The manager learns of the exit from its port, after the process is gone.
+  await_state(source, [#("a", True, False), #("b", False, False)], 50)
   let assert Error(dropped) = lazy.call(source, tool, "{\"message\":\"hi\"}")
   assert string.contains(dropped, "mcp.load")
   assert seen(control, "tools/call") == 2
@@ -388,6 +389,21 @@ fn await_dead(pid: String, tries: Int) -> Nil {
     True, _ -> {
       process.sleep(100)
       await_dead(pid, tries - 1)
+    }
+  }
+}
+
+fn await_state(
+  source: lazy.Source,
+  expected: List(#(String, Bool, Bool)),
+  tries: Int,
+) -> Nil {
+  case state(source) == expected, tries {
+    True, _ -> Nil
+    False, 0 -> panic as "the lazy MCP manager never reached the expected state"
+    False, _ -> {
+      process.sleep(100)
+      await_state(source, expected, tries - 1)
     }
   }
 }
