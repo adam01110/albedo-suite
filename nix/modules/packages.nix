@@ -285,29 +285,46 @@
             '';
         }));
 
-    suiteAlbedo = showDiffs:
+    suiteAlbedo = {
+      showDiffs,
+      suiteNotices ? true,
+    }:
       assert albedo-git.src.outputHash == pin.narHash;
         (albedo-git.override {
           callPackage = path: args: let
             # Builds depend on unwrapped components, never on suite notices.
             package = callPackage path (builtins.mapAttrs (_: arg: arg.unwrapped or arg) args);
             name = baseNameOf path;
+            notices = component:
+              if suiteNotices
+              then component
+              else component.unwrapped;
           in
             if name == "server.nix"
-            then withServerSources package
+            then notices (withServerSources package)
             else if name == "client.nix"
-            then withClientSources showDiffs package
+            then notices (withClientSources showDiffs package)
             else if name == "render.nix"
-            then withSuiteNotices package
+            then notices (withSuiteNotices package)
             else package;
         }).overrideAttrs (old: {
           meta = (old.meta or {}) // {inherit license;};
+          # The same composite without suite notices, which link the whole
+          # tree, so E2E checks survive docs, test and Nix edits.
+          passthru =
+            (old.passthru or {})
+            // pkgs.lib.optionalAttrs suiteNotices {
+              withoutSuiteNotices = suiteAlbedo {
+                inherit showDiffs;
+                suiteNotices = false;
+              };
+            };
         });
   in {
     packages = {
       # keep-sorted start
-      albedo-defaults = suiteAlbedo true;
-      albedo-patched = suiteAlbedo false;
+      albedo-defaults = suiteAlbedo {showDiffs = true;};
+      albedo-patched = suiteAlbedo {showDiffs = false;};
       default = self.packages.${pkgs.stdenv.hostPlatform.system}.albedo-defaults;
       # keep-sorted end
     };

@@ -6,15 +6,34 @@
   ...
 }: {
   perSystem = {pkgs, ...}: let
+    inherit (pkgs.lib) fileset;
     inherit (pkgs) runCommand;
 
     homeManagerFailures = import ../../test/home-manager.nix {inherit inputs pkgs suitePackages;};
 
     suitePackages = self.packages.${pkgs.stdenv.hostPlatform.system};
     runtime = suitePackages.albedo-defaults;
+    e2ePackage = runtime.withoutSuiteNotices;
+    e2eScript = ../../scripts/test-e2e.py;
+
+    # The runner's own case list, so the source below holds exactly what
+    # prepare_source copies and a renamed case fails evaluation.
+    e2eCases = let
+      parts = builtins.split "\nSUITE_CASES = \\(\n([^)]*)\n\\)\n" (builtins.readFile e2eScript);
+    in
+      assert pkgs.lib.assertMsg (builtins.length parts == 3) "scripts/test-e2e.py SUITE_CASES block not found";
+        pkgs.lib.concatLists (builtins.filter builtins.isList (builtins.split "\"([^\"]+)\"" (builtins.head (builtins.elemAt parts 1))));
+    e2eSuite = fileset.toSource {
+      root = ../..;
+      fileset = fileset.unions ([
+          ../../scripts/albedo-monitor.py
+          ../../test/fixtures
+        ]
+        ++ map (case: ../../test + "/${case}") e2eCases);
+    };
     # The E2E checks build at once; letting each widen to every spare core
     # triples daemon boots, so each runs two private daemons at a time.
-    e2eRunner = "python3 ${../../scripts/test-e2e.py} --source ${runtime.server.src} --suite ${../..} --package ${runtime} --exclusive-jobs 2";
+    e2eRunner = "python3 ${e2eScript} --source ${runtime.server.src} --suite ${e2eSuite} --package ${e2ePackage} --exclusive-jobs 2";
 
     # Pinned upstream python with the suite overlay, assembled as the server
     # build assembles priv/python, without waiting for the package builds.
@@ -137,6 +156,14 @@
         test -x ${suitePackages.albedo-fff}/bin/albedo-fff
         # The python check tests this tree before the package exists.
         diff -r -x __pycache__ ${pythonSources} ${runtime}/lib/albedo/albedo/priv/python
+        # The E2E checks run the runtime's files: the runtime adds only suite
+        # notices, and its launcher names the noticed components.
+        sed -e 's|${runtime.client}|${e2ePackage.client}|g' -e 's|${runtime.server}|${e2ePackage.server}|g' ${runtime}/bin/albedo | diff - ${e2ePackage}/bin/albedo
+        diff -rq ${runtime} ${e2ePackage} >"$TMPDIR/e2e-package.diff" || (($? == 1))
+        if grep -Fvx "Files ${runtime}/bin/albedo and ${e2ePackage}/bin/albedo differ" "$TMPDIR/e2e-package.diff" | grep -v "^Only in ${runtime}/share/doc/albedo-suite: "; then
+          echo "The E2E package must match the runtime outside suite notices" >&2
+          exit 1
+        fi
         if grep -E '/[^/]*-albedo-web(-|$)' ${pkgs.closureInfo {rootPaths = [runtime suitePackages.albedo-patched];}}/store-paths; then
           echo "Suite runtime closure must not include the web UI" >&2
           exit 1
