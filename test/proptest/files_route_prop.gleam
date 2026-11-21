@@ -530,9 +530,10 @@ fn fff_search(
 /// A stdio worker that logs each request line and answers with the current
 /// reply file, then exits when the exit file names a code.
 fn worker_script(log: String, reply: String, exit_file: String) -> String {
+  let assert Ok(python) = proptest.executable("python3")
   string.join(
     [
-      "#!/usr/bin/env python3",
+      "#!" <> python,
       "import sys",
       "LOG = \"" <> log <> "\"",
       "REPLY = \"" <> reply <> "\"",

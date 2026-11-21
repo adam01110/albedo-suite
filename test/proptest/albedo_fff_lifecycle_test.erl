@@ -290,10 +290,11 @@ cleanup(Dir) ->
 
 %% The scripted stand-in: one request per line, answering by `probe.mode`, so
 %% a case can make it answer, stall, die, or write past the bound. It also
-%% appends the request it read to `probe.log` when one is named.
+%% appends the request it read to `probe.log` when one is named. The
+%% interpreter is named by path, since a build sandbox has no /usr/bin/env.
 template() ->
     lists:join("\n", [
-      "#!/usr/bin/env escript",
+      ["#!", executable("escript")],
       "%%! +S 2:2",
       "-mode(compile).",
       "main(_Args) -> loop().",

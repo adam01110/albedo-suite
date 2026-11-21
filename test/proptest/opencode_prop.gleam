@@ -807,30 +807,6 @@ fn listing_provider(provider: String) -> Bool {
   }
 }
 
-/// One endpoint spelled with a repeated trailing slash: the host fetches the
-/// same `/models` root either way, so both spellings must share one list key
-/// rather than keeping a second list and a second fetch.
-fn repeated_slash_key() -> Nil {
-  let model_catalog = catalog.catalog()
-  list.each(
-    [
-      "https://opencode.ai/inference/go/v1//",
-      "https://opencode.ai/inference/go/v1///",
-    ],
-    fn(endpoint) {
-      let expected = "https://opencode.ai/inference/go/v1"
-      case model_catalog.list("opencode-go", Some(endpoint), key_environment.empty()) {
-        extension.Remote(key, _, _) ->
-          expect(
-            key == expected,
-            "list key " <> key <> ", expected " <> expected <> " for " <> endpoint,
-          )
-        _ -> fail("the catalog did not list its own provider for " <> endpoint)
-      }
-    },
-  )
-}
-
 /// Every endpoint spelling of one endpoint keeps one list key.
 fn endpoints_listed() -> Nil {
   let model_catalog = catalog.catalog()
@@ -1050,11 +1026,5 @@ pub fn main() -> Nil {
     200,
     recorded_gen(),
     reasoning_replay,
-  )
-  proptest.check(
-    "one endpoint keeps one model-list key",
-    10,
-    qcheck.nil(),
-    fn(_) { repeated_slash_key() },
   )
 }

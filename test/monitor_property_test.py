@@ -330,12 +330,27 @@ class AccountRowsPropertyTests(unittest.TestCase):
             return
         second = monitor.account_rows(list(rows))
         self.assertEqual(first, second)
+
+        # Windows follow the daemon's row order, which docs/monitor.md leaves
+        # open, so reversed input is compared as sets of windows.
+        def unordered(accounts):
+            return sorted(
+                json.dumps(
+                    {
+                        **account,
+                        "windows": sorted(
+                            json.dumps(window, sort_keys=True)
+                            for window in account["windows"]
+                        ),
+                    },
+                    sort_keys=True,
+                )
+                for account in accounts
+            )
+
         self.assertEqual(
-            sorted(json.dumps(a, sort_keys=True) for a in first),
-            sorted(
-                json.dumps(a, sort_keys=True)
-                for a in monitor.account_rows(list(reversed(rows)))
-            ),
+            unordered(first),
+            unordered(monitor.account_rows(list(reversed(rows)))),
         )
 
     @SETTINGS

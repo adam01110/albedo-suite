@@ -115,6 +115,8 @@ class Harness:
         with (
             patch.object(runner, "prepare_source", fake_prepare),
             patch.object(runner, "run_cases", fake_run_cases),
+            # The fake source has no upstream resources.py, so no host lane plan.
+            patch.object(runner, "widened_exclusive_lanes", lambda path: None),
             patch.object(
                 sys,
                 "argv",
@@ -481,13 +483,9 @@ class RunnerPropertyTests(unittest.TestCase):
     # ---- prepare_source: suite cases and fixture patching ---------------
 
     def test_prepare_source_installs_suite_cases_and_patches_fixtures(self):
-        upstream = Path(
-            os.environ.get(
-                "ALBEDO_UPSTREAM_SOURCE", "/nix/store/2qcikl7ck4d8izgify54rbj1cay6yqxp-source"
-            )
-        )
+        upstream = Path(os.environ.get("ALBEDO_UPSTREAM_SOURCE", "/nonexistent"))
         if not (upstream / "e2e").is_dir():
-            self.skipTest("pinned upstream source is not available")
+            self.skipTest("set ALBEDO_UPSTREAM_SOURCE to the pinned upstream source")
 
         root = self.harness.root
         fake = root / "upstream"

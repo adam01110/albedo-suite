@@ -1,5 +1,5 @@
 -module(proptest_ffi).
--export([getenv/1, putenv/2, bump/1, counts/0, reset/0, undefined/0, write_file/3, unique/0, remove_tree/1, models_table/0, put_models/3, clear_models/1, models/2, escript/0]).
+-export([getenv/1, putenv/2, bump/1, counts/0, reset/0, undefined/0, write_file/3, unique/0, remove_tree/1, executable/1, models_table/0, put_models/3, clear_models/1, models/2, escript/0]).
 
 -include_lib("kernel/include/file.hrl").
 
@@ -52,6 +52,14 @@ vm() ->
     end.
 
 remove_tree(Path) -> _ = file:del_dir_r(Path), nil.
+
+%% The absolute path of a program on PATH, for a script's interpreter line:
+%% a build sandbox has no /usr/bin/env.
+executable(Name) ->
+    case os:find_executable(binary_to_list(Name)) of
+        false -> {error, nil};
+        Path -> {ok, unicode:characters_to_binary(Path)}
+    end.
 
 %% A public table for generated model lists, so one runtime can list the ids
 %% the current case put there instead of publishing a runtime per case.

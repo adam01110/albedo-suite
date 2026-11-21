@@ -154,12 +154,31 @@ QUERY_CHARS = [
 ]
 
 
+def _python_regex(query):
+    """Spell Rust's braced `\\x{H}` escapes, which `re` lacks, as `\\U` escapes."""
+    out = []
+    index = 0
+    while index < len(query):
+        if query[index] == "\\" and query.startswith("x{", index + 1):
+            end = query.index("}", index)
+            out.append(f"\\U{int(query[index + 3 : end], 16):08x}")
+            index = end + 1
+        elif query[index] == "\\":
+            out.append(query[index : index + 2])
+            index += 2
+        else:
+            out.append(query[index])
+            index += 1
+    return "".join(out)
+
+
 class FindQueryEscapingTests(unittest.TestCase):
     """`literal=True` turns text into an FFF regex that matches that text as is.
 
     The oracle is the regex meaning of the query the plugin sends: both the
-    worker's Rust regex and Python's `re` read `\\xNN` the same way, and the
-    generated alphabet covers every character the plugin rewrites.
+    worker's Rust regex and Python's `re` read `\\xNN` the same way (braced
+    `\\x{H}` escapes are respelled for `re`), and the generated alphabet
+    covers every character the plugin rewrites.
     """
 
     def setUp(self):
@@ -189,7 +208,7 @@ class FindQueryEscapingTests(unittest.TestCase):
             return  # multiline patterns are refused before a query is built
         query = asyncio.run(self.query(pattern))
         self.assertEqual(
-            re.search(query, line) is not None,
+            re.search(_python_regex(query), line) is not None,
             pattern in line,
             f"pattern {pattern!r} against {line!r} via {query!r}",
         )

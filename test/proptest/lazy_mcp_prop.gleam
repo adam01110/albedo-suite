@@ -195,6 +195,10 @@ fn step(source: lazy.Source, scope: storage.Storage, session: String, controls: 
           let pid = server_pid(get(controls, server, ""))
           kill(pid)
           await_dead(pid, 50)
+          // An unexpected death reaches the manager with the port's exit, after
+          // the OS process ends, so wait for that record before the model
+          // calls it dropped; a load before it would reuse the dead client.
+          await_disconnected(source, server, 500)
           Model(..model, servers: dict.insert(model.servers, server, Dropped))
         }
         _ -> model
@@ -291,6 +295,19 @@ fn await_dead(pid: String, tries: Int) -> Nil {
     True, _ -> {
       process.sleep(100)
       await_dead(pid, tries - 1)
+    }
+  }
+}
+
+/// Waits until the manager reports `name` disconnected, polling every 10 ms.
+fn await_disconnected(source: lazy.Source, name: String, tries: Int) -> Nil {
+  let connected = list.contains(listing(source), #(name, True, True))
+  case connected, tries {
+    False, _ -> Nil
+    True, 0 -> panic as "the manager never recorded a dropped MCP transport"
+    True, _ -> {
+      process.sleep(10)
+      await_disconnected(source, name, tries - 1)
     }
   }
 }

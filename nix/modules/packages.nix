@@ -92,6 +92,30 @@
       };
 
     withServerSources = package: let
+      # The property suites run with the suite tests, at few cases each.
+      propertyModules = map (pkgs.lib.removeSuffix ".gleam") (builtins.filter (pkgs.lib.hasSuffix "_prop.gleam") (builtins.attrNames (builtins.readDir ../../test/proptest)));
+      propertySources = pkgs.lib.fileset.toSource {
+        root = ../../test/proptest;
+        fileset = pkgs.lib.fileset.fileFilter (file: file.hasExt "gleam" || file.hasExt "erl" || file.name == "fake_mcp_record.py") ../../test/proptest;
+      };
+      # qcheck and the packages it needs that the daemon lacks, at the Hex
+      # checksums scripts/proptest-server.sh also pins; only sources and FFI
+      # join the test package.
+      hexPackages = map (line: let
+        fields = pkgs.lib.splitString " " line;
+      in {
+        name = builtins.elemAt fields 0;
+        tarball = pkgs.fetchurl {
+          url = "https://repo.hex.pm/tarballs/${builtins.elemAt fields 0}-${builtins.elemAt fields 1}.tar";
+          sha256 = builtins.elemAt fields 2;
+        };
+      }) (builtins.filter (line: line != "") (pkgs.lib.splitString "\n" (readFile ../../test/proptest/hex-packages.txt)));
+      qcheckSources = runCommand "albedo-proptest-hex-sources" {} (pkgs.lib.concatMapStrings (hex: ''
+          mkdir -p "$TMPDIR/${hex.name}"
+          tar -xOf ${hex.tarball} contents.tar.gz | tar -xz -C "$TMPDIR/${hex.name}" src
+          (cd "$TMPDIR/${hex.name}/src" && find . \( -name '*.gleam' -o -name '*_ffi.erl' \) -exec install -Dm644 {} "$out/{}" \;)
+        '')
+        hexPackages);
       suiteTests = [
         # keep-sorted start
         "suite_agents_glance_test"
@@ -100,6 +124,7 @@
         "suite_codex_error_test"
         "suite_lazy_mcp_test"
         "suite_memory_headings_test"
+        "suite_memory_index_property_test"
         "suite_memory_index_test"
         "suite_opencode_go_test"
         "suite_prompt_docs_test"
@@ -204,22 +229,34 @@
             cp ${../../test/albedo_zed_login_test.erl} "$tests/test/albedo_zed_login_test.erl"
             cp ${../../test/albedo_zed_prop.erl} "$tests/test/albedo_zed_prop.erl"
             cp ${../../test/albedo_zed_callback_prop.erl} "$tests/test/albedo_zed_callback_prop.erl"
+            cp -r --no-preserve=mode ${qcheckSources}/. ${propertySources}/. "$tests/test"
+            # The lazy MCP properties start this server by its relative path.
+            cp ${propertySources}/fake_mcp_record.py test/fake_mcp_record.py
             gleam compile-package --target erlang --package build/packages/gleeunit --out "$lib/gleeunit" --lib "$lib"
             gleam compile-package --target erlang --package "$tests" --out "$lib/albedo_suite_tests" --lib "$lib"
             # The mains run in separate VMs at once; their logs print in list order.
-            modules=(${toString suiteTests})
-            for module in "''${modules[@]}"; do
-              erl -pa "$lib"/*/ebin -noshell -eval "albedo@@main:run($module)" >"$TMPDIR/$module.log" 2>&1 &
-              pids+=("$!")
-            done
+            # PROPTEST_COUNT scales each property's cases; longer runs use
+            # scripts/proptest-server.sh.
+            export PROPTEST_COUNT=20
             failed=0
-            for i in "''${!modules[@]}"; do
-              status=0
-              wait "''${pids[$i]}" || status=$?
-              echo "''${modules[$i]} exited with $status"
-              cat "$TMPDIR/''${modules[$i]}.log"
-              ((status == 0)) || failed=1
-            done
+            run_mains() {
+              local modules=("$@") pids=() status i
+              for module in "''${modules[@]}"; do
+                erl -pa "$lib"/*/ebin -noshell -eval "albedo@@main:run($module)" >"$TMPDIR/$module.log" 2>&1 &
+                pids+=("$!")
+              done
+              for i in "''${!modules[@]}"; do
+                status=0
+                wait "''${pids[$i]}" || status=$?
+                echo "''${modules[$i]} exited with $status"
+                cat "$TMPDIR/''${modules[$i]}.log"
+                ((status == 0)) || failed=1
+              done
+            }
+            # The suite tests have tight deadlines, so the property VMs start
+            # only after they finish.
+            run_mains ${toString suiteTests}
+            run_mains ${toString propertyModules}
             ((failed == 0))
           '';
         postInstall =
@@ -285,7 +322,7 @@
               cp -r --no-preserve=mode ${clientSources}/. .
               ${pkgs.lib.optionalString (!showDiffs) ''substituteInPlace cli/internal/tui/chat.go --replace-fail "DisplayFlags{Diffs: true}" "DisplayFlags{}"''}
               # The packages tested here must not need the daemon blanked above.
-              if grep -rl ALBEDO_TEST_DAEMON cli/cmd cli/internal/{app,cli,daemon,webui,terminal,tui}; then exit 1; fi
+              if grep -rl ALBEDO_TEST_DAEMON cli/cmd cli/internal/{app,cli,config,daemon,webui,terminal,tui}; then exit 1; fi
             ''
             + (old.postPatch or "");
           # Go builds the replaced Bubble Tea module from vendor/, not third_party/.
@@ -311,8 +348,9 @@
               # The whole daemon package: a test without a name filter cannot be
               # left out of every check.
               go test ./internal/app ./internal/cli ./internal/daemon ./internal/webui -count=1
-              # One run links each test binary once; every prefix names tests in one package.
-              go test ./internal/terminal ./internal/tui -run '^(TestActivity|TestAgentsGlance|TestBase16|TestComposerScope|TestContext|TestOpenCodeGo|TestProviderAvailability|TestQuota|TestSessionListCostLeftOfAge|TestSessionViewerTotalCostTopRight|TestSuiteEscape|TestSuiteInline|TestToolImages|TestTurnNotify|TestUsage|TestVim|TestZed|TestZoxide${pkgs.lib.optionalString showDiffs "|TestDefaultDiffVisibility$"})' -count=1 -v
+              # One run links each test binary once; a prefix may name tests in
+              # several packages, as TestProp names every property test.
+              go test ./internal/config ./internal/terminal ./internal/tui -run '^(TestActivity|TestAgentsGlance|TestBase16|TestComposerScope|TestContext|TestOpenCodeGo|TestProp|TestProviderAvailability|TestQuota|TestSessionListCostLeftOfAge|TestSessionViewerTotalCostTopRight|TestSuiteEscape|TestSuiteInline|TestToolImages|TestTurnNotify|TestUsage|TestVim|TestZed|TestZoxide${pkgs.lib.optionalString showDiffs "|TestDefaultDiffVisibility$"})' -count=1 -v
             '';
         }));
 

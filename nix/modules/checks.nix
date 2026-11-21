@@ -37,6 +37,20 @@
 
     # Pinned upstream python with the suite overlay, assembled as the server
     # build assembles priv/python, without waiting for the package builds.
+    # The property files need hypothesis; the glob translation's pathlib
+    # cross-check needs PurePath.full_match, new in Python 3.13.
+    propertyPython = pkgs.python311.withPackages (python: [python.hypothesis]);
+    globPython = pkgs.python313.withPackages (python: [python.hypothesis]);
+    # The property files find the scripts and sources beside them.
+    propertySuite = fileset.toSource {
+      root = ../..;
+      fileset = fileset.unions [
+        ../../scripts
+        ../../src/server/python
+        ../../test
+      ];
+    };
+
     pythonSources = runCommand "albedo-python-sources" {} ''
       cp -r ${runtime.server.src}/python $out
       chmod -R u+w $out
@@ -243,6 +257,72 @@
           status=0
           wait "''${pids[$i]}" || status=$?
           echo "python3 ''${tests[$i]} exited with $status"
+          cat "$TMPDIR/test-$i.log"
+          ((status == 0)) || failed=1
+        done
+        ((failed == 0))
+        touch $out
+      '';
+
+    # A check of its own, so the property files never compete with the
+    # deadline-sensitive LSP and FFF tests in the python check.
+    checks.python-properties =
+      runCommand "albedo-python-property-tests" {
+        nativeBuildInputs = [
+          # keep-sorted start
+          pkgs.beam29Packages.erlang
+          pkgs.git
+          pkgs.nodejs
+          pkgs.treefmt
+          propertyPython
+          # keep-sorted end
+        ];
+      } ''
+        export PYTHONDONTWRITEBYTECODE=1
+        export PYTHONPATH=${pythonSources}
+        export ALBEDO_E2E_RUNNER=${../../scripts/test-e2e.py}
+        export ALBEDO_FORMATTER_SOURCE=$PYTHONPATH
+        export ALBEDO_LSP_SOURCE=$PYTHONPATH
+        export ALBEDO_FFF_SOURCE=$PYTHONPATH
+        export ALBEDO_FFF_COMMAND=${suitePackages.albedo-fff}/bin/albedo-fff
+        export ALBEDO_FFF_ERLANG=${../../src/server/extensions/files/src/albedo_fff.erl}
+        export ALBEDO_FFF_SCRIPT=$PYTHONPATH/albedo_fff.mjs
+        export ALBEDO_MONITOR_SOURCE=${../../scripts/albedo-monitor.py}
+        export ALBEDO_OVERLAY_TREE=${../../scripts/overlay-tree.sh}
+        export ALBEDO_PYTHON_SOURCE=$PYTHONPATH
+        export ALBEDO_PY_SOURCE=${propertySuite}/src/server/python
+        export ALBEDO_UPDATER=${../../scripts/update-upstream.py}
+        export ALBEDO_UPSTREAM_SOURCE=${runtime.server.src}
+        export PROPTEST_FIND_READ_LINES=1
+        export PATH=${pkgs.rtk}/bin:${pkgs.ripgrep}/bin:$PATH
+        # Each file runs at its own default example count, all at once; the
+        # logs print in list order with the seeds hypothesis reports.
+        tests=(
+          "python3 -m unittest discover -s ${propertySuite}/test -p api_docs_property_test.py"
+          "python3 ${propertySuite}/test/e2e_runner_property_test.py"
+          "python3 -m unittest discover -s ${propertySuite}/test -p escaping_sweep_test.py"
+          "python3 ${propertySuite}/test/fff_property_test.py"
+          "python3 ${propertySuite}/test/fff_query_property_test.py"
+          "python3 ${propertySuite}/test/fff_scope_property_test.py"
+          "python3 ${propertySuite}/test/files_check_property_test.py"
+          "python3 ${propertySuite}/test/files_line_number_prop_test.py"
+          "python3 ${propertySuite}/test/lsp_position_proptest.py"
+          "python3 ${propertySuite}/test/monitor_property_test.py"
+          "python3 ${propertySuite}/test/proptest/py_lsp_formatter_rtk.py"
+          "python3 ${propertySuite}/test/proptest_scripts_test.py"
+          "python3 ${propertySuite}/test/proptest_tooling_test.py"
+          "${globPython}/bin/python3 ${propertySuite}/test/glob_translation_property_test.py"
+        )
+        for i in "''${!tests[@]}"; do
+          # shellcheck disable=SC2086
+          ''${tests[$i]} >"$TMPDIR/test-$i.log" 2>&1 &
+          pids+=("$!")
+        done
+        failed=0
+        for i in "''${!tests[@]}"; do
+          status=0
+          wait "''${pids[$i]}" || status=$?
+          echo "''${tests[$i]} exited with $status"
           cat "$TMPDIR/test-$i.log"
           ((status == 0)) || failed=1
         done

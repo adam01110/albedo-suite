@@ -61,6 +61,17 @@ and `package-layout` diffs that tree against the installed one. The E2E checks
 build at once, each with two private daemons. The client's own check tests only
 `cmd/albedo`, so the client does not wait for the built server; the suite's
 selections reuse the build's `-trimpath` objects.
+
+The property suites run in the same places at small case counts, so every
+check exercises them: the server's check phase runs each
+`test/proptest/*_prop.gleam` main beside the suite tests, at `PROPTEST_COUNT=20`
+and with a nice level so the suite tests' deadlines keep their CPU; qcheck and
+its dependencies come from Hex at the checksums in
+`test/proptest/hex-packages.txt`. The client's check runs every `TestProp*`
+test, including `internal/config`, and the `python-properties` check runs the
+hypothesis files apart from the deadline-sensitive `python` tests. Each property prints the seed it used. `test/proptest/README.md` shows
+how to run them longer with `PROPTEST_COUNT`, `PROPTEST_SEED` and the other
+knobs.
 The files under `src/` keep upstream formatting and are excluded from the suite's
 treefmt run.
 

@@ -1,7 +1,7 @@
 package tui
 
-// Property tests for the Vim composer, named TestProp* to stay out of the
-// package check's filters. A line-based reference model of the
+// Property tests for the Vim composer, which the client check runs with the
+// other TestProp* tests. A line-based reference model of the
 // documented semantics (docs/vim.md) replays the same operation histories as
 // key presses on a real ChatModel; pure motions and text objects are also
 // compared exhaustively over small buffers.
@@ -9,6 +9,7 @@ package tui
 import (
 	"albedo/cli/internal/daemon"
 	"fmt"
+	"github.com/charmbracelet/x/ansi"
 	"math/rand"
 	"os"
 	"strconv"
@@ -993,8 +994,12 @@ func runVimHistory(t *testing.T, seed int64, steps int, swarm bool) (trace []str
 	weights["motion"]++
 	g := &vimGen{r: r, alphabet: alphabet, weights: weights}
 	m := newTestChatModel(t, &daemon.Session{ID: "s"})
-	// Narrow composers soft-wrap long logical lines.
-	m.SetSize(12+r.Intn(40), 24)
+	// Upstream's textarea CursorUp can stall on a soft-wrapped row (seen after
+	// wide runes and after word wraps at narrow widths), and upstream's
+	// ChatModel.promptLines walks the cursor up on every key, so such a
+	// composer never answers. Histories therefore run in a composer too wide
+	// to wrap; vim_test.go covers wrapped rows with fixed inputs.
+	m.SetSize(1000, 24)
 	initial := vimRandomBuffer(r, alphabet)
 	m.TextArea.SetValue(initial)
 	m.vim.normal = true
@@ -1022,6 +1027,11 @@ func runVimHistory(t *testing.T, seed int64, steps int, swarm bool) (trace []str
 			}()
 			op.apply(ref)
 		}()
+		// The textarea caps its width, so pastes could still grow a line into
+		// a wrap; the history ends before an op the model says gets there.
+		if refTooWide(ref.text, m.TextArea.Width()) {
+			break
+		}
 		var panicked any
 		func() {
 			defer func() { panicked = recover() }()
@@ -1075,6 +1085,17 @@ func runVimHistory(t *testing.T, seed int64, steps int, swarm bool) (trace []str
 		ref.pos = got.pos
 	}
 	return trace, nil, modeledOps
+}
+
+// refTooWide reports a line at least half the composer's cells wide, well
+// short of a soft wrap even with the cursor cell and wide runes.
+func refTooWide(text []rune, width int) bool {
+	for _, line := range strings.Split(string(text), "\n") {
+		if 2*ansi.StringWidth(line) >= width {
+			return true
+		}
+	}
+	return false
 }
 
 func TestPropVimHistories(t *testing.T) {

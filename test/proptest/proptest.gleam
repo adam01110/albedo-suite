@@ -32,6 +32,10 @@ pub fn write_file(path: String, bytes: BitArray, mtime: Int) -> Nil
 @external(erlang, "proptest_ffi", "remove_tree")
 pub fn remove_tree(path: String) -> Nil
 
+/// The absolute path of a program on PATH.
+@external(erlang, "proptest_ffi", "executable")
+pub fn executable(name: String) -> Result(String, Nil)
+
 @external(erlang, "proptest_ffi", "unique")
 pub fn unique() -> Int
 
