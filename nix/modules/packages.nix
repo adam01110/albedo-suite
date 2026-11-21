@@ -102,6 +102,9 @@
         "suite_memory_index_test"
         "suite_opencode_go_test"
         "suite_prompt_docs_test"
+        "suite_quota_discovery_test"
+        "suite_quota_poll_test"
+        "suite_quota_startup_test"
         "suite_quota_test"
         "suite_tool_count_test"
         "suite_usage_profile_test"
@@ -175,6 +178,8 @@
                 suite="$TMPDIR/suite-source"
                 cp -a ../.. "$suite"
                 ${pkgs.lib.concatMapStrings (module: "cp ${../../test + "/${module}.gleam"} \"$suite/apps/albedo/test/${module}.gleam\"\n") suiteTests}
+                # A helper a listed module imports needs no main of its own.
+                cp ${../../test + "/suite_quota_fixtures.gleam"} "$suite/apps/albedo/test/suite_quota_fixtures.gleam"
                 cp ${../../test/albedo_zed_login_test.erl} "$suite/apps/albedo/test/albedo_zed_login_test.erl"
                 (cd "$suite/apps/albedo" && gleam build) >"$TMPDIR/suite-build.log" 2>&1 &
                 suiteBuild=$!
