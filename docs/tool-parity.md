@@ -39,8 +39,8 @@ RTK resolution; normal remote Python kernels use their own runtime dependencies.
 
 `files.find()` and `files.paths()` use the pinned `@ff-labs/fff-node` engine,
 not ripgrep or a Python scan fallback. Ordinary `files.paths(query)` searches
-rank fuzzy filename matches; wildcard patterns and `glob=` retain exact glob
-filtering. No additional public search tool is added. The compatibility layer
+rank fuzzy filename matches; wildcard patterns and `glob=` retain exact,
+case-sensitive glob filtering. No additional public search tool is added. The compatibility layer
 preserves bounded rows, matching-line objects,
 context and exact glob searches. The worker is daemon-owned and shared per host;
 Python sessions call `files.fff` RPC, and the daemon uses the worker's private

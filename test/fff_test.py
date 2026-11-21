@@ -208,6 +208,20 @@ class FffTests(unittest.IsolatedAsyncioTestCase):
             set(ordered), {str(self.root / "root.txt"), str(self.root / "src/main.txt")}
         )
 
+    async def test_wildcard_paths_match_case_sensitively(self):
+        # `files.paths` wildcards are exact globs: case-sensitive, like `glob=`
+        # and `files.ls(pattern=)`.
+        self.assertEqual(await self.files.paths("*.TXT", str(self.root)), [])
+        self.assertEqual(await self.files.paths("SRC/*.txt", str(self.root)), [])
+        self.assertEqual(
+            set(await self.files.paths("*.txt", str(self.root))),
+            {
+                str(self.root / "root.txt"),
+                str(self.root / "src/main.txt"),
+                str(self.root / "src/nested/deep.txt"),
+            },
+        )
+
     async def test_external_changes_edits_deletion_and_index_reuse(self):
         await self.files.paths(path=str(self.root))
         worker_pid = module._fff.worker_pid

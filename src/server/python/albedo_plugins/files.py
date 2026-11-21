@@ -909,8 +909,8 @@ class Files:
         hidden: bool = False,
     ) -> Search[Rows]:
         """File names, not contents; enumerated by the native FFF index. A pattern
-        with *, ? or [ is a glob over names, or over the path from the search
-        root when it has a /; other text uses ranked fuzzy filename matching.
+        with *, ? or [ is a case-sensitive glob over names, or over the path from
+        the search root when it has a /; other text uses ranked fuzzy filename matching.
         `path` may be one path or a list. Await it: `await files.paths(pattern)`."""
         return Search(
             "files.paths", lambda: self._paths(pattern, path, glob, max_results, hidden)

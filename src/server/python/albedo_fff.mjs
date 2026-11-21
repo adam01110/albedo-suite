@@ -134,8 +134,9 @@ async function request(q) {
       for (const item of r.items)
         if (
           eligible(item.relativePath) &&
+          // Exact globs: case-sensitive, matching the Python-side filters.
           (!q.name ||
-            new RegExp(q.name, "i").test(
+            new RegExp(q.name).test(
               q.nameBase ? item.fileName : item.relativePath,
             ))
         ) {
