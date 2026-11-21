@@ -12,6 +12,9 @@
 
     suitePackages = self.packages.${pkgs.stdenv.hostPlatform.system};
     runtime = suitePackages.albedo-defaults;
+    # The E2E checks build at once; letting each widen to every spare core
+    # triples daemon boots, so each runs two private daemons at a time.
+    e2eRunner = "python3 ${../../scripts/test-e2e.py} --source ${runtime.server.src} --suite ${../..} --package ${runtime} --exclusive-jobs 2";
 
     # Pinned upstream python with the suite overlay, assembled as the server
     # build assembles priv/python, without waiting for the package builds.
@@ -55,31 +58,31 @@
 
     checks.opencode-go = runCommand "albedo-opencode-go-tests" {nativeBuildInputs = [pkgs.python311];} ''
       export ERL_AFLAGS="-public_key cacerts_path '\"${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt\"'"
-      python3 ${../../scripts/test-e2e.py} --source ${runtime.server.src} --suite ${../..} --package ${runtime} --case opencode_go_e2e_test.py
+      ${e2eRunner} --case opencode_go_e2e_test.py
       touch $out
     '';
 
     checks.zed = runCommand "albedo-zed-tests" {nativeBuildInputs = [pkgs.python311];} ''
       export ERL_AFLAGS="-public_key cacerts_path '\"${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt\"'"
-      python3 ${../../scripts/test-e2e.py} --source ${runtime.server.src} --suite ${../..} --package ${runtime} --case zed_e2e_test.py
+      ${e2eRunner} --case zed_e2e_test.py
       touch $out
     '';
 
     checks.kernel-workspace = runCommand "albedo-kernel-workspace-tests" {nativeBuildInputs = [pkgs.python311];} ''
       export ERL_AFLAGS="-public_key cacerts_path '\"${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt\"'"
-      python3 ${../../scripts/test-e2e.py} --source ${runtime.server.src} --suite ${../..} --package ${runtime} --case kernel_workspace_e2e_test.py
+      ${e2eRunner} --case kernel_workspace_e2e_test.py
       touch $out
     '';
 
     checks.tool-images = runCommand "albedo-tool-image-tests" {nativeBuildInputs = [pkgs.python311];} ''
       export ERL_AFLAGS="-public_key cacerts_path '\"${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt\"'"
-      python3 ${../../scripts/test-e2e.py} --source ${runtime.server.src} --suite ${../..} --package ${runtime} --case tool_images_e2e_test.py
+      ${e2eRunner} --case tool_images_e2e_test.py
       touch $out
     '';
 
     checks.session-cost-e2e = runCommand "albedo-session-cost-e2e-tests" {nativeBuildInputs = [pkgs.python311];} ''
       export ERL_AFLAGS="-public_key cacerts_path '\"${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt\"'"
-      python3 ${../../scripts/test-e2e.py} --source ${runtime.server.src} --suite ${../..} --package ${runtime} --case session_cost_e2e_test.py
+      ${e2eRunner} --case session_cost_e2e_test.py
       touch $out
     '';
 
