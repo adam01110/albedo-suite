@@ -8,7 +8,7 @@ Extensions and Nix integration for [Albedo](https://tangled.org/okami.mom/albedo
 
 [![Repo Size](https://img.shields.io/github/repo-size/adam01110/albedo-suite?style=flat-square&labelColor=504945&label=repo%20size&color=3c3836)](https://github.com/adam01110/albedo-suite)
 <br />
-[![Nix](https://img.shields.io/badge/Nix-flakes-689d6a?style=flat-square&labelColor=504945&logo=nixos&logoColor=ebdbb2)](https://nixos.wiki/wiki/Flakes)
+[![Nix](https://img.shields.io/badge/Nix-flakes-8ec07c?style=flat-square&labelColor=504945&logo=nixos&logoColor=ebdbb2)](https://nixos.wiki/wiki/Flakes)
 
 [What it changes](#what-it-changes) - [Usage](#usage) - [Development](#development)
 
