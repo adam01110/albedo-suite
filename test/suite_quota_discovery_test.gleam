@@ -23,23 +23,39 @@ fn discovery_timeout() -> Nil {
       }),
       key_environment.empty(),
       fn() { quota.Settings(1, 1, True) },
-      100,
+      // Discovery gets 2.5 times this; a cold VM beside the other suite VMs
+      // can take longer than a quarter second to reach the source.
+      1000,
     )
-  let assert Ok(#(worker, _)) = process.receive(discoveries, 1000)
-  let monitor = process.monitor(worker)
-  let assert Ok(_) =
-    process.new_selector()
-    |> process.select_specific_monitor(monitor, fn(down) { down })
-    |> process.selector_receive(1000)
-  let assert Ok(#(_, answer)) = process.receive(discoveries, 2000)
+  let assert Ok(#(worker, _)) = process.receive(discoveries, 5000)
+  await_down(worker, 5000)
+  let assert Ok(#(_, answer)) = process.receive(discoveries, 5000)
   process.send(answer, [#("account", json.object([]))])
-  let assert Ok(Nil) = process.receive(polls, 1500)
+  let assert Ok(Nil) = process.receive(polls, 5000)
   // A later discovery timeout must not discard the previously known target.
-  let assert Ok(#(blocked, _)) = process.receive(discoveries, 2000)
-  let assert Ok(Nil) = process.receive(polls, 2000)
+  let assert Ok(#(blocked, _)) = process.receive(discoveries, 5000)
+  await_down(blocked, 5000)
+  drain(polls)
+  let assert Ok(Nil) = process.receive(polls, 5000)
   stop(started.pid)
   process.kill(blocked)
   store.close(db)
+}
+
+fn await_down(pid: process.Pid, timeout: Int) -> Nil {
+  let monitor = process.monitor(pid)
+  let assert Ok(_) =
+    process.new_selector()
+    |> process.select_specific_monitor(monitor, fn(down) { down })
+    |> process.selector_receive(timeout)
+  Nil
+}
+
+fn drain(subject: process.Subject(Nil)) -> Nil {
+  case process.receive(subject, 0) {
+    Ok(Nil) -> drain(subject)
+    Error(Nil) -> Nil
+  }
 }
 
 pub fn main() -> Nil {

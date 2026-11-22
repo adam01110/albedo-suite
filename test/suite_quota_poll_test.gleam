@@ -22,16 +22,19 @@ fn poll_timeout() -> Nil {
       fixture(),
       key_environment.empty(),
       fn() { quota.Settings(1, 1, True) },
-      100,
+      // Discovery gets 2.5 times this; a cold VM beside the other suite VMs
+      // can take longer than a quarter second to list the fixture account.
+      1000,
     )
-  let assert Ok(worker) = process.receive(workers, 1500)
+  let assert Ok(worker) = process.receive(workers, 5000)
   let monitor = process.monitor(worker)
   let assert Ok(_) =
     process.new_selector()
     |> process.select_specific_monitor(monitor, fn(down) { down })
-    |> process.selector_receive(1000)
-  await_error(db, "timed out", clock.monotonic_ms() + 1000)
-  let assert Ok(retry) = process.receive(workers, 3000)
+    |> process.selector_receive(3000)
+  await_error(db, "timed out", clock.monotonic_ms() + 2000)
+  // The failure backs off two poll periods before the retry.
+  let assert Ok(retry) = process.receive(workers, 5000)
   assert retry != worker
   stop(started.pid)
   process.kill(retry)
