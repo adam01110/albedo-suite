@@ -14,11 +14,10 @@ lines inside files the suite replaces, is out of scope for these suites.
 
 ## Gleam and Erlang (server)
 
-Build an overlay tree once. This is a heavy step, so hold the shared CPU lock:
+Build an overlay tree once. This is a heavy step:
 
 ```console
-flock /home/adam0/Projects/albedo-suite/.workspaces/loops/cpu.lock \
-  bash scripts/overlay-tree.sh server /tmp/albedo-overlay-server-<name>
+bash scripts/overlay-tree.sh server /tmp/albedo-overlay-server-<name>
 ```
 
 Then run every `*_prop` module, or name the ones you want:
