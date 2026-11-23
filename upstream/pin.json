@@ -1,7 +1,7 @@
 {
   "project": "https://tangled.org/okami.mom/albedo",
-  "rev": "e66ee558aaa8d84c0f22d7ee98b69da4a1513c02",
-  "narHash": "sha256-MVazSFgCzydoyjtM28H9HRkQDMB2N2tyvKwfIEs0vgo=",
+  "rev": "059136153e087d39337f9f5b0ba3a721d13f2ec4",
+  "narHash": "sha256-OtmBmPZ+ZZU4PaG4D8KJkwTA5GpDjGJltk2jYtEp6MI=",
   "sourceFiles": [
     "apps/albedo/src/albedo/accounts/quota.gleam",
     "apps/albedo/src/albedo/composition/composition.gleam",

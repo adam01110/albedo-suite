@@ -817,7 +817,7 @@ pub fn models(
           Error(_) -> runtime.listed_models(host, provider.0, provider.1)
           Ok(id) -> {
             let info =
-              extension.provider_model_info(
+              extension.model_info(
                 runtime.global(host) |> result.unwrap([]),
                 provider.0,
                 id,
@@ -1084,6 +1084,26 @@ fn model_json(
   ])
 }
 
+/// One page of `items`, which are ordered by `id`: up to `limit` of those
+/// after the id `after` names, and whether more follow. A page resumes after
+/// the last id shown, so an item added or deleted between pages cannot void
+/// the cursor, repeat an item, or skip one that stayed.
+pub fn page_after(
+  items: List(a),
+  id: fn(a) -> String,
+  after: Option(String),
+  limit: Int,
+) -> #(List(a), Bool) {
+  let rest = case after {
+    None -> items
+    Some(last) ->
+      list.drop_while(items, fn(item) {
+        string.compare(id(item), last) != order.Gt
+      })
+  }
+  #(list.take(rest, limit), list.length(rest) > limit)
+}
+
 pub fn storage(
   config: Config,
   registry: Subject(Message),
@@ -1116,19 +1136,13 @@ pub fn storage(
     ))
     let db = observed.database
     let files = observed.files
-    let rest = case after {
-      None -> db.sessions
-      Some(id) ->
-        list.drop_while(db.sessions, fn(session) {
-          string.compare(session.id, id) != order.Gt
-        })
-    }
-    let shown = list.take(rest, limit)
+    let #(shown, more) =
+      page_after(db.sessions, fn(session) { session.id }, after, limit)
     let next =
       sdk_http_api.next_page(
         config.token,
         http_api.page_binding(req, base) <> "sessions",
-        list.length(rest) > limit,
+        more,
         list.last(shown) |> result.map(fn(session) { session.id }),
       )
     let total =

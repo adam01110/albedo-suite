@@ -102,10 +102,11 @@ the settings pane credits it with a link.
 ## web client libraries
 
 The browser client in `web/` bundles these libraries, each under its own
-licence, which ships in its package: Svelte and Svelte Flow (xyflow), MIT; Diffs
-from The Pierre Computer Company (`@pierre/diffs`, https://diffs.com), Apache
-License 2.0; Shiki, MIT; KaTeX, MIT; Pele (https://pele.run, by Obsidian), MIT;
-marked, MIT. The client's about pane lists them with links.
+licence, which ships in its package: Svelte and Svelte Flow (xyflow), MIT;
+Diffs, Words and Highlights from The Pierre Computer Company (`@pierre/diffs`,
+`@pierre/words`, `@pierre/highlights`, https://diffs.com), Apache License 2.0;
+Shiki, MIT; Pele (https://pele.run, by Obsidian), MIT. The client's about pane
+lists them with links.
 
 ## Lobe icons
 

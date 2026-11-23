@@ -21,10 +21,11 @@ import (
 )
 
 type DisplayFlags struct {
-	Thinking   bool
-	Tools      bool
-	Diffs      bool
-	Compaction bool
+	AssistantName string
+	Thinking      bool
+	Tools         bool
+	Diffs         bool
+	Compaction    bool
 }
 
 type TranscriptRenderer struct {
@@ -128,7 +129,11 @@ func (r TranscriptRenderer) nameplate(entry HistoryEntry, flags DisplayFlags, be
 	if entry.Pending == editing {
 		meta = append(meta, "editing")
 	}
-	plate := markChrome + style.Render(strings.ToLower(who))
+	label := strings.ToLower(who)
+	if entry.Kind == EntryAssistant && flags.AssistantName != "" {
+		label = flags.AssistantName
+	}
+	plate := markChrome + style.Render(label)
 	if len(meta) > 0 {
 		plate += DefaultStyles.Faint.Render(" · " + strings.Join(meta, " · "))
 	}

@@ -74,7 +74,7 @@ fn feed(
   use value <- result.try(
     json.parse(data, decode.dynamic)
     |> result.map_error(fn(error) {
-      types.InvalidEvent("invalid Vertex JSON: " <> decoding.json_error(error))
+      types.InvalidEvent("invalid Gemini JSON: " <> decoding.json_error(error))
     }),
   )
   case text_chunk(value) {
@@ -106,16 +106,16 @@ fn decode_chunk(
       }),
     )
     |> result.map_error(fn(_) {
-      types.InvalidEvent("invalid Vertex stream error")
+      types.InvalidEvent("invalid Gemini stream error")
     }),
   )
   case error {
-    Some(_) -> Error(refusal.event(value, "unknown Vertex stream error"))
+    Some(_) -> Error(refusal.event(value, "unknown Gemini stream error"))
     None -> {
       use chunk <- result.try(
         decode.run(value, chunk_decoder())
         |> result.map_error(fn(_) {
-          types.InvalidEvent("invalid Vertex stream chunk")
+          types.InvalidEvent("invalid Gemini stream chunk")
         }),
       )
       apply(state, chunk)
@@ -252,7 +252,7 @@ fn finish(state: State) -> Result(types.Turn, types.Error) {
         )
         |> result.map_error(fn(error) {
           types.InvalidEvent(
-            "could not build the Vertex replay message: "
+            "could not build the Gemini replay message: "
             <> decoding.json_error(error),
           )
         }),

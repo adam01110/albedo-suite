@@ -259,7 +259,7 @@ pub fn read_effort(
       let endpoint = profile_endpoint(state.home, state.info.provider)
       runtime.global(state.host)
       |> result.unwrap([])
-      |> extension.provider_model_info(
+      |> extension.model_info(
         profile_extension(state.home, state.info.provider),
         state.info.model,
         endpoint,
@@ -312,7 +312,7 @@ pub fn read_compact_at(
   let info =
     runtime.global(state.host)
     |> result.unwrap([])
-    |> extension.provider_model_info(
+    |> extension.model_info(
       profile_extension(state.home, state.info.provider),
       state.info.model,
       endpoint,

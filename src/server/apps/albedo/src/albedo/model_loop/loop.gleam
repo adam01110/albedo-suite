@@ -11,11 +11,14 @@ import albedo/history/tool_count
 import albedo/history/tool_results
 import albedo/kernel/journal
 import albedo/kernel/result_view as python_view
+import albedo/model_loop/measured
 import albedo/model_loop/repetition
 import albedo/observation/events as view
 import albedo/observation/stream_trace
 import albedo/observation/tool_progress
 import albedo/runtime
+import albedo/runtime/clip_cost
+import albedo/session/turn
 import albedo/storage/requests
 import albedo/usage/cache_fade
 import albedo/usage/usage
@@ -40,6 +43,7 @@ import gleam/bool
 import gleam/dict
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
+import gleam/erlang/process
 import gleam/int
 import gleam/io
 import gleam/json
@@ -57,6 +61,13 @@ pub type Selection {
     upstream: extension.Upstream,
     inputs: List(transcript.Entry),
   )
+}
+
+pub type Refresh {
+  Unchanged
+  Switched(Selection)
+  /// newest first, the same order as the turn's inputs.
+  Reloaded(inputs: List(transcript.Entry))
 }
 
 pub type Loop {
@@ -93,6 +104,7 @@ pub type Loop {
     record_context: fn(
       String,
       types.Protocol,
+      size.Route,
       types.Request,
       Option(compaction.Observation),
       Bool,
@@ -110,7 +122,7 @@ pub type Loop {
     profile: String,
     run_id: String,
     /// A measured baseline and how much history its count already covers.
-    reported: Option(ReportedUsage),
+    reported: Option(measured.ReportedUsage),
     /// Updates compaction progress until the prepared request clears it.
     report_compacting: fn(compaction.ProgressUpdate) -> Nil,
     /// Whether this run already told the session its window is too small
@@ -127,8 +139,7 @@ pub type Loop {
     spent: Int,
     /// Accepted timeouts already spent by this step, including salvaged attempts.
     accepted_timeouts: Int,
-    /// Returns the model switch a parent queued; `run` applies it before a request.
-    refresh: fn() -> Result(Option(Selection), String),
+    refresh: fn() -> Result(Refresh, String),
     /// Whether this step may finish without assistant text: an editor prompt,
     /// or a step the model ended quietly (`end_turn()`). Asked only when
     /// a step comes back empty.
@@ -142,22 +153,13 @@ pub type Loop {
     /// Whether this turn's steps keep calling the same bindings with nearly
     /// the same code.
     repeats: repetition.Watch,
-    /// Whether this turn already compacted because the provider said its
-    /// request did not fit; a second refusal ends the turn.
+    /// Whether this run answers an isolated external input.
+    external_answer: Bool,
+    /// Whether the provider said a request of this turn did not fit; the turn
+    /// compacts once for it without replaying the refused request, and a
+    /// second refusal ends it.
     overflowed: Bool,
   )
-}
-
-/// The provider's reported total for the last request, the transcript rows it
-/// covered, and how many history inputs it carried (as the strategy projected
-/// them, its reply included) with their chain: a later request whose first
-/// `sent` inputs have the same chain continues it.
-pub type ReportedUsage {
-  ReportedUsage(tokens: Int, history_items: Int, sent: Int, chain: String)
-}
-
-fn carried(inputs: List(types.Input)) -> #(Int, String) {
-  #(list.length(inputs), requests.input_chain("", [], inputs))
 }
 
 /// Dependencies shared by turn, summarizer, and background provider calls.
@@ -299,12 +301,13 @@ pub fn run(
   id: String,
   inputs: List(transcript.Entry),
   step: Int,
-) -> Result(Nil, Failure) {
+) -> Result(Option(String), Failure) {
   use _ <- result.try(plain(checkpoint(state)))
-  use selection <- result.try(plain(state.refresh()))
-  let #(state, inputs) = case selection {
-    None -> #(state, inputs)
-    Some(selected) -> #(
+  use refreshed <- result.try(plain(state.refresh()))
+  let #(state, inputs) = case refreshed {
+    Unchanged -> #(state, inputs)
+    Reloaded(entries) -> #(Loop(..state, reported: None), entries)
+    Switched(selected) -> #(
       Loop(
         ..state,
         model: selected.model,
@@ -319,7 +322,7 @@ pub fn run(
   }
   use prompted <- result.try(plain(prompted(state, inputs, step)))
   case prompted {
-    None -> Ok(Nil)
+    None -> Ok(None)
     Some(inputs) -> {
       let state = case step {
         0 -> Loop(..state, reported: restored_usage(state, inputs))
@@ -335,7 +338,7 @@ pub fn run(
 fn restored_usage(
   state: Loop,
   inputs: List(transcript.Entry),
-) -> Option(ReportedUsage) {
+) -> Option(measured.ReportedUsage) {
   let restored = {
     use last <- result.try(
       requests.last_turn(runtime.ledger(state.host), state.session)
@@ -403,25 +406,22 @@ fn restored_usage(
         state.prepared,
         state.model,
         request_source(state.upstream, state.model),
-        extension.clean_endpoint(state.upstream.endpoint),
+        Some(state.upstream),
         prompt_text(request_prompt(state)),
         original,
-        state.upstream.images,
         None,
       )
       |> result.replace_error(Nil),
     )
-    let #(sent, chain) =
-      carried(list.take(
+    measured.of_reply(
+      Some(usage),
+      list.take(
         projected.inputs,
         list.length(projected.inputs) - list.length(after_response),
-      ))
-    Ok(ReportedUsage(
-      usage.input_tokens + usage.output_tokens,
+      ),
       list.length(inputs) - list.length(after_response),
-      sent,
-      chain,
-    ))
+    )
+    |> option.to_result(Nil)
   }
   option.from_result(restored)
 }
@@ -431,7 +431,7 @@ fn converse(
   id: String,
   inputs: List(transcript.Entry),
   step: Int,
-) -> Result(Nil, Failure) {
+) -> Result(Option(String), Failure) {
   use inputs <- result.try(plain(fit_history(state, inputs)))
   let original_entries = list.reverse(inputs)
   let original = list.map(original_entries, fn(entry) { entry.input })
@@ -451,6 +451,7 @@ fn converse(
   state.record_context(
     state.profile,
     state.upstream.protocol,
+    route(state),
     request,
     prepared.observation,
     prepared.compacted,
@@ -585,17 +586,11 @@ fn converse(
       ..state,
       spent: 0,
       accepted_timeouts: 0,
-      reported: option.map(turn.usage, fn(usage) {
-        {
-          let #(sent, chain) = carried(list.append(history, replay))
-          ReportedUsage(
-            tokens: usage.input_tokens + usage.output_tokens,
-            history_items: list.length(inputs) + list.length(replay),
-            sent:,
-            chain:,
-          )
-        }
-      }),
+      reported: measured.of_reply(
+        turn.usage,
+        list.append(history, replay),
+        list.length(inputs) + list.length(replay),
+      ),
     )
   case turn.tool_calls {
     [] ->
@@ -628,18 +623,37 @@ fn converse(
           ))
       }
     calls -> {
-      use ran <- result.try(
+      let limits = state.upstream.images
+      let held = runtime.clips_held(state.host, limits, history)
+      use #(ran, _) <- result.try(
         plain(
-          list.try_map(calls, fn(call) {
+          list.try_fold(calls, #([], held), fn(acc, call) {
+            let #(ran, held) = acc
             let output_index =
               list.find(turn.call_indices, fn(binding) { binding.0 == call.id })
             case output_index {
-              Ok(binding) -> run_tool(state, id, step, attempt, binding.1, call)
+              Ok(binding) -> {
+                let room = limits.clip_budget - held
+                use item <- result.map(run_tool(
+                  state,
+                  id,
+                  step,
+                  attempt,
+                  binding.1,
+                  call,
+                  room,
+                ))
+                #(
+                  [item, ..ran],
+                  held + runtime.clips_held(state.host, limits, [item.0.input]),
+                )
+              }
               Error(_) ->
                 Error("provider completed a tool call without its output index")
             }
           }),
-        ),
+        )
+        |> result.map(fn(folded) { #(list.reverse(folded.0), folded.1) }),
       )
       let results = list.map(ran, fn(item) { item.0 })
       let #(repeats, repeated) =
@@ -708,10 +722,33 @@ fn stop_or_continue(
   output: List(types.ReplayItem),
   batches: List(List(transcript.Entry)),
   steering: List(transcript.Entry),
-) -> Result(Nil, Failure) {
+) -> Result(Option(String), Failure) {
   use held <- result.try(plain(stopping(state, output)))
   case held, steering {
-    [], [] -> Ok(Nil)
+    [], [] -> {
+      let answer = case state.external_answer && !state.quieted() {
+        False -> None
+        True ->
+          output
+          |> list.map(types.Replay)
+          |> list.filter_map(fn(item) {
+            case message_content.assistant_phase(item, Some("final")) {
+              Some("final") ->
+                message_content.visible_assistant_text(item)
+                |> option.to_result(Nil)
+              _ -> Error(Nil)
+            }
+          })
+          |> string.join("\n\n")
+          |> fn(text) {
+            case string.trim(text) {
+              "" -> None
+              _ -> Some(text)
+            }
+          }
+      }
+      Ok(answer)
+    }
     _, _ -> {
       state.unquiet()
       let state = case held {
@@ -829,6 +866,7 @@ pub fn compact(
   state.record_context(
     state.profile,
     state.upstream.protocol,
+    route(state),
     types.Request(
       ..compacted,
       options: types.Options(
@@ -949,6 +987,7 @@ fn run_tool(
   attempt: Int,
   output_index: Int,
   call: types.ToolCall,
+  clip_room: Int,
 ) -> Result(
   #(transcript.Entry, List(Told), Result(repetition.Cell, Nil)),
   String,
@@ -964,7 +1003,7 @@ fn run_tool(
   case state.progress_running(step, attempt, output_index, call.id, call.name) {
     False -> Error("cancelled before tool execution")
     True -> {
-      let invoked = invoke(state, call)
+      let invoked = invoke(state, call, clip_room)
       // Drop the running projection before committing the result. A reset
       // racing with that commit must not snapshot the just-finished call.
       state.progress_finish(progress_id)
@@ -1097,7 +1136,11 @@ type Invoked {
   )
 }
 
-fn invoke(state: Loop, call: types.ToolCall) -> Result(Invoked, String) {
+fn invoke(
+  state: Loop,
+  call: types.ToolCall,
+  clip_room: Int,
+) -> Result(Invoked, String) {
   // Before the hooks, so they judge the cell that runs.
   let call = runtime.as_cell(state.prepared, call)
   let asked = hook.Call(call.id, call.name, call.arguments, None)
@@ -1119,7 +1162,13 @@ fn invoke(state: Loop, call: types.ToolCall) -> Result(Invoked, String) {
         // next checkpoint.
         Error(why) -> Ok(#(refused(call, why), True))
         Ok(kernel) ->
-          runtime.invoke(state.host, kernel, call, state.upstream.images)
+          runtime.invoke(
+            state.host,
+            kernel,
+            call,
+            state.upstream.images,
+            clip_room,
+          )
       }
   })
   let body = case output {
@@ -1309,12 +1358,11 @@ fn prepare(
     state.prepared,
     state.model,
     request_source(state.upstream, state.model),
-    extension.clean_endpoint(state.upstream.endpoint),
+    Some(state.upstream),
     prompt_text(request_prompt(state)),
     summarize(state, original_entries, _),
     original,
     force,
-    state.upstream.images,
     state.report_compacting,
     fn(rows) {
       rows
@@ -1337,7 +1385,7 @@ fn prepare(
 
 /// The route this turn's sizes are learned and estimated for.
 fn route(state: Loop) -> size.Route {
-  size.Route(state.upstream.endpoint, state.model)
+  clip_cost.route(state.upstream.endpoint, state.model, state.upstream.images)
 }
 
 /// How big this turn's requests and rows are: the provider's count of a
@@ -1367,33 +1415,21 @@ fn sizing(
   }
   compaction.Sizing(
     request: fn(inputs) {
-      // The reported total covers `inputs` only while they start with what
-      // that request carried, as its strategy projected it.
-      let continues = case state.reported {
-        Some(usage) ->
-          carried(list.take(inputs, usage.sent)) == #(usage.sent, usage.chain)
-        None -> False
-      }
-      case counted(inputs), state.reported {
-        Some(tokens), _ ->
-          size.total([size.Measured(tokens, size.CountEndpoint)])
-        None, Some(usage) if continues ->
-          size.total([
-            size.Measured(usage.tokens, size.ReportedUsage),
-            size.estimate(route, list.drop(inputs, usage.sent)),
-          ])
-        None, _ -> {
+      measured.request_size(
+        counted(inputs),
+        state.reported,
+        inputs,
+        size.estimate(route, _),
+        fn() {
           let empty = request(state, prompt, [])
-          size.total([
-            size.estimate_request(
-              route,
-              option.unwrap(empty.instructions, ""),
-              empty.tools,
-              inputs,
-            ),
-          ])
-        }
-      }
+          size.estimate_request(
+            route,
+            option.unwrap(empty.instructions, ""),
+            empty.tools,
+            inputs,
+          )
+        },
+      )
     },
     inputs: fn(inputs) { row_sizes(state, route, original_entries, inputs) },
     image: fn(width, height) { size.estimate_image(route, width, height) },
@@ -1645,6 +1681,7 @@ fn call(
     state.run_id,
     reset_progress,
     salvage,
+    backoff,
     first,
     accepted_timeouts,
   )
@@ -1662,7 +1699,7 @@ type Called {
 }
 
 /// How a provider call ended for its turn.
-type Attempt(a) {
+pub type Attempt(a) {
   Answered(a)
   /// The stream broke after it showed output; `kept` is what was committed
   /// of it, and the turn goes on from there at attempt `next`.
@@ -1687,17 +1724,18 @@ fn whole(called: Attempt(a)) -> Result(a, types.Error) {
   }
 }
 
-/// A request the provider refused as too long for the model's window is
-/// compacted with the session's strategy and sent once more; a second
-/// refusal, or no strategy to compact with, ends the turn with the first.
+/// A request the provider refused as too long, for the model's window or its
+/// own size limit, is compacted with the session's strategy and sent once
+/// more; a second refusal, or no strategy to compact with, ends the turn with
+/// the first.
 fn overflowed(
   state: Loop,
   id: String,
   inputs: List(transcript.Entry),
   step: Int,
   called: Result(a, Failure),
-  otherwise: fn() -> Result(Nil, Failure),
-) -> Result(Nil, Failure) {
+  otherwise: fn() -> Result(Option(String), Failure),
+) -> Result(Option(String), Failure) {
   case called, state.overflowed {
     Error(ProviderFailed(types.Refused(types.ContextTooLong, ..), _) as failure),
       False
@@ -1707,14 +1745,9 @@ fn overflowed(
           "daemon",
           "the provider said the request is too long for the model; compacting and sending it again",
         ))
+      let state = Loop(..state, overflowed: True)
       case compact(state, inputs) {
-        Ok(Nil) ->
-          converse(
-            Loop(..state, overflowed: True, reported: None),
-            id,
-            inputs,
-            step,
-          )
+        Ok(Nil) -> converse(Loop(..state, reported: None), id, inputs, step)
         Error(_) -> Error(failure)
       }
     }
@@ -1741,8 +1774,8 @@ fn go_on(
   inputs: List(transcript.Entry),
   step: Int,
   called: Attempt(a),
-  answered: fn(a) -> Result(Nil, Failure),
-) -> Result(Nil, Failure) {
+  answered: fn(a) -> Result(Option(String), Failure),
+) -> Result(Option(String), Failure) {
   case called {
     Answered(value) -> answered(value)
     Resumed(timestamp, kept, next, accepted_timeouts) -> {
@@ -1815,13 +1848,15 @@ const accepted_timeout_retries = 1
 
 /// Reissue transient transport and gateway failures. A failed attempt that
 /// showed nothing is sent again as it was; one that showed output keeps it
-/// through `salvage`, and the call resumes from it instead.
-fn retry_stream(
+/// through `salvage`, and the call resumes from it instead. `sleep` waits
+/// out each backoff; the loop passes `backoff`.
+pub fn retry_stream(
   run: fn(Int) -> Result(a, types.Error),
   publish: fn(view.Event) -> Bool,
   run_id: String,
   reset_progress: fn(Int) -> Nil,
   salvage: fn(String) -> Result(#(Int, List(types.Input)), String),
+  sleep: fn(Int) -> Nil,
   attempt: Int,
   accepted_timeouts: Int,
 ) -> Result(Attempt(a), types.Error) {
@@ -1861,7 +1896,7 @@ fn retry_stream(
             False -> Error(types.Cancelled)
             True -> {
               reset_progress(attempt)
-              albedo_clock.sleep(delay)
+              sleep(delay)
               case kept {
                 [] ->
                   retry_stream(
@@ -1870,6 +1905,7 @@ fn retry_stream(
                     run_id,
                     reset_progress,
                     salvage,
+                    sleep,
                     attempt + 1,
                     accepted_timeouts,
                   )
@@ -1883,6 +1919,18 @@ fn retry_stream(
     }
     Ok(value) -> Ok(Answered(value))
   }
+}
+
+/// Wait out a retry's backoff, or less once the run is stopped. A stop raises
+/// the worker's latch and wakes it (`turn.cancel` and `turn.cancel_call`), so
+/// the wait ends at once and the next attempt finds the run cancelled, rather
+/// than holding an interrupted turn for up to 16 s.
+pub fn backoff(delay_ms: Int) -> Nil {
+  let _ =
+    process.new_selector()
+    |> turn.select_stop(Nil)
+    |> process.selector_receive(albedo_clock.delay_ms(delay_ms))
+  Nil
 }
 
 fn accepted_timeout(error: types.Error) -> Bool {
@@ -1976,33 +2024,15 @@ fn readable(
   instructions: String,
   history: List(types.Input),
 ) -> #(String, List(types.Input)) {
+  let history = list.map(history, types.readable_input(images, _))
   case images.max_images {
-    Some(0) -> #(
-      instructions <> "\n\n" <> text_only,
-      list.map(history, without_images),
-    )
+    Some(0) -> #(instructions <> "\n\n" <> text_only, history)
     _ -> #(instructions, history)
   }
 }
 
 const text_only =
   "This model reads text only, so no image reaches it: show_image, view_diff and view_code raise, and screenshots come back without the picture. Review changes with `git diff` and read code with files.read instead."
-
-fn without_images(input: types.Input) -> types.Input {
-  case input {
-    types.UserImage(text, [_, ..] as images) ->
-      types.User(text <> omitted_images(images))
-    types.ToolOutput(id, output, [_, ..] as images) ->
-      types.ToolOutput(id, output <> omitted_images(images), [])
-    _ -> input
-  }
-}
-
-fn omitted_images(images: List(types.Image)) -> String {
-  "\n["
-  <> int.to_string(list.length(images))
-  <> " image(s) omitted: this model reads text only]"
-}
 
 fn request_entries(
   entries: List(transcript.Entry),
@@ -2018,10 +2048,7 @@ fn request_entries(
         cells,
       )
     })
-  case images.max_images {
-    Some(0) -> list.map(stamped, without_images)
-    _ -> stamped
-  }
+  list.map(stamped, types.readable_input(images, _))
 }
 
 fn request_for(
@@ -2142,10 +2169,9 @@ pub fn rebuild_observed(
       kernel,
       model,
       request_source(upstream, model),
-      extension.clean_endpoint(upstream.endpoint),
+      Some(upstream),
       prompt_text(prompt_for(pin, kernel)),
       original,
-      upstream.images,
       sizing,
     )
   }
@@ -2158,7 +2184,7 @@ pub fn rebuild_observed(
     Some(tokens) -> {
       let estimated =
         compaction.estimated_sizing(
-          size.Route(upstream.endpoint, model),
+          clip_cost.route(upstream.endpoint, model, upstream.images),
           prompt_text(prompt_for(pin, kernel)),
           runtime.tools(kernel),
         )
@@ -2342,8 +2368,11 @@ fn replayed(
 /// head as a request sent now, sent or kept warm inside the lifetime its
 /// cache marks or the cache table give, with a tenth spare. Once that cache
 /// is gone, extending the request would pay full price for all of it, tail
-/// included. A provider whose cache has no clock never counts as cached.
+/// included. A provider whose cache has no clock never counts as cached, and
+/// neither does one that just refused the request as too long: replaying it
+/// would be refused the same.
 fn cached(state: Loop) -> Bool {
+  use <- bool.guard(state.overflowed, False)
   let now = request(state, request_prompt(state), [])
   let head =
     requests.direct_prefix(option.unwrap(now.instructions, ""), now.tools, [])

@@ -18,13 +18,15 @@ import (
 
 type ReloadResult struct{ Message, Warning string }
 type UIPreferencesPatch struct {
-	Thinking *bool  `json:"thinking,omitempty"`
-	Tools    *bool  `json:"tools,omitempty"`
-	Pinned   *bool  `json:"pinned,omitempty"`
-	Archived *bool  `json:"archived,omitempty"`
-	ETag     string `json:"-"`
+	AssistantName *string `json:"assistant_name,omitempty"`
+	Thinking      *bool   `json:"thinking,omitempty"`
+	Tools         *bool   `json:"tools,omitempty"`
+	Pinned        *bool   `json:"pinned,omitempty"`
+	Archived      *bool   `json:"archived,omitempty"`
+	ETag          string  `json:"-"`
 }
 type UIPreferences struct {
+	AssistantName    string
 	DismissedNotices []string
 	WebAllow         []string
 	ProxyAllow       []string
@@ -368,7 +370,18 @@ func PatchUI(ctx context.Context, conn *Connection, patch UIPreferencesPatch) (U
 	}
 	var change protocol.UISettingsChange
 	err := patchSettingsGroup(ctx, conn, "ui", patch.ETag, patch, &change)
-	return UIPreferences{Thinking: change.Resource.Value.Thinking, Tools: change.Resource.Value.Tools, ETag: change.Resource.ETag}, err
+	return uiPreferences(change.Resource.Value, change.Resource.ETag), err
+}
+
+func GetUI(ctx context.Context, conn *Connection) (UIPreferences, error) {
+	var wire protocol.UISettings
+	var etag string
+	err := executeRead(ctx, conn, operation{Name: "read ui settings", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+		return protocol.NewGetUISettingsRequest(base)
+	}, Validator: &etag, Policy: readRecovery}, func(data []byte) error {
+		return decodeRequired(data, &wire)
+	})
+	return uiPreferences(wire, etag), err
 }
 
 // DismissNotice adds id to the shared dismissed notices and returns the ui
@@ -376,21 +389,15 @@ func PatchUI(ctx context.Context, conn *Connection, patch UIPreferencesPatch) (U
 // again, so neither dismissal is lost.
 func DismissNotice(ctx context.Context, conn *Connection, id string) (UIPreferences, error) {
 	for attempt := 0; ; attempt++ {
-		var wire protocol.UISettings
-		var etag string
-		err := executeRead(ctx, conn, operation{Name: "read ui settings", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
-			return protocol.NewGetUISettingsRequest(base)
-		}, Validator: &etag, Policy: readRecovery}, func(data []byte) error {
-			return decodeRequired(data, &wire)
-		})
+		ui, err := GetUI(ctx, conn)
 		if err != nil {
 			return UIPreferences{}, err
 		}
-		if slices.Contains(wire.DismissedNotices, id) {
-			return uiPreferences(wire, etag), nil
+		if slices.Contains(ui.DismissedNotices, id) {
+			return ui, nil
 		}
 		var change protocol.UISettingsChange
-		err = patchSettingsGroup(ctx, conn, "ui", etag, protocol.UISettingsPatch{DismissedNotices: protocol.SetPatch(append(slices.Clip(wire.DismissedNotices), id))}, &change)
+		err = patchSettingsGroup(ctx, conn, "ui", ui.ETag, protocol.UISettingsPatch{DismissedNotices: protocol.SetPatch(append(slices.Clip(ui.DismissedNotices), id))}, &change)
 		if apiErr, stale := errors.AsType[*APIError](err); stale && apiErr.StatusCode == http.StatusPreconditionFailed && attempt == 0 {
 			continue
 		}
@@ -402,13 +409,13 @@ func DismissNotice(ctx context.Context, conn *Connection, id string) (UIPreferen
 }
 
 func uiPreferences(wire protocol.UISettings, etag string) UIPreferences {
-	return UIPreferences{DismissedNotices: wire.DismissedNotices, WebAllow: wire.WebAllow, ProxyAllow: wire.ProxyAllow, Thinking: wire.Thinking, Tools: wire.Tools, ETag: etag}
+	return UIPreferences{AssistantName: value(wire.AssistantName), DismissedNotices: wire.DismissedNotices, WebAllow: wire.WebAllow, ProxyAllow: wire.ProxyAllow, Thinking: wire.Thinking, Tools: wire.Tools, ETag: etag}
 }
 
 // PatchSessionUI pins or archives one session. Session lists carry no ETag,
 // so a caller without one has the session's current ETag read first.
 func PatchSessionUI(ctx context.Context, conn *Connection, session string, patch UIPreferencesPatch) (UIPreferences, error) {
-	if patch.Thinking != nil || patch.Tools != nil {
+	if patch.AssistantName != nil || patch.Thinking != nil || patch.Tools != nil {
 		return UIPreferences{}, errors.New("thinking and tools are shared preferences")
 	}
 	if patch.ETag == "" {

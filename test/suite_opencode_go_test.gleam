@@ -8,13 +8,13 @@ import gleeunit/should
 const metadata_catalog =
   "{\"opencode-go\":{\"name\":\"OpenCode Go\",\"npm\":\"@ai-sdk/openai-compatible\",\"models\":{\"catalog-inherit\":{},\"catalog-openai\":{\"provider\":{\"npm\":\"@ai-sdk/openai\"}},\"catalog-anthropic\":{\"provider\":{\"npm\":\"@ai-sdk/anthropic\"}},\"catalog-google\":{\"provider\":{\"npm\":\"@ai-sdk/google\"}},\"catalog-unknown\":{\"provider\":{\"npm\":\"unknown-sdk\"}}}}}"
 
-@external(erlang, "albedo_skills_test_support", "fixture")
+@external(erlang, "albedo_suite_test_support", "skills_fixture")
 fn fixture() -> #(String, String, String)
 
-@external(erlang, "albedo_skills_test_support", "write")
+@external(erlang, "albedo_suite_test_support", "write")
 fn write(base: String, relative: String, content: String) -> String
 
-@external(erlang, "albedo_skills_test_support", "cleanup")
+@external(erlang, "albedo_suite_test_support", "cleanup")
 fn cleanup(root: String) -> Nil
 
 /// A catalog entry for the model may inherit the provider's default SDK, but an

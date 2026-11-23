@@ -846,6 +846,13 @@ type ContextCompaction struct {
 	TriggerTokens *Counter `json:"trigger_tokens" nullable:"true"`
 }
 
+// ContextMediaTokens Tokens the prepared request's pictures, audio and video take, priced the way the daemon sizes requests for the session's model before any correction. Clips are priced by how long they play where the model's wire publishes a rate. Sent with a ready snapshot.
+type ContextMediaTokens struct {
+	Audio  Counter `json:"audio"`
+	Images Counter `json:"images"`
+	Video  Counter `json:"video"`
+}
+
 // ContextRead defines model for ContextRead.
 type ContextRead = json.RawMessage
 
@@ -881,13 +888,16 @@ type ContextSummary struct {
 	CapturedAt          *Timestamp        `json:"captured_at" nullable:"true"`
 	Compaction          ContextCompaction `json:"compaction"`
 	ContextWindowTokens *Counter          `json:"context_window_tokens" nullable:"true"`
-	Model               *ID               `json:"model" nullable:"true"`
-	Protocol            *string           `json:"protocol" nullable:"true"`
-	Provider            *ID               `json:"provider" nullable:"true"`
-	Reason              *SafeReason       `json:"reason" nullable:"true"`
-	Sections            []ContextSection  `json:"sections"`
-	SnapshotID          *ID               `json:"snapshot_id" nullable:"true"`
-	State               string            `json:"state"`
+
+	// MediaTokens Tokens the prepared request's pictures, audio and video take, priced the way the daemon sizes requests for the session's model before any correction. Clips are priced by how long they play where the model's wire publishes a rate. Sent with a ready snapshot.
+	MediaTokens *ContextMediaTokens `json:"media_tokens,omitempty"`
+	Model       *ID                 `json:"model" nullable:"true"`
+	Protocol    *string             `json:"protocol" nullable:"true"`
+	Provider    *ID                 `json:"provider" nullable:"true"`
+	Reason      *SafeReason         `json:"reason" nullable:"true"`
+	Sections    []ContextSection    `json:"sections"`
+	SnapshotID  *ID                 `json:"snapshot_id" nullable:"true"`
+	State       string              `json:"state"`
 }
 
 // ContextWindow defines model for ContextWindow.
@@ -1743,11 +1753,12 @@ type ID = string
 
 // ImageContent defines model for ImageContent.
 type ImageContent struct {
+	// Image A picture, or an audio or video clip, whose width and height are 0.
 	Image ImageMetadata `json:"image"`
 	Kind  string        `json:"kind"`
 }
 
-// ImageMetadata defines model for ImageMetadata.
+// ImageMetadata A picture, or an audio or video clip, whose width and height are 0.
 type ImageMetadata struct {
 	Height        int64   `json:"height"`
 	MimeType      string  `json:"mime_type"`
@@ -1758,7 +1769,7 @@ type ImageMetadata struct {
 	Width     int64            `json:"width"`
 }
 
-// ImageUpload Strict base64; decoded dimensions and provider constraints are validated before admission.
+// ImageUpload Strict base64 of a picture, or of a whole audio or video clip; decoded headers and provider constraints are validated before admission. A clip of a type the session's model does not read is refused with 409 image_rejected. Clips that would take what the session's next request carries past 64 MiB of clips are refused with 409 media_budget; the shake route frees room.
 type ImageUpload struct {
 	Data     string `json:"data"`
 	MimeType string `json:"mime_type"`
@@ -2229,6 +2240,9 @@ type MailMetadata struct {
 	SenderSessionID   *ID     `json:"sender_session_id" nullable:"true"`
 }
 
+// MessageImage defines model for MessageImage.
+type MessageImage = json.RawMessage
+
 // MessageInputRequest Examples: {"client_id":"draft-1","kind":"message","text":"Fix the parser."}
 type MessageInputRequest struct {
 	ClientID *string `json:"client_id,omitempty"`
@@ -2237,8 +2251,8 @@ type MessageInputRequest struct {
 	Files []FileUpload `json:"files,omitempty"`
 
 	// Images Attached in order; the text's numbered image markers say where each was attached.
-	Images []ImageUpload `json:"images,omitempty"`
-	Kind   string        `json:"kind"`
+	Images []MessageImage `json:"images,omitempty"`
+	Kind   string         `json:"kind"`
 
 	// Pastes Pasted text the text marks by number; a long one is saved to a file the model reads.
 	Pastes []string `json:"pastes,omitempty"`
@@ -2567,6 +2581,12 @@ type PendingInput struct {
 	Preview Preview `json:"preview"`
 }
 
+// PhotonStatus defines model for PhotonStatus.
+type PhotonStatus struct {
+	Session *string `json:"session" nullable:"true"`
+	Ready   bool    `json:"ready"`
+}
+
 // PreferencePatch defines model for PreferencePatch.
 type PreferencePatch struct {
 	Archived PatchField[bool] `json:"archived,omitempty"`
@@ -2756,6 +2776,15 @@ type ProviderSettingsResource struct {
 	// URL Daemon-relative URL, including any representation query. No foreign origin or fragment.
 	URL   ResourceURL      `json:"url"`
 	Value ProviderSettings `json:"value"`
+}
+
+// ProxyAudioPart defines model for ProxyAudioPart.
+type ProxyAudioPart struct {
+	InputAudio struct {
+		Data   string `json:"data"`
+		Format string `json:"format"`
+	} `json:"input_audio"`
+	Type string `json:"type"`
 }
 
 // ProxyChunk defines model for ProxyChunk.
@@ -3527,6 +3556,31 @@ type SessionLocation struct {
 	User  *string `json:"user" nullable:"true"`
 }
 
+// SessionMedia defines model for SessionMedia.
+type SessionMedia struct {
+	ClipBudget int64              `json:"clip_budget"`
+	ClipsHeld  *int64             `json:"clips_held" nullable:"true"`
+	Media      []SessionMediaItem `json:"media"`
+	Message    string             `json:"message"`
+	Rows       *int64             `json:"rows,omitempty"`
+	Shaken     []SessionMediaItem `json:"shaken,omitempty"`
+}
+
+// SessionMediaItem defines model for SessionMediaItem.
+type SessionMediaItem struct {
+	Bytes int64 `json:"bytes"`
+
+	// ID The first hex digits of the payload hash, at least 8 and as many as tell the session's payloads apart.
+	ID       string `json:"id"`
+	Kind     string `json:"kind"`
+	MimeType string `json:"mime_type"`
+	Places   []struct {
+		CallID *string `json:"call_id" nullable:"true"`
+		From   string  `json:"from"`
+		Row    int64   `json:"row"`
+	} `json:"places"`
+}
+
 // SessionMessageEvent defines model for SessionMessageEvent.
 type SessionMessageEvent struct {
 	Data struct {
@@ -3806,9 +3860,11 @@ type SessionThinkingEvent struct {
 type SessionToolEvent struct {
 	Data struct {
 		// Arguments Explicit domain payload: tool arguments, tool results, provider-private state, or extension data. JSON values of any type are allowed; no core resource uses this as its envelope.
-		Arguments       DynamicJSON `json:"arguments"`
-		ContentComplete bool        `json:"content_complete"`
-		Name            string      `json:"name"`
+		Arguments DynamicJSON `json:"arguments"`
+
+		// ContentComplete False when the arguments exceed 64 KiB or the encoded arguments, result and trace exceed 64 KiB plus the trace's snapshots (counted up to 256 KiB). Arguments, result and trace are then null; read the call from history through reference.
+		ContentComplete bool   `json:"content_complete"`
+		Name            string `json:"name"`
 
 		// ProgressCallID Opaque identity. Never infer a resource type or route from its contents.
 		ProgressCallID ID                `json:"progress_call_id"`
@@ -3904,6 +3960,12 @@ type SettingsPatch = json.RawMessage
 
 // SettingsRead defines model for SettingsRead.
 type SettingsRead = json.RawMessage
+
+// ShakeRequest defines model for ShakeRequest.
+type ShakeRequest struct {
+	// Media Kinds (audio, video, image, all) and ids from the listing, separated by spaces or commas.
+	Media string `json:"media"`
+}
 
 // ShellCommand defines model for ShellCommand.
 type ShellCommand struct {
@@ -4425,14 +4487,16 @@ type Turn struct {
 
 // UISettings defines model for UISettings.
 type UISettings struct {
-	DismissedNotices []ID `json:"dismissed_notices"`
+	// AssistantName Sender label shared by web and terminal chats. Empty uses albedo.
+	AssistantName    *string `json:"assistant_name,omitempty"`
+	DismissedNotices []ID    `json:"dismissed_notices"`
 
-	// ProxyAllow Networks `albedo proxy` serves to besides this machine, as CIDR or an address whose trailing zero octets stand for any (10.0.0.0 is 10.0.0.0/8).
+	// ProxyAllow Networks `albedo proxy` serves to besides this machine, as CIDR or an address whose trailing zero octets stand for any (10.0.0.0 is 10.0.0.0/8). A bare unspecified address (0.0.0.0) is refused; 0.0.0.0/0 or ::/0 allows every client.
 	ProxyAllow []string `json:"proxy_allow,omitempty"`
 	Thinking   bool     `json:"thinking"`
 	Tools      bool     `json:"tools"`
 
-	// WebAllow Networks `albedo web` serves to besides this machine, as CIDR or an address whose trailing zero octets stand for any (10.0.0.0 is 10.0.0.0/8).
+	// WebAllow Networks `albedo web` serves to besides this machine, as CIDR or an address whose trailing zero octets stand for any (10.0.0.0 is 10.0.0.0/8). A bare unspecified address (0.0.0.0) is refused; 0.0.0.0/0 or ::/0 allows every client.
 	WebAllow []string `json:"web_allow,omitempty"`
 }
 
@@ -4445,14 +4509,16 @@ type UISettingsChange struct {
 
 // UISettingsPatch defines model for UISettingsPatch.
 type UISettingsPatch struct {
-	DismissedNotices PatchField[[]ID] `json:"dismissed_notices,omitempty"`
+	// AssistantName Sender label shared by web and terminal chats. Empty uses albedo.
+	AssistantName    PatchField[string] `json:"assistant_name,omitempty"`
+	DismissedNotices PatchField[[]ID]   `json:"dismissed_notices,omitempty"`
 
-	// ProxyAllow Networks `albedo proxy` serves to besides this machine, as CIDR or an address whose trailing zero octets stand for any (10.0.0.0 is 10.0.0.0/8).
+	// ProxyAllow Networks `albedo proxy` serves to besides this machine, as CIDR or an address whose trailing zero octets stand for any (10.0.0.0 is 10.0.0.0/8). A bare unspecified address (0.0.0.0) is refused; 0.0.0.0/0 or ::/0 allows every client.
 	ProxyAllow PatchField[[]string] `json:"proxy_allow,omitempty"`
 	Thinking   PatchField[bool]     `json:"thinking,omitempty"`
 	Tools      PatchField[bool]     `json:"tools,omitempty"`
 
-	// WebAllow Networks `albedo web` serves to besides this machine, as CIDR or an address whose trailing zero octets stand for any (10.0.0.0 is 10.0.0.0/8).
+	// WebAllow Networks `albedo web` serves to besides this machine, as CIDR or an address whose trailing zero octets stand for any (10.0.0.0 is 10.0.0.0/8). A bare unspecified address (0.0.0.0) is refused; 0.0.0.0/0 or ::/0 allows every client.
 	WebAllow PatchField[[]string] `json:"web_allow,omitempty"`
 }
 
@@ -4468,6 +4534,31 @@ type UISettingsResource struct {
 
 // UUIDv7 Client-generated lowercase UUIDv7. Retained decisions are checked before timestamp expiry.
 type UUIDv7 = string
+
+// Upload defines model for Upload.
+type Upload struct {
+	// ExpiresAt UTC RFC 3339.
+	ExpiresAt Timestamp `json:"expires_at"`
+
+	// Height Pixels; 0 for a clip.
+	Height int64 `json:"height"`
+
+	// ID Client-generated lowercase UUIDv7. Retained decisions are checked before timestamp expiry.
+	ID       UUIDv7 `json:"id"`
+	MimeType string `json:"mime_type"`
+
+	// Size Bytes.
+	Size int64 `json:"size"`
+
+	// Width Pixels; 0 for a clip.
+	Width int64 `json:"width"`
+}
+
+// UploadReference A picture or clip uploaded to this session beforehand. An upload that is unknown, expired or taken by an earlier message is refused with 409 upload_unknown. It is checked as an ImageUpload is.
+type UploadReference struct {
+	// Upload Client-generated lowercase UUIDv7. Retained decisions are checked before timestamp expiry.
+	Upload UUIDv7 `json:"upload"`
+}
 
 // Usage defines model for Usage.
 type Usage struct {
@@ -5600,6 +5691,9 @@ type RestartKernelJSONRequestBody = EmptyRequest
 // UpgradeKernelJSONRequestBody defines body for UpgradeKernel for application/json ContentType.
 type UpgradeKernelJSONRequestBody = EmptyRequest
 
+// ShakeSessionMediaJSONRequestBody defines body for ShakeSessionMedia for application/json ContentType.
+type ShakeSessionMediaJSONRequestBody = ShakeRequest
+
 // MoveSessionToDaemonJSONRequestBody defines body for MoveSessionToDaemon for application/json ContentType.
 type MoveSessionToDaemonJSONRequestBody MoveSessionToDaemonJSONBody
 
@@ -5854,13 +5948,15 @@ type ClientInterface interface {
 	// after_generation?,after_seq?}, {key,type:"sessions",scope:"roots"},
 	// {key,type:"stop"}, or {type:"ping"}. Keys contain 1 to 128 UTF-8 bytes.
 	// Session replay and tail validation match GET /sessions/{session_id} SSE.
-	// Subscribing an existing key replaces that follow. after_seq accepts an
+	// Subscribing an existing key releases that follow first, so a refused
+	// replacement leaves the key without one. after_seq accepts an
 	// integer or its decimal string; tail defaults to 100 and is at most 200.
 	// Server text frames are {key,batch:<unchanged SSE batch>}: session batches
 	// carry generation,cursor,events and optional snapshot; collection batches
 	// carry events. A successful send acknowledges its session cursor. A follow
 	// ending (including stop, deletion, failure or overflow) sends {key,end:true}.
-	// Invalid commands and admission refusals send {key,failure:{code,detail}};
+	// Invalid commands and admission refusals send {key,failure:{code,detail}}, which ends
+	// the key like an end frame;
 	// malformed commands without a usable key use an empty key. Session failures
 	// and collection overflow retain their SSE batch before the end frame.
 	// Ping replies and 15-second keepalives are {type:"pong"}. Commands are at
@@ -6220,6 +6316,11 @@ type ClientInterface interface {
 	//
 	// Corresponds with PATCH /extensions/paperclips/items/{item_id} (the `PatchPaperclips` operationId).
 	PatchPaperclipsWithApplicationMergePatchPlusJSONBody(ctx context.Context, itemID ID, params *PatchPaperclipsParams, body PatchPaperclipsApplicationMergePatchPlusJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetPhotonStatus Read the local iMessage pairing and transport readiness
+	//
+	// Corresponds with GET /extensions/photon/status (the `GetPhotonStatus` operationId).
+	GetPhotonStatus(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// CreateProxyCompletionWithBody Run a stateless OpenAI chat completion
 	//
@@ -6822,7 +6923,9 @@ type ClientInterface interface {
 	// fast mode supported; unknown capability is not inferred. Disabling is
 	// always allowed. `toggle` inverts the state protected by If-Match; replaying
 	// a successful toggle with the old ETag is refused rather than toggling twice.
-	// This setting can affect provider billing.
+	// This setting can affect provider billing, so the editor of an ACP session
+	// owns it: another client gets 409 `acp_owned`, and a token that no
+	// longer holds the attachment gets 409 `attachment_lost`.
 	//
 	// Takes any type of body and a specified content type.
 	//
@@ -6836,7 +6939,9 @@ type ClientInterface interface {
 	// fast mode supported; unknown capability is not inferred. Disabling is
 	// always allowed. `toggle` inverts the state protected by If-Match; replaying
 	// a successful toggle with the old ETag is refused rather than toggling twice.
-	// This setting can affect provider billing.
+	// This setting can affect provider billing, so the editor of an ACP session
+	// owns it: another client gets 409 `acp_owned`, and a token that no
+	// longer holds the attachment gets 409 `attachment_lost`.
 	//
 	// Takes a body of the `application/merge-patch+json` content type.
 	//
@@ -6873,7 +6978,7 @@ type ClientInterface interface {
 
 	// GetHistoryImage Read one image field as its own bytes
 	//
-	// Image references in history point here. The body is the stored image itself, not base64, and is never content-coded. When `edge` is given and either dimension exceeds it, the response is scaled down so its longer edge equals `edge` and encoded as lossy WebP; smaller images are returned untouched.
+	// Image references in history point here. The body is the stored image itself, not base64, and is never content-coded. When `edge` is given and either dimension exceeds it, the response is scaled down so its longer edge equals `edge` and encoded as lossy WebP; smaller images are returned untouched. An audio or video clip is always returned untouched.
 	//
 	// Corresponds with GET /sessions/{session_id}/history/{entry_id}/{field} (the `GetHistoryImage` operationId).
 	GetHistoryImage(ctx context.Context, sessionID ID, entryID ID, field string, params *GetHistoryImageParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -6923,7 +7028,7 @@ type ClientInterface interface {
 
 	// EditInputWithBody Put an edited message in place of a waiting one
 	//
-	// Replaces a person's typed message that still waits, keeping its id and its place in the queue, and releases any hold on it. 409 input_not_waiting once the session read it or it was cancelled.
+	// Replaces a person's typed message that still waits, keeping its id and its place in the queue, and releases any hold on it. 409 input_not_waiting once the session read it or it was cancelled. Its images and clips are checked as a new message's are, so 409 image_rejected or media_budget refuse them the same way.
 	//
 	// Takes any type of body and a specified content type.
 	//
@@ -6932,7 +7037,7 @@ type ClientInterface interface {
 
 	// EditInput Put an edited message in place of a waiting one
 	//
-	// Replaces a person's typed message that still waits, keeping its id and its place in the queue, and releases any hold on it. 409 input_not_waiting once the session read it or it was cancelled.
+	// Replaces a person's typed message that still waits, keeping its id and its place in the queue, and releases any hold on it. 409 input_not_waiting once the session read it or it was cancelled. Its images and clips are checked as a new message's are, so 409 image_rejected or media_budget refuse them the same way.
 	//
 	// Takes a body of the `application/json` content type.
 	//
@@ -7018,9 +7123,34 @@ type ClientInterface interface {
 	// Corresponds with POST /sessions/{session_id}/kernel/upgrade (the `UpgradeKernel` operationId).
 	UpgradeKernel(ctx context.Context, sessionID ID, body UpgradeKernelJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// GetSessionMedia List the pictures and clips a session's history holds
+	//
+	// Each stored picture or clip once, by the first hex digits of its payload hash, with every row that shows it. `clips_held` is the base64 bytes of the clips the session's next request carries, as its model is sent them, which `clip_budget` bounds; null when the session has no provider. `clip_budget` is what the wire of the session's current model takes, held to albedo's own 64 MiB, or that ceiling without a provider.
+	//
+	// Corresponds with GET /sessions/{session_id}/media (the `GetSessionMedia` operationId).
+	GetSessionMedia(ctx context.Context, sessionID ID, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ShakeSessionMediaWithBody Drop pictures and clips from a session's history
+	//
+	// Removes what `media` names from every row and cell result of the session, which keep their text and gain a marker such as `[audio/wav clip removed by shake]`, and deletes payloads no other session names. Earlier messages change, so the next request misses the provider's prompt cache once. A running turn goes on with the new history from its next request. An unknown or ambiguous id, or a session compacting, is refused with 409 shake_refused.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /sessions/{session_id}/media/shake (the `ShakeSessionMedia` operationId).
+	ShakeSessionMediaWithBody(ctx context.Context, sessionID ID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ShakeSessionMedia Drop pictures and clips from a session's history
+	//
+	// Removes what `media` names from every row and cell result of the session, which keep their text and gain a marker such as `[audio/wav clip removed by shake]`, and deletes payloads no other session names. Earlier messages change, so the next request misses the provider's prompt cache once. A running turn goes on with the new history from its next request. An unknown or ambiguous id, or a session compacting, is refused with 409 shake_refused.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /sessions/{session_id}/media/shake (the `ShakeSessionMedia` operationId).
+	ShakeSessionMedia(ctx context.Context, sessionID ID, body ShakeSessionMediaJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// MoveSessionToDaemonWithBody Move a session and its same-workspace descendants to another host's daemon
 	//
-	// The source daemon drives the move to the end whether or not the client stays, and a restart resumes it from its state. A repeat with the same transfer id and target answers the move as it stands. Once active the sessions here are marked moved and refuse new input (409 session_moved).
+	// The source daemon drives the move to the end whether or not the client stays, and a restart resumes it from its state. A repeat with the same transfer id and target answers the move as it stands. Once active the sessions here are marked moved and refuse new input (409 session_moved). A move takes an ACP session from its editor, so only the attachment holder may move one; another client gets 409 `acp_owned`, and a token that no longer holds the attachment gets 409 `attachment_lost`.
 	//
 	// Takes any type of body and a specified content type.
 	//
@@ -7029,7 +7159,7 @@ type ClientInterface interface {
 
 	// MoveSessionToDaemon Move a session and its same-workspace descendants to another host's daemon
 	//
-	// The source daemon drives the move to the end whether or not the client stays, and a restart resumes it from its state. A repeat with the same transfer id and target answers the move as it stands. Once active the sessions here are marked moved and refuse new input (409 session_moved).
+	// The source daemon drives the move to the end whether or not the client stays, and a restart resumes it from its state. A repeat with the same transfer id and target answers the move as it stands. Once active the sessions here are marked moved and refuse new input (409 session_moved). A move takes an ACP session from its editor, so only the attachment holder may move one; another client gets 409 `acp_owned`, and a token that no longer holds the attachment gets 409 `attachment_lost`.
 	//
 	// Takes a body of the `application/json` content type.
 	//
@@ -7157,9 +7287,18 @@ type ClientInterface interface {
 	// Corresponds with POST /sessions/{session_id}/title-generation (the `GenerateSessionTitle` operationId).
 	GenerateSessionTitle(ctx context.Context, sessionID ID, body GenerateSessionTitleJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// PutUploadWithBody Upload a picture or clip as its own bytes
+	//
+	// Upload ID is UUIDv7. The body is the whole file, at most 20 MiB, and Content-Type its MIME type, which must match what its header says; a picture holds at most 5 MiB. A message names it with an `upload` entry in `images`, and the session's model is checked then, not here. The upload waits under the session until a message the session accepts takes it, or for a day; a message it refuses leaves it for the next one. Uploads no message has taken hold 256 MiB across every session.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with PUT /sessions/{session_id}/uploads/{upload_id} (the `PutUpload` operationId).
+	PutUploadWithBody(ctx context.Context, sessionID ID, uploadID UUIDv7, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// RecordVisitWithBody Count one deliberate opening
 	//
-	// Visit ID is UUIDv7. Same identity increments once; reads and refreshes never count.
+	// Visit ID is UUIDv7. Same identity increments once and answers its original count again, even after the session is deleted; under another session it conflicts. Reads and refreshes never count.
 	//
 	// Takes any type of body and a specified content type.
 	//
@@ -7168,7 +7307,7 @@ type ClientInterface interface {
 
 	// RecordVisit Count one deliberate opening
 	//
-	// Visit ID is UUIDv7. Same identity increments once; reads and refreshes never count.
+	// Visit ID is UUIDv7. Same identity increments once and answers its original count again, even after the session is deleted; under another session it conflicts. Reads and refreshes never count.
 	//
 	// Takes a body of the `application/json` content type.
 	//
@@ -7789,13 +7928,15 @@ func (c *Client) CreateLogin(ctx context.Context, loginID UUIDv7, body CreateLog
 // after_generation?,after_seq?}, {key,type:"sessions",scope:"roots"},
 // {key,type:"stop"}, or {type:"ping"}. Keys contain 1 to 128 UTF-8 bytes.
 // Session replay and tail validation match GET /sessions/{session_id} SSE.
-// Subscribing an existing key replaces that follow. after_seq accepts an
+// Subscribing an existing key releases that follow first, so a refused
+// replacement leaves the key without one. after_seq accepts an
 // integer or its decimal string; tail defaults to 100 and is at most 200.
 // Server text frames are {key,batch:<unchanged SSE batch>}: session batches
 // carry generation,cursor,events and optional snapshot; collection batches
 // carry events. A successful send acknowledges its session cursor. A follow
 // ending (including stop, deletion, failure or overflow) sends {key,end:true}.
-// Invalid commands and admission refusals send {key,failure:{code,detail}};
+// Invalid commands and admission refusals send {key,failure:{code,detail}}, which ends
+// the key like an end frame;
 // malformed commands without a usable key use an empty key. Session failures
 // and collection overflow retain their SSE batch before the end frame.
 // Ping replies and 15-second keepalives are {type:"pong"}. Commands are at
@@ -8616,6 +8757,21 @@ func (c *Client) PatchPaperclipsWithBody(ctx context.Context, itemID ID, params 
 // Corresponds with PATCH /extensions/paperclips/items/{item_id} (the `PatchPaperclips` operationId).
 func (c *Client) PatchPaperclipsWithApplicationMergePatchPlusJSONBody(ctx context.Context, itemID ID, params *PatchPaperclipsParams, body PatchPaperclipsApplicationMergePatchPlusJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewPatchPaperclipsRequestWithApplicationMergePatchPlusJSONBody(c.Server, itemID, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetPhotonStatus Read the local iMessage pairing and transport readiness
+//
+// Corresponds with GET /extensions/photon/status (the `GetPhotonStatus` operationId).
+func (c *Client) GetPhotonStatus(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetPhotonStatusRequest(c.Server)
 	if err != nil {
 		return nil, err
 	}
@@ -10007,7 +10163,9 @@ func (c *Client) GetFastMode(ctx context.Context, sessionID ID, reqEditors ...Re
 // fast mode supported; unknown capability is not inferred. Disabling is
 // always allowed. `toggle` inverts the state protected by If-Match; replaying
 // a successful toggle with the old ETag is refused rather than toggling twice.
-// This setting can affect provider billing.
+// This setting can affect provider billing, so the editor of an ACP session
+// owns it: another client gets 409 `acp_owned`, and a token that no
+// longer holds the attachment gets 409 `attachment_lost`.
 //
 // Takes any type of body and a specified content type.
 //
@@ -10031,7 +10189,9 @@ func (c *Client) PatchFastModeWithBody(ctx context.Context, sessionID ID, params
 // fast mode supported; unknown capability is not inferred. Disabling is
 // always allowed. `toggle` inverts the state protected by If-Match; replaying
 // a successful toggle with the old ETag is refused rather than toggling twice.
-// This setting can affect provider billing.
+// This setting can affect provider billing, so the editor of an ACP session
+// owns it: another client gets 409 `acp_owned`, and a token that no
+// longer holds the attachment gets 409 `attachment_lost`.
 //
 // Takes a body of the `application/merge-patch+json` content type.
 //
@@ -10118,7 +10278,7 @@ func (c *Client) GetHistoryContent(ctx context.Context, sessionID ID, entryID ID
 
 // GetHistoryImage Read one image field as its own bytes
 //
-// Image references in history point here. The body is the stored image itself, not base64, and is never content-coded. When `edge` is given and either dimension exceeds it, the response is scaled down so its longer edge equals `edge` and encoded as lossy WebP; smaller images are returned untouched.
+// Image references in history point here. The body is the stored image itself, not base64, and is never content-coded. When `edge` is given and either dimension exceeds it, the response is scaled down so its longer edge equals `edge` and encoded as lossy WebP; smaller images are returned untouched. An audio or video clip is always returned untouched.
 //
 // Corresponds with GET /sessions/{session_id}/history/{entry_id}/{field} (the `GetHistoryImage` operationId).
 func (c *Client) GetHistoryImage(ctx context.Context, sessionID ID, entryID ID, field string, params *GetHistoryImageParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
@@ -10228,7 +10388,7 @@ func (c *Client) CancelInput(ctx context.Context, sessionID ID, inputID ID, para
 
 // EditInputWithBody Put an edited message in place of a waiting one
 //
-// Replaces a person's typed message that still waits, keeping its id and its place in the queue, and releases any hold on it. 409 input_not_waiting once the session read it or it was cancelled.
+// Replaces a person's typed message that still waits, keeping its id and its place in the queue, and releases any hold on it. 409 input_not_waiting once the session read it or it was cancelled. Its images and clips are checked as a new message's are, so 409 image_rejected or media_budget refuse them the same way.
 //
 // Takes any type of body and a specified content type.
 //
@@ -10247,7 +10407,7 @@ func (c *Client) EditInputWithBody(ctx context.Context, sessionID ID, inputID ID
 
 // EditInput Put an edited message in place of a waiting one
 //
-// Replaces a person's typed message that still waits, keeping its id and its place in the queue, and releases any hold on it. 409 input_not_waiting once the session read it or it was cancelled.
+// Replaces a person's typed message that still waits, keeping its id and its place in the queue, and releases any hold on it. 409 input_not_waiting once the session read it or it was cancelled. Its images and clips are checked as a new message's are, so 409 image_rejected or media_budget refuse them the same way.
 //
 // Takes a body of the `application/json` content type.
 //
@@ -10433,9 +10593,64 @@ func (c *Client) UpgradeKernel(ctx context.Context, sessionID ID, body UpgradeKe
 	return c.Client.Do(req)
 }
 
+// GetSessionMedia List the pictures and clips a session's history holds
+//
+// Each stored picture or clip once, by the first hex digits of its payload hash, with every row that shows it. `clips_held` is the base64 bytes of the clips the session's next request carries, as its model is sent them, which `clip_budget` bounds; null when the session has no provider. `clip_budget` is what the wire of the session's current model takes, held to albedo's own 64 MiB, or that ceiling without a provider.
+//
+// Corresponds with GET /sessions/{session_id}/media (the `GetSessionMedia` operationId).
+func (c *Client) GetSessionMedia(ctx context.Context, sessionID ID, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetSessionMediaRequest(c.Server, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// ShakeSessionMediaWithBody Drop pictures and clips from a session's history
+//
+// Removes what `media` names from every row and cell result of the session, which keep their text and gain a marker such as `[audio/wav clip removed by shake]`, and deletes payloads no other session names. Earlier messages change, so the next request misses the provider's prompt cache once. A running turn goes on with the new history from its next request. An unknown or ambiguous id, or a session compacting, is refused with 409 shake_refused.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /sessions/{session_id}/media/shake (the `ShakeSessionMedia` operationId).
+func (c *Client) ShakeSessionMediaWithBody(ctx context.Context, sessionID ID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewShakeSessionMediaRequestWithBody(c.Server, sessionID, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// ShakeSessionMedia Drop pictures and clips from a session's history
+//
+// Removes what `media` names from every row and cell result of the session, which keep their text and gain a marker such as `[audio/wav clip removed by shake]`, and deletes payloads no other session names. Earlier messages change, so the next request misses the provider's prompt cache once. A running turn goes on with the new history from its next request. An unknown or ambiguous id, or a session compacting, is refused with 409 shake_refused.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /sessions/{session_id}/media/shake (the `ShakeSessionMedia` operationId).
+func (c *Client) ShakeSessionMedia(ctx context.Context, sessionID ID, body ShakeSessionMediaJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewShakeSessionMediaRequest(c.Server, sessionID, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 // MoveSessionToDaemonWithBody Move a session and its same-workspace descendants to another host's daemon
 //
-// The source daemon drives the move to the end whether or not the client stays, and a restart resumes it from its state. A repeat with the same transfer id and target answers the move as it stands. Once active the sessions here are marked moved and refuse new input (409 session_moved).
+// The source daemon drives the move to the end whether or not the client stays, and a restart resumes it from its state. A repeat with the same transfer id and target answers the move as it stands. Once active the sessions here are marked moved and refuse new input (409 session_moved). A move takes an ACP session from its editor, so only the attachment holder may move one; another client gets 409 `acp_owned`, and a token that no longer holds the attachment gets 409 `attachment_lost`.
 //
 // Takes any type of body and a specified content type.
 //
@@ -10454,7 +10669,7 @@ func (c *Client) MoveSessionToDaemonWithBody(ctx context.Context, sessionID ID, 
 
 // MoveSessionToDaemon Move a session and its same-workspace descendants to another host's daemon
 //
-// The source daemon drives the move to the end whether or not the client stays, and a restart resumes it from its state. A repeat with the same transfer id and target answers the move as it stands. Once active the sessions here are marked moved and refuse new input (409 session_moved).
+// The source daemon drives the move to the end whether or not the client stays, and a restart resumes it from its state. A repeat with the same transfer id and target answers the move as it stands. Once active the sessions here are marked moved and refuse new input (409 session_moved). A move takes an ACP session from its editor, so only the attachment holder may move one; another client gets 409 `acp_owned`, and a token that no longer holds the attachment gets 409 `attachment_lost`.
 //
 // Takes a body of the `application/json` content type.
 //
@@ -10782,9 +10997,28 @@ func (c *Client) GenerateSessionTitle(ctx context.Context, sessionID ID, body Ge
 	return c.Client.Do(req)
 }
 
+// PutUploadWithBody Upload a picture or clip as its own bytes
+//
+// Upload ID is UUIDv7. The body is the whole file, at most 20 MiB, and Content-Type its MIME type, which must match what its header says; a picture holds at most 5 MiB. A message names it with an `upload` entry in `images`, and the session's model is checked then, not here. The upload waits under the session until a message the session accepts takes it, or for a day; a message it refuses leaves it for the next one. Uploads no message has taken hold 256 MiB across every session.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with PUT /sessions/{session_id}/uploads/{upload_id} (the `PutUpload` operationId).
+func (c *Client) PutUploadWithBody(ctx context.Context, sessionID ID, uploadID UUIDv7, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPutUploadRequestWithBody(c.Server, sessionID, uploadID, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 // RecordVisitWithBody Count one deliberate opening
 //
-// Visit ID is UUIDv7. Same identity increments once; reads and refreshes never count.
+// Visit ID is UUIDv7. Same identity increments once and answers its original count again, even after the session is deleted; under another session it conflicts. Reads and refreshes never count.
 //
 // Takes any type of body and a specified content type.
 //
@@ -10803,7 +11037,7 @@ func (c *Client) RecordVisitWithBody(ctx context.Context, sessionID ID, visitID 
 
 // RecordVisit Count one deliberate opening
 //
-// Visit ID is UUIDv7. Same identity increments once; reads and refreshes never count.
+// Visit ID is UUIDv7. Same identity increments once and answers its original count again, even after the session is deleted; under another session it conflicts. Reads and refreshes never count.
 //
 // Takes a body of the `application/json` content type.
 //
@@ -13706,6 +13940,33 @@ func NewPatchPaperclipsRequestWithBody(server string, itemID ID, params *PatchPa
 
 		req.Header.Set("If-Match", headerParam0)
 
+	}
+
+	return req, nil
+}
+
+// NewGetPhotonStatusRequest constructs an http.Request for the GetPhotonStatus method
+func NewGetPhotonStatusRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/extensions/photon/status")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
 	}
 
 	return req, nil
@@ -18178,6 +18439,87 @@ func NewUpgradeKernelRequestWithBody(server string, sessionID ID, contentType st
 	return req, nil
 }
 
+// NewGetSessionMediaRequest constructs an http.Request for the GetSessionMedia method
+func NewGetSessionMediaRequest(server string, sessionID ID) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/sessions/%s/media", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewShakeSessionMediaRequest calls the generic ShakeSessionMedia builder with application/json body
+func NewShakeSessionMediaRequest(server string, sessionID ID, body ShakeSessionMediaJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewShakeSessionMediaRequestWithBody(server, sessionID, "application/json", bodyReader)
+}
+
+// NewShakeSessionMediaRequestWithBody constructs an http.Request for the ShakeSessionMedia method, with any body, and a specified content type
+func NewShakeSessionMediaRequestWithBody(server string, sessionID ID, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/sessions/%s/media/shake", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
 // NewMoveSessionToDaemonRequest calls the generic MoveSessionToDaemon builder with application/json body
 func NewMoveSessionToDaemonRequest(server string, sessionID ID, body MoveSessionToDaemonJSONRequestBody) (*http.Request, error) {
 	var bodyReader io.Reader
@@ -18866,6 +19208,49 @@ func NewGenerateSessionTitleRequestWithBody(server string, sessionID ID, content
 	}
 
 	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewPutUploadRequestWithBody constructs an http.Request for the PutUpload method, with any body, and a specified content type
+func NewPutUploadRequestWithBody(server string, sessionID ID, uploadID UUIDv7, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithOptions("simple", false, "upload_id", uploadID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: "uuid"})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/sessions/%s/uploads/%s", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPut, queryURL.String(), body)
 	if err != nil {
 		return nil, err
 	}

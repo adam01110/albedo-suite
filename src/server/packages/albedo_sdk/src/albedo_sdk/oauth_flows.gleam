@@ -1048,7 +1048,7 @@ fn run_flow(
       }
     oauth.Callback(host:, port:, path:, fixed:) -> {
       let callbacks = process.new_subject()
-      case listener.listen(port:, fixed:, path:, pages:, callbacks:) {
+      case listener.listen(host:, port:, fixed:, path:, pages:, callbacks:) {
         Error(listener.ListenError(reason)) ->
           process.send(
             ready,

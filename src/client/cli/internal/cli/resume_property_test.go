@@ -36,7 +36,7 @@ func TestPropResumeArgumentArity(t *testing.T) {
 				}},
 				Terminal: &terminal.Service{},
 			}
-			err := Execute(t.Context(), args, deps, Streams{In: strings.NewReader(""), Out: io.Discard, Err: io.Discard})
+			err := ExecuteComponent(t.Context(), TUIRoot, args, deps, Streams{In: strings.NewReader(""), Out: io.Discard, Err: io.Discard})
 			switch {
 			case arguments <= 1 && (err == nil || calls != 1):
 				t.Fatalf("%v: err=%v connections=%d, want one connection", args, err, calls)

@@ -153,7 +153,7 @@ fn assert_responses_items_typed(body: String) -> Nil {
   let items =
     decode.at(["provider_request", "input"], decode.list(decode.dynamic))
   let assert Ok(items) = json.parse(body, items)
-  list.length(items) |> should.equal(6)
+  list.length(items) |> should.equal(7)
   // The suite's own Responses item decoder requires the `type` discriminator.
   json.parse(
     body,
@@ -173,8 +173,8 @@ fn assert_responses_items_typed(body: String) -> Nil {
     )
   kinds
   |> should.equal([
-    "message", "message", "message", "function_call", "function_call_output",
-    "message",
+    "message", "message", "message", "message", "function_call",
+    "function_call_output", "message",
   ])
 }
 
@@ -386,7 +386,19 @@ fn provider_requests() {
   sent_text(gpt, [Key("model")]) |> should.equal("gpt-5.4")
   sent_bool(gpt, [Key("stream")]) |> should.equal(True)
   sent_bool(gpt, [Key("store")]) |> should.equal(False)
-  sent_text(gpt, [Key("instructions")]) |> should.equal("answer briefly")
+  // The system prompt opens the input as a developer message (upstream), so
+  // the conversation items follow it.
+  has(gpt, [Key("instructions")]) |> should.equal(False)
+  sent_text(gpt, [Key("input"), Index(0), Key("role")])
+  |> should.equal("developer")
+  sent_text(gpt, [
+    Key("input"),
+    Index(0),
+    Key("content"),
+    Index(0),
+    Key("text"),
+  ])
+  |> should.equal("answer briefly")
   sent_int(gpt, [Key("max_output_tokens")]) |> should.equal(512)
   sent_text(gpt, [Key("include"), Index(0)])
   |> should.equal("reasoning.encrypted_content")
@@ -398,12 +410,12 @@ fn provider_requests() {
   sent_text(gpt, [Key("tools"), Index(0), Key("name")])
   |> should.equal("python")
   sent_bool(gpt, [Key("tools"), Index(0), Key("strict")]) |> should.equal(False)
-  sent_text(gpt, [Key("input"), Index(0), Key("type")])
+  sent_text(gpt, [Key("input"), Index(1), Key("type")])
   |> should.equal("message")
-  sent_text(gpt, [Key("input"), Index(0), Key("role")]) |> should.equal("user")
+  sent_text(gpt, [Key("input"), Index(1), Key("role")]) |> should.equal("user")
   sent_text(gpt, [
     Key("input"),
-    Index(0),
+    Index(1),
     Key("content"),
     Index(0),
     Key("type"),
@@ -411,7 +423,7 @@ fn provider_requests() {
   |> should.equal("input_text")
   sent_text(gpt, [
     Key("input"),
-    Index(0),
+    Index(1),
     Key("content"),
     Index(0),
     Key("text"),
@@ -419,33 +431,33 @@ fn provider_requests() {
   |> should.equal("hello")
   sent_text(gpt, [
     Key("input"),
-    Index(1),
+    Index(2),
     Key("content"),
     Index(1),
     Key("type"),
   ])
   |> should.equal("input_image")
-  sent_text(gpt, [Key("input"), Index(2), Key("role")])
+  sent_text(gpt, [Key("input"), Index(3), Key("role")])
   |> should.equal("assistant")
   sent_text(gpt, [
     Key("input"),
-    Index(2),
+    Index(3),
     Key("content"),
     Index(0),
     Key("type"),
   ])
   |> should.equal("output_text")
-  sent_text(gpt, [Key("input"), Index(3), Key("type")])
-  |> should.equal("function_call")
-  sent_text(gpt, [Key("input"), Index(3), Key("call_id")])
-  |> should.equal("call-1")
-  sent_text(gpt, [Key("input"), Index(3), Key("name")])
-  |> should.equal("python")
   sent_text(gpt, [Key("input"), Index(4), Key("type")])
-  |> should.equal("function_call_output")
+  |> should.equal("function_call")
   sent_text(gpt, [Key("input"), Index(4), Key("call_id")])
   |> should.equal("call-1")
-  sent_text(gpt, [Key("input"), Index(4), Key("output")])
+  sent_text(gpt, [Key("input"), Index(4), Key("name")])
+  |> should.equal("python")
+  sent_text(gpt, [Key("input"), Index(5), Key("type")])
+  |> should.equal("function_call_output")
+  sent_text(gpt, [Key("input"), Index(5), Key("call_id")])
+  |> should.equal("call-1")
+  sent_text(gpt, [Key("input"), Index(5), Key("output")])
   |> should.equal("tool said")
   // The exact item shapes Zed's own Responses client sends.
   contains(

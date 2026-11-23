@@ -98,6 +98,9 @@ pub type State(message) {
     spent: Option(types.Cost),
     activity: turn.Activity,
     pending_switch: Option(PendingSwitch),
+    history_rewritten: Bool,
+    /// a retry resends the request already built, which can still read these.
+    shaken: List(String),
     /// Admitted inputs whose receipts the store has not committed yet.
     admitting: Int,
     /// The run ended and its end is being committed; it holds the session
@@ -128,6 +131,10 @@ pub type State(message) {
     workspace_reset: Option(List(message)),
     /// A remote workspace readiness probe running outside the actor.
     workspace_probe: Option(String),
+    /// A `StartQueued` the actor sent itself and has not handled yet. Reads
+    /// answered before it report the session preparing, not idle, so a
+    /// client never hears that an input waiting to start is done.
+    start_pending: Bool,
     releasing: Option(List(message)),
     checkpointing: Option(List(message)),
     closing: Bool,
@@ -499,7 +506,8 @@ pub fn current_status(state: State(message)) -> session_activity.Status {
     state.activity,
     state.booting != None
       || state.workspace_reset != None
-      || state.holding_failure,
+      || state.holding_failure
+      || state.start_pending,
     blocking,
   )
 }

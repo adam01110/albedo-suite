@@ -10,7 +10,7 @@ import sys
 import time
 import unittest
 
-from harness import Albedo, Provider, alive, exclusive, python, text
+from harness import Albedo, Provider, alive, exclusive, python, system_prompt, text
 
 SERVER = Path(__file__).with_name("fake_mcp_server.py")
 REMOTE = "REMOTE_SCHEMA_SENTINEL"
@@ -136,7 +136,7 @@ class LazyMcpTests(unittest.TestCase):
                         for tool in request.get("tools", [])
                     )
                 )
-                self.assertNotIn(REMOTE, request.get("instructions", ""))
+                self.assertNotIn(REMOTE, system_prompt(request))
                 self.assertNotIn(REMOTE, json.dumps(request.get("tools", [])))
         return requests[0]
 
@@ -144,7 +144,7 @@ class LazyMcpTests(unittest.TestCase):
         self.assertFalse(list(self.markers.glob("*/pid-*")))
         self.reload()
         initial = self.turn()
-        context = initial["instructions"]
+        context = system_prompt(initial)
         for name in ("fake", "other", "filtered", "broken"):
             self.assertIn(f"LOCAL_DESCRIPTION_{name}", context)
         for name in ("disabled", "excluded"):

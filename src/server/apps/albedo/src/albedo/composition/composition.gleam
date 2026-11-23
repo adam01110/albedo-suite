@@ -32,11 +32,11 @@ import gleam/result
 import gleam/string
 
 /// One session's extension state, composed from nothing: the harness base and
-/// every selected extension's static contributions in registry order, then
-/// every prepared managed plugin. It is never mutated. A refresh or reload
-/// composes a replacement and closes whichever composition loses, so each
-/// contribution applies exactly once and a plugin that disappears takes its
-/// tools with it.
+/// every selected extension's static contributions in registry order, each
+/// after the extensions it requires, then every prepared managed plugin. It
+/// is never mutated. A refresh or reload composes a replacement and closes
+/// whichever composition loses, so each contribution applies exactly once and
+/// a plugin that disappears takes its tools with it.
 pub opaque type Composition {
   Composition(
     requested: List(extension.Extension),
@@ -61,7 +61,10 @@ pub opaque type Composition {
 /// context, then every prepared managed plugin. The harness base comes first
 /// whatever `selected` holds, so its python tool claims its names before any
 /// extension can. An extension that fails, crashes, or collides with another
-/// is left out with a warning; the session composes without it. `harness`
+/// is left out with a warning; the session composes without it. Each
+/// extension composes after the selected extensions it requires, and one
+/// whose requirement is inactive is left out before it loads or prepares, so
+/// it claims no name another extension could have used. `harness`
 /// is the base (`base.contribution()`); the runtime builds it once and passes
 /// the shared value, so a session holds no copy of its own. A preparation
 /// reaches the host's worktree service through `worktrees`, which the caller
@@ -78,9 +81,33 @@ pub fn compose(
   worktrees: sdk_worktree.Worktrees,
 ) -> Composition {
   let empty = Composition(selected, [], [], [], [], ledger, selection)
+  let candidates = dependency_order([harness, ..selected])
+  let names = list.map(candidates, fn(item) { item.name })
   let composed =
-    list.fold([harness, ..selected], empty, fn(composed, candidate) {
-      let #(static, load_failures) = split(loaded(candidate, workspace))
+    list.fold(candidates, empty, fn(composed, candidate) {
+      let active = list.map(composed.extensions, fn(item) { item.name })
+      let settled =
+        list.append(
+          active,
+          list.map(composed.failures, fn(item) { item.extension }),
+        )
+      // A requirement that is absent or already left out stops the
+      // dependent before it loads, prepares, or claims a name. One still
+      // pending is part of a cycle; `supported` settles it below.
+      let unmet =
+        list.filter(candidate.requires, fn(name) {
+          !list.contains(active, name)
+          && { !list.contains(names, name) || list.contains(settled, name) }
+        })
+      let #(static, load_failures) = case unmet {
+        [] -> split(loaded(candidate, workspace))
+        _ -> #([], [
+          broken(
+            candidate.name,
+            "it requires active extension " <> string.join(unmet, ", "),
+          ),
+        ])
+      }
       let #(managed, prepare_failures) = case load_failures {
         [] ->
           split(prepare(
@@ -192,6 +219,47 @@ fn unbound_client_command(
   |> list.find(fn(binding) { !list.contains(names, binding.slash_name) })
   |> result.map(fn(binding) { binding.slash_name })
   |> option.from_result
+}
+
+/// `candidates` in registry order, except that each one comes after the
+/// candidates it requires: the earliest candidate whose requirements are
+/// already placed goes next. Members of a requirement cycle keep registry
+/// order.
+fn dependency_order(
+  candidates: List(extension.Extension),
+) -> List(extension.Extension) {
+  let names = list.map(candidates, fn(item) { item.name })
+  order_ready(
+    list.index_map(candidates, fn(item, index) { #(index, item) }),
+    names,
+    [],
+    [],
+  )
+}
+
+fn order_ready(
+  pending: List(#(Int, extension.Extension)),
+  names: List(String),
+  placed: List(String),
+  ordered: List(extension.Extension),
+) -> List(extension.Extension) {
+  let ready = fn(entry: #(Int, extension.Extension)) {
+    list.all({ entry.1 }.requires, fn(name) {
+      !list.contains(names, name) || list.contains(placed, name)
+    })
+  }
+  case pending {
+    [] -> list.reverse(ordered)
+    [first, ..] -> {
+      let #(index, next) = result.unwrap(list.find(pending, ready), first)
+      order_ready(
+        list.filter(pending, fn(entry) { entry.0 != index }),
+        names,
+        [next.name, ..placed],
+        [next, ..ordered],
+      )
+    }
+  }
 }
 
 /// Remove dependents until every remaining requirement is active.

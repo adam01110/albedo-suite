@@ -43,6 +43,7 @@ tags:
   - name: schedule
   - name: links
   - name: webhooks
+  - name: photon
   - name: discord
   - name: proxy
   - name: terminals
@@ -154,6 +155,9 @@ paths:
         stays, and a restart resumes it from its state. A repeat with the same
         transfer id and target answers the move as it stands. Once active the
         sessions here are marked moved and refuse new input (409 session_moved).
+        A move takes an ACP session from its editor, so only the attachment
+        holder may move one; another client gets 409 `acp_owned`, and a token
+        that no longer holds the attachment gets 409 `attachment_lost`.
       parameters:
         - name: session_id
           in: path
@@ -207,6 +211,7 @@ paths:
           $ref: '#/components/responses/Problem422'
       x-albedo-audience: client
       x-albedo-recovery: no-automatic-replay
+      x-albedo-acp-other-clients: refused
   /transfers/{transfer_id}/finish:
     post:
       operationId: finishTransfer
@@ -1149,7 +1154,9 @@ paths:
 
         Session replay and tail validation match GET /sessions/{session_id} SSE.
 
-        Subscribing an existing key replaces that follow. after_seq accepts an
+        Subscribing an existing key releases that follow first, so a refused
+
+        replacement leaves the key without one. after_seq accepts an
 
         integer or its decimal string; tail defaults to 100 and is at most 200.
 
@@ -1165,7 +1172,9 @@ paths:
         {key,end:true}.
 
         Invalid commands and admission refusals send
-        {key,failure:{code,detail}};
+        {key,failure:{code,detail}}, which ends
+
+        the key like an end frame;
 
         malformed commands without a usable key use an empty key. Session
         failures
@@ -1745,6 +1754,8 @@ paths:
           $ref: '#/components/responses/Problem409'
       x-albedo-audience: client
       x-albedo-recovery: no-automatic-replay
+      x-albedo-acp-other-clients: allowed
+      x-albedo-acp-reason: a title is presentation, not execution
   /sessions/{session_id}/fast-mode:
     parameters:
       - name: session_id
@@ -1791,7 +1802,12 @@ paths:
         a successful toggle with the old ETag is refused rather than toggling
         twice.
 
-        This setting can affect provider billing.
+        This setting can affect provider billing, so the editor of an ACP
+        session
+
+        owns it: another client gets 409 `acp_owned`, and a token that no
+
+        longer holds the attachment gets 409 `attachment_lost`.
 
         '
       parameters:
@@ -1834,6 +1850,7 @@ paths:
           $ref: '#/components/responses/Problem428'
       x-albedo-audience: client
       x-albedo-recovery: refresh-before-edit
+      x-albedo-acp-other-clients: refused
   /sessions/{session_id}:
     get:
       operationId: getSession
@@ -2087,6 +2104,8 @@ paths:
         description: UTF-8 JSON; duplicate keys and unknown fields are rejected.
       x-albedo-audience: client
       x-albedo-recovery: repeat-identical-intent
+      x-albedo-acp-other-clients: allowed
+      x-albedo-acp-reason: creation takes the attachment token itself
     delete:
       operationId: deleteSession
       summary: Delete a leaf or captured subtree
@@ -2152,6 +2171,9 @@ paths:
             $ref: '#/components/schemas/ID'
       x-albedo-audience: client
       x-albedo-recovery: no-automatic-replay
+      x-albedo-acp-other-clients: allowed
+      x-albedo-acp-reason:
+        deleting ends a session like stopping it, and the editor sees it go
   /sessions/{session_id}/visits/{visit_id}:
     put:
       operationId: recordVisit
@@ -2183,11 +2205,14 @@ paths:
           $ref: '#/components/responses/Problem415'
         '404':
           $ref: '#/components/responses/Problem404'
+        '409':
+          $ref: '#/components/responses/Problem409'
         '410':
           $ref: '#/components/responses/Problem410'
       description:
-        Visit ID is UUIDv7. Same identity increments once; reads and refreshes
-        never count.
+        Visit ID is UUIDv7. Same identity increments once and answers its
+        original count again, even after the session is deleted; under another
+        session it conflicts. Reads and refreshes never count.
       parameters:
         - name: visit_id
           in: path
@@ -2208,6 +2233,8 @@ paths:
         description: UTF-8 JSON; duplicate keys and unknown fields are rejected.
       x-albedo-audience: client
       x-albedo-recovery: no-automatic-replay
+      x-albedo-acp-other-clients: allowed
+      x-albedo-acp-reason: a visit records that a client looked
   /sessions/{session_id}/side-questions/{question_id}:
     put:
       operationId: putSideQuestion
@@ -2257,6 +2284,7 @@ paths:
           $ref: '#/components/responses/Problem503'
       x-albedo-audience: client
       x-albedo-recovery: no-automatic-replay
+      x-albedo-acp-other-clients: refused
     patch:
       operationId: patchSideQuestion
       tags:
@@ -2303,6 +2331,7 @@ paths:
           $ref: '#/components/responses/Problem503'
       x-albedo-audience: client
       x-albedo-recovery: refresh-before-edit
+      x-albedo-acp-other-clients: refused
   /sessions/{session_id}/side-questions/{question_id}/cancel:
     post:
       operationId: cancelSideQuestion
@@ -2352,6 +2381,7 @@ paths:
           $ref: '#/components/responses/Problem503'
       x-albedo-audience: client
       x-albedo-recovery: no-automatic-replay
+      x-albedo-acp-other-clients: refused
   /sessions/{session_id}/shell-commands/{command_id}:
     put:
       operationId: putShellCommand
@@ -2405,6 +2435,7 @@ paths:
           $ref: '#/components/responses/Problem503'
       x-albedo-audience: client
       x-albedo-recovery: no-automatic-replay
+      x-albedo-acp-other-clients: refused
     get:
       operationId: getShellCommand
       summary: Read a human shell command
@@ -2491,6 +2522,9 @@ paths:
           $ref: '#/components/responses/Problem503'
       x-albedo-audience: client
       x-albedo-recovery: no-automatic-replay
+      x-albedo-acp-other-clients: allowed
+      x-albedo-acp-reason:
+        it stops only a command that the refused putShellCommand started
   /sessions/{session_id}/shell-commands/{command_id}/output:
     get:
       operationId: getShellCommandOutput
@@ -2672,6 +2706,7 @@ paths:
         description: UTF-8 JSON; duplicate keys and unknown fields are rejected.
       x-albedo-audience: client
       x-albedo-recovery: repeat-identical-intent
+      x-albedo-acp-other-clients: refused
       x-albedo-problem-codes:
         - invalid_request
         - identity_invalid
@@ -2730,6 +2765,125 @@ paths:
         - invalid_request
         - input_unknown
         - input_conflict
+        - request_unavailable
+  /sessions/{session_id}/uploads/{upload_id}:
+    put:
+      operationId: putUpload
+      summary: Upload a picture or clip as its own bytes
+      tags:
+        - sessions
+      responses:
+        '200':
+          description:
+            The upload, kept for a message to name. A repeat with the same bytes
+            answers the same upload.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Upload'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '409':
+          $ref: '#/components/responses/Problem409'
+        '410':
+          $ref: '#/components/responses/Problem410'
+        '413':
+          $ref: '#/components/responses/Problem413'
+        '415':
+          $ref: '#/components/responses/Problem415'
+        '429':
+          $ref: '#/components/responses/Problem429'
+        '503':
+          $ref: '#/components/responses/Problem503'
+      description:
+        Upload ID is UUIDv7. The body is the whole file, at most 20 MiB, and
+        Content-Type its MIME type, which must match what its header says; a
+        picture holds at most 5 MiB. A message names it with an `upload` entry
+        in `images`, and the session's model is checked then, not here. The
+        upload waits under the session until a message the session accepts takes
+        it, or for a day; a message it refuses leaves it for the next one.
+        Uploads no message has taken hold 256 MiB across every session.
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/ID'
+        - name: upload_id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUIDv7'
+      requestBody:
+        required: true
+        content:
+          image/png:
+            schema:
+              type: string
+              contentMediaType: image/png
+          image/jpeg:
+            schema:
+              type: string
+              contentMediaType: image/jpeg
+          image/webp:
+            schema:
+              type: string
+              contentMediaType: image/webp
+          audio/wav:
+            schema:
+              type: string
+              contentMediaType: audio/wav
+          audio/mpeg:
+            schema:
+              type: string
+              contentMediaType: audio/mpeg
+          audio/aac:
+            schema:
+              type: string
+              contentMediaType: audio/aac
+          audio/flac:
+            schema:
+              type: string
+              contentMediaType: audio/flac
+          audio/ogg:
+            schema:
+              type: string
+              contentMediaType: audio/ogg
+          audio/mp4:
+            schema:
+              type: string
+              contentMediaType: audio/mp4
+          video/mp4:
+            schema:
+              type: string
+              contentMediaType: video/mp4
+          video/webm:
+            schema:
+              type: string
+              contentMediaType: video/webm
+        description: The file's bytes, never content-coded except by zstd.
+      x-albedo-audience: client
+      x-albedo-recovery: repeat-identical-intent
+      x-albedo-acp-other-clients: refused
+      x-albedo-problem-codes:
+        - invalid_request
+        - identity_invalid
+        - identity_expired
+        - id_conflict
+        - image_invalid
+        - unsupported_media_type
+        - uploads_full
+        - session_not_found
         - request_unavailable
   /sessions/{session_id}/inputs/{input_id}/cancel:
     post:
@@ -2791,6 +2945,10 @@ paths:
         description: UTF-8 JSON; duplicate keys and unknown fields are rejected.
       x-albedo-audience: client
       x-albedo-recovery: no-automatic-replay
+      x-albedo-acp-other-clients: allowed
+      x-albedo-acp-reason:
+        cancelling is a stop, and an ACP input checks the attachment token
+        itself
   /sessions/{session_id}/inputs/{input_id}/hold:
     post:
       operationId: holdInput
@@ -2850,6 +3008,9 @@ paths:
         description: UTF-8 JSON; duplicate keys and unknown fields are rejected.
       x-albedo-audience: client
       x-albedo-recovery: no-automatic-replay
+      x-albedo-acp-other-clients: allowed
+      x-albedo-acp-reason:
+        only a typed message waits to be held, and ACP sessions admit none
     delete:
       operationId: releaseInput
       summary: Let a held message be read as it is
@@ -2886,6 +3047,9 @@ paths:
             $ref: '#/components/schemas/ID'
       x-albedo-audience: client
       x-albedo-recovery: no-automatic-replay
+      x-albedo-acp-other-clients: allowed
+      x-albedo-acp-reason:
+        only a typed message waits to be held, and ACP sessions admit none
   /sessions/{session_id}/inputs/{input_id}/edit:
     post:
       operationId: editInput
@@ -2922,7 +3086,9 @@ paths:
       description:
         Replaces a person's typed message that still waits, keeping its id and
         its place in the queue, and releases any hold on it. 409
-        input_not_waiting once the session read it or it was cancelled.
+        input_not_waiting once the session read it or it was cancelled. Its
+        images and clips are checked as a new message's are, so 409
+        image_rejected or media_budget refuse them the same way.
       parameters:
         - name: input_id
           in: path
@@ -2943,6 +3109,9 @@ paths:
         description: UTF-8 JSON; duplicate keys and unknown fields are rejected.
       x-albedo-audience: client
       x-albedo-recovery: no-automatic-replay
+      x-albedo-acp-other-clients: allowed
+      x-albedo-acp-reason:
+        only a typed message can be edited, and ACP sessions admit none
   /sessions/{session_id}/interrupt:
     post:
       operationId: interruptSession
@@ -2992,6 +3161,8 @@ paths:
         description: UTF-8 JSON; duplicate keys and unknown fields are rejected.
       x-albedo-audience: client
       x-albedo-recovery: no-automatic-replay
+      x-albedo-acp-other-clients: allowed
+      x-albedo-acp-reason: any client may stop a session
   /sessions/{session_id}/acp-plan:
     get:
       operationId: getACPPlan
@@ -3098,6 +3269,9 @@ paths:
         description: UTF-8 JSON; duplicate keys and unknown fields are rejected.
       x-albedo-audience: client
       x-albedo-recovery: no-automatic-replay
+      x-albedo-acp-other-clients: allowed
+      x-albedo-acp-reason:
+        the attachment routes check the attachment token themselves
     delete:
       operationId: releaseACPSession
       summary: Release this connection's attachment
@@ -3134,6 +3308,9 @@ paths:
         - $ref: '#/components/parameters/AttachmentToken'
       x-albedo-audience: client
       x-albedo-recovery: no-automatic-replay
+      x-albedo-acp-other-clients: allowed
+      x-albedo-acp-reason:
+        the attachment routes check the attachment token themselves
   /sessions/{session_id}/acp-attachment/renew:
     post:
       operationId: renewACPSession
@@ -3183,6 +3360,9 @@ paths:
         description: UTF-8 JSON; duplicate keys and unknown fields are rejected.
       x-albedo-audience: client
       x-albedo-recovery: no-automatic-replay
+      x-albedo-acp-other-clients: allowed
+      x-albedo-acp-reason:
+        the attachment routes check the attachment token themselves
   /sessions/{session_id}/active-output/{content_id}:
     get:
       operationId: getActiveOutputContent
@@ -3401,7 +3581,7 @@ paths:
         - sessions
       responses:
         '200':
-          description: The decoded image, typed by its MIME type.
+          description: The decoded image or clip, typed by its MIME type.
           content:
             image/png:
               schema:
@@ -3415,6 +3595,87 @@ paths:
               schema:
                 type: string
                 contentMediaType: image/webp
+            audio/wav:
+              schema:
+                type: string
+                contentMediaType: audio/wav
+            audio/mpeg:
+              schema:
+                type: string
+                contentMediaType: audio/mpeg
+            audio/aac:
+              schema:
+                type: string
+                contentMediaType: audio/aac
+            audio/flac:
+              schema:
+                type: string
+                contentMediaType: audio/flac
+            audio/ogg:
+              schema:
+                type: string
+                contentMediaType: audio/ogg
+            audio/mp4:
+              schema:
+                type: string
+                contentMediaType: audio/mp4
+            video/mp4:
+              schema:
+                type: string
+                contentMediaType: video/mp4
+            video/webm:
+              schema:
+                type: string
+                contentMediaType: video/webm
+        '206':
+          description:
+            The one byte range a `Range` header asked for, with its
+            `Content-Range`. Any other range gets the whole body.
+          content:
+            image/png:
+              schema:
+                type: string
+                contentMediaType: image/png
+            image/jpeg:
+              schema:
+                type: string
+                contentMediaType: image/jpeg
+            image/webp:
+              schema:
+                type: string
+                contentMediaType: image/webp
+            audio/wav:
+              schema:
+                type: string
+                contentMediaType: audio/wav
+            audio/mpeg:
+              schema:
+                type: string
+                contentMediaType: audio/mpeg
+            audio/aac:
+              schema:
+                type: string
+                contentMediaType: audio/aac
+            audio/flac:
+              schema:
+                type: string
+                contentMediaType: audio/flac
+            audio/ogg:
+              schema:
+                type: string
+                contentMediaType: audio/ogg
+            audio/mp4:
+              schema:
+                type: string
+                contentMediaType: audio/mp4
+            video/mp4:
+              schema:
+                type: string
+                contentMediaType: video/mp4
+            video/webm:
+              schema:
+                type: string
+                contentMediaType: video/webm
         '400':
           $ref: '#/components/responses/Problem400'
         '401':
@@ -3432,7 +3693,7 @@ paths:
         itself, not base64, and is never content-coded. When `edge` is given and
         either dimension exceeds it, the response is scaled down so its longer
         edge equals `edge` and encoded as lossy WebP; smaller images are
-        returned untouched.
+        returned untouched. An audio or video clip is always returned untouched.
       parameters:
         - name: session_id
           in: path
@@ -3824,6 +4085,116 @@ paths:
             type: string
       x-albedo-audience: client
       x-albedo-recovery: safe-read
+  /sessions/{session_id}/media:
+    get:
+      operationId: getSessionMedia
+      summary: List the pictures and clips a session's history holds
+      tags:
+        - sessions
+      responses:
+        '200':
+          description: Successful result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionMedia'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '503':
+          $ref: '#/components/responses/Problem503'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '409':
+          $ref: '#/components/responses/Problem409'
+      description:
+        Each stored picture or clip once, by the first hex digits of its payload
+        hash, with every row that shows it. `clips_held` is the base64 bytes of
+        the clips the session's next request carries, as its model is sent them,
+        which `clip_budget` bounds; null when the session has no provider.
+        `clip_budget` is what the wire of the session's current model takes,
+        held to albedo's own 64 MiB, or that ceiling without a provider.
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/ID'
+      x-albedo-audience: client
+      x-albedo-recovery: safe-read
+      x-albedo-problem-codes:
+        - shake_refused
+        - session_not_found
+        - request_unavailable
+  /sessions/{session_id}/media/shake:
+    post:
+      operationId: shakeSessionMedia
+      summary: Drop pictures and clips from a session's history
+      tags:
+        - sessions
+      responses:
+        '200':
+          description: Successful result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionMedia'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '503':
+          $ref: '#/components/responses/Problem503'
+        '413':
+          $ref: '#/components/responses/Problem413'
+        '415':
+          $ref: '#/components/responses/Problem415'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '409':
+          $ref: '#/components/responses/Problem409'
+      description:
+        Removes what `media` names from every row and cell result of the
+        session, which keep their text and gain a marker such as `[audio/wav
+        clip removed by shake]`, and deletes payloads no other session names.
+        Earlier messages change, so the next request misses the provider's
+        prompt cache once. A running turn goes on with the new history from its
+        next request. An unknown or ambiguous id, or a session compacting, is
+        refused with 409 shake_refused.
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/ID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ShakeRequest'
+        description: UTF-8 JSON; duplicate keys and unknown fields are rejected.
+      x-albedo-audience: client
+      x-albedo-recovery: no-automatic-replay
+      x-albedo-acp-other-clients: refused
+      x-albedo-problem-codes:
+        - invalid_request
+        - shake_refused
+        - session_not_found
+        - request_unavailable
   /sessions/{session_id}/reload:
     post:
       operationId: reloadSession
@@ -3876,6 +4247,7 @@ paths:
         description: UTF-8 JSON; duplicate keys and unknown fields are rejected.
       x-albedo-audience: client
       x-albedo-recovery: no-automatic-replay
+      x-albedo-acp-other-clients: refused
       x-albedo-problem-codes:
         - invalid_request
         - session_not_found
@@ -3931,6 +4303,7 @@ paths:
         description: UTF-8 JSON; duplicate keys and unknown fields are rejected.
       x-albedo-audience: client
       x-albedo-recovery: no-automatic-replay
+      x-albedo-acp-other-clients: refused
       x-albedo-problem-codes:
         - invalid_request
         - session_not_found
@@ -3986,6 +4359,7 @@ paths:
         description: UTF-8 JSON; duplicate keys and unknown fields are rejected.
       x-albedo-audience: client
       x-albedo-recovery: no-automatic-replay
+      x-albedo-acp-other-clients: refused
       x-albedo-problem-codes:
         - invalid_request
         - session_not_found
@@ -4048,6 +4422,7 @@ paths:
         description: UTF-8 JSON; duplicate keys and unknown fields are rejected.
       x-albedo-audience: client
       x-albedo-recovery: no-automatic-replay
+      x-albedo-acp-other-clients: refused
   /models:
     get:
       operationId: listModels
@@ -6624,6 +6999,33 @@ paths:
         description: UTF-8 JSON; duplicate keys and unknown fields are rejected.
       x-albedo-audience: extension
       x-albedo-recovery: refresh-before-edit
+  /extensions/photon/status:
+    get:
+      operationId: getPhotonStatus
+      summary: Read the local iMessage pairing and transport readiness
+      tags:
+        - photon
+      responses:
+        '200':
+          description: Successful result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PhotonStatus'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '405':
+          $ref: '#/components/responses/Problem405'
+        '406':
+          $ref: '#/components/responses/Problem406'
+        '503':
+          $ref: '#/components/responses/Problem503'
+      x-albedo-audience: extension
+      x-albedo-recovery: safe-read
   /extensions/discord/bots:
     get:
       operationId: listDiscordBots
@@ -8390,6 +8792,7 @@ paths:
         description: UTF-8 JSON; duplicate keys and unknown fields are rejected.
       x-albedo-audience: client
       x-albedo-recovery: refresh-before-edit
+      x-albedo-acp-other-clients: refused
       x-albedo-problem-codes:
         - invalid_request
         - precondition_required
@@ -8555,6 +8958,7 @@ paths:
         description: UTF-8 JSON; duplicate keys and unknown fields are rejected.
       x-albedo-audience: client
       x-albedo-recovery: no-automatic-replay
+      x-albedo-acp-other-clients: refused
       x-albedo-problem-codes:
         - invalid_request
         - precondition_required
@@ -8732,6 +9136,7 @@ paths:
         description: UTF-8 JSON; duplicate keys and unknown fields are rejected.
       x-albedo-audience: client
       x-albedo-recovery: repeat-identical-intent
+      x-albedo-acp-other-clients: refused
       x-albedo-problem-codes:
         - invalid_request
         - acp_owned
@@ -10566,6 +10971,12 @@ components:
     UISettings:
       type: object
       properties:
+        assistant_name:
+          description:
+            Sender label shared by web and terminal chats. Empty uses albedo.
+          type: string
+          maxLength: 80
+          pattern: '^[^\x00-\x1f\x7f-\x9f]*$'
         thinking:
           type: boolean
         tools:
@@ -10579,7 +10990,8 @@ components:
           description:
             Networks `albedo web` serves to besides this machine, as CIDR or an
             address whose trailing zero octets stand for any (10.0.0.0 is
-            10.0.0.0/8).
+            10.0.0.0/8). A bare unspecified address (0.0.0.0) is refused;
+            0.0.0.0/0 or ::/0 allows every client.
           type: array
           items:
             type: string
@@ -10590,7 +11002,8 @@ components:
           description:
             Networks `albedo proxy` serves to besides this machine, as CIDR or
             an address whose trailing zero octets stand for any (10.0.0.0 is
-            10.0.0.0/8).
+            10.0.0.0/8). A bare unspecified address (0.0.0.0) is refused;
+            0.0.0.0/0 or ::/0 allows every client.
           type: array
           items:
             type: string
@@ -10602,6 +11015,12 @@ components:
     UISettingsPatch:
       type: object
       properties:
+        assistant_name:
+          description:
+            Sender label shared by web and terminal chats. Empty uses albedo.
+          type: string
+          maxLength: 80
+          pattern: '^[^\x00-\x1f\x7f-\x9f]*$'
         thinking:
           type: boolean
         tools:
@@ -10615,7 +11034,8 @@ components:
           description:
             Networks `albedo web` serves to besides this machine, as CIDR or an
             address whose trailing zero octets stand for any (10.0.0.0 is
-            10.0.0.0/8).
+            10.0.0.0/8). A bare unspecified address (0.0.0.0) is refused;
+            0.0.0.0/0 or ::/0 allows every client.
           type: array
           items:
             type: string
@@ -10626,7 +11046,8 @@ components:
           description:
             Networks `albedo proxy` serves to besides this machine, as CIDR or
             an address whose trailing zero octets stand for any (10.0.0.0 is
-            10.0.0.0/8).
+            10.0.0.0/8). A bare unspecified address (0.0.0.0) is refused;
+            0.0.0.0/0 or ::/0 allows every client.
           type: array
           items:
             type: string
@@ -13869,14 +14290,84 @@ components:
       properties:
         mime_type:
           type: string
-          enum: [image/png, image/jpeg, image/webp]
+          enum:
+            [
+              image/png,
+              image/jpeg,
+              image/webp,
+              audio/wav,
+              audio/mpeg,
+              audio/aac,
+              audio/flac,
+              audio/ogg,
+              audio/mp4,
+              video/mp4,
+              video/webm,
+            ]
         data:
           type: string
           contentEncoding: base64
       description:
-        Strict base64; decoded dimensions and provider constraints are validated
-        before admission.
+        Strict base64 of a picture, or of a whole audio or video clip; decoded
+        headers and provider constraints are validated before admission. A clip
+        of a type the session's model does not read is refused with 409
+        image_rejected. Clips that would take what the session's next request
+        carries past 64 MiB of clips are refused with 409 media_budget; the
+        shake route frees room.
       required: [mime_type, data]
+      additionalProperties: false
+    UploadReference:
+      type: object
+      properties:
+        upload:
+          $ref: '#/components/schemas/UUIDv7'
+      description:
+        A picture or clip uploaded to this session beforehand. An upload that is
+        unknown, expired or taken by an earlier message is refused with 409
+        upload_unknown. It is checked as an ImageUpload is.
+      required: [upload]
+      additionalProperties: false
+    MessageImage:
+      oneOf:
+        - $ref: '#/components/schemas/ImageUpload'
+        - $ref: '#/components/schemas/UploadReference'
+    Upload:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/UUIDv7'
+        mime_type:
+          type: string
+          enum:
+            [
+              image/png,
+              image/jpeg,
+              image/webp,
+              audio/wav,
+              audio/mpeg,
+              audio/aac,
+              audio/flac,
+              audio/ogg,
+              audio/mp4,
+              video/mp4,
+              video/webm,
+            ]
+        width:
+          type: integer
+          minimum: 0
+          description: Pixels; 0 for a clip.
+        height:
+          type: integer
+          minimum: 0
+          description: Pixels; 0 for a clip.
+        size:
+          type: integer
+          minimum: 1
+          maximum: 20971520
+          description: Bytes.
+        expires_at:
+          $ref: '#/components/schemas/Timestamp'
+      required: [id, mime_type, width, height, size, expires_at]
       additionalProperties: false
     FileAttachment:
       type: object
@@ -13929,7 +14420,7 @@ components:
             Attached in order; the text's numbered image markers say where each
             was attached.
           items:
-            $ref: '#/components/schemas/ImageUpload'
+            $ref: '#/components/schemas/MessageImage'
           maxItems: 10
         files:
           type: array
@@ -14598,17 +15089,19 @@ components:
       additionalProperties: false
     ImageMetadata:
       type: object
+      description:
+        A picture, or an audio or video clip, whose width and height are 0.
       properties:
         mime_type:
           type: string
           maxLength: 100
         width:
           type: integer
-          minimum: 1
+          minimum: 0
           maximum: 9007199254740991
         height:
           type: integer
-          minimum: 1
+          minimum: 0
           maximum: 9007199254740991
         original_bytes:
           $ref: '#/components/schemas/Counter'
@@ -14991,6 +15484,22 @@ components:
       required:
         [id, label, kind, source, item_count, utf8_bytes, page_count, preview]
       additionalProperties: false
+    ContextMediaTokens:
+      type: object
+      description:
+        Tokens the prepared request's pictures, audio and video take, priced the
+        way the daemon sizes requests for the session's model before any
+        correction. Clips are priced by how long they play where the model's
+        wire publishes a rate. Sent with a ready snapshot.
+      properties:
+        images:
+          $ref: '#/components/schemas/Counter'
+        audio:
+          $ref: '#/components/schemas/Counter'
+        video:
+          $ref: '#/components/schemas/Counter'
+      required: [images, audio, video]
+      additionalProperties: false
     ContextSummary:
       type: object
       properties:
@@ -15029,6 +15538,8 @@ components:
           items:
             $ref: '#/components/schemas/ContextSection'
           maxItems: 1000
+        media_tokens:
+          $ref: '#/components/schemas/ContextMediaTokens'
         reason:
           anyOf:
             - $ref: '#/components/schemas/SafeReason'
@@ -16026,6 +16537,71 @@ components:
             - type: 'null'
       required: [state, failure]
       additionalProperties: false
+    ShakeRequest:
+      type: object
+      properties:
+        media:
+          type: string
+          maxLength: 4096
+          description:
+            Kinds (audio, video, image, all) and ids from the listing, separated
+            by spaces or commas.
+      required: [media]
+      additionalProperties: false
+    SessionMediaItem:
+      type: object
+      properties:
+        id:
+          type: string
+          description:
+            The first hex digits of the payload hash, at least 8 and as many as
+            tell the session's payloads apart.
+        kind:
+          type: string
+          enum: [audio, video, image]
+        mime_type:
+          type: string
+        bytes:
+          type: integer
+          minimum: 0
+        places:
+          type: array
+          items:
+            type: object
+            properties:
+              row:
+                type: integer
+              from:
+                type: string
+                enum: [message, tool_result]
+              call_id:
+                type: [string, 'null']
+            required: [row, from, call_id]
+            additionalProperties: false
+      required: [id, kind, mime_type, bytes, places]
+      additionalProperties: false
+    SessionMedia:
+      type: object
+      properties:
+        media:
+          type: array
+          items:
+            $ref: '#/components/schemas/SessionMediaItem'
+        clips_held:
+          type: [integer, 'null']
+        clip_budget:
+          type: integer
+        message:
+          type: string
+        shaken:
+          type: array
+          items:
+            $ref: '#/components/schemas/SessionMediaItem'
+        rows:
+          type: integer
+          minimum: 0
+      required: [media, clips_held, clip_budget, message]
+      additionalProperties: false
     ReloadRequest:
       type: object
       properties:
@@ -16354,6 +16930,8 @@ components:
           enum:
             - default
             - remote
+            - cache-ttl
+            - context-limits
             - local
         match:
           type: object
@@ -16477,6 +17055,8 @@ components:
           enum:
             - default
             - remote
+            - cache-ttl
+            - context-limits
             - local
         path:
           type: string
@@ -16505,7 +17085,7 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/CachePolicyLayer'
-          maxItems: 3
+          maxItems: 5
         matched:
           anyOf:
             - $ref: '#/components/schemas/CachePolicyEntry'
@@ -17644,6 +18224,11 @@ components:
                 - type: 'null'
             content_complete:
               type: boolean
+              description: >-
+                False when the arguments exceed 64 KiB or the encoded arguments,
+                result and trace exceed 64 KiB plus the trace's snapshots
+                (counted up to 256 KiB). Arguments, result and trace are then
+                null; read the call from history through reference.
             reference:
               anyOf:
                 - $ref: '#/components/schemas/ContentReference'
@@ -19020,6 +19605,19 @@ components:
           maxLength: 256
       required: [id, username]
       additionalProperties: false
+    PhotonStatus:
+      type: object
+      additionalProperties: false
+      required:
+        - session
+        - ready
+      properties:
+        session:
+          x-order: 1
+          type: [string, 'null']
+        ready:
+          x-order: 2
+          type: boolean
     DiscordBotPage:
       type: object
       properties:
@@ -19541,6 +20139,24 @@ components:
           additionalProperties: false
       required: [type, image_url]
       additionalProperties: false
+    ProxyAudioPart:
+      type: object
+      properties:
+        type:
+          const: input_audio
+        input_audio:
+          type: object
+          properties:
+            data:
+              type: string
+              contentEncoding: base64
+            format:
+              type: string
+              enum: [wav, mp3]
+          required: [data, format]
+          additionalProperties: false
+      required: [type, input_audio]
+      additionalProperties: false
     ProxyToolCall:
       type: object
       properties:
@@ -19578,6 +20194,7 @@ components:
                     oneOf:
                       - $ref: '#/components/schemas/ProxyTextPart'
                       - $ref: '#/components/schemas/ProxyImagePart'
+                      - $ref: '#/components/schemas/ProxyAudioPart'
             - type: 'null'
         name:
           type: string

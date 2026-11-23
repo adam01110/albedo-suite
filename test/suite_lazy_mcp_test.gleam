@@ -556,7 +556,7 @@ fn set_env(name: String, value: String) -> Nil {
   Nil
 }
 
-@external(erlang, "albedo_mcp_ownership_test_support", "fake_server")
+@external(erlang, "albedo_suite_test_support", "fake_mcp_server")
 fn fake_server() -> #(String, String)
 
 @external(erlang, "file", "read_file")

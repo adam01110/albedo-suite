@@ -39,6 +39,7 @@ type Profile {
 
 type UI {
   UI(
+    assistant_name: String,
     thinking: Bool,
     tools: Bool,
     dismissed_notices: List(String),
@@ -109,6 +110,11 @@ pub fn ui_group(picker: Dynamic) -> Result(Dynamic, Error) {
     }
   }
   let decoder = {
+    use assistant_name <- decode.optional_field(
+      "assistant_name",
+      "",
+      decode.string,
+    )
     use thinking <- decode.optional_field("thinking", False, decode.bool)
     use tools <- decode.optional_field("tools", False, decode.bool)
     use notices <- decode.optional_field(
@@ -122,7 +128,14 @@ pub fn ui_group(picker: Dynamic) -> Result(Dynamic, Error) {
       [],
       decode.list(text),
     )
-    decode.success(UI(thinking, tools, notices, web_allow, proxy_allow))
+    decode.success(UI(
+      assistant_name,
+      thinking,
+      tools,
+      notices,
+      web_allow,
+      proxy_allow,
+    ))
   }
   use ui <- result.try(
     decode.run(picker, decoder) |> result.replace_error(InvalidValue),
@@ -136,6 +149,7 @@ pub fn ui_group(picker: Dynamic) -> Result(Dynamic, Error) {
     True ->
       Ok(
         object([
+          #("assistant_name", dynamic.string(ui.assistant_name)),
           #("thinking", dynamic.bool(ui.thinking)),
           #("tools", dynamic.bool(ui.tools)),
           #(

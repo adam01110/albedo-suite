@@ -128,6 +128,16 @@ var customProviders = []customProvider{
 		Optional:      true,
 	},
 	{
+		ID:            "add-google-ai-studio",
+		Label:         "Google AI Studio",
+		Detail:        "API key · Gemini models",
+		Extension:     "google-ai-studio",
+		DefaultName:   "google-ai-studio",
+		DefaultURL:    "https://generativelanguage.googleapis.com/v1beta",
+		FixedProtocol: "chat_completions",
+		Optional:      true,
+	},
+	{
 		ID:            "add-vertex",
 		Label:         "Google Vertex AI",
 		Detail:        "application default credentials",
@@ -246,7 +256,7 @@ func (m *LoginModel) askEndpoint() tea.Cmd {
 	}
 	m.Step = StepBaseURL
 	m.TextInput.Placeholder = ""
-	if p.Optional {
+	if p.Optional && !m.keyAccounts() {
 		m.TextInput.Placeholder = "blank: your AWS region"
 	}
 	return m.promptInput(m.Draft.BaseURL, false)
@@ -256,7 +266,7 @@ func (m *LoginModel) askAPIKey() tea.Cmd {
 	m.Step = StepAPIKey
 	m.TextInput.Placeholder = ""
 	if p, _ := m.custom(); p.Optional {
-		m.TextInput.Placeholder = "blank: your AWS credentials"
+		m.TextInput.Placeholder = "blank: use automatic credentials"
 	}
 	return m.promptInput("", true)
 }

@@ -20,12 +20,16 @@ import albedo/session/session_state
 import albedo/session/session_switch
 import albedo/session/turn
 import albedo/storage/mail
+import albedo/support/scratch
 import albedo_ext_bedrock/converse_wire
 import albedo_ext_bedrock/extension as bedrock
+import albedo_file
 import albedo_model as types
+import albedo_protect
 import albedo_sdk/extension
 import albedo_sdk/store
 import albedo_sdk/transcript
+import gleam/bit_array
 import gleam/dict
 import gleam/erlang/process
 import gleam/json
@@ -127,6 +131,7 @@ fn fake_provider() -> extension.Extension {
               images: types.any_images,
               output: extension.NoCeiling,
               resolved_effort: None,
+              model_info: None,
               count: None,
             )),
           )
@@ -183,6 +188,8 @@ fn state(home: String, host: runtime.Runtime) -> session_state.State(Nil) {
     spent: None,
     activity: turn.Resting,
     pending_switch: None,
+    history_rewritten: False,
+    shaken: [],
     admitting: 0,
     finishing: False,
     pending_agent_close: None,
@@ -200,6 +207,7 @@ fn state(home: String, host: runtime.Runtime) -> session_state.State(Nil) {
     boot_token: 0,
     workspace_reset: None,
     workspace_probe: None,
+    start_pending: False,
     releasing: None,
     checkpointing: None,
     closing: False,
@@ -473,8 +481,45 @@ pub fn untyped_and_plaintext_history_accept_cross_model_and_other_modes_are_unch
   })
 }
 
-@external(erlang, "albedo_bedrock_replay_preflight_test_support", "with_home")
-fn with_home(run: fn(String) -> Nil) -> Nil
+/// Runs `run` in a disposable home whose settings hold one Bedrock profile
+/// per API, a legacy one with none, and an OpenAI one, with `converse`
+/// active. The home is removed however `run` ends.
+fn with_home(run: fn(String) -> Nil) -> Nil {
+  let home = scratch.directory("albedo-replay-preflight-")
+  let profile = fn(extension, extra) {
+    json.object([
+      #("extension", json.string(extension)),
+      #("model", json.string("fixture-origin")),
+      #(
+        "baseUrl",
+        json.string("https://bedrock-runtime.us-east-1.amazonaws.com"),
+      ),
+      #("protocol", json.string("chat_completions")),
+      ..extra
+    ])
+  }
+  let api = fn(name) { [#("api", json.string(name))] }
+  let settings =
+    json.object([
+      #("active", json.string("converse")),
+      #(
+        "providers",
+        json.object([
+          #("converse", profile("bedrock", api("converse"))),
+          #("messages", profile("bedrock", api("messages"))),
+          #("legacy", profile("bedrock", [])),
+          #("other", profile("openai", api("converse"))),
+        ]),
+      ),
+    ])
+  scratch.write(home, "config.json", json.to_string(settings))
+  albedo_protect.finally(run: fn() { run(home) }, after: fn() {
+    scratch.cleanup(home)
+  })
+}
 
-@external(erlang, "albedo_bedrock_replay_preflight_test_support", "settings_bytes")
-fn settings_bytes(home: String) -> String
+fn settings_bytes(home: String) -> String {
+  let assert Ok(bytes) = albedo_file.read(albedo_file.join(home, "config.json"))
+  let assert Ok(text) = bit_array.to_string(bytes)
+  text
+}

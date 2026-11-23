@@ -1,4 +1,5 @@
 import albedo/accounts/quota
+import albedo/accounts/quota_schedule
 import albedo_clock as clock
 import albedo_sdk/key_environment
 import albedo_sdk/store
@@ -21,7 +22,7 @@ fn poll_timeout() -> Nil {
       },
       fixture(),
       key_environment.empty(),
-      fn() { quota.Settings(1, 1, True) },
+      fn() { quota_schedule.Settings(1, 1, True) },
       // Discovery gets 2.5 times this; a cold VM beside the other suite VMs
       // can take longer than a quarter second to list the fixture account.
       1000,

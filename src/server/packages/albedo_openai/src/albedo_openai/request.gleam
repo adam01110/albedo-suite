@@ -3,6 +3,7 @@ import albedo_model.{
   ChatCompletions, InvalidRequest, Replay, Responses, ToolOutput, User,
   UserImage,
 } as types
+import albedo_openai/replay
 import gleam/dict.{type Dict}
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
@@ -36,9 +37,19 @@ pub fn fields(
     #("stream", json.bool(True)),
   ]
   let fields = case protocol {
+    // The system prompt opens the input as a developer message rather than
+    // riding in `instructions`, which GPT-6.2 and later place after the input:
+    // there every new turn moves it, so it is never part of a cached prefix
+    // and is billed in full on each request.
     Responses ->
       [
-        #("input", json.preprocessed_array(input)),
+        #(
+          "input",
+          json.preprocessed_array(case request.instructions {
+            None | Some("") -> input
+            Some(text) -> [message(Responses, "developer", text), ..input]
+          }),
+        ),
         #("store", json.bool(False)),
         ..fields
       ]
@@ -52,7 +63,6 @@ pub fn fields(
         },
         json.array(_, json.string),
       )
-      |> optional("instructions", request.instructions, json.string)
       |> optional("max_output_tokens", request.max_output_tokens, json.int)
     ChatCompletions -> {
       let messages = case request.instructions {
@@ -306,7 +316,8 @@ fn encode_input(
           ])
         ChatCompletions -> chat_tool_message(id, text, images)
       })
-    Replay(item) ->
+    Replay(item) -> {
+      let item = replay.repair(item)
       case types.replay_protocol(item) == protocol {
         True if reasoning ->
           Ok(case types.replay_has(item, "reasoning_content") {
@@ -317,6 +328,7 @@ fn encode_input(
         True -> Ok(types.replay_json(item))
         False -> Error(InvalidRequest("cannot replay output across protocols"))
       }
+    }
   }
 }
 
@@ -389,7 +401,32 @@ fn text_part(protocol: Protocol, text: String) -> Json {
   json.object([#("type", json.string(kind)), #("text", json.string(text))])
 }
 
+/// input_audio takes only wav and mp3. other clips become a note here
 fn image_part(protocol: Protocol, image: types.Image) -> Json {
+  let #(mime_type, _, _, _) = types.image_meta(image)
+  case types.media_kind(image), protocol, mime_type {
+    types.Picture, _, _ -> picture_part(protocol, image)
+    _, ChatCompletions, "audio/wav" -> audio_part(image, "wav")
+    _, ChatCompletions, "audio/mpeg" -> audio_part(image, "mp3")
+    _, _, _ ->
+      text_part(protocol, "[" <> mime_type <> " clip omitted: not sent here]")
+  }
+}
+
+fn audio_part(image: types.Image, format: String) -> Json {
+  json.object([
+    #("type", json.string("input_audio")),
+    #(
+      "input_audio",
+      json.object([
+        #("data", types.base64_string(types.image_data(image))),
+        #("format", json.string(format)),
+      ]),
+    ),
+  ])
+}
+
+fn picture_part(protocol: Protocol, image: types.Image) -> Json {
   let #(mime_type, _, _, _) = types.image_meta(image)
   let url = data_url(mime_type, types.image_data(image))
   case protocol {

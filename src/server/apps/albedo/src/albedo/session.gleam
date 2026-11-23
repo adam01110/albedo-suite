@@ -24,6 +24,7 @@ import albedo/history/history
 import albedo/http/http_history
 import albedo/kernel as python
 import albedo/kernel/link
+import albedo/kernel/state_file
 import albedo/model_loop/loop
 import albedo/observation/active_output
 import albedo/observation/bus
@@ -34,7 +35,9 @@ import albedo/observation/tool_progress as tool_progress_state
 import albedo/refusal.{type Refusal}
 import albedo/runtime
 import albedo/runtime/catalog as session_catalog
+import albedo/runtime/clip_cost
 import albedo/runtime/state as runtime_state
+import albedo/session/awaited
 import albedo/session/child_failure
 import albedo/session/command_state
 import albedo/session/compaction_action
@@ -54,6 +57,7 @@ import albedo/session/session_prompt
 import albedo/session/session_provider
 import albedo/session/session_run
 import albedo/session/session_salvage
+import albedo/session/session_shake
 import albedo/session/session_side_question
 import albedo/session/session_state
 import albedo/session/session_submission
@@ -273,6 +277,7 @@ pub type Message {
   /// work that will wake it: its extensions hear its last turn call again.
   Rewarm
   /// Saved profiles were renamed, old name first.
+  ChatNameChanged
   RenameProfiles(List(#(String, String)))
   ReadCapture(Subject(Result(Unobserved, Refusal)))
   CaptureIn(Option(sqlight.Connection), Subject(Result(Unobserved, Refusal)))
@@ -295,7 +300,8 @@ pub type Message {
   /// A move of this session finished; the words name where it went.
   MovedAway(String)
   SwitchModel(String, String, String, Subject(Result(Bool, String)))
-  RequestBoundary(String, Subject(Result(Option(loop.Selection), String)))
+  RequestBoundary(String, Subject(Result(loop.Refresh, String)))
+  ShakeMedia(List(String), Subject(Result(json.Json, String)))
   ChangeConfiguration(
     session_configuration.Version,
     session_configuration.Patch,
@@ -487,7 +493,7 @@ pub type Message {
     Subject(Nil),
   )
   ReadContext(Subject(context_snapshot.Snapshot))
-  Finished(String, Result(Nil, loop.Failure))
+  Finished(String, Result(Option(String), loop.Failure))
   Down(process.Down)
   Idle(Subject(Report))
   /// An automatic release keeps a kernel whose save missed names; the sweep
@@ -750,7 +756,8 @@ pub fn start(
     ))
     let unheld =
       list.take_while(waiting, fn(row) { !dict.has_key(held_map, row.id) })
-    case turn.starts_turn(unheld) {
+    let start_pending = turn.starts_turn(unheld)
+    case start_pending {
       False -> Nil
       True -> process.send(self, StartQueued)
     }
@@ -790,6 +797,8 @@ pub fn start(
         pending_switch: option.map(saved_switch, fn(p) {
           session_state.PendingSwitch(p.0, p.1, p.2)
         }),
+        history_rewritten: False,
+        shaken: [],
         admitting: 0,
         finishing: False,
         pending_agent_close: None,
@@ -810,6 +819,7 @@ pub fn start(
         boot_token: 0,
         workspace_reset: None,
         workspace_probe: None,
+        start_pending:,
         releasing: None,
         checkpointing: None,
         closing: False,
@@ -986,8 +996,11 @@ pub fn interrupt_captured(
   actor.call(session, 5000, InterruptCaptured(run_id, through_input_order, _))
 }
 
+/// How long a client's read of a session waits for the actor to answer.
+pub const read_timeout_ms = 5000
+
 pub fn capture(session: Session) -> Result(Capture, Refusal) {
-  actor_call.try_call(session, 5000, ReadCapture)
+  actor_call.try_call(session, read_timeout_ms, ReadCapture)
   |> result.replace_error(refusal.Unavailable("session capture unavailable"))
   |> result.flatten
   |> result.try(fn(observe) { observe() })
@@ -1004,13 +1017,13 @@ pub fn reload(session: Session) -> Result(session_extensions.Reloaded, String) {
 
 /// Capture collection facts without inspecting a kernel or composing plugins.
 pub fn summary(session: Session) -> Result(Summary, String) {
-  actor_call.try_call(session, 5000, ReadSummary)
+  actor_call.try_call(session, read_timeout_ms, ReadSummary)
   |> result.replace_error("session summary unavailable")
 }
 
 /// The live facts alone: what a watching client's footer draws.
 pub fn status_read(session: Session) -> Result(StatusRead, String) {
-  actor_call.try_call(session, 5000, ReadStatus)
+  actor_call.try_call(session, read_timeout_ms, ReadStatus)
   |> result.replace_error("session status unavailable")
   |> result.try(fn(observe) { observe() })
 }
@@ -1120,7 +1133,7 @@ fn context_page(
 
 /// Remove the saved variables after a session has stopped.
 pub fn discard_state(home: String, id: String) -> Nil {
-  case session_namespace.state_path(home, id) {
+  case state_file.path(home, id) {
     Some(path) -> discard(path)
     None -> Nil
   }
@@ -1207,6 +1220,10 @@ pub fn alive(session: Session) -> Bool {
 /// warming where a daemon restart left it.
 pub fn rewarm(session: Session) -> Nil {
   process.send(session, Rewarm)
+}
+
+pub fn chat_name_changed(session: Session) -> Nil {
+  process.send(session, ChatNameChanged)
 }
 
 pub fn rename_profiles(
@@ -1644,8 +1661,7 @@ fn upgraded_kernel(
       "/sessions/" <> state.info.id,
     )
   list.each(parked, process.send(state.self, _))
-  process.send(state.self, StartQueued)
-  answer(state, reply, refusal.storage(outcome))
+  answer(queue_start(state), reply, refusal.storage(outcome))
 }
 
 /// Replace the session's kernel with an empty one, stopping what runs first.
@@ -2071,6 +2087,10 @@ fn handle(
       actor.continue(
         session_state.State(..session_naming.cancel(state), moved: Some(detail)),
       )
+    ShakeMedia(selectors, reply) -> {
+      let #(state, shaken) = session_shake.shake(state, selectors)
+      answer(state, reply, shaken)
+    }
     SwitchModel(caller, provider, model, reply) -> {
       let #(state, changed) =
         session_switch.queue(state, caller, provider, model)
@@ -2080,8 +2100,14 @@ fn handle(
       case turn.live(state.activity, id) {
         False -> answer(state, reply, Error("stale run"))
         True -> {
-          let #(state, selection) = session_switch.apply_pending(state)
-          answer(arm_rest(state, id), reply, Ok(selection))
+          let #(state, refreshed) = case session_switch.apply_pending(state) {
+            #(state, Some(selection)) -> #(
+              session_state.State(..state, history_rewritten: False),
+              Ok(loop.Switched(selection)),
+            )
+            #(state, None) -> session_shake.reloaded(state)
+          }
+          answer(arm_rest(session_shake.release(state), id), reply, refreshed)
         }
       }
     }
@@ -2114,6 +2140,12 @@ fn handle(
             Ok(state) -> actor.continue(restore_last_call(state))
           }
       }
+    ChatNameChanged ->
+      actor.continue(session_state.invalidate(
+        state,
+        view.StaleSettings,
+        "/settings/ui",
+      ))
     RenameProfiles(renames) -> {
       let previous = state.info.provider
       let state = session_history.rename_profiles(state, renames)
@@ -2180,7 +2212,10 @@ fn handle(
       }
     WorkspaceReady(token, purpose, result) ->
       actor.continue(workspace_ready(state, token, purpose, result))
-    StartQueued -> actor.continue(start_queued(state))
+    StartQueued ->
+      actor.continue(start_queued(
+        session_state.State(..state, start_pending: False),
+      ))
     AdmitOperation(operation, submission, committed, reply) ->
       admit_operation(state, operation, submission, committed, reply)
     AdmitACP(operation, submission, digest, committed, reply) ->
@@ -2196,13 +2231,15 @@ fn handle(
       let pending =
         acp_attachments.read(state.info.id).0.readiness != acp_attachments.Ready
       case
-        candidate,
-        pending,
-        busy(state) || state.booting != None || replacing_kernel(state)
+        acp_session.publication(
+          option.is_some(candidate),
+          pending,
+          busy(state) || state.booting != None || replacing_kernel(state),
+        )
       {
-        None, False, _ -> answer(state, reply, Ok(Nil))
-        _, _, True -> answer(state, reply, Error(acp_session.Busy))
-        _, _, False -> {
+        acp_session.AlreadyCurrent -> answer(state, reply, Ok(Nil))
+        acp_session.Refuse -> answer(state, reply, Error(acp_session.Busy))
+        acp_session.Install -> {
           let published = case candidate {
             Some(candidate) ->
               acp_session.publish(
@@ -2226,9 +2263,8 @@ fn handle(
               case outcome {
                 Ok(_) -> {
                   acp_attachments.reloaded(state.info.id)
-                  process.send(state.self, StartQueued)
                   answer(
-                    session_state.State(..state, blocked_until: 0),
+                    session_state.State(..queue_start(state), blocked_until: 0),
                     reply,
                     Ok(Nil),
                   )
@@ -3044,7 +3080,9 @@ fn handle(
     // waits for the turn to end stays there and starts the next one.
     DrainSteering(id, answer, ack) -> {
       process.send(ack, Nil)
-      let exclusive = turn.exclusive(state.active_submissions)
+      let exclusive =
+        turn.exclusive(state.active_submissions)
+        || turn.isolated_event(state.active_submissions) != None
       let #(state, taken) = case turn.live(state.activity, id) {
         False -> #(state, Error(Nil))
         True ->
@@ -3353,6 +3391,7 @@ fn handle(
           )
         }
         True -> {
+          session_namespace.log_release(state.info.id, kernel, automatic)
           session_namespace.forget(kernel)
           // Reset and any subsequent Open are sent by this actor, in that order.
           runtime.reset_session_async(state.host, state.info.id)
@@ -4044,6 +4083,8 @@ fn command_op(
         ])
       })
       |> result.map_error(command.Other)
+    command.Shake(selectors) ->
+      shake(session, selectors) |> result.map_error(command.Other)
     command.Refresh ->
       reload(session)
       |> result.map(fn(reloaded) {
@@ -4349,12 +4390,10 @@ pub fn live(id: String) -> Option(Session) {
   }
 }
 
-/// Delete a kernel state file and the saved job book (`.jobs.json`,
-/// robot-docs/kernel.md) that goes with it.
+/// Delete the namespace checkpoint and its session-owned sidecars.
 fn discard(path: String) -> Nil {
   let _ = delete_file(path)
-  let _ = delete_file(path <> ".jobs.json")
-  Nil
+  state_file.discard_sidecars(path)
 }
 
 @external(erlang, "file", "delete")
@@ -4908,7 +4947,7 @@ fn blocked_queued(state: State, error: String, retry_at: Option(Int)) -> State {
 fn answer_parent(
   state: State,
   run_id: String,
-  outcome: Result(Nil, loop.Failure),
+  outcome: Result(Option(String), loop.Failure),
 ) -> #(State, Option(fn() -> List(Result(mail_value.Letter, String)))) {
   let db = runtime.ledger(state.host)
   let owed = case queue_starts(state) {
@@ -4993,27 +5032,55 @@ fn family_closed(state: State) -> Result(Bool, String) {
   families.closed(storage.host(runtime.ledger(state.host)), state.info.id)
 }
 
-/// Why the session's provider would refuse one of the submission's images,
-/// so it is turned away before the transcript keeps it rather than failing
-/// every request after.
+/// refused before a bad image reaches the transcript, or every request fails.
+/// a clip past the budget is refused, never trimmed for a newer one.
 fn refused_image(
   state: State,
   submission: Submission,
-) -> #(State, Option(String)) {
+) -> #(State, Option(Refusal)) {
   case submission.images {
     [] -> #(state, None)
     images ->
       case session_provider.configured_client(state) {
         // Without a provider the turn is refused on its own when it starts.
         Error(_) -> #(state, None)
-        Ok(#(state, client)) -> #(
-          state,
-          list.find_map(images, fn(image) {
-            types.image_refusal(client.images, image) |> option.to_result(Nil)
-          })
-            |> option.from_result,
-        )
+        Ok(#(state, client)) ->
+          case
+            list.find_map(images, fn(image) {
+              types.media_refusal(client.images, image) |> option.to_result(Nil)
+            })
+          {
+            Ok(reason) -> #(state, Some(refusal.ImageRejected(reason)))
+            Error(Nil) -> over_clip_budget(state, client.images, images)
+          }
       }
+  }
+}
+
+fn over_clip_budget(
+  state: State,
+  limits: types.ImageLimits,
+  images: List(types.Image),
+) -> #(State, Option(Refusal)) {
+  let adding =
+    runtime.clips_held(state.host, limits, [types.UserImage("", images)])
+  use <- bool.guard(adding == 0, #(state, None))
+  case session_history.ensure_history(state) {
+    // an unreadable history fails the turn when it starts instead.
+    Error(_) -> #(state, None)
+    Ok(state) -> {
+      let held = limits.clip_budget - session_history.clip_room(state, limits)
+      #(
+        state,
+        types.clip_budget_refusal(limits.clip_budget, held, adding)
+          |> option.map(fn(reason) {
+            refusal.MediaBudget(
+              reason
+              <> "; /shake lists the session's media and drops what it no longer needs",
+            )
+          }),
+      )
+    }
   }
 }
 
@@ -5050,6 +5117,15 @@ fn elide_compacted_images(state: State) -> State {
     Error(error) ->
       session_state.emit(state, view.error("image cleanup skipped: " <> error))
   }
+}
+
+pub fn shake(
+  session: Session,
+  selectors: List(String),
+) -> Result(json.Json, String) {
+  actor_call.try_call(session, 60_000, ShakeMedia(selectors, _))
+  |> result.replace_error("the session did not answer")
+  |> result.flatten
 }
 
 /// Wait for the compaction worker's observed outcome without retrying the action.
@@ -5245,7 +5321,7 @@ fn prepare_turn_pipeline(
     Some(_) if state.results_settled -> []
     Some(held) ->
       session_history.recover_pending(
-        state.host,
+        state,
         session_history.unanswered(state),
         held,
         client.images,
@@ -5413,9 +5489,10 @@ fn turn_state(
 fn finish_run(
   state: State,
   run: turn.Run,
-  failure: Result(Nil, loop.Failure),
+  failure: Result(Option(String), loop.Failure),
 ) -> actor.Next(State, Message) {
-  let outcome = result.map_error(failure, loop.failure_message)
+  let outcome =
+    failure |> result.map_error(loop.failure_message) |> result.replace(Nil)
   case run.work {
     // A background call holds the session like a compaction run does, but
     // commits nothing and never reaches the transcript.
@@ -5437,11 +5514,13 @@ fn finish_run(
 fn finish_turn(
   state: State,
   run: turn.Run,
-  failure: Result(Nil, loop.Failure),
+  failure: Result(Option(String), loop.Failure),
 ) -> actor.Next(State, Message) {
   use <- bool.guard(state.finishing, actor.continue(state))
-  let outcome = result.map_error(failure, loop.failure_message)
+  let outcome =
+    failure |> result.map_error(loop.failure_message) |> result.replace(Nil)
   process.demonitor_process(run.monitor)
+  let state = session_shake.release(state)
   // A session closing for deletion keeps nothing of the turn.
   let state = case run.work, run.cancelled, outcome {
     _, _, _ if state.closing -> state
@@ -5459,11 +5538,27 @@ fn finish_turn(
       turn.final_stage(run, outcome),
       turn_state(run, outcome),
     )
+  let record_answer = case
+    run.work,
+    run.cancelled,
+    state.closing,
+    failure,
+    turn.isolated_event(state.active_submissions),
+    session_state.composition(state)
+  {
+    turn.Turn(..), False, False, Ok(Some(text)), Some(letter_id), Some(prepared)
+    -> {
+      let answer = extension.ExternalAnswer(state.info.id, letter_id, text)
+      let recorders = runtime.external_answer_recorders(prepared)
+      fn(conn) { list.try_each(recorders, fn(record) { record(conn, answer) }) }
+    }
+    _, _, _, _, _, _ -> fn(_) { Ok(Nil) }
+  }
   // The run holds the session until its end is durable, so nothing starts
   // behind a turn the store still calls running.
   session_state.State(..state, finishing: True)
   |> session_state.write_then(
-    fn() { conversation.finish_turn(ledger, completion) },
+    fn() { conversation.finish_turn(ledger, completion, record_answer) },
     fn(state, persisted) {
       // Its requesters' answers are posted before the session reads idle, so
       // whoever waits on it sees them once it does.
@@ -5999,21 +6094,29 @@ fn awaited_observer(state: State) -> fn() -> Bool {
 }
 
 /// Whether an open child of `id`, or one beneath it, has work under way that
-/// ends in a report: a turn, or a job its idle session waits on. A child
-/// between turns waiting on its build is still working for its parent.
+/// ends in a report; see `awaited`.
 fn children_working(host: runtime.Runtime, id: String) -> Bool {
-  case families.children(storage.host(runtime.ledger(host)), id) {
-    Ok(children) ->
-      list.any(children, fn(child) {
-        !child.closed
-        && {
-          bus.is_running(child.session)
-          || runtime.awaiting_jobs(host, child.session)
-          || children_working(host, child.session)
+  awaited.children_working(
+    awaited.Family(
+      children: fn(parent) {
+        case families.children(storage.host(runtime.ledger(host)), parent) {
+          Ok(children) ->
+            list.map(children, fn(child) { #(child.session, child.closed) })
+          Error(_) -> []
         }
-      })
-    Error(_) -> False
-  }
+      },
+      running: bus.is_running,
+      awaiting_jobs: runtime.awaiting_jobs(host, _),
+    ),
+    id,
+  )
+}
+
+/// Ask the actor to start what waits in the inbox once it has handled the
+/// messages already queued; until then the session reads as preparing.
+fn queue_start(state: State) -> State {
+  process.send(state.self, StartQueued)
+  session_state.State(..state, start_pending: True)
 }
 
 fn start_queued(state: State) -> State {
@@ -6359,8 +6462,7 @@ fn workspace_reset(
   case applied {
     Ok(state) -> {
       list.each(parked, process.send(state.self, _))
-      process.send(state.self, StartQueued)
-      state |> follow_up |> session_state.announce
+      state |> queue_start |> follow_up |> session_state.announce
     }
     Error(#(state, error)) ->
       list.fold(parked, state, fn(state, message) {
@@ -6404,9 +6506,9 @@ fn finish_workspace(
     True -> {
       // Inputs a missing folder blocked try the new one now, not when
       // their 15 s retry comes round.
-      case queue_starts(state) {
-        False -> Nil
-        True -> process.send(state.self, StartQueued)
+      let state = case queue_starts(state) {
+        False -> state
+        True -> queue_start(state)
       }
       let state =
         session_state.State(
@@ -6601,8 +6703,7 @@ fn admit_operation(
           Some(session_creation.rejection(
             refusal.AttachmentWorkspaceUnsupported,
           ))
-        _, Some(reason), _ ->
-          Some(operations.Rejection(409, "image_rejected", reason))
+        _, Some(refused), _ -> Some(session_creation.rejection(refused))
         _, _, turn.Reject(turn.Oversized) ->
           Some(operations.Rejection(
             413,
@@ -6677,11 +6778,11 @@ fn admission_committed(
               outcome.acceptance_order,
               TitleFinished,
             )
-          process.send(state.self, StartQueued)
           session_state.State(..state, kernel_blocked: case submission.source {
             turn.Chat | turn.Continue -> False
             _ -> state.kernel_blocked
           })
+          |> queue_start
           |> session_state.emit(view.Input(
             outcome,
             Some(session_submission.display(submission)),
@@ -6967,13 +7068,14 @@ fn rebuilt_context(
   composition: runtime.Prepared,
 ) -> context_snapshot.Snapshot {
   case session_last_call.restore_context(state) {
-    #(state, Some(#(request, observation, protocol))) -> {
+    #(state, Some(#(request, observation, protocol, route))) -> {
       let rebuilt =
         context_snapshot.from_request(
           Some(usage.now()),
           state.info.provider,
           conversation.protocol(protocol),
           protocol,
+          route,
           request,
           observation,
         )
@@ -7022,6 +7124,11 @@ fn preview_context(
                 state.info.provider,
                 conversation.protocol(upstream.protocol),
                 upstream.protocol,
+                clip_cost.route(
+                  upstream.endpoint,
+                  request.model,
+                  upstream.images,
+                ),
                 request,
                 observation,
               )
@@ -7223,16 +7330,13 @@ fn edit_input_in(
   submission: Submission,
 ) -> #(State, Result(Nil, Refusal)) {
   let id = option.unwrap(submission.submission_id, "")
-  let edited = {
-    use _ <- result.try(waiting_message(state, id))
-    use replaced <- result.try(
-      inbox.replace(runtime.ledger(state.host), state.info.id, submission)
-      |> refusal.storage,
-    )
-    case replaced {
-      True -> Ok(Nil)
-      False -> Error(refusal.InputNotWaiting)
-    }
+  let #(state, edited) = case waiting_message(state, id) {
+    Error(refused) -> #(state, Error(refused))
+    Ok(Nil) ->
+      case refused_image(state, submission) {
+        #(state, Some(refused)) -> #(state, Error(refused))
+        #(state, None) -> #(state, replace_input(state, submission))
+      }
   }
   case edited {
     // A hold the edit could not use stays until it is released or lapses.
@@ -7241,6 +7345,17 @@ fn edit_input_in(
       edited,
     )
     Error(_) -> #(state, edited)
+  }
+}
+
+fn replace_input(state: State, submission: Submission) -> Result(Nil, Refusal) {
+  use replaced <- result.try(
+    inbox.replace(runtime.ledger(state.host), state.info.id, submission)
+    |> refusal.storage,
+  )
+  case replaced {
+    True -> Ok(Nil)
+    False -> Error(refusal.InputNotWaiting)
   }
 }
 

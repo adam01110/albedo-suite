@@ -335,7 +335,12 @@ func TestPropListSessionsTotalCost(t *testing.T) {
 			}{usd: float64(r.Intn(1<<20)) / 1000, partial: r.Intn(2) == 0}
 		}
 
-		conn := controlledConnection(t, func(w http.ResponseWriter, request *http.Request) {
+		// A negative total is outside the contract on purpose.
+		connect := controlledConnection
+		if total != nil && total.usd < 0 {
+			connect = uncheckedConnection
+		}
+		conn := connect(t, func(w http.ResponseWriter, request *http.Request) {
 			items := []any{}
 			for _, generated := range rows {
 				session := testwire.Session(generated.id, testwire.GenerationA, 0)
@@ -432,7 +437,7 @@ func TestPropSaveProviderPatch(t *testing.T) {
 				t.Errorf("body %s: %v", data, err)
 			}
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = io.WriteString(w, `{}`)
+			_ = json.NewEncoder(w).Encode(testwire.SettingsChange("providers", map[string]any{"default_profile": nil, "profiles": map[string]any{}}))
 		})
 		save := SaveProvider
 		if clearKey {
@@ -440,8 +445,7 @@ func TestPropSaveProviderPatch(t *testing.T) {
 				return SaveSignedInProvider(ctx, conn, name, profile, etag, false)
 			}
 		}
-		// The fixture replies with no change document, so the client reports an
-		// uncertain outcome after sending the patch; the body is still the record.
+		// The body is the record; the fixture's change document is generic.
 		_ = save(t.Context(), conn, name, profile, `"providers-1"`)
 		profiles, ok := body["profiles"].(map[string]any)
 		if !ok {
@@ -535,12 +539,12 @@ func TestPropProviderProfileDecode(t *testing.T) {
 		name := randomToken(r, "profile")
 		profile := map[string]any{
 			"extension":   randomToken(r, "extension"),
-			"api":         randomToken(r, "api"),
+			"api":         oneOf(r, "messages", "converse"),
 			"endpoint":    randomToken(r, "endpoint"),
 			"model":       randomToken(r, "model"),
 			"protocol":    oneOf(r, "responses", "chat_completions"),
 			"effort":      randomToken(r, "effort"),
-			"image_edge":  r.Intn(4096),
+			"image_edge":  r.Intn(4095) + 1,
 			"account_id":  randomToken(r, "account"),
 			"account_ids": []any{randomToken(r, "one"), randomToken(r, "two")},
 			"rotation":    oneOf(r, "failover", "spread", "first"),

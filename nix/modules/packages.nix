@@ -98,24 +98,6 @@
         root = ../../test/proptest;
         fileset = pkgs.lib.fileset.fileFilter (file: file.hasExt "gleam" || file.hasExt "erl" || file.name == "fake_mcp_record.py") ../../test/proptest;
       };
-      # qcheck and the packages it needs that the daemon lacks, at the Hex
-      # checksums scripts/proptest-server.sh also pins; only sources and FFI
-      # join the test package.
-      hexPackages = map (line: let
-        fields = pkgs.lib.splitString " " line;
-      in {
-        name = builtins.elemAt fields 0;
-        tarball = pkgs.fetchurl {
-          url = "https://repo.hex.pm/tarballs/${builtins.elemAt fields 0}-${builtins.elemAt fields 1}.tar";
-          sha256 = builtins.elemAt fields 2;
-        };
-      }) (builtins.filter (line: line != "") (pkgs.lib.splitString "\n" (readFile ../../test/proptest/hex-packages.txt)));
-      qcheckSources = runCommand "albedo-proptest-hex-sources" {} (pkgs.lib.concatMapStrings (hex: ''
-          mkdir -p "$TMPDIR/${hex.name}"
-          tar -xOf ${hex.tarball} contents.tar.gz | tar -xz -C "$TMPDIR/${hex.name}" src
-          (cd "$TMPDIR/${hex.name}/src" && find . \( -name '*.gleam' -o -name '*_ffi.erl' \) -exec install -Dm644 {} "$out/{}" \;)
-        '')
-        hexPackages);
       suiteTests = [
         # keep-sorted start
         "suite_agents_glance_test"
@@ -229,10 +211,16 @@
             cp ${../../test/albedo_zed_login_test.erl} "$tests/test/albedo_zed_login_test.erl"
             cp ${../../test/albedo_zed_prop.erl} "$tests/test/albedo_zed_prop.erl"
             cp ${../../test/albedo_zed_callback_prop.erl} "$tests/test/albedo_zed_callback_prop.erl"
-            cp -r --no-preserve=mode ${qcheckSources}/. ${propertySources}/. "$tests/test"
+            cp -r --no-preserve=mode ${propertySources}/. "$tests/test"
             # The lazy MCP properties start this server by its relative path.
             cp ${propertySources}/fake_mcp_record.py test/fake_mcp_record.py
             gleam compile-package --target erlang --package build/packages/gleeunit --out "$lib/gleeunit" --lib "$lib"
+            # Upstream's property helper and qcheck are dev dependencies the
+            # shipment leaves out; both test suites use them.
+            for package in gleam_regexp gleam_yielder prng qcheck; do
+              gleam compile-package --target erlang --package "build/packages/$package" --out "$lib/$package" --lib "$lib"
+            done
+            gleam compile-package --target erlang --package ../../packages/albedo_property --out "$lib/albedo_property" --lib "$lib"
             gleam compile-package --target erlang --package "$tests" --out "$lib/albedo_suite_tests" --lib "$lib"
             # The mains run in separate VMs at once; their logs print in list order.
             # PROPTEST_COUNT scales each property's cases; longer runs use
@@ -307,19 +295,30 @@
         filter = path: _: showDiffs || !(builtins.elem (baseNameOf path) ["default_diffs_test.go"]);
       };
     in
-      # Only cmd/albedo's tests run in this derivation; the suite adds the rest.
+      # Only the cmd packages' tests run in this derivation; the suite adds the rest.
       # The readers of ALBEDO_TEST_DAEMON are cli/internal/storage and
       # cli/test/e2e, which no derivation here builds, so the client does not
       # wait for the server.
       assert package ? ALBEDO_TEST_DAEMON;
-      assert package.subPackages == ["cmd/albedo"];
+      assert package.subPackages == ["cmd/albedo" "cmd/albedo-acp" "cmd/albedo-server" "cmd/albedo-tui" "cmd/albedo-web"];
         withSuiteNotices (package.overrideAttrs (old: {
           ALBEDO_TEST_DAEMON = "";
           nativeCheckInputs = (old.nativeCheckInputs or []) ++ [pkgs.zoxide];
+          # Vendored modules stay pristine so NUR's vendorHash still holds; the
+          # replaced Bubble Tea file is installed after configure instead.
+          passthru =
+            old.passthru
+            // {
+              overrideModAttrs = pkgs.lib.composeExtensions old.passthru.overrideModAttrs (_: _: {
+                postPatch = old.postPatch or "";
+              });
+            };
           postPatch =
             ''
               sha256sum --check ${../../upstream/client.sha256}
               cp -r --no-preserve=mode ${clientSources}/. .
+              # Test exchanges are checked against the contract the suite serves.
+              install -m644 ${../../src/server/docs/openapi.yaml} docs/openapi.yaml
               ${pkgs.lib.optionalString (!showDiffs) ''substituteInPlace cli/internal/tui/chat.go --replace-fail "DisplayFlags{Diffs: true}" "DisplayFlags{}"''}
               # The packages tested here must not need the daemon blanked above.
               if grep -rl ALBEDO_TEST_DAEMON cli/cmd cli/internal/{app,cli,config,daemon,webui,terminal,tui}; then exit 1; fi
@@ -360,6 +359,9 @@
     }:
       assert albedo-git.src.outputHash == pin.narHash;
         (albedo-git.override {
+          # The suite ships neither the iMessage bridge nor the browser client.
+          withPhoton = false;
+          withWeb = false;
           callPackage = path: args: let
             # Builds depend on unwrapped components, never on suite notices.
             package = callPackage path (builtins.mapAttrs (_: arg: arg.unwrapped or arg) args);

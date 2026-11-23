@@ -62,10 +62,6 @@ UPSTREAM_CASES = (
     "mcp_oauth_test.py",
     "operations_lifecycle_test.py",
     "image_limits_test.py",
-    "python_test.py:PythonToolsTests.test_a_list_of_edits_applies_all_or_none",
-    "python_test.py:PythonToolsTests.test_text_returns_plain_output_and_raises_with_the_last_lines",
-    "python_test.py:PythonToolsTests.test_wait_for_returns_the_line_and_leaves_the_job_running",
-    "python_test.py:PythonToolsTests.test_chdir_moves_run_and_files",
     "stream_replay_test.py",
     "provider_protocols_test.py",
     "side_questions_test.py",
@@ -76,7 +72,7 @@ UPSTREAM_CASES = (
 def synchronize_kernel_upgrade_fixture(
     path,
     *,
-    expected_sha256="d49d58381d29a26ed5d6d3929c3bb33b062060dd7bc10ff209e29e0d389e8a65",
+    expected_sha256="517397b1a5e5b5e4fa7ac246f28cf640ea0f42a39c689dce39e32dc653308eb7",
 ):
     """Listener readiness precedes asynchronous kernel reattachment after restart."""
     original = "    def test_kernel_upgrade_forces_the_swap_past_a_live_job(self):\n        self.cell(\"import os\\nsurvivor = 41\\nj = run('sleep', '60')\\nos.getpid()\")\n        self.edit_bundle()\n        self.app.restart()\n"

@@ -16,6 +16,7 @@
 //// errors exactly as the feed reported them, never anything derived. Phase 2
 //// derives what it needs from these rows.
 
+import albedo/accounts/quota_schedule as schedule
 import albedo_clock
 import albedo_ext_zed/quota as zed_quota
 import albedo_process
@@ -44,11 +45,10 @@ import sqlight
 pub type Fetch =
   fn(String, json.Json, Int) -> Result(Report, String)
 
-pub type Settings {
-  Settings(poll_seconds: Int, busy_poll_seconds: Int, enabled: Bool)
-}
+pub type Settings =
+  schedule.Settings
 
-const default_settings = Settings(600, 120, True)
+const default_settings = schedule.Settings(600, 120, True)
 
 /// `$ALBEDO_HOME/extensions.json` under `"quota"`, read like any extension's
 /// settings, and re-read every round so changes apply without a restart.
@@ -61,7 +61,7 @@ fn load_settings() -> Settings {
       decode.int,
     )
     use enabled <- decode.optional_field("enabled", True, decode.bool)
-    decode.success(Settings(poll_seconds, busy_poll_seconds, enabled))
+    decode.success(schedule.Settings(poll_seconds, busy_poll_seconds, enabled))
   }
   settings.load("quota", decoder, default_settings)
   |> result.unwrap(default_settings)
@@ -70,7 +70,7 @@ fn load_settings() -> Settings {
 
 fn clamped(settings: Settings) -> Settings {
   let poll_seconds = int.clamp(settings.poll_seconds, 1, 86_400)
-  Settings(
+  schedule.Settings(
     poll_seconds,
     int.clamp(settings.busy_poll_seconds, 1, poll_seconds),
     settings.enabled,
@@ -141,22 +141,6 @@ pub type Message {
   Down(process.Down)
 }
 
-type Account {
-  Account(
-    /// provider <> "/" <> label: one polled account, never two polls at once.
-    key: String,
-    watched: Watched,
-    /// Wall-clock milliseconds for this account's next poll.
-    next_due: Int,
-    /// Consecutive failed polls, for backoff.
-    failures: Int,
-    /// The process polling now, so a crash frees the slot.
-    polling: Option(process.Pid),
-    /// Whether the latest discovery still lists this account.
-    listed: Bool,
-  )
-}
-
 type State {
   State(
     home: String,
@@ -166,14 +150,18 @@ type State {
     sources: List(#(String, usage_feed.Source)),
     settings: fn() -> Settings,
     worker_timeout_ms: Int,
-    accounts: Dict(String, Account),
+    /// When each account polls; the rules live in `quota_schedule`.
+    schedule: schedule.Schedule,
+    /// What each scheduled account polls.
+    watched: Dict(String, Watched),
+    /// The process polling each account now, so a crash frees its slot.
+    polls: Dict(process.Pid, String),
     self: Subject(Message),
     /// Cancel and replace the pending tick when an earlier deadline appears.
     timer: Option(process.Timer),
     generation: Int,
     /// The process listing accounts now, so a crash cannot wedge it.
     enumerating: Option(process.Pid),
-    last_enumerated: Int,
     /// The runtime's key environment, for sources that poll key accounts.
     keys: KeyEnvironment,
   )
@@ -239,12 +227,13 @@ pub fn start_with(
         sources,
         settings,
         worker_timeout_ms,
+        schedule.new(),
+        dict.new(),
         dict.new(),
         self,
         Some(timer),
         0,
         None,
-        0,
         keys,
       ))
       |> actor.returning(self)
@@ -259,156 +248,77 @@ pub fn start_with(
   |> actor.start
 }
 
+/// Runs the schedule's step for each message and starts what it asks for.
+/// Answers from a worker the poller no longer owns, as after a timeout, are
+/// dropped.
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
+  let settings = state.settings()
+  let now = albedo_clock.system_ms()
   case message {
     Tick(generation) if generation != state.generation -> actor.continue(state)
-    Tick(_) -> retick(on_tick(State(..state, timer: None)))
-    WorkerTimedOut(pid) -> {
+    Tick(_) -> {
+      let #(next, effects) = schedule.tick(state.schedule, settings, now)
+      let state = State(..state, schedule: next, timer: None)
+      let state = case settings.enabled {
+        False -> State(..state, watched: dict.new())
+        True -> state
+      }
+      list.fold(effects, state, fn(state, effect) {
+        run_effect(state, effect, now, settings)
+      })
+      |> retick(settings)
+    }
+    WorkerTimedOut(pid) ->
       case owns_worker(state, pid) {
         False -> actor.continue(state)
         True -> {
           process.kill(pid)
-          retick(fell(state, pid, "quota worker timed out"))
+          fell(state, pid, "quota worker timed out", now, settings)
+          |> retick(settings)
         }
       }
+    Enumerated(pid, _) if state.enumerating != Some(pid) -> actor.continue(state)
+    Enumerated(_, targets) -> {
+      let listed =
+        list.map(targets, fn(watched) { #(key_of(watched.target), watched) })
+      let next =
+        schedule.enumerated(
+          state.schedule,
+          list.map(listed, fn(entry) { entry.0 }),
+          now,
+        )
+      // A gone account still polling keeps what it polls until it finishes.
+      let fresh = dict.from_list(listed)
+      let kept =
+        dict.filter(state.watched, fn(key, _) {
+          dict.has_key(next.slots, key) && !dict.has_key(fresh, key)
+        })
+      let watched = dict.merge(kept, fresh)
+      State(..state, schedule: next, watched:, enumerating: None)
+      |> retick(settings)
     }
-    Enumerated(pid, targets) -> {
-      case state.enumerating == Some(pid) {
-        False -> actor.continue(state)
-        True ->
-          retick(merged(
-            State(..state, enumerating: None),
-            targets,
-            albedo_clock.system_ms(),
-          ))
-      }
-    }
-    Polled(key, pid, failed, busy, attempted_at) -> {
-      case dict.get(state.accounts, key) {
-        Ok(account) if account.polling == Some(pid) ->
-          retick(finished(state, key, failed, busy, attempted_at))
+    Polled(key, pid, failed, busy, attempted_at) ->
+      case dict.get(state.polls, pid) {
+        Ok(polling) if polling == key ->
+          finished(state, key, failed, busy, attempted_at, settings)
+          |> retick(settings)
         _ -> actor.continue(state)
       }
-    }
     Down(process.ProcessDown(_, pid, _)) ->
-      retick(fell(state, pid, "quota worker exited before reporting"))
+      case owns_worker(state, pid) {
+        False -> actor.continue(state)
+        True ->
+          fell(
+            state,
+            pid,
+            "quota worker exited before reporting",
+            now,
+            settings,
+          )
+          |> retick(settings)
+      }
     // The poller monitors processes only; a port is never one of them.
     Down(process.PortDown(_, _, _)) -> actor.continue(state)
-  }
-}
-
-fn on_tick(state: State) -> State {
-  let config = state.settings()
-  let now = albedo_clock.system_ms()
-  case config.enabled {
-    False -> State(..state, accounts: dict.new())
-    True -> {
-      let state = case
-        state.enumerating,
-        now - state.last_enumerated >= config.poll_seconds * 1000
-      {
-        None, True -> enumerate_now(state, now)
-        _, _ -> state
-      }
-      start_due(state, now)
-    }
-  }
-}
-
-/// Account discovery runs off the poller: a refresh may wait on the network.
-/// The attempt is what the cadence counts from, so a discovery that fails
-/// fast never spins.
-fn enumerate_now(state: State, now: Int) -> State {
-  let self = state.self
-  let home = state.home
-  let sources = state.sources
-  let keys = state.keys
-  let pid =
-    process.spawn_unlinked(fn() {
-      process.send(
-        self,
-        Enumerated(process.self(), enumerate(home, sources, keys)),
-      )
-    })
-  let _ = process.monitor(pid)
-  let _ =
-    albedo_clock.send_after(
-      state.self,
-      state.worker_timeout_ms * 5 / 2,
-      WorkerTimedOut(pid),
-    )
-  State(..state, enumerating: Some(pid), last_enumerated: now)
-}
-
-/// New accounts poll at once; an account that is polling now finishes first,
-/// so its readings stay even if the account has since gone.
-fn merged(state: State, targets: List(Watched), now: Int) -> State {
-  let fresh =
-    list.fold(targets, dict.new(), fn(accounts, watched) {
-      let key = key_of(watched.target)
-      let account = case dict.get(state.accounts, key) {
-        Ok(existing) -> Account(..existing, watched:, listed: True)
-        Error(_) -> Account(key, watched, now, 0, None, True)
-      }
-      dict.insert(accounts, key, account)
-    })
-  let accounts =
-    dict.fold(state.accounts, fresh, fn(accounts, key, account) {
-      case dict.has_key(accounts, key), account.polling {
-        False, Some(_) ->
-          dict.insert(accounts, key, Account(..account, listed: False))
-        _, _ -> accounts
-      }
-    })
-  State(..state, accounts: accounts)
-}
-
-fn start_due(state: State, now: Int) -> State {
-  let fetch = state.fetch
-  let database = state.database
-  let self = state.self
-  dict.fold(state.accounts, state, fn(state, key, account) {
-    case account.next_due <= now, account.polling {
-      True, None -> {
-        let watched = account.watched
-        let home = state.home
-        let pid =
-          process.spawn_unlinked(fn() {
-            let #(failed, busy) = run(fetch, database, watched, home)
-            process.send(self, Polled(key, process.self(), failed, busy, now))
-          })
-        let _ = process.monitor(pid)
-        let _ =
-          albedo_clock.send_after(
-            self,
-            state.worker_timeout_ms,
-            WorkerTimedOut(pid),
-          )
-        State(
-          ..state,
-          accounts: dict.insert(
-            state.accounts,
-            key,
-            Account(..account, polling: Some(pid)),
-          ),
-        )
-      }
-      _, _ -> state
-    }
-  })
-}
-
-/// Seconds until an account's next poll: the busy cadence while any limit is
-/// at or above 80 percent or resets within fifteen minutes, the ordinary
-/// cadence otherwise, and after `failures` failed polls in a row a backoff
-/// that doubles six times at most and never waits past an hour.
-pub fn wait_seconds(settings: Settings, failures: Int, busy: Bool) -> Int {
-  case failures, busy {
-    0, True -> settings.busy_poll_seconds
-    0, False -> settings.poll_seconds
-    _, _ ->
-      settings.poll_seconds * int.bitwise_shift_left(1, int.min(failures, 6))
-      |> int.min(3600)
   }
 }
 
@@ -418,93 +328,136 @@ fn finished(
   failed: Bool,
   busy: Bool,
   attempted_at: Int,
+  settings: Settings,
 ) -> State {
-  case dict.get(state.accounts, key) {
-    Error(_) -> state
-    Ok(account) if !account.listed ->
-      State(..state, accounts: dict.delete(state.accounts, key))
-    Ok(account) -> {
-      let failures = case failed {
-        True -> account.failures + 1
-        False -> 0
-      }
-      let wait = wait_seconds(state.settings(), failures, busy)
+  let next =
+    schedule.polled(state.schedule, key, failed, busy, attempted_at, settings)
+  State(
+    ..state,
+    schedule: next,
+    polls: dict.filter(state.polls, fn(_, polling) { polling != key }),
+    watched: case dict.has_key(next.slots, key) {
+      True -> state.watched
+      False -> dict.delete(state.watched, key)
+    },
+  )
+}
+
+fn owns_worker(state: State, pid: process.Pid) -> Bool {
+  state.enumerating == Some(pid) || dict.has_key(state.polls, pid)
+}
+
+/// A worker that crashed or timed out never answers: free its slot, record
+/// why for a poll, and back the account off, so a crashing or hanging feed
+/// cannot wedge the schedule.
+fn fell(
+  state: State,
+  pid: process.Pid,
+  message: String,
+  now: Int,
+  settings: Settings,
+) -> State {
+  case state.enumerating, dict.get(state.polls, pid) {
+    Some(enumerating), _ if enumerating == pid -> {
+      io.println_error("quota account discovery failed: " <> message)
       State(
         ..state,
-        accounts: dict.insert(
-          state.accounts,
-          key,
-          Account(
-            ..account,
-            failures: failures,
-            polling: None,
-            next_due: attempted_at + wait * 1000,
-          ),
-        ),
+        schedule: schedule.enumeration_ended(state.schedule),
+        enumerating: None,
       )
     }
+    _, Ok(key) -> {
+      case dict.get(state.watched, key) {
+        Ok(watched) -> {
+          let _ =
+            record(state.database, watched.target, None, [], Some(message), now)
+          Nil
+        }
+        Error(Nil) -> Nil
+      }
+      finished(state, key, True, False, now, settings)
+    }
+    _, Error(Nil) -> state
   }
 }
 
-/// A spawned poll that crashed never answers `Polled`: free its slot and
-/// back the account off, so a crashing feed cannot wedge the schedule.
-fn owns_worker(state: State, pid: process.Pid) -> Bool {
-  state.enumerating == Some(pid)
-  || list.any(dict.values(state.accounts), fn(account) {
-    account.polling == Some(pid)
-  })
-}
-
-fn fell(state: State, pid: process.Pid, message: String) -> State {
-  case state.enumerating {
-    Some(enumerating) if enumerating == pid -> {
-      io.println_error("quota account discovery failed: " <> message)
-      State(..state, enumerating: None)
-    }
-    _ ->
-      case
-        dict.to_list(state.accounts)
-        |> list.find(fn(entry) { entry.1.polling == Some(pid) })
-      {
-        Error(_) -> state
-        Ok(#(key, account)) -> {
-          let now = albedo_clock.system_ms()
-          record(
-            state.database,
-            account.watched.target,
-            None,
-            [],
-            Some(message),
-            now,
+/// Account discovery and each poll run off the poller: a refresh may wait on
+/// the network. Each worker has a deadline after which it is killed.
+fn run_effect(
+  state: State,
+  effect: schedule.Effect,
+  now: Int,
+  settings: Settings,
+) -> State {
+  let self = state.self
+  case effect {
+    schedule.Enumerate -> {
+      let home = state.home
+      let sources = state.sources
+      let keys = state.keys
+      let pid =
+        process.spawn_unlinked(fn() {
+          process.send(
+            self,
+            Enumerated(process.self(), enumerate(home, sources, keys)),
           )
-          finished(state, key, True, False, now)
+        })
+      let _ = process.monitor(pid)
+      let _ =
+        albedo_clock.send_after(
+          self,
+          state.worker_timeout_ms * 5 / 2,
+          WorkerTimedOut(pid),
+        )
+      State(..state, enumerating: Some(pid))
+    }
+    schedule.Poll(key) ->
+      case dict.get(state.watched, key) {
+        Error(Nil) -> finished(state, key, True, False, now, settings)
+        Ok(watched) -> {
+          let fetch = state.fetch
+          let database = state.database
+          let home = state.home
+          let pid =
+            process.spawn_unlinked(fn() {
+              let #(failed, busy) = run(fetch, database, watched, home)
+              process.send(self, Polled(key, process.self(), failed, busy, now))
+            })
+          let _ = process.monitor(pid)
+          let _ =
+            albedo_clock.send_after(
+              self,
+              state.worker_timeout_ms,
+              WorkerTimedOut(pid),
+            )
+          State(..state, polls: dict.insert(state.polls, pid, key))
         }
       }
   }
 }
 
-/// Replace the timer as deadlines change; generations ignore already-delivered ticks.
-fn retick(state: State) -> actor.Next(State, Message) {
+/// Replace the timer as deadlines change; generations ignore already-delivered
+/// ticks.
+fn retick(state: State, settings: Settings) -> actor.Next(State, Message) {
   let _ = option.map(state.timer, process.cancel_timer)
   let generation = state.generation + 1
-  let timer =
-    albedo_clock.send_after(state.self, tick_delay(state), Tick(generation))
+  let delay =
+    next_delay(
+      settings,
+      albedo_clock.system_ms(),
+      state.schedule.last_enumerated,
+      state.schedule.enumerating,
+      list.map(dict.values(state.schedule.slots), fn(slot) {
+        #(slot.next_due, slot.polling)
+      }),
+    )
+  let timer = albedo_clock.send_after(state.self, delay, Tick(generation))
   actor.continue(State(..state, timer: Some(timer), generation: generation))
 }
 
-fn tick_delay(state: State) -> Int {
-  next_delay(
-    state.settings(),
-    albedo_clock.system_ms(),
-    state.last_enumerated,
-    state.enumerating != None,
-    list.map(dict.values(state.accounts), fn(account) {
-      #(account.next_due, account.polling != None)
-    }),
-  )
-}
-
-/// In-flight work has its own deadline, not an overdue idle-poll deadline.
+/// In-flight work has its own deadline, not an overdue idle-poll deadline:
+/// the soonest idle account or due discovery, at least 250 and at most the
+/// ordinary cadence.
 pub fn next_delay(
   config: Settings,
   now: Int,
@@ -526,22 +479,18 @@ pub fn next_delay(
         True -> idle
         False -> [last_enumerated + config.poll_seconds * 1000, ..idle]
       }
-      let delay = case minimum(due) {
-        None -> config.poll_seconds * 1000
-        Some(when) -> when - now
+      let delay = case list.reduce(due, int.min) {
+        Error(Nil) -> config.poll_seconds * 1000
+        Ok(when) -> when - now
       }
       int.clamp(delay, 250, config.poll_seconds * 1000)
     }
   }
 }
 
-fn minimum(values: List(Int)) -> Option(Int) {
-  list.fold(values, None, fn(best, value) {
-    case best {
-      Some(current) -> Some(int.min(current, value))
-      None -> Some(value)
-    }
-  })
+/// Seconds until an account's next poll; see `quota_schedule.wait_seconds`.
+pub fn wait_seconds(settings: Settings, failures: Int, busy: Bool) -> Int {
+  schedule.wait_seconds(settings, failures, busy)
 }
 
 /// One poll of one account, off the poller: whatever comes back is recorded
@@ -648,7 +597,7 @@ pub fn initialise(database: store.Store) -> Result(Nil, String) {
 
 /// Only readings: one row per limit the report carried, or one row carrying
 /// the report's error when it carried none.
-fn record(
+pub fn record(
   database: store.Store,
   target: Target,
   plan: Option(String),
@@ -805,6 +754,37 @@ fn erlang_rfc3339_to_system_time(
   stamp: String,
   options: List(#(atom.Atom, atom.Atom)),
 ) -> Int
+
+/// The history filter a request's parameters name: every reading, or one
+/// account's limit when provider, account and limit all are given, from
+/// `quota_since` when that is given too. Anything else is refused.
+pub fn filter_from(
+  parameters: List(#(String, String)),
+) -> Result(Filter, String) {
+  case
+    list.key_find(parameters, "quota_provider"),
+    list.key_find(parameters, "quota_account"),
+    list.key_find(parameters, "quota_limit"),
+    list.key_find(parameters, "quota_since")
+  {
+    Ok(provider), Ok(account), Ok(limit_id), Ok(since) ->
+      case parse_rfc3339(since) {
+        Ok(since_ms) -> Ok(Trail(provider, account, limit_id, Some(since_ms)))
+        Error(_) -> Error("invalid quota_since")
+      }
+    Ok(provider), Ok(account), Ok(limit_id), Error(_) ->
+      Ok(Trail(provider, account, limit_id, None))
+    Error(_), Error(_), Error(_), Error(_) -> Ok(Everything)
+    Error(_), Error(_), Error(_), Ok(_) ->
+      Error(
+        "quota_since requires quota_provider, quota_account, and quota_limit",
+      )
+    _, _, _, _ ->
+      Error(
+        "quota_provider, quota_account, and quota_limit must all be provided together",
+      )
+  }
+}
 
 pub fn parse_rfc3339(stamp: String) -> Result(Int, Nil) {
   let opts = [#(atom.create("unit"), atom.create("millisecond"))]

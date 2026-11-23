@@ -71,6 +71,16 @@ func (m ChatModel) sidebarWidth() int {
 	return min(32, room)
 }
 
+// drawnSidebar is the sidebar the frame draws: only one the last layout made
+// room for, so glances that appear between layouts (the suite's activity
+// glance follows history) never widen a row past the terminal.
+func (m ChatModel) drawnSidebar() int {
+	if m.layoutSidebar <= 0 {
+		return 0
+	}
+	return m.sidebarWidth()
+}
+
 // actionLabel is the action row for a call, live from its progress and then
 // from its result, so the row holds the last action until the next begins.
 func actionLabel(progress *daemon.ToolProgress, result *HistoryEntry) string {
@@ -376,20 +386,11 @@ func (m *ChatModel) View() string {
 	pad := strings.Repeat(" ", chatMargin)
 	rows := m.frame.scratch[:0]
 	rows = append(rows, m.header(width), "")
-	for _, n := range m.Notices {
-		if n.Error {
-			rows = append(rows, m.Renderer.errorRow(n.Message))
-		} else {
-			rows = append(rows, DefaultStyles.Faint.Render(n.Message))
-		}
-	}
-	if len(m.Notices) > 0 {
-		rows = append(rows, "")
-	}
+	rows = append(rows, m.noticeRows(width)...)
 
 	rows = append(rows, m.body()...)
-	// one row: a job's command may span lines
-	status := oneLine(m.statusLine())
+	// one row: a job's command may span lines, or run past the width
+	status := ansi.Truncate(oneLine(m.statusLine()), width, "…")
 	// the face trails the text, so its frames never move anything
 	if m.animating() && !m.TurnFailed && !m.Notices.HasError() {
 		face := m.phaseMood().frame(m.moodSeed, m.ProgressFrame, m.Fast)
@@ -445,6 +446,28 @@ func (m *ChatModel) View() string {
 		return overlay(m.frame.content, m.btwPanelView(m.Width, m.Height), m.Width, m.Height)
 	}
 	return m.frame.content
+}
+
+// noticeRows are the notices wrapped to the width, never cut: a notice may
+// hold a command to paste, such as /link add with a path. A blank row follows
+// them. The layout counts these rows (noticeChromeRows).
+func (m ChatModel) noticeRows(width int) []string {
+	if len(m.Notices) == 0 {
+		return nil
+	}
+	var rows []string
+	for _, n := range m.Notices {
+		text := DefaultStyles.Faint.Render(n.Message)
+		if n.Error {
+			text = m.Renderer.errorRow(n.Message)
+		}
+		rows = append(rows, strings.Split(ansi.Hardwrap(ansi.Wrap(text, max(1, width), ""), max(1, width), true), "\n")...)
+	}
+	return append(rows, "")
+}
+
+func (m ChatModel) noticeChromeRows() int {
+	return len(m.noticeRows(m.chatWidth()))
 }
 
 // frameCache holds the pieces of a frame whose rendering costs more than
@@ -604,7 +627,7 @@ func (c *frameCache) glances(m ChatModel) sidebarBlock {
 // sidebarColumn is the glance column as the frame draws it: each row padded to
 // the sidebar's width, or nothing without one.
 func (m ChatModel) sidebarColumn() []string {
-	if m.sidebarWidth() <= 0 {
+	if m.drawnSidebar() <= 0 {
 		return nil
 	}
 	if m.frame != nil {
@@ -630,7 +653,7 @@ func (m *ChatModel) body() []string {
 	if m.dragAnchor == nil && m.frame != nil && m.frame.bodyReady && key.same(m.frame.bodyKey) {
 		return m.frame.body
 	}
-	rows := joinBody(shown.lines(), column, shown.width, m.sidebarWidth())
+	rows := joinBody(shown.lines(), column, shown.width, m.drawnSidebar())
 	if m.dragAnchor != nil {
 		// the selection is in transcript rows; the viewport shows from scrollOffset
 		anchor, head := *m.dragAnchor, m.dragHead

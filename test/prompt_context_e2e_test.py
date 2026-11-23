@@ -4,7 +4,7 @@ import json
 import re
 import unittest
 
-from harness import Albedo, Provider, LOOPBACK_REMOTE, python, text
+from harness import Albedo, Provider, LOOPBACK_REMOTE, python, system_prompt, text
 
 
 def inputs(request):
@@ -12,13 +12,8 @@ def inputs(request):
 
 
 def instructions(request):
-    if "instructions" in request:
-        return request["instructions"]
-    return "\n".join(
-        message["content"]
-        for message in request["messages"]
-        if message.get("role") in {"system", "developer"}
-    )
+    # The system prompt opens the input as a developer or system message.
+    return system_prompt(request)
 
 
 class PromptContextTests(unittest.TestCase):

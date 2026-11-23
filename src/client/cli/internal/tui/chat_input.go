@@ -253,7 +253,7 @@ func (m *ChatModel) handleInput(msg tea.Msg) (tea.Cmd, bool) {
 			}
 			return nil, true
 		}
-		firstRow := 2 + m.Notices.ChromeRows()
+		firstRow := 2 + m.noticeChromeRows()
 		mouse := msg.Mouse()
 		point := func() Point {
 			screen := max(0, min(m.Viewport.Height()-1, mouse.Y-firstRow))
@@ -322,10 +322,10 @@ func (m *ChatModel) handleInput(msg tea.Msg) (tea.Cmd, bool) {
 		}
 		switch {
 		case msg.Err != nil:
-			m.AddError(fmt.Sprintf("Could not paste the image: %v", msg.Err))
+			m.AddError(fmt.Sprintf("Could not paste: %v", msg.Err))
 		case msg.Image == nil:
 		case len(m.Images.referenced(m.TextArea.Value())) >= MaxPromptImages:
-			m.AddError(fmt.Sprintf("A prompt can attach at most %d images.", MaxPromptImages))
+			m.AddError(fmt.Sprintf("A prompt can attach at most %d images and clips.", MaxPromptImages))
 		default:
 			defer m.trackComposerEdit()()
 			m.TextArea.InsertString(m.Images.add(pastedImage{*msg.Image, msg.thumb}))

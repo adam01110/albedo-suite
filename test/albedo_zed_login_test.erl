@@ -779,7 +779,7 @@ login() -> {login, <<"zed">>, <<"Zed">>, <<"browser">>, model, <<"zed">>, {devic
 start(Home) -> start(Home, login()).
 
 start(Home, L) ->
-    Id = albedo_oauth_test_support:identity(),
+    Id = albedo_suite_test_support:identity(),
     {ok, {true, Flow}} = start_identified(Home, Id, <<"zed">>, {some,L}, <<"zed">>),
     {Id, Flow}.
 

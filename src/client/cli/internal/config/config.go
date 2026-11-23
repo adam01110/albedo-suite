@@ -10,13 +10,18 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
+
+	"github.com/spf13/viper"
 )
 
 var providerNameRegex = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`)
 
 // HomeDir returns the albedo configuration directory.
 func HomeDir() string {
-	if env := os.Getenv("ALBEDO_HOME"); env != "" {
+	settings := viper.New()
+	settings.SetEnvPrefix("ALBEDO")
+	settings.AutomaticEnv()
+	if env := settings.GetString("home"); env != "" {
 		abs, err := filepath.Abs(env)
 		if err == nil {
 			return abs

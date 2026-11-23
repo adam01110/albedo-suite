@@ -118,12 +118,13 @@ func (m LoginModel) acceptProfileName() (LoginModel, tea.Cmd) {
 // accounts, so one key can be pinned, rotated, or shared by several profiles.
 // Every other provider keeps its key in the profile itself.
 var keyAccountExtensions = map[string]bool{
-	"openai":         true,
-	"anthropic-api":  true,
-	"opencode-go":    true,
-	"perplexity":     true,
-	"mistral":        true,
-	"github-copilot": true,
+	"openai":           true,
+	"anthropic-api":    true,
+	"opencode-go":      true,
+	"perplexity":       true,
+	"mistral":          true,
+	"github-copilot":   true,
+	"google-ai-studio": true,
 }
 
 // keyAccounts reports whether the draft's extension stores its API keys as
@@ -241,6 +242,13 @@ func (m *LoginModel) saveCredentialSelection() tea.Cmd {
 func (m *LoginModel) chooseCredentialRow(id string) tea.Cmd {
 	if id == anotherAccount {
 		if m.keyAccounts() {
+			if m.Draft.BaseURL == "" {
+				// A new key must be scoped. Offer the canonical setup row's URL,
+				// not a compatible provider's preset for the same extension.
+				p, _ := customProviderByID("add-" + m.Draft.Extension)
+				m.Draft.BaseURL = p.DefaultURL
+				return m.askEndpoint()
+			}
 			return m.askAPIKey()
 		}
 		login, _ := m.signInFor(m.Provider)

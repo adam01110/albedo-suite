@@ -75,11 +75,11 @@ var (
 // named from, and which of them group at all.
 type burstRowsKey struct {
 	workspace string
+	flags     DisplayFlags
 	entries   int
 	evicted   int
 	epoch     int
 	width     int
-	flags     DisplayFlags
 }
 
 // liveRowsKey is what the cached rows of the reply streaming in were

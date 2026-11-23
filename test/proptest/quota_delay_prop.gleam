@@ -3,6 +3,7 @@
 //// account's deadline nor longer than one poll period.
 
 import albedo/accounts/quota
+import albedo/accounts/quota_schedule
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -21,7 +22,7 @@ fn settings() -> qcheck.Generator(quota.Settings) {
     ]),
   )
   use busy <- qcheck.bind(qcheck.bounded_int(1, poll))
-  qcheck.return(quota.Settings(poll, busy, True))
+  qcheck.return(quota_schedule.Settings(poll, busy, True))
 }
 
 fn scenario() -> qcheck.Generator(Case) {

@@ -1323,7 +1323,7 @@ fn parsed(text: String) -> Dynamic {
 @external(erlang, "gleam_stdlib", "identity")
 fn coerce(value: a) -> b
 
-@external(erlang, "albedo_mcp_ownership_test_support", "fake_server")
+@external(erlang, "albedo_suite_test_support", "fake_mcp_server")
 fn fake_server() -> #(String, String)
 
 @external(erlang, "file", "read_file")

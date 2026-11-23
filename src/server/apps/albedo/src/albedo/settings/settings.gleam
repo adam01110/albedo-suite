@@ -970,13 +970,28 @@ fn ui_candidate(
 ) -> Result(Candidate, Refusal) {
   use _ <- result.try(
     fields(patch, [
-      "thinking", "tools", "dismissed_notices", "web_allow", "proxy_allow",
+      "assistant_name", "thinking", "tools", "dismissed_notices", "web_allow",
+      "proxy_allow",
     ]),
   )
   use _ <- result.try(
     dict.to_list(patch)
     |> list.try_each(fn(field) {
       case field.0 {
+        "assistant_name" -> {
+          use name <- result.try(text(field.1, 0, 320))
+          let points = string.to_utf_codepoints(name)
+          case
+            list.length(points) <= 80
+            && list.all(points, fn(cp) {
+              let n = string.utf_codepoint_to_int(cp)
+              n >= 32 && { n < 127 || n > 159 }
+            })
+          {
+            True -> Ok(Nil)
+            False -> Error(invalid())
+          }
+        }
         "dismissed_notices" ->
           strings(field.1, 1000, 512) |> result.replace(Nil)
         "web_allow" | "proxy_allow" ->

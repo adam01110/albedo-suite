@@ -625,7 +625,7 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 			m.TextInput.SetCursor(0)
 			val := cmp.Or(strings.TrimSpace(m.TextInput.Value()), m.Draft.BaseURL)
 			endpoint := ""
-			if p, _ := m.custom(); val != "" || !p.Optional {
+			if val != "" || m.keyAccounts() || !m.optionalKey() {
 				var err error
 				if endpoint, err = config.ValidateEndpoint(val); err != nil {
 					return m.fail(err.Error())
@@ -636,7 +636,7 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 			}
 			m.Draft.BaseURL = endpoint
 			m.Error = ""
-			if m.keyAccounts() {
+			if m.keyAccounts() && !m.Editing {
 				m.Provider = m.Draft.Extension
 				m.CredentialTicks = nil
 				return m, m.chooseCredential()

@@ -1,63 +1,67 @@
 {
-  "harness.py": {
-    "sha256": "c856025bcc9a8d758ed2b5a70d6766db07563a815da542d877c16c72585246f8",
-    "replacements": [
-      [
-        "def prompt_text(request):",
-        "def message_text(item):\n    content = item.get(\"content\", \"\")\n    if isinstance(content, str):\n        return content\n    return \"\".join(part.get(\"text\", \"\") for part in content)\n\n\ndef prompt_text(request):"
-      ],
-      [
-        "str(item.get(\"content\", \"\"))",
-        "message_text(item)"
-      ],
-      [
-        "strip_timestamp(item.get(\"content\", \"\"))",
-        "strip_timestamp(message_text(item))"
-      ]
-    ]
-  },
-  "kernel_detach_test.py": {
-    "sha256": "52a549336f993da14bd65db82d9fa7f8a45153e2e84938e4a157eec2369f416c",
-    "replacements": [
-      [
-        "item[\"content\"] for item in request[\"input\"] if item.get(\"role\") == \"user\"",
-        "harness.message_text(item) for item in request[\"input\"] if item.get(\"role\") == \"user\""
-      ]
-    ]
-  },
-  "repetition_test.py": {
-    "sha256": "941b41b6ebe110c95a4c7fe3c701e9feeefb0fa5dfbe96db370e0e6e85dbd550",
-    "replacements": [
-      [
-        "import difflib",
-        "import difflib\nimport harness"
-      ],
-      [
-        "                item[\"content\"]",
-        "                harness.message_text(item)"
-      ]
-    ]
-  },
-  "image_limits_test.py": {
-    "sha256": "c1ccd9093b30b2ba54b8e482559acdd4e13d52614e1f07cb25fcbff1d146949b",
-    "replacements": [
-      [
-        "                item.get(\"content\")\n",
-        "                harness.message_text(item)\n"
-      ]
-    ]
-  },
-  "history_content_test.py": {
-    "sha256": "49cca0b55df6ea1e099ed8394746f967d9930125d1430f0f5f713ed374dfc252",
-    "replacements": [
-      [
-        "from harness import Albedo, Provider, Reply, exclusive, operation_id, python, text",
-        "import harness\nfrom harness import Albedo, Provider, Reply, exclusive, operation_id, python, text"
-      ],
-      [
-        "                item[\"content\"]\n                for item in ",
-        "                harness.message_text(item)\n                for item in "
-      ]
-    ]
-  }
+ "harness.py": {
+  "sha256": "30f1470b6f05c86b454bcaedc03be0bd9d6be782d043d0d6c3d81785f020b907",
+  "replacements": [
+   [
+    "def prompt_text(request):",
+    "def message_text(item):\n    content = item.get(\"content\", \"\")\n    if isinstance(content, str):\n        return content\n    return \"\".join(part.get(\"text\", \"\") for part in content)\n\n\ndef prompt_text(request):"
+   ],
+   [
+    "str(item.get(\"content\", \"\"))",
+    "message_text(item)"
+   ],
+   [
+    "strip_timestamp(item.get(\"content\", \"\"))",
+    "strip_timestamp(message_text(item))"
+   ],
+   [
+    "        return content if isinstance(content, str) else \"\"",
+    "        return message_text(first)"
+   ]
+  ]
+ },
+ "kernel_detach_test.py": {
+  "sha256": "ec9b70b39b6ccefc016603b60a17f02971d0378d9ac8ac6218c839ba5c569fe8",
+  "replacements": [
+   [
+    "item[\"content\"] for item in request[\"input\"] if item.get(\"role\") == \"user\"",
+    "harness.message_text(item) for item in request[\"input\"] if item.get(\"role\") == \"user\""
+   ]
+  ]
+ },
+ "repetition_test.py": {
+  "sha256": "01feae6e5a13e2512743b0999688fa892949b91bd5482990b7b92e9b5d7be171",
+  "replacements": [
+   [
+    "import unittest\n",
+    "import unittest\n\nimport harness\n"
+   ],
+   [
+    "                item[\"content\"]",
+    "                harness.message_text(item)"
+   ]
+  ]
+ },
+ "image_limits_test.py": {
+  "sha256": "0d75e7d58dd854a5ec781e6577430f211c642b263f8ccfaf2992dd6462cac21b",
+  "replacements": [
+   [
+    "                item.get(\"content\")\n",
+    "                harness.message_text(item)\n"
+   ]
+  ]
+ },
+ "history_content_test.py": {
+  "sha256": "e5b16db8671e01d148d43162bcabedf025a2621d5b5a98d160640238db091b99",
+  "replacements": [
+   [
+    "from harness import Albedo, Provider, Reply, exclusive, operation_id, python, text",
+    "import harness\nfrom harness import Albedo, Provider, Reply, exclusive, operation_id, python, text"
+   ],
+   [
+    "                item[\"content\"]\n                for item in ",
+    "                harness.message_text(item)\n                for item in "
+   ]
+  ]
+ }
 }

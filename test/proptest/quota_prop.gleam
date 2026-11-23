@@ -15,6 +15,7 @@
 //// an hour, and a tick that never fires early or later than the cadence.
 
 import albedo/accounts/quota
+import albedo/accounts/quota_schedule
 import albedo/storage/core_store
 import albedo_ext_zed/quota as zed_quota
 import albedo_protect
@@ -373,7 +374,7 @@ fn schedule() -> qcheck.Generator(Schedule) {
 /// up to six doublings and never passes an hour.
 fn wait_seconds(scenario: Schedule) -> Nil {
   let settings =
-    quota.Settings(
+    quota_schedule.Settings(
       scenario.poll_seconds,
       int.min(scenario.busy_poll_seconds, scenario.poll_seconds),
       True,
@@ -439,7 +440,7 @@ fn deadlines() -> qcheck.Generator(Deadlines) {
     ),
   )
   Deadlines(
-    quota.Settings(times.0, int.min(60, times.0), True),
+    quota_schedule.Settings(times.0, int.min(60, times.0), True),
     times.1,
     times.2,
     enumerating,

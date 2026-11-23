@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"albedo/cli/internal/daemon/protocol"
+	"albedo/cli/internal/testwire"
 )
 
 func TestToolImagesReadAuthenticatedBoundedResource(t *testing.T) {
@@ -18,9 +19,10 @@ func TestToolImagesReadAuthenticatedBoundedResource(t *testing.T) {
 					t.Errorf("wrong image request: %s %s auth %q", r.Method, r.URL, r.Header.Get("Authorization"))
 				}
 				if failure == "missing" {
-					http.Error(w, `{"code":"content_unknown"}`, http.StatusNotFound)
+					testwire.WriteProblem(w, http.StatusNotFound, "content_unknown", "no such image")
 					return
 				}
+				w.Header().Set("Content-Type", "image/png")
 				if failure == "oversized" {
 					_, _ = w.Write(bytes.Repeat([]byte{'x'}, MaxPreviewImageBytes+1))
 					return

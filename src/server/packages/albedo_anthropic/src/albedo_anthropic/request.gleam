@@ -3,6 +3,7 @@
 //// Claude recorded; `fields` replays natively only under an explicit detail
 //// tag. Routes own their URL, authentication and headers.
 
+import albedo_anthropic/content
 import albedo_anthropic/schema
 import albedo_model.{
   type Error, type Input, type Request, Assistant, InvalidRequest, Replay,
@@ -20,7 +21,7 @@ import gleam/string
 import gleam/string_tree.{type StringTree}
 
 type Message {
-  Message(role: String, blocks: List(Json))
+  Message(role: String, blocks: List(content.Block))
 }
 
 /// Encodes `request` into a portable Anthropic Messages JSON body. A replayed
@@ -95,14 +96,17 @@ pub fn cache_marks(
     _ -> []
   }
   let tail = case list.last(request.input) {
-    // A replayed assistant turn is history to read, not a breakpoint to write.
-    Ok(Replay(_)) | Error(Nil) -> []
-    Ok(_) -> [
-      types.CacheMark(
-        types.InputSpan(list.length(request.input) - 1),
-        ttl_seconds,
-      ),
-    ]
+    Ok(input) ->
+      case content.marks_tail(input) {
+        True -> [
+          types.CacheMark(
+            types.InputSpan(list.length(request.input) - 1),
+            ttl_seconds,
+          ),
+        ]
+        False -> []
+      }
+    Error(Nil) -> []
   }
   list.flatten([tools, shared, system, tail])
 }
@@ -150,7 +154,9 @@ fn prompt_fields(
   )
   use messages <- result.try(
     list.try_fold(
-      mark_last(request.input, fn(input, last) { #(input, last) }),
+      mark_last(request.input, fn(input, last) {
+        #(input, last && content.marks_tail(input))
+      }),
       [],
       fn(acc, pair) {
         add(
@@ -172,7 +178,10 @@ fn prompt_fields(
     |> list.map(fn(message) {
       json.object([
         #("role", json.string(message.role)),
-        #("content", json.preprocessed_array(message.blocks)),
+        #(
+          "content",
+          json.preprocessed_array(list.map(message.blocks, content.to_json)),
+        ),
       ])
     })
   let fields = [
@@ -217,32 +226,39 @@ fn add(
   model: String,
   detail_tag: Option(String),
 ) -> Result(List(Message), Error) {
+  use #(role, blocks) <- result.map(input_blocks(input, model, detail_tag))
+  push(acc, role, content.mark(blocks, option.map(mark, cache_control)))
+}
+
+/// The role and blocks `input` is sent as.
+fn input_blocks(
+  input: Input,
+  model: String,
+  detail_tag: Option(String),
+) -> Result(#(String, List(content.Block)), Error) {
   case input {
-    User(text) -> Ok(push(acc, "user", [text_block(text, mark)]))
-    Assistant(text) -> Ok(push(acc, "assistant", [text_block(text, mark)]))
-    UserImage(text, images) -> {
-      let count = list.length(images)
-      let image_blocks =
-        list.index_map(images, fn(image, index) {
-          image_block(image, case mark {
-            Some(seconds) if index == count - 1 -> Some(seconds)
-            _ -> None
-          })
-        })
-      let blocks = case text {
-        "" -> image_blocks
-        _ -> [text_block(text, None), ..image_blocks]
-      }
-      Ok(push(acc, "user", blocks))
-    }
+    User(text) -> Ok(#("user", content.text(text)))
+    Assistant(text) -> Ok(#("assistant", content.text(text)))
+    UserImage(text, images) ->
+      Ok(#(
+        "user",
+        list.append(content.text(text), list.map(images, image_block)),
+      ))
     ToolOutput(id, output, images) ->
-      Ok(push(acc, "user", [tool_result_block(id, output, images, mark)]))
+      Ok(
+        #("user", [
+          content.tool_result(
+            id,
+            list.append(content.text(output), list.map(images, image_block)),
+          ),
+        ]),
+      )
     Replay(item) -> {
       use <- bool.guard(
         types.replay_protocol(item) == types.Responses,
         Error(InvalidRequest("cannot replay output across protocols")),
       )
-      use message <- result.try(
+      use message <- result.map(
         types.inspect_item(
           item,
           replay.message_decoder(case detail_tag {
@@ -266,16 +282,13 @@ fn add(
         Some(blocks) -> blocks
         None ->
           list.append(
-            case message.text {
-              "" -> []
-              text -> [text_block(text, None)]
-            },
+            content.text(message.text),
             list.map(message.calls, fn(call) {
               tool_use_block(call.id, call.name, call.arguments)
             }),
           )
       }
-      Ok(push(acc, "assistant", blocks))
+      #("assistant", blocks)
     }
   }
 }
@@ -310,11 +323,11 @@ pub fn native_blocks(
   text: String,
   calls: List(types.ToolCall),
   wire_name: fn(String) -> String,
-) -> Option(List(Json)) {
+) -> Option(List(content.Block)) {
   case details {
     [#(original, [_, ..] as blocks), ..] if original == model ->
       case native_matches(blocks, text, calls, wire_name) {
-        True -> Some(list.map(blocks, types.encode_value))
+        True -> Some(list.flat_map(blocks, content.recorded))
         False -> None
       }
     _ -> None
@@ -380,7 +393,11 @@ fn native_matches(
 
 /// Adjacent turns of one role merge: Anthropic rejects back-to-back messages
 /// of the same role, and a run of tool results arrives as separate inputs.
-fn push(acc: List(Message), role: String, blocks: List(Json)) -> List(Message) {
+fn push(
+  acc: List(Message),
+  role: String,
+  blocks: List(content.Block),
+) -> List(Message) {
   case blocks, acc {
     [], _ -> acc
     _, [Message(last, previous), ..rest] if last == role -> [
@@ -391,28 +408,21 @@ fn push(acc: List(Message), role: String, blocks: List(Json)) -> List(Message) {
   }
 }
 
-/// A text block, carrying a cache breakpoint when `mark` names its lease.
-fn text_block(text: String, mark: Option(Int)) -> Json {
-  json.object([
-    #("type", json.string("text")),
-    #("text", json.string(text)),
-    ..cache_field(mark)
-  ])
-}
-
 /// The `system` field: one string, or, when the request marks its cache, the
 /// blocks whose breakpoints `cache_marks` reports.
 fn system_field(request: Request, ttl: Option(Int)) -> Option(Json) {
   case ttl, request.instructions {
     Some(seconds), Some(text) if text != "" ->
       Some(
-        json.preprocessed_array(case types.split_instructions(request) {
-          Some(#(shared, rest)) -> [
-            text_block(shared, Some(seconds)),
-            text_block(rest, Some(seconds)),
-          ]
-          None -> [text_block(text, Some(seconds))]
-        }),
+        case types.split_instructions(request) {
+          Some(#(shared, rest)) -> [shared, rest]
+          None -> [text]
+        }
+        |> list.flat_map(fn(part) {
+          content.mark(content.text(part), Some(cache_control(seconds)))
+        })
+        |> list.map(content.to_json)
+        |> json.preprocessed_array,
       )
     _, Some(text) if text != "" -> Some(json.string(text))
     _, _ -> None
@@ -424,20 +434,19 @@ fn system_field(request: Request, ttl: Option(Int)) -> Option(Json) {
 /// is sent only where a route honours it.
 fn cache_field(mark: Option(Int)) -> List(#(String, Json)) {
   case mark {
+    Some(seconds) -> [cache_control(seconds)]
     None -> []
-    Some(seconds) -> [
-      #(
-        "cache_control",
-        json.object(case seconds >= 3600 {
-          True -> [
-            #("type", json.string("ephemeral")),
-            #("ttl", json.string("1h")),
-          ]
-          False -> [#("type", json.string("ephemeral"))]
-        }),
-      ),
-    ]
   }
+}
+
+fn cache_control(seconds: Int) -> #(String, Json) {
+  #(
+    "cache_control",
+    json.object(case seconds >= 3600 {
+      True -> [#("type", json.string("ephemeral")), #("ttl", json.string("1h"))]
+      False -> [#("type", json.string("ephemeral"))]
+    }),
+  )
 }
 
 /// Maps a list, telling the mapper when it is holding the final item.
@@ -449,55 +458,36 @@ fn mark_last(items: List(a), mapper: fn(a, Bool) -> b) -> List(b) {
   }
 }
 
-fn image_block(image: types.Image, mark: Option(Int)) -> Json {
+fn image_block(image: types.Image) -> content.Block {
   let #(mime_type, _, _, _) = types.image_meta(image)
-  json.object([
-    #("type", json.string("image")),
-    #(
-      "source",
-      json.object([
-        #("type", json.string("base64")),
-        #("media_type", json.string(mime_type)),
-        #("data", types.base64_string(types.image_data(image))),
-      ]),
-    ),
-    ..cache_field(mark)
-  ])
+  content.image(
+    json.object([
+      #("type", json.string("base64")),
+      #("media_type", json.string(mime_type)),
+      #("data", types.base64_string(types.image_data(image))),
+    ]),
+  )
 }
 
-/// Builds a native tool call with the supplied wire name unchanged.
-pub fn tool_use_block(id: String, name: String, arguments: String) -> Json {
-  let input =
-    json.parse(arguments, decode.dynamic)
-    |> result.map(types.encode_value)
-    |> result.unwrap(json.object([]))
-  json.object([
-    #("type", json.string("tool_use")),
-    #("id", json.string(id)),
-    #("name", json.string(name)),
-    #("input", input),
-  ])
-}
-
-fn tool_result_block(
+/// Builds a native tool call with the supplied wire name unchanged. Arguments
+/// that are not a JSON object, which a provider sent and the tool refused,
+/// replay as empty input: Messages takes only an object, and would refuse
+/// every later request that replays them.
+pub fn tool_use_block(
   id: String,
-  output: String,
-  images: List(types.Image),
-  mark: Option(Int),
-) -> Json {
-  let content = case output, images {
-    "", [] -> [text_block("", None)]
-    _, _ -> [
-      text_block(output, None),
-      ..list.map(images, fn(image) { image_block(image, None) })
-    ]
+  name: String,
+  arguments: String,
+) -> content.Block {
+  let input = case
+    json.parse(arguments, decode.dict(decode.string, decode.dynamic))
+  {
+    Ok(_) ->
+      json.parse(arguments, decode.dynamic)
+      |> result.map(types.encode_value)
+      |> result.unwrap(json.object([]))
+    Error(_) -> json.object([])
   }
-  json.object([
-    #("type", json.string("tool_result")),
-    #("tool_use_id", json.string(id)),
-    #("content", json.preprocessed_array(content)),
-    ..cache_field(mark)
-  ])
+  content.tool_use(id, name, input)
 }
 
 fn tool_block(tool: types.Tool, mark: Option(Int)) -> Json {

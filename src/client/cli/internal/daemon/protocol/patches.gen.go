@@ -349,6 +349,9 @@ func (p SessionPatch) MarshalJSON() ([]byte, error) {
 }
 func (p UISettingsPatch) MarshalJSON() ([]byte, error) {
 	fields := map[string]any{}
+	if p.AssistantName.present {
+		fields["assistant_name"] = p.AssistantName
+	}
 	if p.DismissedNotices.present {
 		fields["dismissed_notices"] = p.DismissedNotices
 	}

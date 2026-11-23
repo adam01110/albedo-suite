@@ -176,6 +176,7 @@ pub fn encode(
       0,
       False,
       tail,
+      0,
     )
   use history <- result.try(case tail {
     0 ->

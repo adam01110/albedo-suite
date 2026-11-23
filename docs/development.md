@@ -290,10 +290,18 @@ NUR. Do not maintain a second pin history here. Lazy MCP uses upstream's native
 client, and Zed uses native transport method selection.
 
 The suite packages ship the CLI and daemon without building or bundling the
-web UI. There is no `albedo-web` output or packaged `ALBEDO_WEB_DIST` default.
-Upstream's web-serving commands remain, but browser assets are not supplied.
-`checks.package-layout` verifies that neither package's runtime closure includes
-an `albedo-web` derivation. No upstream web source is replaced.
+web UI or the Photon iMessage bridge: they override NUR's `albedo-git` with
+`withWeb = false` and `withPhoton = false`. There is no `albedo-web` output or
+packaged `ALBEDO_WEB_DIST` default, and `albedo-photon` is not on PATH.
+Upstream's web-serving and `photon` commands remain, but their runtimes are not
+supplied. `checks.package-layout` verifies that neither package's runtime
+closure includes an `albedo-web` or `albedo-photon` derivation. No upstream web
+source is replaced.
+
+The client builds upstream's component commands (`albedo`, `albedo-acp`,
+`albedo-server`, `albedo-tui`, `albedo-web`) into `libexec/albedo`; `albedo`
+execs its siblings from there. The package-layout check compares every
+launcher with the E2E package.
 
 ## Automated sparse upstream updates
 

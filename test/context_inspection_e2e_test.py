@@ -4,7 +4,7 @@ import json
 import threading
 import unittest
 
-from harness import Albedo, Provider, exclusive, python, text, wait_until
+from harness import Albedo, Provider, exclusive, python, system_prompt, text, wait_until
 
 
 # exclusive: holds a provider reply open longer than the kernel's rest timer
@@ -69,7 +69,7 @@ class ContextInspectionTests(unittest.TestCase):
         )
         with page as response:
             first = json.load(response)["text"]
-        self.assertTrue(sent["instructions"].startswith(first))
+        self.assertTrue(system_prompt(sent).startswith(first))
 
     def test_a_restarted_daemon_rebuilds_the_last_request(self):
         self.release.set()

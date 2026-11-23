@@ -191,12 +191,17 @@ def in_login_shell(script: str) -> str:
     # reading from its open handle, and the exec below leaves no process behind
     # whose command line still holds it.
     login = f'rm -f "$0"; exec 1>&3 2>&4 3>&- 4>&-; {script}'
+    # A heredoc ends at its delimiter on a line of its own, so the script's
+    # own text must not hold one; extend the delimiter until it does not.
+    delimiter = "ALBEDO-REMOTE"
+    while re.search(f"^{re.escape(delimiter)}$", script, re.MULTILINE):
+        delimiter += "-x"
     outer = (
         'f=$(mktemp "${TMPDIR:-/tmp}/albedo-remote-XXXXXX" 2>/dev/null) || exit 1\n'
         "trap 'rm -f -- \"$f\"' EXIT HUP INT TERM\n"
-        "cat > \"$f\" <<'ALBEDO-REMOTE' || exit 1\n"
+        f"cat > \"$f\" <<'{delimiter}' || exit 1\n"
         f"{login}\n"
-        "ALBEDO-REMOTE\n"
+        f"{delimiter}\n"
         "exec 3>&1 4>&2 1>/dev/null 2>&1\n"
         'exec "${SHELL:-/bin/sh}" -l -c "/bin/sh $f"\n'
     )
@@ -330,7 +335,13 @@ def _shipped(info: tarfile.TarInfo) -> tarfile.TarInfo | None:
         return None
     parts = info.name.split("/")
     skipped = any(p == "__pycache__" or p.startswith(".") and p != "." for p in parts)
-    return None if skipped else info
+    if skipped:
+        return None
+    if info.isdir():
+        # Nix store directories are 0555. The remote owner must be able to
+        # rename the extracted root and clean up a losing concurrent stage.
+        info.mode |= 0o700
+    return info
 
 
 def archive() -> bytes:
@@ -628,7 +639,36 @@ def announce(step: str) -> None:
     print(json.dumps({"step": step}), flush=True)
 
 
+def fetch_snapshot(target: str, source: str, archive: str, digest: str) -> None:
+    """Copy the original from an SSH kernel before retiring its run directory."""
+    if re.fullmatch("[0-9a-f]{64}", digest) is None:
+        raise ValueError("invalid snapshot digest")
+    original = os.path.join(source + ".originals", digest + ".state")
+    os.makedirs(archive, mode=0o700, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(dir=archive, prefix=".copy-")
+    try:
+        with os.fdopen(fd, "w+b") as out:
+            subprocess.run(
+                [*base(target), target, "cat < " + shlex.quote(original)],
+                stdin=subprocess.DEVNULL,
+                stdout=out,
+                check=True,
+                timeout=STAGE_TIMEOUT,
+                env=env(target),
+            )
+            out.seek(0)
+            if hashlib.file_digest(out, "sha256").hexdigest() != digest:
+                raise ValueError("incomplete or changed remote snapshot")
+        os.replace(temporary, os.path.join(archive, digest + ".state"))
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
 def main(argv: list[str]) -> int:
+    if len(argv) == 6 and argv[1] == "fetch-snapshot":
+        fetch_snapshot(argv[2], argv[3], argv[4], argv[5])
+        return 0
     if len(argv) == 3 and argv[1] == "probe":
         print(json.dumps(probe(argv[2], announce)))
         return 0

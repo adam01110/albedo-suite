@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"albedo/cli/internal/config"
+	"albedo/cli/internal/testwire"
 )
 
 func TestProviderAvailabilityTogglePatchesOnlyEnabledWithValidator(t *testing.T) {
@@ -117,7 +118,7 @@ func providersDaemon(t *testing.T) (LoginModel, <-chan providerPatch) {
 	patches := make(chan providerPatch, 4)
 	conn := commandTestConnection(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPatch || r.URL.Path != "/settings/providers" {
-			w.WriteHeader(http.StatusNotFound)
+			testwire.WriteProblem(w, http.StatusServiceUnavailable, "unavailable", "not served by the test")
 			return
 		}
 		data, _ := io.ReadAll(r.Body)
@@ -126,9 +127,7 @@ func providersDaemon(t *testing.T) (LoginModel, <-chan providerPatch) {
 			t.Errorf("patch body is not JSON: %s", data)
 		}
 		patches <- providerPatch{query: r.URL.RawQuery, body: body}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusConflict)
-		_, _ = w.Write([]byte(`{"code":"profile_exists","message":"refused by the test"}`))
+		testwire.WriteProblem(w, http.StatusConflict, "profile_exists", "refused by the test")
 	})
 	m := loginModel(120, 30)
 	m.Conn = conn

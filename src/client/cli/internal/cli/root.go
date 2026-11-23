@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"albedo/cli/internal/app"
+	"albedo/cli/internal/component"
 	"albedo/cli/internal/daemon"
 	"albedo/cli/internal/localdaemon"
 	"albedo/cli/internal/storage"
@@ -48,16 +49,35 @@ type Streams struct {
 
 // Execute uses a fresh command tree so flags never survive another invocation.
 func Execute(ctx context.Context, args []string, deps Dependencies, streams Streams) error {
+	return ExecuteComponent(ctx, NewRoot, args, deps, streams)
+}
+
+func ExecuteComponent(ctx context.Context, command func(Dependencies) *cobra.Command, args []string, deps Dependencies, streams Streams) error {
 	output, errorOutput := &checkedWriter{Writer: streams.Out}, &checkedWriter{Writer: streams.Err}
 	if deps.Terminal != nil {
 		invocationTerminal := *deps.Terminal
 		invocationTerminal.In, invocationTerminal.Out, invocationTerminal.Err = streams.In, preserveFile(output), preserveFile(errorOutput)
 		deps.Terminal = &invocationTerminal
 	}
-	root := NewRoot(deps)
+	root := command(deps)
+	root.SilenceUsage = true
+	root.SilenceErrors = true
+	root.CompletionOptions.DisableDefaultCmd = true
 	root.SetIn(streams.In)
 	root.SetOut(output)
 	root.SetErr(errorOutput)
+	if len(args) > 2 && (args[0] == cobra.ShellCompRequestCmd || args[0] == cobra.ShellCompNoDescRequestCmd) {
+		if topic, _, err := root.Find(args[1:2]); err == nil && topic.DisableFlagParsing {
+			role, forwarded := companionArgs(topic.Name(), args[2:])
+			return component.Exec(role, append([]string{args[0]}, forwarded...))
+		}
+	}
+	// Let each companion render its own help for both Cobra help spellings.
+	if len(args) > 1 && args[0] == "help" {
+		if topic, _, err := root.Find(args[1:]); err == nil && topic.DisableFlagParsing {
+			args = append(slices.Clone(args[1:]), "--help")
+		}
+	}
 	root.SetArgs(args)
 	err := root.ExecuteContext(ctx)
 	if outputErr := output.Err(); outputErr != nil && !errors.Is(err, outputErr) {
@@ -106,12 +126,29 @@ func preserveFile(writer *checkedWriter) io.Writer {
 	return writer
 }
 
+func WebRoot(deps Dependencies) *cobra.Command {
+	cmd := newWeb(deps)
+	cmd.Use = "albedo-web"
+	return cmd
+}
+func ACPRoot(deps Dependencies) *cobra.Command {
+	cmd := acpCommand(deps.Application)
+	cmd.Use = "albedo-acp"
+	return cmd
+}
+func TUIRoot(deps Dependencies) *cobra.Command {
+	cmd := &cobra.Command{Use: "albedo-tui", Short: "open the terminal client", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+		return open(cmd, deps, app.OpenOptions{Workspace: deps.Workspace})
+	}}
+	cmd.AddCommand(newOpen(deps), newResume(deps), newLogin(deps))
+	return cmd
+}
 func NewRoot(deps Dependencies) *cobra.Command {
 	var prompt, session, model, rawWindow, cyberAccess string
 	var timeout time.Duration
 	root := &cobra.Command{Use: "albedo", Short: "persistent coding sessions", Args: cobra.NoArgs, SilenceErrors: true, SilenceUsage: true}
 	root.CompletionOptions.DisableDefaultCmd = true
-	root.AddCommand(acpCommand(deps.Application))
+	root.AddCommand(dispatch("acp", "serve Agent Client Protocol over stdio"), dispatch("web", "serve the browser client"), dispatch("tui", "open the terminal client"))
 	root.Flags().StringVarP(&prompt, "prompt", "p", "", "create a session in cwd and wait for its reply")
 	root.Flags().StringVarP(&session, "session", "s", "", "send the prompt to an existing session")
 	root.Flags().StringVarP(&model, "model", "m", "", "model id or provider/model; requires --prompt")
@@ -125,7 +162,7 @@ func NewRoot(deps Dependencies) *cobra.Command {
 					return fmt.Errorf("--%s requires --prompt", name)
 				}
 			}
-			return open(cmd, deps, app.OpenOptions{Workspace: deps.Workspace})
+			return component.Exec("tui", nil)
 		}
 		access, err := parseCyberAccess(cmd, cyberAccess)
 		if err != nil {
@@ -151,8 +188,20 @@ func NewRoot(deps Dependencies) *cobra.Command {
 		_, err = fmt.Fprintln(cmd.OutOrStdout(), result.Answer)
 		return err
 	}
-	root.AddCommand(newOpen(deps), newResume(deps), newSessions(deps), newModels(deps), newSend(deps), newStop(deps), newDaemon(deps), newStorage(deps), newLogin(deps), newWeb(deps), newProxy(deps))
+	root.AddCommand(newPhoton(deps), dispatch("new", "start a fresh session"), dispatch("resume", "reopen a session"), newSessions(deps), newModels(deps), newSend(deps), newStop(deps), newDaemon(deps), newStorage(deps), dispatch("login", "set up a model provider in a terminal"), newProxy(deps))
 	return root
+}
+func dispatch(name, description string) *cobra.Command {
+	return &cobra.Command{Use: name, Short: description, DisableFlagParsing: true, RunE: func(_ *cobra.Command, args []string) error {
+		role, args := companionArgs(name, args)
+		return component.Exec(role, args)
+	}}
+}
+func companionArgs(name string, args []string) (string, []string) {
+	if name == "new" || name == "resume" || name == "login" {
+		return "tui", append([]string{name}, args...)
+	}
+	return name, args
 }
 func open(cmd *cobra.Command, deps Dependencies, options app.OpenOptions) error {
 	options.Terminal = deps.Terminal.Capable

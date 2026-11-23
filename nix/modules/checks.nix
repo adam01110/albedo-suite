@@ -183,6 +183,8 @@
     assert !(suitePackages ? albedo-web);
     assert !(runtime ? web);
     assert !(suitePackages.albedo-patched ? web);
+    assert !(runtime ? photon);
+    assert !(suitePackages.albedo-patched ? photon);
       runCommand "albedo-package-layout" {} ''
         test -f ${runtime}/lib/albedo/albedo/priv/python/albedo_formatter.py
         test -f ${runtime}/lib/albedo/albedo/priv/python/albedo_lsp.py
@@ -193,15 +195,24 @@
         # The python check tests this tree before the package exists.
         diff -r -x __pycache__ ${pythonSources} ${runtime}/lib/albedo/albedo/priv/python
         # The E2E checks run the runtime's files: the runtime adds only suite
-        # notices, and its launcher names the noticed components.
-        sed -e 's|${runtime.client}|${e2ePackage.client}|g' -e 's|${runtime.server}|${e2ePackage.server}|g' ${runtime}/bin/albedo | diff - ${e2ePackage}/bin/albedo
+        # notices, and its launchers name the noticed components.
+        launchers=(albedo albedo-acp albedo-server albedo-tui albedo-web)
+        : >"$TMPDIR/launchers.diff"
+        for name in "''${launchers[@]}"; do
+          sed -e 's|${runtime.client}|${e2ePackage.client}|g' -e 's|${runtime.server}|${e2ePackage.server}|g' ${runtime}/bin/$name | cmp - ${e2ePackage}/bin/$name
+          echo "Files ${runtime}/bin/$name and ${e2ePackage}/bin/$name differ" >>"$TMPDIR/launchers.diff"
+        done
         diff -rq ${runtime} ${e2ePackage} >"$TMPDIR/e2e-package.diff" || (($? == 1))
-        if grep -Fvx "Files ${runtime}/bin/albedo and ${e2ePackage}/bin/albedo differ" "$TMPDIR/e2e-package.diff" | grep -v "^Only in ${runtime}/share/doc/albedo-suite: "; then
+        if grep -Fvxf "$TMPDIR/launchers.diff" "$TMPDIR/e2e-package.diff" | grep -v "^Only in ${runtime}/share/doc/albedo-suite: "; then
           echo "The E2E package must match the runtime outside suite notices" >&2
           exit 1
         fi
         if grep -E '/[^/]*-albedo-web(-|$)' ${pkgs.closureInfo {rootPaths = [runtime suitePackages.albedo-patched];}}/store-paths; then
           echo "Suite runtime closure must not include the web UI" >&2
+          exit 1
+        fi
+        if grep -E '/[^/]*-albedo-photon(-|$)' ${pkgs.closureInfo {rootPaths = [runtime suitePackages.albedo-patched];}}/store-paths; then
+          echo "Suite runtime closure must not include the iMessage bridge" >&2
           exit 1
         fi
         touch $out

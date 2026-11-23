@@ -133,6 +133,7 @@ func (m *AppModel) newChatModel(session *daemon.Session) ChatModel {
 		chat.pendingContinuations = maps.Clone(pending.continuations)
 		delete(m.pendingBySession, session.ID)
 	}
+	chat.Flags.AssistantName = m.UI.AssistantName
 	chat.Flags.Thinking = m.UI.Thinking
 	chat.Flags.Tools = m.UI.Tools
 	chat.Notices = slices.Clone(m.Notices)
@@ -436,9 +437,12 @@ func (m *AppModel) Update(msg tea.Msg) (model tea.Model, resultCmd tea.Cmd) {
 
 	case WebhooksPageDoneMsg, DiscordPageDoneMsg, ExtensionPickerDoneMsg,
 		TreeCancelMsg, ContextDoneMsg, CapabilityPageDoneMsg, PageCancelMsg,
-		QuotaCancelMsg, UsageCancelMsg, ConfigPageDoneMsg:
+		QuotaCancelMsg, UsageCancelMsg:
 		m.State = AppStateChat
 		return m, nil
+	case ConfigPageDoneMsg:
+		m.State = AppStateChat
+		return m, m.refreshSettingsCmd()
 
 	case ExtensionPickerChangedMsg:
 		m.CatalogGen++

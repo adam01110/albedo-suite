@@ -77,10 +77,14 @@
     meta.mainProgram = "albedo";
     paths = [cfg.package];
     nativeBuildInputs = [makeWrapper];
+    # The component commands can start on their own, so each gets the runtime.
     postBuild = ''
-      wrapProgram $out/bin/albedo \
-        --set ALBEDO_HOME ${escapeShellArg cfg.home} \
-        ${escapeShellArgs (lib.concatLists (mapAttrsToList (name: value: ["--set" name value]) cfg.environment))}
+      for name in albedo albedo-{acp,server,tui,web}; do
+        [[ -e $out/bin/$name ]] || continue
+        wrapProgram $out/bin/$name \
+          --set ALBEDO_HOME ${escapeShellArg cfg.home} \
+          ${escapeShellArgs (lib.concatLists (mapAttrsToList (name: value: ["--set" name value]) cfg.environment))}
+      done
     '';
   };
 in {

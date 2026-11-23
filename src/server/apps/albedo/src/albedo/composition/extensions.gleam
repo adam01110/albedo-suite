@@ -18,6 +18,7 @@ import albedo_ext_files
 import albedo_ext_formatter/extension as formatter
 import albedo_ext_git
 import albedo_ext_github_copilot
+import albedo_ext_google_ai_studio
 import albedo_ext_hooks
 import albedo_ext_imagegen
 import albedo_ext_instructions
@@ -37,6 +38,7 @@ import albedo_ext_opencode_zen
 import albedo_ext_paperclips
 import albedo_ext_perplexity
 import albedo_ext_persistent_agent
+import albedo_ext_photon
 import albedo_ext_proxy
 import albedo_ext_remote
 import albedo_ext_rolling
@@ -104,6 +106,7 @@ pub fn declared() -> Config {
       albedo_ext_anthropic_api.extension(),
       albedo_ext_claude.extension(),
       albedo_ext_vertex.extension(),
+      albedo_ext_google_ai_studio.extension(),
       // Ahead of models.dev: its `perplexity-agent` namespace lists a staler
       // catalog than the Agent API's own /models, and a catalog that answers
       // first is the one the picker shows.
@@ -136,6 +139,7 @@ pub fn declared() -> Config {
       albedo_ext_proxy.extension(),
       albedo_ext_webhooks.extension(),
       albedo_ext_discord.extension(),
+      albedo_ext_photon.extension(),
       albedo_ext_hooks.extension(),
       albedo_ext_warm.extension(),
       albedo_ext_exa.extension(),
@@ -146,10 +150,10 @@ pub fn declared() -> Config {
       "run", "work", "mail", "jj", "git", "worktrees", "agents", "schedule",
       "files", "memory", "links", "instructions", "commands", "skills",
       "paperclips", "artifacts", "models", "openai", "codex", "antigravity",
-      "opencode-go", "opencode-zen", "bedrock", "claude", "vertex", "rolling",
-      "snapcompact-memory", "lcm-memory", "notes", "remote", "browser", "warm",
-      "exa", "perplexity", "mistral", "github-copilot", "web-search",
-      "editor-mcp", "anthropic-api", "zed",
+      "opencode-go", "opencode-zen", "bedrock", "claude", "vertex",
+      "google-ai-studio", "rolling", "snapcompact-memory", "lcm-memory", "notes",
+      "remote", "browser", "warm", "exa", "perplexity", "mistral",
+      "github-copilot", "web-search", "editor-mcp", "anthropic-api", "zed",
     ],
   )
 }

@@ -320,7 +320,7 @@ fn add(
       Ok(case sibling, images {
         True, [_, ..] ->
           push(history, "user", [
-            text_part("Tool result image:"),
+            text_part(types.attached_label(images)),
             ..list.map(images, inline_part)
           ])
         _, _ -> history
@@ -420,8 +420,14 @@ fn text_part(text: String) -> Json {
   json.object([#("text", json.string(text))])
 }
 
-fn inline_part(image: types.Image) -> Json {
+pub fn inline_part(image: types.Image) -> Json {
   let #(mime_type, _, _, _) = types.image_meta(image)
+  let sampling = case types.clip_fps(image) {
+    Some(fps) -> [
+      #("videoMetadata", json.object([#("fps", json.float(fps))])),
+    ]
+    None -> []
+  }
   json.object([
     #(
       "inlineData",
@@ -430,5 +436,6 @@ fn inline_part(image: types.Image) -> Json {
         #("data", types.base64_string(types.image_data(image))),
       ]),
     ),
+    ..sampling
   ])
 }

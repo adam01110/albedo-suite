@@ -1,4 +1,5 @@
 import albedo/accounts/quota
+import albedo/accounts/quota_schedule
 import albedo_clock as clock
 import albedo_sdk/key_environment
 import albedo_sdk/store
@@ -17,7 +18,7 @@ fn startup_and_crash() -> Nil {
       healthy_fetch(polls),
       fixture(),
       key_environment.empty(),
-      fn() { quota.Settings(600, 120, True) },
+      fn() { quota_schedule.Settings(600, 120, True) },
       1000,
     )
   // Discovery must shorten the ten-minute timer to poll immediately.
@@ -37,7 +38,7 @@ fn startup_and_crash() -> Nil {
       },
       fixture(),
       key_environment.empty(),
-      fn() { quota.Settings(1, 1, True) },
+      fn() { quota_schedule.Settings(1, 1, True) },
       1000,
     )
   let assert Ok(Nil) = process.receive(calls, 1500)

@@ -526,8 +526,12 @@ fn expected_marks(shaped: Shaped) -> Int {
         Some(text) if text != "" -> 1
         _ -> 0
       }
+      // An input that encodes no block, such as empty text, has none to
+      // carry the mark (upstream `content.marks_tail`).
       let tail = case list.last(shaped.inputs) {
         Ok(types.Replay(_)) | Error(_) -> 0
+        Ok(types.User("")) | Ok(types.Assistant("")) -> 0
+        Ok(types.UserImage("", [])) -> 0
         Ok(_) -> 1
       }
       tools + system + tail

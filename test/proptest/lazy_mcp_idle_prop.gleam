@@ -796,7 +796,7 @@ fn is_utf8(bytes: BitArray) -> Bool {
   decode.run(utf8_check(bytes), decode.bit_array) |> result.is_ok
 }
 
-@external(erlang, "albedo_mcp_ownership_test_support", "fake_server")
+@external(erlang, "albedo_suite_test_support", "fake_mcp_server")
 fn fake_server() -> #(String, String)
 
 @external(erlang, "file", "read_file")

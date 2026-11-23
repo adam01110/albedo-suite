@@ -11,6 +11,7 @@
 import albedo/kernel/resources
 import albedo/session/command_state
 import albedo/session/family as daemon_family
+import albedo/session/inbox
 import albedo/session/session_control
 import albedo/storage/mail
 import albedo/workspace/worktree
@@ -33,7 +34,7 @@ pub fn context(
   workspace: String,
 ) -> host.Context {
   host.Context(
-    mail.inbox(),
+    inbox.extension_inbox(),
     mail.letters(),
     session,
     workspace,

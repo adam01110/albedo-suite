@@ -104,7 +104,7 @@ func TestZedBrowserSignInClearsAStoredKey(t *testing.T) {
 			t.Errorf("unexpected request %s %s", r.Method, r.URL.RequestURI())
 			return
 		}
-		if got := r.Header.Get("If-Match"); got != "providers-etag" {
+		if got := r.Header.Get("If-Match"); got != `"providers-etag"` {
 			t.Errorf("save dropped the observed revision: %q", got)
 		}
 		if err := json.NewDecoder(r.Body).Decode(&saved); err != nil {
@@ -121,7 +121,7 @@ func TestZedBrowserSignInClearsAStoredKey(t *testing.T) {
 			},
 			"group": "providers",
 			"resource": map[string]any{
-				"etag": "next-etag",
+				"etag": `"next-etag"`,
 				"url":  "/settings/providers",
 				"value": map[string]any{
 					"profiles":        map[string]any{},
@@ -138,7 +138,7 @@ func TestZedBrowserSignInClearsAStoredKey(t *testing.T) {
 	m := NewLoginModel(conn, "", nil)
 	defer m.Close()
 	m.SetSize(120, 30)
-	m.Profiles = config.Profiles{Providers: map[string]config.Settings{"zed": keyed}, ETag: "providers-etag"}
+	m.Profiles = config.Profiles{Providers: map[string]config.Settings{"zed": keyed}, ETag: `"providers-etag"`}
 	m.Name = "zed"
 	m.Draft = keyed
 	m.beginSignIn(daemon.SignIn{Provider: "zed", Flows: []string{"browser"}})

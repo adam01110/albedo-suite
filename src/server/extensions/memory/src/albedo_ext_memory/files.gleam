@@ -235,7 +235,9 @@ pub fn journal(
   case journal_date(date) {
     False -> Error("journal date must be YYYY-MM-DD")
     True -> {
-      let path = join([root(workspace), "journal", date <> ".md"])
+      // The final newline PCRE's `$` lets through is not part of the day.
+      let day = string.remove_suffix(date, "\n")
+      let path = join([root(workspace), "journal", day <> ".md"])
       locked(workspace, fn() {
         use _ <- result.try(recover_import(path))
         let size = case info(path) {

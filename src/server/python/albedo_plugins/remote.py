@@ -34,6 +34,7 @@ from typing import Any, NotRequired, TypedDict, cast
 
 from albedo_protocol import RemoteCall, RemoteMessage, parse_remote
 
+from albedo_capture import MAX_CLIP_BYTES
 from albedo_api import OutputCapture, PythonApi, ReadyList, Text, check_timeout, excerpt
 import albedo_notices
 from albedo_values import InvalidValue, decode
@@ -50,14 +51,15 @@ INVOKE_TIMEOUT = 3600  # anti-wedge bound; the cell deadline is the real limit
 COMMAND_TIMEOUT = 120  # degraded-mode command default
 MAX_FRAME = 8 * 1024 * 1024  # control-frame ceiling, as in the kernel
 STDERR_TAIL = 65536  # bytes of ssh diagnostics kept for failures
-IMAGE_READ = 5 * 1024 * 1024 + 1  # one past a cell's image bytes, as local reads
+# one byte past the clip limit. an oversized file comes back over it.
+READ = MAX_CLIP_BYTES + 1
 
 loop: asyncio.AbstractEventLoop
 host_call: Any
 HostErrorType: type[Exception]
 capture_factory: Any
 send_frame: Any
-attach_image: Any
+attach_media: Any = None
 session_modules: list[str] = []
 current_cell: Callable[[], str | None] | None = None
 
@@ -270,6 +272,10 @@ async def ssh_run(
             f"ssh command did not finish in {timeout:g}s: {script}"
         ) from None
     return process.returncode, stdout, stderr.decode(errors="replace")
+
+
+async def _raise(error: BaseException) -> Any:
+    raise error
 
 
 def _revive(value: Any) -> Any:
@@ -576,6 +582,9 @@ class RemoteConnection:
         self._write_lock = asyncio.Lock()
         self._pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._placeholders: dict[str, RemoteRef] = {}
+        # Invoke frames built this step and not yet written, by every call id
+        # they carry; a call on one of those ids joins the frame's `then`.
+        self._unsent: dict[str, dict[str, Any]] = {}
         self._refs: dict[str, RemoteRef] = {}
         self._mirrors: dict[str, dict[str, Any]] = {}
         self._handshake: asyncio.Future[dict[str, Any]] | None = None
@@ -835,21 +844,53 @@ class RemoteConnection:
     def start(
         self, call: "_RemoteCall", args: tuple[Any, ...], kwargs: dict[str, Any]
     ) -> RemoteRef:
-        """Fire one call and return its reference immediately; it settles on await."""
+        """Fire one call and return its reference immediately; it settles on await.
+
+        A call on a pending reference whose frame has not gone out yet rides
+        in that frame's `then` list, and the remote side makes it right after
+        the call it names, with nothing scheduled between them. So
+        run(...).pipe(...) attaches the pipe before the job's output can
+        outgrow the replay limit, as it does locally, however the two calls'
+        bytes cross the channel.
+        """
         call_id = secrets.token_hex(16)
         reference = RemoteRef(self, call_id=call_id, label=call._label)
+        try:
+            frame = self._frame(call._name, call._handle, call._pending, args, kwargs)
+        except Exception as error:
+            reference._task = loop.create_task(_raise(error))
+            return reference
+        frame["id"] = call_id
+        root = self._unsent.get(call._pending) if call._pending is not None else None
+        self._expect(call_id, reference)
+        if root is None:
+            self._unsent[call_id] = frame
+            outgoing: dict[str, Any] | None = frame
+        else:
+            del frame["type"]
+            root.setdefault("then", []).append(frame)
+            self._unsent[call_id] = root
+            outgoing = None
         reference._task = loop.create_task(
-            self.invoke(
-                name=call._name,
-                handle=call._handle,
-                pending=call._pending,
-                args=args,
-                kwargs=kwargs,
-                call_id=call_id,
-                placeholder=reference,
+            self._exchange(
+                call_id, outgoing, call._name, None, INVOKE_TIMEOUT, reference
             )
         )
+        if outgoing is not None:
+            reference._task.add_done_callback(lambda _: self._unsendable(frame))
         return reference
+
+    def _unsendable(self, frame: dict[str, Any]) -> None:
+        """A frame whose call ended before writing it, cancelled before it
+        started, fails the calls riding in it."""
+        if not any(held is frame for held in self._unsent.values()):
+            return
+        for key in [key for key, held in self._unsent.items() if held is frame]:
+            del self._unsent[key]
+        for entry in frame.get("then", ()):
+            waiting = self._pending.get(entry["id"])
+            if waiting is not None and not waiting.done():
+                waiting.set_exception(RemoteLost("the call it follows was never sent"))
 
     async def invoke(
         self,
@@ -871,16 +912,31 @@ class RemoteConnection:
         `placeholder` is the reference the caller already holds; a handle reply
         adopts into it rather than minting a second object.
         """
+        frame = self._frame(name, handle, pending, args, kwargs or {})
+        call_id = call_id or secrets.token_hex(16)
+        frame["id"] = call_id
+        if wait:
+            frame["await"] = True
+        self._expect(call_id, placeholder)
+        return await self._exchange(call_id, frame, name, handle, timeout, placeholder)
+
+    def _frame(
+        self,
+        name: str,
+        handle: str | None,
+        pending: str | None,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+    ) -> dict[str, Any]:
+        """An invoke frame without its id."""
         if self.degraded is not None:
             raise RemoteError(
                 f"degraded to ssh command mode ({self.degraded}); only rem.run() is available"
             )
-        call_id = call_id or secrets.token_hex(16)
         frame: dict[str, Any] = {
             "type": "invoke",
-            "id": call_id,
             "args": [_encode_arg(item) for item in args],
-            "kwargs": {key: _encode_arg(item) for key, item in (kwargs or {}).items()},
+            "kwargs": {key: _encode_arg(item) for key, item in kwargs.items()},
         }
         if name:
             frame["name"] = name
@@ -888,27 +944,56 @@ class RemoteConnection:
             frame["target"] = {"handle": handle}
         elif pending is not None:
             frame["target"] = {"pending": pending}
-        if wait:
-            frame["await"] = True
-        future: asyncio.Future[dict[str, Any]] = loop.create_future()
-        self._pending[call_id] = future
+        return frame
+
+    def _expect(self, call_id: str, placeholder: RemoteRef | None) -> None:
+        self._pending[call_id] = loop.create_future()
         if placeholder is not None:
             self._placeholders[call_id] = placeholder
-        await self._send(frame)
+
+    async def _exchange(
+        self,
+        call_id: str,
+        frame: dict[str, Any] | None,
+        name: str,
+        handle: str | None,
+        timeout: float,
+        placeholder: RemoteRef | None,
+    ) -> Any:
+        """Write `frame`, unless this call rides in another's, and await the
+        reply to `call_id`. A frame that never goes out fails every call it
+        carries, so none waits for a reply that cannot come."""
+        future = self._pending[call_id]
         try:
-            reply = await asyncio.wait_for(future, timeout)
-        except asyncio.TimeoutError:
-            await self._interrupt(call_id)
-            raise RemoteTimeout(
-                f"remote call {name or ('await ' + str(handle))!r} did not answer "
-                f"in {timeout:g}s; an interrupt was sent"
-            ) from None
-        except asyncio.CancelledError:
-            await self._interrupt(call_id)
-            raise
+            if frame is not None:
+                for key in [key for key, held in self._unsent.items() if held is frame]:
+                    del self._unsent[key]
+                try:
+                    await self._send(frame)
+                except BaseException as error:
+                    for entry in frame.get("then", ()):
+                        waiting = self._pending.get(entry["id"])
+                        if waiting is not None and not waiting.done():
+                            waiting.set_exception(
+                                RemoteLost(f"the call it follows was not sent: {error}")
+                            )
+                    raise
+            try:
+                reply = await asyncio.wait_for(future, timeout)
+            except asyncio.TimeoutError:
+                await self._interrupt(call_id)
+                raise RemoteTimeout(
+                    f"remote call {name or ('await ' + str(handle))!r} did not answer "
+                    f"in {timeout:g}s; an interrupt was sent"
+                ) from None
+            except asyncio.CancelledError:
+                await self._interrupt(call_id)
+                raise
         finally:
             self._pending.pop(call_id, None)
             self._placeholders.pop(call_id, None)
+            if self._unsent.get(call_id) is frame and frame is not None:
+                del self._unsent[call_id]
         return self._result(reply, placeholder)
 
     def _result(
@@ -1022,27 +1107,35 @@ class RemoteConnection:
         except UnicodeDecodeError:
             return data
 
-    async def show_image(
+    async def show_media(
         self,
         source: bytes | str | os.PathLike[str],
         *,
+        fps: float | None = None,
         timeout: float = COMMAND_TIMEOUT,
     ) -> str:
-        """Return a remote image to yourself with this cell's result, under the
-        same limits as local show_image. The remote kernel has no cell of its
-        own to carry one, so the bytes come here over the control connection."""
-        if attach_image is None:
-            raise RemoteError("this kernel cannot attach images")
+        """Return a remote image or audio or video clip to yourself with this
+        cell's result, under the same limits as local show_media, a video
+        sampled at `fps` frames a second when given. The remote kernel has no
+        cell of its own to carry one, so the bytes come here over the control
+        connection."""
+        if attach_media is None:
+            raise RemoteError("this kernel cannot attach images or clips")
+        return attach_media(await self._attachment(source, timeout), fps)
+
+    show_image = show_media
+
+    async def _attachment(
+        self, source: bytes | str | os.PathLike[str], timeout: float
+    ) -> bytes:
         if isinstance(source, (bytes, bytearray, memoryview)):
-            data = bytes(source)
-        elif isinstance(source, (str, os.PathLike)):
+            return bytes(source)
+        if isinstance(source, (str, os.PathLike)):
             remote = shlex.quote(_remote_path(self, os.fspath(source)))
-            data = await self._ssh(f"head -c {IMAGE_READ} {remote}", timeout)
-        else:
-            raise TypeError(
-                f"show_image takes image bytes or a remote path, not {type(source).__name__}"
-            )
-        return attach_image(data)
+            return await self._ssh(f"head -c {READ} {remote}", timeout)
+        raise TypeError(
+            f"show_media takes bytes or a remote path, not {type(source).__name__}"
+        )
 
     async def _ssh(
         self, script: str, timeout: float, stdin: bytes | None = None
@@ -1228,6 +1321,12 @@ class RemoteConnection:
         return str(self.target["host"])
 
 
+# The key sets the remote's argument reader takes for something else.
+_ARG_MARKERS = {
+    frozenset(keys) for keys in (["__ref__"], ["pending"], ["__bytes__"], ["__dict__"])
+}
+
+
 def _encode_arg(value: Any) -> Any:
     """References pass as references; everything else must already be wire data."""
     if isinstance(value, RemoteRef):
@@ -1247,7 +1346,20 @@ def _encode_arg(value: Any) -> Any:
     if isinstance(value, list):
         return [_encode_arg(item) for item in value]
     if isinstance(value, dict) and type(value) is dict:
-        return {key: _encode_arg(item) for key, item in value.items()}
+        if all(isinstance(key, str) for key in value) and (
+            frozenset(value) not in _ARG_MARKERS
+        ):
+            return {key: _encode_arg(item) for key, item in value.items()}
+        # Keys a JSON object cannot hold, or a key set the remote reads as a
+        # reference, a pending call or bytes: the pairs.
+        pairs = []
+        for key, item in value.items():
+            if not (isinstance(key, (str, int, float, bytes)) or key is None):
+                raise RemoteError(
+                    f"cannot pass a dict keyed by {type(key).__name__} to a remote call"
+                )
+            pairs.append([_encode_arg(key), _encode_arg(item)])
+        return {"__dict__": pairs}
     try:
         json.dumps(value)
         return value
@@ -1653,11 +1765,11 @@ def cell_jobs(cell: str) -> list[tuple[str, str]]:
 
 def setup(api: PythonApi) -> dict[str, object]:
     global loop, host_call, HostErrorType, capture_factory, send_frame
-    global attach_image, session_modules, current_cell
+    global attach_media, session_modules, current_cell
     loop, host_call = api.loop, api.host
     HostErrorType, capture_factory = api.HostError, api.capture
     send_frame = api.send
-    attach_image = api.attach_image
+    attach_media = api.attach_media
     session_modules = list(api.modules)
     api.on_shutdown(Remote.close_all)
     if api.owns_resources is not None:

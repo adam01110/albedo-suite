@@ -157,7 +157,7 @@ fn doctrine(
   <> family.name_of(db, member.parent)
   <> "\", depth "
   <> string.inspect(member.depth)
-  <> ". Your task arrived as <mail kind=\"task\">. When it is done, send your result with await mail.submit(\"parent\", result) — a short summary, with paths to anything large. To ask your parent a question or request clarification, use await mail.request(\"parent\", question). If a verifier command is set and you are blocked, report it with await mail.submit(\"parent\", blocker, blocker=True). If your turn ends before you send a reply, you will get one reminder, and if the next turn also ends without a reply, your last message is forwarded to your parent marked unreviewed. For longer work, you can post await agents.progress(\"...\") occasionally; it updates the agents view without interrupting anyone. Mail from other agents is from peers rather than the user."
+  <> ". Your task arrived as <mail kind=\"task\">. When it is done, send your result with await mail.submit(\"parent\", result) — a short summary, with paths to anything large. To ask your parent a question or request clarification, use await mail.request(\"parent\", question). If a verifier command is set and you are blocked, report it with await mail.submit(\"parent\", blocker, blocker=True). A submission tells your parent the task is finished: do not send progress or an incomplete result that way. If you cannot finish, report it with blocker=True. If your turn ends before you send a reply, you will get up to three reminders, and if the turn after them also ends without a reply, your last message is forwarded to your parent marked unreviewed. For longer work, you can post await agents.progress(\"...\") occasionally; it updates the agents view without interrupting anyone. Mail from other agents is from peers rather than the user."
   <> worktree_note(db, worktrees, member.session, workspace)
 }
 
@@ -235,12 +235,10 @@ fn answered(
                       <> "\n\nFix the failure so the verifier exits 0, then send your result with await mail.submit(\"parent\", result).\nIf you need help from your parent, ask with await mail.request(\"parent\", <question>), or report a blocker with await mail.submit(\"parent\", <blocker>, blocker=True).",
                     ),
                   )
-                Ok(Nil) if held == 0 ->
+                Ok(Nil) if held < reminders ->
                   hook.Verdict(
                     ..hook.proceed,
-                    block: Some(
-                      "You have not answered your parent yet. Send your result with await mail.submit(\"parent\", result) before you finish.",
-                    ),
+                    block: Some(child_reminder(held)),
                   )
                 Ok(Nil) -> hook.proceed
               }
@@ -259,6 +257,21 @@ fn answered(
       }
     _ -> hook.proceed
   }
+}
+
+/// How many times a session that still owes a reply is kept going before its
+/// last words are forwarded as unreviewed.
+const reminders = 3
+
+/// What a child that stopped without answering is told. Weak models answer a
+/// bare reminder with a progress note and stop, so it says what a submission
+/// means and names the other ways to report.
+fn child_reminder(held: Int) -> String {
+  "You have not answered your parent yet (reminder "
+  <> int.to_string(held + 1)
+  <> " of "
+  <> int.to_string(reminders)
+  <> "). If the task is finished, send your result with await mail.submit(\"parent\", result). If it is not finished, keep working: a submission tells your parent you are done, so do not use it for progress (use await agents.progress(\"...\")). If you cannot continue, report that with await mail.submit(\"parent\", reason, blocker=True), or ask with await mail.request(\"parent\", question)."
 }
 
 fn verify_child(db: storage.Storage, session: String) -> Result(Nil, String) {
@@ -628,7 +641,12 @@ fn dispatch(
     "agents.cancel_all" -> {
       use tree <- result.try(service.tree_flag(args))
       use children <- result.try(family.children(db, session))
-      service.stop_all(db, control, children, tree)
+      service.stop_all(
+        db,
+        control,
+        list.map(children, fn(member) { member.session }),
+        tree,
+      )
     }
     "agents.messages" -> {
       use target <- result.try(addressed(db, session, correspondents, args))

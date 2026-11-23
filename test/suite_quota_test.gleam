@@ -1,4 +1,5 @@
 import albedo/accounts/quota
+import albedo/accounts/quota_schedule
 import albedo_clock as clock
 import albedo_ext_zed/quota as zed_quota
 import albedo_sdk/key_environment
@@ -240,7 +241,7 @@ fn zed_poller() -> Nil {
       },
       sources("zed", fn() { [#("okami", zed_credential())] }),
       key_environment.empty(),
-      fn() { quota.Settings(600, 120, True) },
+      fn() { quota_schedule.Settings(600, 120, True) },
       1000,
     )
   let assert Ok(Nil) = process.receive(polls, 1500)
@@ -259,7 +260,7 @@ fn zed_poller() -> Nil {
 }
 
 fn scheduling() -> Nil {
-  let settings = quota.Settings(600, 120, True)
+  let settings = quota_schedule.Settings(600, 120, True)
   assert quota.next_delay(settings, 1000, 1000, False, [#(0, True)]) == 600_000
   assert quota.next_delay(settings, 1000, 0, True, [#(0, True)]) == 600_000
   assert quota.next_delay(settings, 1000, 0, True, [#(2000, False)]) == 1000

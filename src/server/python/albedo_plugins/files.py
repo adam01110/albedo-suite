@@ -715,7 +715,8 @@ class Files:
     """Workspace file access with the diagnostics an exact edit needs."""
 
     async def image(self, index: int = 0, *, entry: int | None = None) -> bytes:
-        """Original bytes of this session's uploaded image, ready for an image library.
+        """Original bytes of this session's uploaded image, ready for an image library,
+        or of an uploaded audio or video clip.
 
         Index is zero-based. Without entry, use the latest user message with
         images, looking past later text-only messages. Otherwise entry is that
@@ -1485,13 +1486,16 @@ class _Occurrence:
 
 
 def _occurrences(content: str, needle: str) -> list[_Occurrence]:
-    found, span, start = [], needle.count("\n") + 1, 0
+    found, start = [], 0
     while True:
         index = content.find(needle, start)
         if index < 0:
             return found
-        first = content.count("\n", 0, index) + 1
-        found.append(_Occurrence(index, first, first + span - 1))
+        # Line numbers count the same boundaries `read` numbers its rows with,
+        # so the numbers it printed are the ones `line_hint` takes here.
+        first = len(LINE_BOUNDARIES.findall(content, 0, index)) + 1
+        last = len(LINE_BOUNDARIES.findall(content, 0, index + len(needle))) + 1
+        found.append(_Occurrence(index, first, last))
         start = index + len(needle)
 
 

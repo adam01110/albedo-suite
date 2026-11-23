@@ -5,6 +5,8 @@ import (
 	"io"
 	"net/http"
 	"testing"
+
+	"albedo/cli/internal/testwire"
 )
 
 func TestProviderAvailabilityToggleIsConditional(t *testing.T) {
@@ -15,7 +17,7 @@ func TestProviderAvailabilityToggleIsConditional(t *testing.T) {
 			t.Errorf("unexpected toggle %s %s If-Match=%q %s", r.Method, r.URL, r.Header.Get("If-Match"), data)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{}`)
+		_ = json.NewEncoder(w).Encode(testwire.SettingsChange("providers", map[string]any{"default_profile": nil, "profiles": map[string]any{}}))
 	})
 	_ = SetProviderEnabled(t.Context(), conn, "claude", false, `"providers-1"`)
 }

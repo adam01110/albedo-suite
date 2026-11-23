@@ -97,6 +97,26 @@ fn documented_route(model: String) -> Route {
   }
 }
 
+/// what the route takes; the model's catalog still has to say it reads them
+pub fn media(model: String) -> List(String) {
+  case route(model) {
+    GeminiRoute -> types.gemini_clips
+    ChatRoute -> types.chat_audio
+    ResponsesRoute | MessagesRoute -> []
+  }
+}
+
+/// nothing is published. its edge took 16 MB bodies and refused one of about
+/// 17 MB with a 413, so clips keep 12 MiB, the rest left to text and pictures.
+/// https://github.com/anomalyco/opencode/issues/54784
+/// https://github.com/anomalyco/opencode/issues/59067
+pub const clip_budget = 12_582_912
+
+/// only the gemini route's parts carry a video's frame rate
+pub fn frame_rate(model: String) -> Bool {
+  route(model) == GeminiRoute
+}
+
 /// Send a request using the route and reducer selected for its model.
 pub fn stream(
   client: Client,
