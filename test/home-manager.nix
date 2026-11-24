@@ -45,6 +45,7 @@
       };
     };
     formatter.enable = true;
+    linter.enable = true;
     lsp.enable = true;
   };
   unknownActiveProvider = mkHome {
@@ -54,6 +55,10 @@
   conflictingEnableFlag = mkHome {
     enable = true;
     settings.enabled.formatter = true;
+  };
+  conflictingLinterEnableFlag = mkHome {
+    enable = true;
+    settings.enabled.linter = true;
   };
   conflictingLspEnableFlag = mkHome {
     enable = true;
@@ -107,6 +112,7 @@ in
     testConflictingEnableFlagsAreRejected = {
       expr =
         !assertionsPass conflictingEnableFlag
+        && !assertionsPass conflictingLinterEnableFlag
         && !assertionsPass conflictingLspEnableFlag
         && !assertionsPass conflictingMcpEnableFlag;
       expected = true;
@@ -141,6 +147,11 @@ in
 
     testInvalidEnvironmentNameIsRejected = {
       expr = !assertionsPass invalidEnvironmentName;
+      expected = true;
+    };
+
+    testLinterIsOptIn = {
+      expr = !minimal.config.programs.albedo.linter.enable;
       expected = true;
     };
 

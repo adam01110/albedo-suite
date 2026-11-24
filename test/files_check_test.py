@@ -13,12 +13,14 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.environ["ALBEDO_FORMATTER_SOURCE"])
 import albedo_formatter as formatter
+import albedo_linter as linter
 from albedo_lsp import Lsp
 
 file_plugin: Any = importlib.import_module("albedo_plugins.files")
 # Importing the plugin is what enables the formatting stage in Files.check().
 importlib.import_module("albedo_plugins.formatter")
 lsp_plugin: Any = importlib.import_module("albedo_plugins.lsp")
+importlib.import_module("albedo_plugins.linter")
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -56,6 +58,8 @@ class FilesCheckTests(unittest.IsolatedAsyncioTestCase):
         lsp_plugin._manager = self.old_manager
         formatter._root = None
         formatter._pending.clear()
+        linter._root = None
+        linter._pending.clear()
         formatter._versions.clear()
         self.temp.cleanup()
 
@@ -175,6 +179,37 @@ class FilesCheckTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(path.read_text(), "fixed")
         self.assertFalse(formatter._pending)
         self.assertFalse(manager.pending)
+
+    async def test_linting_reads_formatted_output_and_skips_failed_formatting(self):
+        linter.configure(
+            {
+                "linters": {
+                    "fake": {
+                        "command": [
+                            sys.executable,
+                            str(FIXTURES / "linter-fixture.py"),
+                            "regex",
+                        ],
+                        "pattern": r"^(?P<path>[^:\n]+):(?P<line>\d+):\d+: \w+\[[^\]]+\]: (?P<message>.*)$",
+                    }
+                },
+                "chains": {".py": ["fake"]},
+            },
+            str(self.root),
+        )
+        path = self.write(content="bad\n")
+        result = await self.fs.check()
+        self.assertEqual(path.read_text(), "BAD\n")
+        # The fixture flags lowercase "bad", which formatting removed.
+        self.assertEqual(result["linting"]["status"], "ok", result)
+        self.assertEqual(result["status"], "ok")
+
+        path = self.write(content="bad\n")
+        self.control.write_text(json.dumps({"mode": "failure", "diagnostic": "failed"}))
+        result = await self.fs.check()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["linting"]["status"], "skipped")
+        self.assertEqual(result["pending"]["linting"], [str(path)])
 
     async def test_disabled_remote_and_unmatched_do_not_fabricate_passes(self):
         formatter._root = None

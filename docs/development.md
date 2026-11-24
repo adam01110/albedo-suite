@@ -237,7 +237,7 @@ Regression tests exercise both paths through real supervised jobs.
 
 ## Temporary compatibility layers
 
-Formatter and LSP support are local stopgaps for the pinned upstream version.
+Formatter, linter and LSP support are local stopgaps for the pinned upstream version.
 Do not add unrelated editor features or make other extensions depend on them.
 Remove each layer when upstream covers its useful behavior and the native path
 passes the relevant lifecycle tests. `files.check()` runs an explicit ordered
@@ -266,6 +266,14 @@ Formatter owns `albedo_formatter.py`, `albedo_plugins/formatter.py`,
 registration/settings. Final-acceptance hook support has been retired; native
 streaming and Stop behavior are unchanged. Compare replacements before deletion;
 other suite changes may share a file. Keep lazy MCP and diff-display changes.
+
+Linter owns `albedo_linter.py`, `albedo_plugins/linter.py`,
+`apps/albedo/src/albedo_ext_linter/extension.gleam` and
+`nix/home-manager/linter.nix`. Retirement also removes its file-write tracking
+in `albedo_plugins/files.py`, its `linting` stage in `files.check()`, its
+registration in `extensions.gleam`, its settings/enable wiring in `runtime.nix`,
+its Home Manager import, `test/linter_python_test.py` and its fixture. Replace
+Infra's `albedo/linter.nix` declaration with native settings first.
 
 Remove retired cases from the flake checks and E2E runner, update documentation
 and source inventories, and rerun disabled-feature, ordinary streaming and MCP

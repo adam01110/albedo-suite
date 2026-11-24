@@ -55,10 +55,12 @@
   extensionSettings = recursiveUpdate cfg.settings {
     enabled = {
       formatter = cfg.formatter.enable;
+      linter = cfg.linter.enable;
       lsp = cfg.lsp.enable;
       mcp = cfg.mcp.enable;
     };
     formatter = cfg.formatter.settings;
+    linter = cfg.linter.settings;
     lsp = cfg.lsp.settings;
     mcp = {
       lazy = cfg.mcp.lazy;
@@ -102,8 +104,8 @@ in {
         message = "programs.albedo.settings.enabled must be an attribute set.";
       }
       {
-        assertion = enabledMatches "mcp" cfg.mcp.enable && enabledMatches "formatter" cfg.formatter.enable && enabledMatches "lsp" cfg.lsp.enable;
-        message = "Use programs.albedo.mcp.enable, formatter.enable and lsp.enable instead of conflicting settings.enabled values.";
+        assertion = enabledMatches "mcp" cfg.mcp.enable && enabledMatches "formatter" cfg.formatter.enable && enabledMatches "linter" cfg.linter.enable && enabledMatches "lsp" cfg.lsp.enable;
+        message = "Use programs.albedo.mcp.enable, formatter.enable, linter.enable and lsp.enable instead of conflicting settings.enabled values.";
       }
     ];
     home.sessionVariables.ALBEDO_HOME = cfg.home;

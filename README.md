@@ -27,8 +27,9 @@ providers, skills and SOPS declarations stay in Infra.
 | Component | Behavior |
 | --- | --- |
 | [Lazy MCP](docs/lazy-mcp.md) | Connect to a server when explicitly requested, rather than at session startup, close each one after its own idle timeout, and list loaded servers in the sidebar under skills. |
-| [Explicit file checks](docs/formatter.md) | Format tracked files and collect diagnostics in one `files.check()` call. |
+| [Explicit file checks](docs/formatter.md) | Format tracked files, then collect diagnostics and lint findings in one `files.check()` call. |
 | [Local LSP](docs/lsp.md) | Start a language server on an explicit diagnostics or navigation call. |
+| [Linters](docs/linter.md) | Run configured CLI linters read-only in `files.check()` and report parsed findings. |
 | [Monitor snapshots](docs/monitor.md) | Export running-agent status and cached connected-account quotas without starting the daemon. |
 | [RTK and FFF](docs/tool-parity.md) | Filter supported commands through RTK and replace file search with FFF. |
 | [Zed provider](docs/zed.md) | Native hosted-model streaming with tool choice, thinking, effort and usage. |

@@ -187,6 +187,8 @@
     assert !(suitePackages.albedo-patched ? photon);
       runCommand "albedo-package-layout" {} ''
         test -f ${runtime}/lib/albedo/albedo/priv/python/albedo_formatter.py
+        test -f ${runtime}/lib/albedo/albedo/priv/python/albedo_linter.py
+        test -f ${runtime}/lib/albedo/albedo/priv/python/albedo_plugins/linter.py
         test -f ${runtime}/lib/albedo/albedo/priv/python/albedo_lsp.py
         test -f ${runtime}/lib/albedo/albedo/priv/python/albedo_plugins/lsp.py
         test -f ${runtime}/lib/albedo/albedo/priv/python/albedo_rtk.py
@@ -233,6 +235,7 @@
         export PYTHONPATH=${pythonSources}
         export ALBEDO_E2E_RUNNER=${../../scripts/test-e2e.py}
         export ALBEDO_FORMATTER_SOURCE=$PYTHONPATH
+        export ALBEDO_LINTER_SOURCE=$PYTHONPATH
         export ALBEDO_LSP_SOURCE=$PYTHONPATH
         export ALBEDO_REMOTE_SOURCE=$PYTHONPATH
         export ALBEDO_RTK_SOURCE=$PYTHONPATH
@@ -247,6 +250,7 @@
         tests=(
           "-m unittest discover -s ${../../test} -p formatter_python_test.py -v"
           "-m unittest discover -s ${../../test} -p files_check_test.py -v"
+          "${../../test}/linter_python_test.py -v"
           "${../../test}/e2e_runner_test.py -v"
           "${../../test}/prompt_context_python_test.py -v"
           "-m unittest discover -s ${../../test} -p lazy_mcp_python_test.py -v"

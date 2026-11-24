@@ -56,6 +56,7 @@ GO_FILTERS = [
 PYTHON_TESTS = [
     "formatter_python_test.py",
     "files_check_test.py",
+    "linter_python_test.py",
     "e2e_runner_test.py",
     "prompt_context_python_test.py",
     "lazy_mcp_python_test.py",
@@ -129,6 +130,7 @@ def main():
             PYTHONDONTWRITEBYTECODE="1",
             ALBEDO_E2E_RUNNER=os.path.join(options.suite, "scripts", "test-e2e.py"),
             ALBEDO_FORMATTER_SOURCE=source,
+            ALBEDO_LINTER_SOURCE=source,
             ALBEDO_LSP_SOURCE=source,
             ALBEDO_REMOTE_SOURCE=source,
             ALBEDO_RTK_SOURCE=source,

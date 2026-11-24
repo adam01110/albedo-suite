@@ -34,9 +34,17 @@ def _record_edit(path: Path) -> None:
         import albedo_formatter
 
         albedo_formatter.record(path)
+    if "albedo_plugins.linter" in sys.modules:
+        import albedo_linter
+
+        albedo_linter.record(path)
     plugin = sys.modules.get("albedo_plugins.lsp")
     if plugin is not None:
         plugin.record(path)
+
+
+async def _none() -> None:
+    return None
 
 
 host: Host
@@ -750,8 +758,9 @@ class Files:
     async def check(self, paths=None) -> dict:
         """Check current pending files, or enroll/select explicit local paths.
 
-        Formatting precedes LSP in one call. Current bytes are adopted at batch
-        start; changes during the check are conflicts, not silently overwritten.
+        Formatting precedes LSP diagnostics and linting in one call. Current
+        bytes are adopted at batch start; changes during the check are
+        conflicts, not silently overwritten.
         This is explicit verification, never a final-response veto.
         """
 
@@ -765,6 +774,7 @@ class Files:
             "paths": [],
             "formatting": inactive("disabled", "formatter is not configured"),
             "diagnostics": inactive("disabled", "LSP is not configured"),
+            "linting": inactive("disabled", "linter is not configured"),
             "pending": {},
             "conflicts": [],
         }
@@ -787,15 +797,28 @@ class Files:
             lsp = sys.modules.get("albedo_plugins.lsp")
             if lsp is not None and lsp.workspace() is None:
                 lsp = None
-            if formatter is None and lsp is None:
+            linter = sys.modules.get("albedo_linter")
+            if (
+                "albedo_plugins.linter" not in sys.modules
+                or linter is None
+                or linter.workspace() is None
+            ):
+                linter = None
+            stages = (
+                ("formatting", formatter),
+                ("diagnostics", lsp),
+                ("linting", linter),
+            )
+            checkers = [stage for _, stage in stages if stage is not None]
+            if not checkers:
                 return result
-            checkers = [stage for stage in (formatter, lsp) if stage is not None]
             roots = {stage.workspace() for stage in checkers}
             batch_images = {}
             format_versions = {}
             diagnostic_versions = {}
+            lint_versions = {}
             completed = False
-            for name, stage in (("formatting", formatter), ("diagnostics", lsp)):
+            for name, stage in stages:
                 if stage is not None:
                     result[name] = inactive("idle", "no selected pending files")
             try:
@@ -848,6 +871,13 @@ class Files:
                     raise ValueError(
                         "LSP tracking capacity exceeded; check existing pending paths before enrolling more"
                     )
+                if (
+                    linter is not None
+                    and len(set(linter.pending_paths()) | selected) > 1024
+                ):
+                    raise ValueError(
+                        "linter tracking capacity exceeded; check existing pending paths before enrolling more"
+                    )
                 batch_images = {path: _check_image(path) for path in selected}
                 result["paths"] = sorted(map(str, selected))
                 if not selected:
@@ -858,6 +888,10 @@ class Files:
                     for path in selected:
                         lsp.record(path)
                     diagnostic_versions = lsp.pending_versions()
+                if linter is not None:
+                    for path in selected:
+                        linter.record(path)
+                    lint_versions = linter.pending_versions()
                 if formatter is not None:
                     stage = await formatter.finish(selected, adopt=True, details=True)
                     snapshots = stage.pop("_snapshots", {})
@@ -873,27 +907,45 @@ class Files:
                     )
                     result["formatting"] = stage
                 format_ok = result["formatting"].get("ok", True)
-                if lsp is not None:
-                    if format_ok:
-                        stage = await lsp.finish(selected, details=True)
-                        checked_versions = stage.pop("_versions", {})
-                        for path, generation in checked_versions.items():
-                            if diagnostic_versions.get(path) != generation:
+                skipped = "formatting failed; {} were not run"
+                # Diagnostics and linting both only read the published snapshot.
+                if not format_ok:
+                    if lsp is not None:
+                        result["diagnostics"] = inactive(
+                            "skipped", skipped.format("diagnostics")
+                        )
+                    if linter is not None:
+                        result["linting"] = inactive(
+                            "skipped", skipped.format("linters")
+                        )
+                else:
+                    finished = await asyncio.gather(
+                        lsp.finish(selected, details=True)
+                        if lsp is not None
+                        else _none(),
+                        linter.finish(selected, details=True)
+                        if linter is not None
+                        else _none(),
+                    )
+                    for name, stage, enrolled, has_findings in (
+                        ("diagnostics", finished[0], diagnostic_versions, "feedback"),
+                        ("linting", finished[1], lint_versions, "findings"),
+                    ):
+                        if stage is None:
+                            continue
+                        for path, generation in stage.pop("_versions", {}).items():
+                            if enrolled.get(path) != generation:
                                 result["conflicts"].append(str(path))
                         stage["status"] = (
                             "failed"
                             if not stage["ok"]
                             else "findings"
-                            if stage["feedback"]
+                            if stage[has_findings]
                             else "ok"
                             if stage["checked"]
                             else "unmatched"
                         )
-                        result["diagnostics"] = stage
-                    else:
-                        result["diagnostics"] = inactive(
-                            "skipped", "formatting failed; diagnostics were not run"
-                        )
+                        result[name] = stage
                 for path, expected in batch_images.items():
                     try:
                         stable = _check_image(path) == expected
@@ -909,15 +961,28 @@ class Files:
                         stable = stable and lsp.pending_versions()[
                             path
                         ] == diagnostic_versions.get(path)
+                    if linter is not None and path in linter.pending_versions():
+                        stable = stable and linter.pending_versions()[
+                            path
+                        ] == lint_versions.get(path)
                     if not stable or str(path) in result["conflicts"]:
                         if str(path) not in result["conflicts"]:
                             result["conflicts"].append(str(path))
                         _record_edit(path)
                 diagnostics_ok = result["diagnostics"].get("ok", True)
-                ok = format_ok and diagnostics_ok and not result["conflicts"]
-                findings = bool(result["diagnostics"].get("feedback"))
+                linting_ok = result["linting"].get("ok", True)
+                ok = (
+                    format_ok
+                    and diagnostics_ok
+                    and linting_ok
+                    and not result["conflicts"]
+                )
+                findings = bool(result["diagnostics"].get("feedback")) or bool(
+                    result["linting"].get("findings")
+                )
                 checked = any(
-                    result[key].get("checked") for key in ("formatting", "diagnostics")
+                    result[key].get("checked")
+                    for key in ("formatting", "diagnostics", "linting")
                 )
                 result.update(
                     ok=ok if checked or not ok else None,
@@ -945,7 +1010,7 @@ class Files:
                             formatter._versions.pop(path, None)
                 result["pending"] = {
                     name: list(map(str, stage.pending_paths()))
-                    for name, stage in (("formatting", formatter), ("diagnostics", lsp))
+                    for name, stage in stages
                     if stage is not None
                 }
             return result

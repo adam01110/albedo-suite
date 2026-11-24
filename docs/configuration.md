@@ -110,6 +110,13 @@ extension settings document. [Local LSP](lsp.md) describes the temporary
 compatibility layer, server fields and explicit diagnostics/navigation tools.
 It neither starts servers at session setup nor adds a final-reply gate.
 
+## Linters
+
+Set `programs.albedo.linter.enable = true` and declare commands, output parsers
+and file chains under `programs.albedo.linter.settings`. [Linters](linter.md)
+describes the fields. Linting runs only inside `files.check()`, after
+formatting.
+
 ## Other options
 
 | Option | Default | Purpose |
@@ -125,8 +132,9 @@ It neither starts servers at session setup nor adds a final-reply gate.
 Providers, settings, environment and instructions are visible in the Nix store.
 Keep private values in runtime authentication or `secretFiles`, not these fields.
 Raw `settings` bypasses the typed server checks. Apply the same secret
-restrictions there. Enable MCP and formatting through `mcp.enable` and
-`formatter.enable`, rather than conflicting `settings.enabled` values.
+restrictions there. Enable MCP, formatting, linting and LSP through
+`mcp.enable`, `formatter.enable`, `linter.enable` and `lsp.enable`, rather than
+conflicting `settings.enabled` values.
 
 ## Applying changes
 

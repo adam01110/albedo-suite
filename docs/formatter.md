@@ -16,7 +16,8 @@ result = await files.check()
 ```
 
 This formats the pending scope, publishes successful changes, then collects
-configured LSP diagnostics in the **same call**. Formatting changes are ordinary
+configured LSP diagnostics and [linter](linter.md) findings in the **same
+call**. Formatting changes are ordinary
 results, not rejected final answers. Review changes and findings; after further
 edits, check again. Errors and conflicts are normal tool results with pending
 paths retained. Final text streams normally: no synthetic user messages,

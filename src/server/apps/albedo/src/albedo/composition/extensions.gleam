@@ -25,6 +25,7 @@ import albedo_ext_instructions
 import albedo_ext_jj
 import albedo_ext_lcm
 import albedo_ext_links
+import albedo_ext_linter/extension as linter
 import albedo_ext_lsp/extension as lsp
 import albedo_ext_mail
 import albedo_ext_mcp
@@ -91,6 +92,7 @@ pub fn declared() -> Config {
       // Diagnostics inspect published formatter output, not unfinished edits.
       formatter.extension(),
       lsp.extension(),
+      linter.extension(),
       albedo_ext_memory.extension(),
       albedo_ext_links.extension(worktree.origins()),
       albedo_ext_instructions.extension(),

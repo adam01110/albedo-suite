@@ -28,6 +28,7 @@ in {
     # keep-sorted start
     (import ./home-manager/runtime.nix {inherit suitePackages;})
     ./home-manager/formatter.nix
+    ./home-manager/linter.nix
     ./home-manager/lsp.nix
     ./home-manager/mcp.nix
     ./home-manager/providers.nix
