@@ -2,15 +2,18 @@
 //// counts approach the int64 range. Not a property test; run explicitly with
 //// `gleam run -m usage_overflow_probe` in an overlay tree.
 
+import albedo/generated/sql/usage/usage_hours_sql
 import albedo/refusal
 import albedo/storage/core_store
 import albedo/usage/usage_hours
 import albedo/usage/usage_profile
 import albedo_sdk/store
+import albedo_sqlite
 import gleam/dynamic/decode
 import gleam/int
 import gleam/io
 import gleam/list
+import gleam/result
 import gleam/string
 import sqlight
 
@@ -24,12 +27,10 @@ const base_day = 20_412
 
 fn ledger() -> store.Store {
   let assert Ok(ledger) =
-    store.start(
-      ":memory:",
-      usage_hours.schema
-        <> "CREATE TABLE input_turns(id TEXT PRIMARY KEY,session TEXT NOT NULL,state TEXT NOT NULL,started_at INTEGER NOT NULL,ended_at INTEGER);",
-      core_store.tables(),
-    )
+    store.start(":memory:", fn(db) {
+      use _ <- result.try(usage_hours_sql.create_usage_hours(db:))
+      albedo_sqlite.exec("CREATE TABLE input_turns(id TEXT PRIMARY KEY,session TEXT NOT NULL,state TEXT NOT NULL,started_at INTEGER NOT NULL,ended_at INTEGER);", on: db)
+    }, core_store.tables())
   ledger
 }
 
@@ -37,17 +38,13 @@ fn insert(ledger: store.Store, rows: List(#(Int, Int, Int, Int))) -> Nil {
   list.index_map(rows, fn(row, i) {
     let #(at, input, output, calls) = row
     let assert Ok(_) =
-      store.write(
-        ledger,
-        "INSERT INTO usage_hours(hour_ms,profile,provider,account,model,kind,calls,errors,input_tokens,cached_input_tokens,cache_creation_tokens,output_tokens,reasoning_tokens) VALUES(?,'p','prov','',?,'turn',?,0,?,0,0,?,0)",
-        [
+      store.writing(ledger, fn(db) { albedo_sqlite.run("INSERT INTO usage_hours(hour_ms,profile,provider,account,model,kind,calls,errors,input_tokens,cached_input_tokens,cache_creation_tokens,output_tokens,reasoning_tokens) VALUES(?,'p','prov','',?,'turn',?,0,?,0,0,?,0)", on: db, with: [
           sqlight.int(at),
           sqlight.text("m" <> int.to_string(i)),
           sqlight.int(calls),
           sqlight.int(input),
           sqlight.int(output),
-        ],
-      )
+        ]) })
     Nil
   })
   Nil
@@ -55,7 +52,7 @@ fn insert(ledger: store.Store, rows: List(#(Int, Int, Int, Int))) -> Nil {
 
 fn raw(label: String, sql: String, ledger: store.Store) -> Nil {
   let found =
-    store.read(ledger, sql, [], decode.field(0, decode.dynamic, decode.success))
+    store.reading(ledger, fn(db) { albedo_sqlite.rows(sql, on: db, with: [], expecting: decode.field(0, decode.dynamic, decode.success)) })
   io.println("  raw " <> label <> ": " <> string.inspect(found))
 }
 
@@ -108,27 +105,21 @@ const sessions_schema =
 
 fn trigger_ledger() -> store.Store {
   let assert Ok(ledger) =
-    store.start(
-      ":memory:",
-      usage_hours.schema
-        <> provider_requests_schema
+    store.start(":memory:", fn(db) {
+      use _ <- result.try(usage_hours_sql.create_usage_hours(db:))
+      albedo_sqlite.exec(provider_requests_schema
         <> sessions_schema
         <> trigger
-        <> "CREATE TABLE input_turns(id TEXT PRIMARY KEY,session TEXT NOT NULL,state TEXT NOT NULL,started_at INTEGER NOT NULL,ended_at INTEGER);",
-      core_store.tables(),
-    )
+        <> "CREATE TABLE input_turns(id TEXT PRIMARY KEY,session TEXT NOT NULL,state TEXT NOT NULL,started_at INTEGER NOT NULL,ended_at INTEGER);", on: db)
+    }, core_store.tables())
   let assert Ok(_) =
-    store.write(ledger, "INSERT INTO sessions VALUES('s','active')", [])
+    store.writing(ledger, fn(db) { albedo_sqlite.run("INSERT INTO sessions VALUES('s','active')", on: db, with: []) })
   ledger
 }
 
 fn request(ledger: store.Store, i: Int, input: Int) -> Nil {
   let assert Ok(_) =
-    store.write(
-      ledger,
-      "INSERT INTO provider_requests(id,session,profile,provider,account,model,kind,finished_ms,outcome,input_tokens,cached_input_tokens,cache_creation_tokens,output_tokens,reasoning_tokens) VALUES(?,'s','p','prov',NULL,'m','turn',?,'ok',?,NULL,NULL,0,NULL)",
-      [sqlight.int(i), sqlight.int(base_day * day + hour), sqlight.int(input)],
-    )
+    store.writing(ledger, fn(db) { albedo_sqlite.run("INSERT INTO provider_requests(id,session,profile,provider,account,model,kind,finished_ms,outcome,input_tokens,cached_input_tokens,cache_creation_tokens,output_tokens,reasoning_tokens) VALUES(?,'s','p','prov',NULL,'m','turn',?,'ok',?,NULL,NULL,0,NULL)", on: db, with: [sqlight.int(i), sqlight.int(base_day * day + hour), sqlight.int(input)]) })
   Nil
 }
 

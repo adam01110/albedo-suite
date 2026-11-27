@@ -12,7 +12,8 @@ import gleam/string
 // across, so each module still runs beside the others in its own VM.
 
 pub fn database() -> store.Store {
-  let assert Ok(db) = store.start(":memory:", "", core_store.tables())
+  let assert Ok(db) =
+    store.start(":memory:", fn(_) { Ok(Nil) }, core_store.tables())
   let assert Ok(Nil) = quota.initialise(db)
   db
 }

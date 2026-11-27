@@ -74,8 +74,8 @@ func TestToolImagesSurviveLiveAndReplayMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	replay, err := historyEntryEvents(decoded[0])
-	if err != nil || len(replay) != 2 || len(replay[0].Images) != 1 || replay[0].Images[0] != event.Images[0] {
+	replay, err := historyEvents(decoded)
+	if err != nil || len(replay) != 1 || len(replay[0].Images) != 1 || replay[0].Images[0] != event.Images[0] {
 		t.Fatalf("replay metadata lost: %+v %v", replay, err)
 	}
 	legacy, err := decodeChatEvent(json.RawMessage(strings.ReplaceAll(strings.ReplaceAll(live, `"entry_id":"42",`, ""), `"images":[`+meta+`],`, "")))

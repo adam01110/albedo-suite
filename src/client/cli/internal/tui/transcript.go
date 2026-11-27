@@ -2,13 +2,10 @@ package tui
 
 import (
 	"albedo/cli/internal/daemon"
-	"charm.land/lipgloss/v2"
+	"albedo/cli/internal/tui/chrome"
 	"cmp"
 	"encoding/json"
 	"fmt"
-	"github.com/alecthomas/chroma/v2"
-	"github.com/alecthomas/chroma/v2/lexers"
-	"github.com/charmbracelet/x/ansi"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -18,6 +15,11 @@ import (
 	"sync"
 	"time"
 	"unicode"
+
+	"charm.land/lipgloss/v2"
+	"github.com/alecthomas/chroma/v2"
+	"github.com/alecthomas/chroma/v2/lexers"
+	"github.com/charmbracelet/x/ansi"
 )
 
 type DisplayFlags struct {
@@ -32,15 +34,15 @@ type TranscriptRenderer struct {
 	// Open holds the keys of expanded bursts, messages, and notes.
 	Open       map[string]bool
 	ToolImages map[string]toolImagePreview
-	// Workspace roots the paths trace rows name.
-	Workspace string
-	BodyWidth int
 	// highlights keeps the chat's colored code and diff lines; nil keeps none.
 	highlights *highlightCache
 	// live is the reply streaming in, kept as rows so a draw renders only what
 	// arrived. Models are copied by value; the rows belong to the renderer the
 	// way the highlight cache does.
 	live *liveRender
+	// Workspace roots the paths trace rows name.
+	Workspace string
+	BodyWidth int
 }
 
 func NewTranscriptRenderer() TranscriptRenderer {
@@ -106,9 +108,9 @@ func (r TranscriptRenderer) nameplate(entry HistoryEntry, flags DisplayFlags, be
 	if !flags.Tools && who == before.speaker && entry.MailKind == "" {
 		return ""
 	}
-	style := DefaultStyles.Agent
+	style := chrome.DefaultStyles.Agent
 	if entry.Kind == EntryUser && entry.Source.FromPerson() {
-		style = DefaultStyles.You
+		style = chrome.DefaultStyles.You
 	}
 	var meta []string
 	if entry.MailKind != "" {
@@ -135,7 +137,7 @@ func (r TranscriptRenderer) nameplate(entry HistoryEntry, flags DisplayFlags, be
 	}
 	plate := markChrome + style.Render(label)
 	if len(meta) > 0 {
-		plate += DefaultStyles.Faint.Render(" · " + strings.Join(meta, " · "))
+		plate += chrome.DefaultStyles.Faint.Render(" · " + strings.Join(meta, " · "))
 	}
 	return plate
 }
@@ -143,25 +145,23 @@ func (r TranscriptRenderer) nameplate(entry HistoryEntry, flags DisplayFlags, be
 // errorRow marks only the label red. Long red text tires the eye, and the
 // message reads best in the prose color.
 func (r TranscriptRenderer) errorRow(text string) string {
-	return DefaultStyles.Error.Render("error:") + " " + text
+	return chrome.DefaultStyles.Error.Render("error:") + " " + text
 }
 
 // signoff closes a turn: a face for how it ended, then how long it took.
 func (r TranscriptRenderer) signoff(entry HistoryEntry) string {
-	style := DefaultStyles.Agent
+	style := chrome.DefaultStyles.Agent
 	switch entry.Mood {
 	case moodFailed:
-		style = DefaultStyles.Error
+		style = chrome.DefaultStyles.Error
 	case moodStopped:
-		style = DefaultStyles.Warning
+		style = chrome.DefaultStyles.Warning
 	}
 	var meta []string
 	if entry.Mood == moodStopped {
 		meta = append(meta, "stopped by you")
 	}
-	if entry.ElapsedMs > 0 {
-		meta = append(meta, formatElapsed(entry.ElapsedMs))
-	}
+	meta = append(meta, formatElapsed(entry.ElapsedMs))
 	if entry.Tools > 0 {
 		unit := "tools"
 		if entry.Tools == 1 {
@@ -180,9 +180,9 @@ func (r TranscriptRenderer) signoff(entry HistoryEntry) string {
 	}
 	row := markChrome + rowAction{verbCopy, entryKey(entry)}.mark() + style.Render(entry.Mood.face(entry.Timestamp))
 	if len(meta) > 0 {
-		row += " " + DefaultStyles.Faint.Render(strings.Join(meta, " · "))
+		row += " " + chrome.DefaultStyles.Faint.Render(strings.Join(meta, " · "))
 	}
-	return row + DefaultStyles.Faint.Render(" · ") + DefaultStyles.Muted.Render("⧉")
+	return row + chrome.DefaultStyles.Faint.Render(" · ") + chrome.DefaultStyles.Muted.Render("⧉")
 }
 
 var diffHunk = regexp.MustCompile(`^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@`)
@@ -203,9 +203,9 @@ func (r TranscriptRenderer) renderDiffPath(diff, path string, width int) string 
 		gutter, content, bg string
 		syntax              bool
 	}
-	panel, add, remove := diffPanel(), diffAdded(), diffRemoved()
+	panel, add, remove := chrome.DiffPanel(), chrome.DiffAdded(), chrome.DiffRemoved()
 	gutter := func(style lipgloss.Style, n int, sign string) string {
-		return keepBackground(style.Render(fmt.Sprintf("%4d %s ", n, sign)))
+		return chrome.KeepBackground(style.Render(fmt.Sprintf("%4d %s ", n, sign)))
 	}
 	parsed := []diffRow{{" ", clean(r.named(path)), panel, false}}
 	oldLine, newLine := 0, 0
@@ -221,13 +221,13 @@ func (r TranscriptRenderer) renderDiffPath(diff, path string, width int) string 
 		}
 		switch line[0] {
 		case '+':
-			parsed = append(parsed, diffRow{gutter(DefaultStyles.Success, newLine, "+"), clean(line[1:]), add, true})
+			parsed = append(parsed, diffRow{gutter(chrome.DefaultStyles.Success, newLine, "+"), clean(line[1:]), add, true})
 			newLine++
 		case '-':
-			parsed = append(parsed, diffRow{gutter(DefaultStyles.Error, oldLine, "-"), clean(line[1:]), remove, true})
+			parsed = append(parsed, diffRow{gutter(chrome.DefaultStyles.Error, oldLine, "-"), clean(line[1:]), remove, true})
 			oldLine++
 		case ' ':
-			parsed = append(parsed, diffRow{gutter(DefaultStyles.Decor, newLine, " "), clean(line[1:]), panel, true})
+			parsed = append(parsed, diffRow{gutter(chrome.DefaultStyles.Decor, newLine, " "), clean(line[1:]), panel, true})
 			newLine++
 			oldLine++
 		default:
@@ -245,9 +245,9 @@ func (r TranscriptRenderer) renderDiffPath(diff, path string, width int) string 
 	code = HighlightLines(code, lexerFor(path), r.highlights)
 	var rows []string
 	for _, row := range parsed {
-		body := keepBackground(DefaultStyles.Faint.Render(row.content))
+		body := chrome.KeepBackground(chrome.DefaultStyles.Faint.Render(row.content))
 		if row.syntax {
-			body, code = keepBackground(code[0]), code[1:]
+			body, code = chrome.KeepBackground(code[0]), code[1:]
 		}
 		for i, part := range strings.Split(ansi.Hardwrap(body, max(1, width-ansi.StringWidth(row.gutter)), true), "\n") {
 			prefix := row.gutter
@@ -255,7 +255,7 @@ func (r TranscriptRenderer) renderDiffPath(diff, path string, width int) string 
 				prefix = strings.Repeat(" ", ansi.StringWidth(row.gutter))
 			}
 			cell := prefix + part
-			rows = append(rows, row.bg+cell+strings.Repeat(" ", max(0, width-ansi.StringWidth(cell)))+ansiReset)
+			rows = append(rows, row.bg+cell+strings.Repeat(" ", max(0, width-ansi.StringWidth(cell)))+chrome.AnsiReset)
 		}
 	}
 	return strings.Join(rows, "\n")
@@ -283,15 +283,6 @@ func lineUnit(n int) string {
 	return "lines"
 }
 
-func firstLine(text string) string {
-	for line := range strings.SplitSeq(text, "\n") {
-		if line = strings.TrimSpace(line); line != "" {
-			return line
-		}
-	}
-	return ""
-}
-
 func toolSummary(entry HistoryEntry) string {
 	arg := func(key string) string {
 		if entry.ToolArgs == nil {
@@ -304,12 +295,12 @@ func toolSummary(entry HistoryEntry) string {
 		if entry.ToolTitle != "" {
 			return "python · " + entry.ToolTitle
 		}
-		if line := firstLine(arg("code")); line != "" {
+		if line := chrome.FirstLine(arg("code")); line != "" {
 			return "python · " + line
 		}
 		return "python"
 	case "shell":
-		return "$ " + firstLine(arg("command"))
+		return "$ " + chrome.FirstLine(arg("command"))
 	case "read_file", "write_file", "edit_file":
 		return strings.TrimSuffix(entry.ToolName, "_file") + " " + arg("path")
 	default:
@@ -493,7 +484,7 @@ func toolRowParts(entry HistoryEntry, failed bool, clock string) (string, string
 }
 
 func (r TranscriptRenderer) diffCounts(change daemon.FileChange) string {
-	return DefaultStyles.Success.Render(fmt.Sprintf("+%d", change.Added)) + " " + DefaultStyles.Error.Render(fmt.Sprintf("−%d", change.Removed))
+	return chrome.DefaultStyles.Success.Render(fmt.Sprintf("+%d", change.Added)) + " " + chrome.DefaultStyles.Error.Render(fmt.Sprintf("−%d", change.Removed))
 }
 
 // RenderToolTrace is a call's glance in normal mode: what it read, ran and
@@ -516,13 +507,13 @@ func (r TranscriptRenderer) RenderToolTrace(trace *daemon.ToolTrace, flags Displ
 		}
 		switch act.Kind {
 		case "artifact":
-			rows = append(rows, DefaultStyles.Faint.Render(artifactRow(act, width)))
+			rows = append(rows, chrome.DefaultStyles.Faint.Render(artifactRow(act, width)))
 			continue
 		case "skill":
-			rows = append(rows, DefaultStyles.Faint.Render(skillRow(act.Target, width)))
+			rows = append(rows, chrome.DefaultStyles.Faint.Render(skillRow(act.Target, width)))
 			continue
 		}
-		rows = append(rows, DefaultStyles.Faint.Render(r.traceLine(act.Kind, act.Target, isPath(act), width)))
+		rows = append(rows, chrome.DefaultStyles.Faint.Render(r.traceLine(act.Kind, act.Target, isPath(act), width)))
 		if act.Kind == "display" && act.Detail != "" {
 			rows = append(rows, r.renderDisplayRows(act.Target, act.Title, act.Description, act.Detail, width)...)
 		}
@@ -537,17 +528,17 @@ func (r TranscriptRenderer) RenderToolTrace(trace *daemon.ToolTrace, flags Displ
 			counts = "  " + r.diffCounts(change)
 		}
 		line := r.traceLine(label, change.Path, true, width-ansi.StringWidth(counts))
-		rows = append(rows, fit(DefaultStyles.Faint.Render(line), counts, width))
+		rows = append(rows, fit(chrome.DefaultStyles.Faint.Render(line), counts, width))
 		if flags.Diffs {
 			if change.Kind == "diff" {
 				rows = append(rows, r.renderDiffPath(change.Diff, change.Path, width))
 			} else {
-				rows = append(rows, DefaultStyles.Faint.Render(change.Reason))
+				rows = append(rows, chrome.DefaultStyles.Faint.Render(change.Reason))
 			}
 		}
 	}
 	if trace.Truncated {
-		rows = append(rows, DefaultStyles.Faint.Render("Some activity was not captured · /v shows what is available"))
+		rows = append(rows, chrome.DefaultStyles.Faint.Render("Some activity was not captured · /v shows what is available"))
 	}
 	return strings.Join(rows, "\n")
 }
@@ -566,7 +557,7 @@ func (r TranscriptRenderer) faintRows(rendered string, width int) []string {
 	var rows []string
 	for line := range strings.SplitSeq(rendered, "\n") {
 		for _, wrapped := range wrapOrChunkLine(line, width) {
-			rows = append(rows, DefaultStyles.Faint.Render(ansi.Strip(wrapped)))
+			rows = append(rows, chrome.DefaultStyles.Faint.Render(ansi.Strip(wrapped)))
 		}
 	}
 	return rows
@@ -603,10 +594,10 @@ func (r TranscriptRenderer) RenderAfter(before prior, entry HistoryEntry, flags 
 			rows = append(rows, r.renderToolImages(entry, width)...)
 		}
 		if entry.Skill != nil {
-			rows = append(rows, markChrome+DefaultStyles.Faint.Render(skillRow(entry.Skill.Name, width)))
+			rows = append(rows, markChrome+chrome.DefaultStyles.Faint.Render(skillRow(entry.Skill.Name, width)))
 		}
 	case EntryThinking:
-		rows = []string{markChrome + DefaultStyles.Faint.Render("thinking")}
+		rows = []string{markChrome + chrome.DefaultStyles.Faint.Render("thinking")}
 		if flags.Thinking {
 			render := RenderMarkdownAnsi
 			if entry.Live {
@@ -627,21 +618,33 @@ func (r TranscriptRenderer) RenderAfter(before prior, entry HistoryEntry, flags 
 		hasTrace := trace != nil && (len(trace.Activities) > 0 || len(trace.Changes) > 0)
 		failed := toolFailed(entry)
 		if !hasTrace || failed {
-			style := DefaultStyles.Faint
+			style := chrome.DefaultStyles.Faint
 			if failed {
-				style = DefaultStyles.Error
+				style = chrome.DefaultStyles.Error
 			}
 			rows = append(rows, markChrome+style.Render(toolRow(entry, failed, "", width)))
 		}
 		if hasTrace {
-			rows = append(rows, chrome(r.RenderToolTrace(trace, flags, width)))
+			rows = append(rows, markChromeRows(r.RenderToolTrace(trace, flags, width)))
 		}
 		rows = append(rows, r.renderToolImages(entry, width)...)
 	case EntryTurnEnd:
 		rows = []string{r.signoff(entry)}
 	case EntryNote:
+		text := entry.Text
+		if entry.NoteOrigin == "honcho" {
+			if !flags.Tools {
+				return ""
+			}
+			body := strings.TrimSpace(entry.Text)
+			heading, rest, _ := strings.Cut(body, "\n")
+			if strings.TrimSpace(heading) == "## Explicit Observations" {
+				body = strings.TrimSpace(rest)
+			}
+			text = "Honcho observations\n" + body
+		}
 		// Styling the whole note pads short rows to its longest line.
-		rows = []string{r.foldTall(entry, strings.Join(r.faintRows(entry.Text, width), "\n"))}
+		rows = []string{r.foldTall(entry, strings.Join(r.faintRows(text, width), "\n"))}
 	case EntryError:
 		rows = []string{r.errorRow(entry.Text)}
 	case EntryCompacted:
@@ -650,7 +653,7 @@ func (r TranscriptRenderer) RenderAfter(before prior, entry HistoryEntry, flags 
 			action = "hide"
 		}
 		verb, noun := compactionWords(entry.Strategy)
-		rows = []string{markChrome + DefaultStyles.Faint.Render(fmt.Sprintf("compaction done · %d items %s · ctrl+k %s %s", entry.Evicted, verb, action, noun))}
+		rows = []string{markChrome + chrome.DefaultStyles.Faint.Render(fmt.Sprintf("compaction done · %d items %s · ctrl+k %s %s", entry.Evicted, verb, action, noun))}
 		if flags.Compaction {
 			rows = append(rows, r.faintMarkdownRows(entry.Text, width)...)
 		}
@@ -682,7 +685,7 @@ func (r TranscriptRenderer) foldTall(entry HistoryEntry, body string) string {
 }
 
 func (r TranscriptRenderer) foldRow(key, label string) string {
-	return markChrome + rowAction{verbMore, key}.mark() + DefaultStyles.Faint.Render(label)
+	return markChrome + rowAction{verbMore, key}.mark() + chrome.DefaultStyles.Faint.Render(label)
 }
 
 // compactionWords names what a strategy did with the evicted items and what
@@ -761,11 +764,11 @@ func joint(above, below lane) lane {
 func (r TranscriptRenderer) rail(l lane) string {
 	switch l {
 	case laneYou:
-		return DefaultStyles.You.Render("│") + " "
+		return chrome.DefaultStyles.You.Render("│") + " "
 	case laneAgent:
-		return DefaultStyles.Agent.Render("│") + " "
+		return chrome.DefaultStyles.Agent.Render("│") + " "
 	case laneBusy:
-		return DefaultStyles.Busy.Render("│") + " "
+		return chrome.DefaultStyles.Busy.Render("│") + " "
 	}
 	return strings.Repeat(" ", railWidth)
 }
@@ -774,6 +777,9 @@ func (r TranscriptRenderer) rail(l lane) string {
 // separates it from the entry before, when one belongs, then its rows
 // wrapped beside its rail. head indexes the entry's first row.
 func (r TranscriptRenderer) Block(before []HistoryEntry, entry HistoryEntry, flags DisplayFlags) (rows []string, head int) {
+	if entry.NoteOrigin == "honcho" && !flags.Tools {
+		return nil, 0
+	}
 	return r.frame(before, entry, flags, func(width int) string {
 		return r.RenderAfter(priorOf(before), entry, flags, width)
 	})
@@ -800,6 +806,9 @@ func (r TranscriptRenderer) frame(before []HistoryEntry, first HistoryEntry, fla
 // separator is the blank row that belongs between entry and the one before it,
 // on the lane the two share.
 func (r TranscriptRenderer) separator(before []HistoryEntry, entry HistoryEntry, flags DisplayFlags) (string, bool) {
+	for len(before) > 0 && before[len(before)-1].NoteOrigin == "honcho" && !flags.Tools {
+		before = before[:len(before)-1]
+	}
 	if n := len(before); n > 0 && Separated(&before[n-1], entry, flags) {
 		return strings.TrimRight(r.rail(joint(laneOf(before[n-1]), laneOf(entry))), " "), true
 	}
@@ -833,7 +842,7 @@ func (r TranscriptRenderer) LiveHead(before []HistoryEntry, entry HistoryEntry, 
 		rows = append(rows, separate)
 	}
 	if entry.Kind == EntryThinking {
-		return r.frameRows(rows, laneOf(entry), markChrome+DefaultStyles.Faint.Render("thinking"))
+		return r.frameRows(rows, laneOf(entry), markChrome+chrome.DefaultStyles.Faint.Render("thinking"))
 	}
 	if plate := r.nameplate(entry, flags, priorOf(before)); plate != "" {
 		rows = r.frameRows(rows, laneOf(entry), plate)

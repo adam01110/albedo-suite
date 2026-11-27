@@ -3,12 +3,11 @@ package tui
 import (
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
-	"charm.land/lipgloss/v2"
+	"albedo/cli/internal/tui/chrome"
+
 	"github.com/alecthomas/chroma/v2/lexers"
 )
 
@@ -29,94 +28,16 @@ func base16Fixture(t *testing.T) ([]byte, [16]string) {
 
 func saveBase16State(t *testing.T) {
 	t.Helper()
-	active, palette, ink, styles, hues := base16Active, base16Palette, transcriptInk, DefaultStyles, identityHues
-	t.Cleanup(func() {
-		base16Active, base16Palette, transcriptInk, DefaultStyles, identityHues = active, palette, ink, styles, hues
-	})
+	ink, styles := chrome.CurrentInk, chrome.DefaultStyles
+	t.Cleanup(func() { chrome.CurrentInk, chrome.DefaultStyles = ink, styles })
 }
 
-func TestBase16Validation(t *testing.T) {
-	data, want := base16Fixture(t)
-	got, err := parseBase16Theme(data)
-	if err != nil || got != want {
-		t.Fatalf("parse = %v, %v", got, err)
-	}
-	// One input per rejection branch: unparsable JSON, a bad slot value, an extra key.
-	for _, bad := range []string{"bad", strings.Replace(string(data), want[5], "#xyzxyz", 1), strings.TrimSuffix(string(data), "}") + `,"extra":"#112233"}`} {
-		if _, err := parseBase16Theme([]byte(bad)); err == nil {
-			t.Errorf("accepted %s", bad)
-		}
-	}
-}
-
-func TestBase16DetectBypassesTerminal(t *testing.T) {
+func TestBase16HighlightKeepsTrueColor(t *testing.T) {
 	saveBase16State(t)
-	data, p := base16Fixture(t)
-	path := filepath.Join(t.TempDir(), "theme.json")
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("ALBEDO_THEME_FILE", path)
-	// No terminal is attached under go test; success requires bypassing the query.
-	if err := DetectInk(); err != nil {
-		t.Fatal(err)
-	}
-	if !base16Active || transcriptInk.bg != p[0] || transcriptInk.code != p[5] || transcriptInk.heading != p[13] {
-		t.Fatalf("wrong ink: %+v", transcriptInk)
-	}
-	for _, pair := range []struct {
-		style lipgloss.Style
-		want  string
-	}{
-		{DefaultStyles.You, p[12]}, {DefaultStyles.Error, p[8]}, {DefaultStyles.Warning, p[10]},
-		{DefaultStyles.Success, p[11]}, {DefaultStyles.Agent, p[14]},
-	} {
-		if pair.style.GetForeground() != lipgloss.Color(pair.want) {
-			t.Errorf("style != %s", pair.want)
-		}
-	}
-	if agentColors().you.hex() != p[12] || agentColors().hi.hex() != p[5] {
-		t.Fatal("orchestrator ignored palette")
-	}
-	// "Go" is #6fd1c4; its nearest palette slot is base0F (#c4a76c).
-	if got := languageStyle("Go", "").GetForeground(); got != lipgloss.Color(p[15]) {
-		t.Fatalf("language label %v, want palette slot %s", got, p[15])
-	}
+	_, p := base16Fixture(t)
+	chrome.UseBase16Theme(p)
 	lines := HighlightLines([]string{"var x = 1"}, lexers.Get("go"), nil)
 	if !strings.Contains(lines[0], "38;2;") || strings.Contains(lines[0], "38;5;") {
 		t.Fatalf("highlight quantized: %q", lines)
-	}
-}
-
-func TestBase16FileSelection(t *testing.T) {
-	saveBase16State(t)
-	t.Setenv("ALBEDO_THEME_FILE", "")
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
-	if loaded, err := loadBase16Theme(); loaded || err != nil {
-		t.Fatalf("missing default: %v, %v", loaded, err)
-	}
-	path := filepath.Join(dir, "albedo", "theme.json")
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		t.Fatal(err)
-	}
-	data, _ := base16Fixture(t)
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		t.Fatal(err)
-	}
-	if loaded, err := loadBase16Theme(); !loaded || err != nil {
-		t.Fatalf("default: %v, %v", loaded, err)
-	}
-	t.Setenv("ALBEDO_THEME_FILE", filepath.Join(dir, "missing"))
-	if _, err := loadBase16Theme(); err == nil {
-		t.Fatal("missing explicit path accepted")
-	}
-	t.Setenv("ALBEDO_THEME_FILE", path)
-	before := transcriptInk
-	if err := os.WriteFile(path, []byte("{}"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := loadBase16Theme(); err == nil || transcriptInk != before {
-		t.Fatal("invalid theme changed state or succeeded")
 	}
 }

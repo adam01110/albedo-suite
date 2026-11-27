@@ -3,11 +3,15 @@ package tui
 import (
 	"albedo/cli/internal/daemon"
 	"albedo/cli/internal/presentation"
+	"albedo/cli/internal/terminalui"
 	"cmp"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
+
+	"albedo/cli/internal/tui/chrome"
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -57,7 +61,7 @@ func svLogo() []string {
 			// Diagonal sweep so the gradient reads as light glancing off the mark.
 			if ch != " " {
 				t := (float64(c)/float64(width) + float64(r)/float64(rows)) / 2
-				ch = brandInk(t).Render(ch)
+				ch = chrome.BrandInk(t).Render(ch)
 			}
 			b.WriteString(ch)
 		}
@@ -86,19 +90,6 @@ func svCompactAge(ts *int64, now time.Time) string {
 		return fmt.Sprintf("%dw", int(d.Hours()/24/7))
 	}
 	return fmt.Sprintf("%dmo", int(d.Hours()/24/30))
-}
-
-// svCell fits plain text into exactly w columns.
-func svCell(s string, w int, right bool) string {
-	if w <= 0 {
-		return ""
-	}
-	s = ansi.Truncate(s, w, "…")
-	pad := strings.Repeat(" ", max(0, w-ansi.StringWidth(s)))
-	if right {
-		return pad + s
-	}
-	return s + pad
 }
 
 type svColumns struct {
@@ -130,26 +121,29 @@ func svLayout(width int) svColumns {
 }
 
 // svSep divides the columns.
-func svSep() string { return DefaultStyles.Decor.Render(" │ ") }
+func svSep() string { return chrome.DefaultStyles.Decor.Render(" │ ") }
 
 // ── view ───────────────────────────────────────────────────────────────────
 
-// View shows the grouped session list beside its preview when there is room,
+// Page shows the grouped session list beside its preview when there is room,
 // and the list alone on narrow terminals.
-func (m *SessionViewer) View() string {
+func (m *SessionViewer) Page() terminalui.Page {
 	m.ensure()
 	width := cmp.Or(m.Width, 80)
 	now := m.clock()
-	f := listFrame{
-		title:     located(m.brandName(), sessionText(m.workspacePlace())),
-		right:     m.totalCost(),
-		filter:    promptLead() + m.SearchInput.View(),
-		list:      func(w, h int) []string { return m.column(w, h, now) },
-		pane:      func(w, h int) []string { return m.preview(w, h, now) },
-		paneWidth: halfPane,
-		footer:    m.footer(width, now),
+	filter := chrome.PromptLead() + m.SearchInput.View()
+	if chips := m.filterChips(); chips != "" {
+		filter += "\n" + chips
 	}
-	return f.view(m.Width, m.Height)
+	return terminalui.Page{
+		Title:       chrome.Located(m.brandName(), sessionText(m.workspacePlace())),
+		Meta:        m.totalCost(),
+		Filter:      filter,
+		List:        func(w, h int) []string { return m.column(w, h, now) },
+		Detail:      func(w, h int) []string { return m.preview(w, h, now) },
+		DetailWidth: halfPane,
+		Footer:      m.footer(width, now),
+	}
 }
 
 // totalCost is the title rule's right end: what every stored session cost,
@@ -165,11 +159,105 @@ func (m SessionViewer) totalCost() string {
 	if m.TotalCost.Partial {
 		cost = "≥" + cost
 	}
-	return DefaultStyles.Faint.Render("total ") + DefaultStyles.Muted.Render(cost)
+	return chrome.DefaultStyles.Faint.Render("total ") + chrome.DefaultStyles.Muted.Render(cost)
 }
 
-// svFit pads or cuts a styled line to exactly w columns.
-func svFit(s string, w int) string { return svCell(s, w, false) }
+// filterChips is the active listing filter below the search line.
+func (m *SessionViewer) filterChips() string {
+	if m.ArchiveView || len(m.Filter) == 0 {
+		return ""
+	}
+	chips := make([]string, len(m.Filter))
+	for i, chip := range m.Filter {
+		chips[i] = chrome.Chip(chip.Token, chip.Typed)
+	}
+	return " " + strings.Join(chips, " ")
+}
+
+// filterOverlay composites the filter menu or typeahead over the rendered page.
+func (m *SessionViewer) filterOverlay(base string) string {
+	if m.ArchiveView {
+		return base
+	}
+	if m.filterMenu {
+		return m.floatPopup(base, daemon.SessionFilterOptions(), 0, true)
+	}
+	if start, _, items := m.suggestions(); len(items) > 0 {
+		return m.floatPopup(base, items, start, false)
+	}
+	return base
+}
+
+func (m *SessionViewer) floatPopup(base string, items []daemon.FilterSuggestion, start int, menu bool) string {
+	width, height := cmp.Or(m.Width, 80), cmp.Or(m.Height, 24)
+	y := 2
+	if height >= 12 {
+		y++
+	}
+	if len(m.Filter) > 0 {
+		y++
+	}
+	if len(items) == 0 || width < 18 || height-y < 3 {
+		return base
+	}
+	maxTok, maxDesc := 0, 0
+	for _, item := range items {
+		maxTok = max(maxTok, ansi.StringWidth(item.Token))
+		maxDesc = max(maxDesc, ansi.StringWidth(item.Description))
+	}
+	capacity := min(len(items), height-y-2)
+	selected := max(0, min(m.suggestIdx, len(items)-1))
+	first := min(max(0, selected-capacity/2), len(items)-capacity)
+	visible := items[first : first+capacity]
+	selected -= first
+	hintText := "tab"
+	if menu {
+		hintText = "space"
+	}
+	inner := min(width-4, maxTok+2+maxDesc+len(hintText)+6)
+	rows := make([]string, len(visible))
+	for i, item := range visible {
+		token := item.Token
+		if menu && slices.ContainsFunc(m.Filter, func(chip daemon.FilterChip) bool {
+			return chip.Token == item.Token
+		}) {
+			token = chrome.DefaultStyles.Prompt.Bold(true).Render(item.Token)
+		}
+		pad := strings.Repeat(" ", maxTok-ansi.StringWidth(item.Token)+2)
+		row := token + pad + chrome.DefaultStyles.Faint.Render(item.Description)
+		if i == selected {
+			hint := ""
+			maxLabel := max(1, inner-4)
+			if inner >= 22 {
+				hint = chrome.DefaultStyles.Faint.Render(hintText) + " "
+				maxLabel = max(1, inner-4-ansi.StringWidth(hint))
+			}
+			label := ansi.Truncate(row, maxLabel, "…")
+			gap := strings.Repeat(" ", max(1, inner-2-ansi.StringWidth(label)-ansi.StringWidth(hint)))
+			rows[i] = chrome.SelectedLine(chrome.SelectBar()+" "+label+gap+hint, inner)
+		} else {
+			text := "  " + ansi.Truncate(row, max(1, inner-4), "…")
+			if padRight := inner - ansi.StringWidth(text); padRight > 0 {
+				text += strings.Repeat(" ", padRight)
+			}
+			rows[i] = text
+		}
+	}
+	popup := chrome.PopoverStyle().Render(strings.Join(rows, "\n"))
+	xOff := 0
+	if runes := []rune(m.SearchInput.Value()); start > 0 && start <= len(runes) {
+		xOff = ansi.StringWidth(string(runes[:start]))
+	}
+	margin := 1
+	if width >= terminalui.SideWidth {
+		margin = 2
+	}
+	x := max(1, min(margin+ansi.StringWidth(chrome.PromptLead())+xOff, width-lipgloss.Width(popup)-1))
+	return lipgloss.NewCompositor(
+		lipgloss.NewLayer(base),
+		lipgloss.NewLayer(popup).X(x).Y(y).Z(1),
+	).Render()
+}
 
 // brandName is the title's brand: the archive says so.
 func (m SessionViewer) brandName() string {
@@ -181,38 +269,41 @@ func (m SessionViewer) brandName() string {
 
 // footer is the keys and the status, or the question while one is asked.
 func (m SessionViewer) footer(width int, now time.Time) string {
-	if m.confirm.asking() {
-		return m.confirm.footer(width, "")
+	if m.confirm.Asking() {
+		return m.confirm.Footer(width, "")
 	}
 	status, urgent := m.counts(now), false
 	switch {
 	case m.notice != "":
-		status, urgent = DefaultStyles.Error.Render(m.notice), true
+		status, urgent = chrome.DefaultStyles.Error.Render(m.notice), true
 	case m.Loading:
-		status = DefaultStyles.Faint.Render("loading…")
+		status = chrome.DefaultStyles.Faint.Render("loading…")
 	}
-	return footerLine(width, m.hints(), status, urgent)
+	return chrome.FooterLine(width, m.hints(), status, urgent)
 }
 
 // hints are the keys for the list, the archive, or a rename in progress.
-func (m SessionViewer) hints() []hint {
+func (m SessionViewer) hints() []chrome.Hint {
 	switch {
-	case m.rename.active():
-		return []hint{{"enter", "save"}, {"esc", "cancel"}, {"", "empty restores the automatic title"}}
+	case m.rename.Active():
+		return []chrome.Hint{{Key: "enter", Does: "save"}, {Key: "esc", Does: "cancel"}, {Key: "", Does: "empty restores the automatic title"}}
 	case m.ArchiveView:
 		if _, ok := m.Highlighted(); !ok {
-			return []hint{{"esc", "back"}}
+			return []chrome.Hint{{Key: "esc", Does: "back"}}
 		}
-		return []hint{{"↑↓", "move"}, {"enter", "open"}, {"ctrl+x", "delete"}, {"ctrl+r", "rename"}, {"ctrl+a", "restore"}, {"esc", "back"}}
+		return []chrome.Hint{{Key: "↑↓", Does: "move"}, {Key: "enter", Does: "open"}, {Key: "ctrl+x", Does: "delete"}, {Key: "ctrl+r", Does: "rename"}, {Key: "ctrl+a", Does: "restore"}, {Key: "esc", Does: "back"}}
 	}
 	esc := "quit"
 	if m.HasActive {
 		esc = "back"
 	}
-	if item, ok := m.Highlighted(); !ok || m.section[item.ID] == secAction {
-		return []hint{{"↑↓", "move"}, {"tab", "switch"}, {"enter", "open"}, {"ctrl+f", "folders"}, {"@", "hosts"}, {"esc", esc}}
+	if m.filterMenu {
+		return []chrome.Hint{{Key: "↑↓", Does: "move"}, {Key: "space", Does: "toggle"}, {Key: "enter", Does: "apply"}, {Key: "esc", Does: "close"}}
 	}
-	return []hint{{"↑↓", "move"}, {"tab", "switch"}, {"enter", "open"}, {"ctrl+r", "rename"}, {"ctrl+s", "pin"}, {"ctrl+a", "archive"}, {"ctrl+f", "folders"}, {"@", "hosts"}, {"esc", esc}}
+	if item, ok := m.Highlighted(); !ok || m.section[item.ID] == secAction {
+		return []chrome.Hint{{Key: "↑↓", Does: "move"}, {Key: "tab", Does: "switch"}, {Key: "enter", Does: "open"}, {Key: "ctrl+t", Does: "filters"}, {Key: "ctrl+f", Does: "folders"}, {Key: "@", Does: "hosts"}, {Key: "esc", Does: esc}}
+	}
+	return []chrome.Hint{{Key: "↑↓", Does: "move"}, {Key: "tab", Does: "switch"}, {Key: "enter", Does: "open"}, {Key: "ctrl+r", Does: "rename"}, {Key: "ctrl+s", Does: "pin"}, {Key: "ctrl+a", Does: "archive"}, {Key: "ctrl+t", Does: "filters"}, {Key: "ctrl+f", Does: "folders"}, {Key: "@", Does: "hosts"}, {Key: "esc", Does: esc}}
 }
 
 // counts is how many sessions the list holds, and how many of them today.
@@ -227,9 +318,9 @@ func (m SessionViewer) counts(now time.Time) string {
 			}
 		}
 	}
-	out := DefaultStyles.Faint.Render(counted(count, "session"))
+	out := chrome.DefaultStyles.Faint.Render(counted(count, "session"))
 	if today > 0 {
-		out += DefaultStyles.Decor.Render(" · ") + DefaultStyles.Success.Render(fmt.Sprintf("%d today", today))
+		out += chrome.DefaultStyles.Decor.Render(" · ") + chrome.DefaultStyles.Success.Render(fmt.Sprintf("%d today", today))
 	}
 	return out
 }
@@ -245,7 +336,7 @@ func (m SessionViewer) column(width, height int, now time.Time) []string {
 		case m.Loading:
 			message = "   loading sessions…"
 		}
-		return scrollWindow([]string{DefaultStyles.Faint.Render(message)}, -1, width, height)
+		return scrollWindow([]string{chrome.DefaultStyles.Faint.Render(message)}, -1, width, height)
 	}
 
 	selectedAt, total := -1, 0
@@ -274,7 +365,7 @@ func (m SessionViewer) column(width, height int, now time.Time) []string {
 	// Overflow markers replace edge rows rather than adding to the window.
 	first, last := start, end
 	if total > height && height >= 3 {
-		more := svFit(DefaultStyles.Faint.Render("   ···"), width)
+		more := chrome.Fit(chrome.DefaultStyles.Faint.Render("   ···"), width)
 		if start > 0 {
 			out[0] = more
 			first++
@@ -293,7 +384,7 @@ func (m SessionViewer) column(width, height int, now time.Time) []string {
 				position++
 			}
 			if position >= first && position < last {
-				out[position-start] = svFit(sectionRule(sectionTitles[group.section], m.sectionCounts[group.section], width), width)
+				out[position-start] = chrome.Fit(chrome.SectionRule(sectionTitles[group.section], m.sectionCounts[group.section], width), width)
 			}
 			position++
 		}
@@ -301,7 +392,7 @@ func (m SessionViewer) column(width, height int, now time.Time) []string {
 			index := group.first + offset
 			item := m.Filtered[index]
 			session, _ := m.session(item.ID)
-			out[position+offset-start] = svFit(m.row(item, session, group.section, index == m.Cursor, width, cols, now), width)
+			out[position+offset-start] = chrome.Fit(m.row(item, session, group.section, index == m.Cursor, width, cols, now), width)
 		}
 		position += group.count
 	}
@@ -336,9 +427,9 @@ func drawFrom(n int, line func(int) string, start, width, height int) []string {
 	for i := range out {
 		switch at := start + i; {
 		case cut && (i == 0 && start > 0 || i == height-1 && at < n-1):
-			out[i] = svFit(DefaultStyles.Faint.Render("   ···"), width)
+			out[i] = chrome.Fit(chrome.DefaultStyles.Faint.Render("   ···"), width)
 		case at < n:
-			out[i] = svFit(line(at), width)
+			out[i] = chrome.Fit(line(at), width)
 		default:
 			out[i] = strings.Repeat(" ", width)
 		}
@@ -349,21 +440,21 @@ func drawFrom(n int, line func(int) string, start, width, height int) []string {
 func (m SessionViewer) row(item PickerItem, s daemon.Session, sec int, selected bool, width int, cols svColumns, now time.Time) string {
 	// A row being renamed drops the selection surface and takes the prompt's
 	// color, so it reads as a place to type rather than a highlight.
-	editing := m.rename.id == item.ID
+	editing := m.rename.ID == item.ID
 	selected = selected && !editing
 	st := func(style lipgloss.Style) lipgloss.Style {
 		if selected {
-			return style.Inherit(DefaultStyles.Selected)
+			return style.Inherit(chrome.DefaultStyles.Selected)
 		}
 		return style
 	}
 	bar := " "
 	if selected {
-		bar = st(DefaultStyles.Agent).Render("▌")
+		bar = st(chrome.DefaultStyles.Agent).Render("▌")
 	}
 	titleStyle := lipgloss.NewStyle()
 	if selected {
-		titleStyle = DefaultStyles.Bold
+		titleStyle = chrome.DefaultStyles.Bold
 	}
 	fill := func(line string) string {
 		if pad := width - ansi.StringWidth(line); pad > 0 {
@@ -373,78 +464,80 @@ func (m SessionViewer) row(item PickerItem, s daemon.Session, sec int, selected 
 	}
 
 	if sec == secAction {
-		glyph, title, hint, fg := "✦ ", "New session", "in "+sessionText(filepath.Base(m.Workspace)), DefaultStyles.You
+		glyph, title, hint, fg := "✦ ", "New session", "in "+sessionText(filepath.Base(m.Workspace)), chrome.DefaultStyles.You
 		switch item.ID {
+		case "settings":
+			glyph, title, hint, fg = "◇ ", "settings", "connections and preferences", chrome.DefaultStyles.Muted
 		case "archive":
-			glyph, title, hint, fg = "▤ ", "Archive", counted(len(m.archivedIDs), "session"), DefaultStyles.Muted
+			glyph, title, hint, fg = "▤ ", "Archive", counted(len(m.archivedIDs), "session"), chrome.DefaultStyles.Muted
 		case "login":
-			glyph, title, hint, fg = "◇ ", "Accounts", "sign-ins", DefaultStyles.Muted
+			glyph, title, hint, fg = "◇ ", "Accounts", "sign-ins", chrome.DefaultStyles.Muted
 		}
 		titleWidth := min(ansi.StringWidth(title), cols.title)
 		return fill(bar + st(fg).Render(glyph) + st(lipgloss.NewStyle()).Render(" ") +
-			st(titleStyle.Inherit(fg)).Render(svCell(title, titleWidth, false)) +
-			st(DefaultStyles.Faint).Render(svCell("  "+hint, max(0, width-4-titleWidth), false)))
+			st(titleStyle.Inherit(fg)).Render(chrome.Cell(title, titleWidth, false)) +
+			st(chrome.DefaultStyles.Faint).Render(chrome.Cell("  "+hint, max(0, width-4-titleWidth), false)))
 	}
 
-	glyph, iconStyle := "· ", DefaultStyles.Faint
+	glyph, iconStyle := "· ", chrome.DefaultStyles.Faint
 	switch {
 	case editing:
-		bar, glyph, iconStyle = DefaultStyles.Prompt.Render("▌"), "✎ ", DefaultStyles.Prompt
+		bar, glyph, iconStyle = chrome.DefaultStyles.Prompt.Render("▌"), "✎ ", chrome.DefaultStyles.Prompt
 	case selected:
-		glyph, iconStyle = "◆ ", DefaultStyles.Agent
+		glyph, iconStyle = "◆ ", chrome.DefaultStyles.Agent
 	case sec == secPinned:
-		glyph, iconStyle = "★ ", DefaultStyles.Agent
+		glyph, iconStyle = "★ ", chrome.DefaultStyles.Agent
 	case s.Moved != nil:
 		glyph = "↗ "
 	case s.MovePending != nil:
-		glyph, iconStyle = "↗ ", DefaultStyles.Warning
+		glyph, iconStyle = "↗ ", chrome.DefaultStyles.Warning
 	case warm(s, now):
-		glyph, iconStyle = "● ", DefaultStyles.Success
+		glyph, iconStyle = "● ", chrome.DefaultStyles.Success
 	}
 	gap := st(lipgloss.NewStyle()).Render("  ")
-	title := st(titleStyle).Render(svCell(item.Label, cols.title, false))
+	title := st(titleStyle).Render(chrome.Cell(item.Label, cols.title, false))
 	if editing {
-		title = m.rename.view(cols.title)
+		title = m.rename.View(cols.title)
 	}
 	line := bar + st(iconStyle).Render(glyph) + st(lipgloss.NewStyle()).Render(" ") + title
 	if cols.model > 0 {
-		ms := DefaultStyles.Muted
+		ms := chrome.DefaultStyles.Muted
 		if selected {
 			ms = lipgloss.NewStyle()
 		}
 		model := cmp.Or(sessionText(s.Model), "—")
 		switch {
 		case s.Moved != nil:
-			ms, model = DefaultStyles.Faint, "↗ "+sessionText(s.Moved.Host)
+			ms, model = chrome.DefaultStyles.Faint, "↗ "+sessionText(s.Moved.Host)
 		case s.MovePending != nil:
-			ms, model = DefaultStyles.Faint, "↗ "+sessionText(s.MovePending.Host)+" · pending"
+			ms, model = chrome.DefaultStyles.Faint, "↗ "+sessionText(s.MovePending.Host)+" · pending"
 			if ansi.StringWidth(model) > cols.model {
 				model = "↗ pending"
 			}
 		}
-		line += gap + st(ms).Render(svCell(model, cols.model, false))
+		line += gap + st(ms).Render(chrome.Cell(model, cols.model, false))
 	}
 	if cols.workspace > 0 {
-		ws := DefaultStyles.Muted
+		ws := chrome.DefaultStyles.Muted
 		if s.Workspace == m.Workspace {
-			ws = DefaultStyles.Faint
+			ws = chrome.DefaultStyles.Faint
 		}
-		line += gap + st(ws).Render(svCell(sessionText(filepath.Base(s.Workspace)), cols.workspace, false))
+		line += gap + st(ws).Render(chrome.Cell(sessionText(filepath.Base(s.Workspace)), cols.workspace, false))
 	}
 	if cols.cost > 0 {
 		cost, known := estimatedCost(s.SessionCostUSD, true)
-		cs := DefaultStyles.Muted
+		cs := chrome.DefaultStyles.Muted
 		if !known {
-			cost, cs = "—", DefaultStyles.Faint
+			cost, cs = "—", chrome.DefaultStyles.Faint
 		}
-		line += gap + st(cs).Render(svCell(cost, cols.cost, true))
+		line += gap + st(cs).Render(chrome.Cell(cost, cols.cost, true))
 	}
 	if cols.age > 0 {
-		as := DefaultStyles.Faint
+		as := chrome.DefaultStyles.Faint
 		if warm(s, now) {
-			as = DefaultStyles.Success
+			as = chrome.DefaultStyles.Success
 		}
-		line += gap + st(as).Render(svCell(svCompactAge(s.LastAssistantAt, now), cols.age, true))
+		line += gap + st(as).Render(chrome.Cell(svCompactAge(s.LastAssistantAt, now), cols.age, true))
 	}
 	return fill(line)
 }
@@ -455,7 +548,7 @@ func (m SessionViewer) row(item PickerItem, s daemon.Session, sec int, selected 
 func paneBox(lines []string, inner, width, height int) []string {
 	out := make([]string, 0, height)
 	for _, l := range lines[:min(len(lines), height)] {
-		out = append(out, " "+svFit(l, inner)+" ")
+		out = append(out, " "+chrome.Fit(l, inner)+" ")
 	}
 	for len(out) < height {
 		out = append(out, strings.Repeat(" ", width))
@@ -471,7 +564,7 @@ func (m SessionViewer) preview(width, height int, now time.Time) []string {
 	s, isSession := m.session(item.ID)
 	switch {
 	case !ok && m.SearchInput.Value() == "":
-		return paneBox([]string{"", DefaultStyles.Muted.Render("Nothing listed here")}, inner, width, height)
+		return paneBox([]string{"", chrome.DefaultStyles.Muted.Render("Nothing listed here")}, inner, width, height)
 	case !ok:
 		return paneBox(nil, inner, width, height)
 	case !isSession:
@@ -480,30 +573,30 @@ func (m SessionViewer) preview(width, height int, now time.Time) []string {
 
 	var top []string
 	for _, l := range svWrap(sessionTitle(s), inner, 2) {
-		top = append(top, DefaultStyles.Bold.Render(l))
+		top = append(top, chrome.DefaultStyles.Bold.Render(l))
 	}
 	meta := []string{}
 	if s.Pinned {
-		meta = append(meta, DefaultStyles.Agent.Render("★ pinned"))
+		meta = append(meta, chrome.DefaultStyles.Agent.Render("★ pinned"))
 	}
 	if s.Model != "" {
-		meta = append(meta, DefaultStyles.Muted.Render(sessionText(s.Model)))
+		meta = append(meta, chrome.DefaultStyles.Muted.Render(sessionText(s.Model)))
 	}
 	if s.Workspace != "" {
-		meta = append(meta, DefaultStyles.Muted.Render(sessionText(sessionPlace(s))))
+		meta = append(meta, chrome.DefaultStyles.Muted.Render(sessionText(sessionPlace(s))))
 	}
-	meta = append(meta, DefaultStyles.Faint.Render(presentation.AssistantAge(s.LastAssistantAt, now)))
+	meta = append(meta, chrome.DefaultStyles.Faint.Render(presentation.AssistantAge(s.LastAssistantAt, now)))
 	if c := m.previews[s.ID]; c != nil && !c.loading && !c.err {
-		meta = append(meta, DefaultStyles.Faint.Render(fmt.Sprintf("%d messages", s.TranscriptCount)))
+		meta = append(meta, chrome.DefaultStyles.Faint.Render(fmt.Sprintf("%d messages", s.TranscriptCount)))
 	}
-	top = append(top, strings.Join(meta, DefaultStyles.Decor.Render(" · ")))
+	top = append(top, strings.Join(meta, chrome.DefaultStyles.Decor.Render(" · ")))
 	switch {
 	case s.Moved != nil:
-		top = append(top, DefaultStyles.Muted.Render("moved to "+sessionText(s.Moved.Host))+DefaultStyles.Faint.Render(" · "+sessionText(s.Moved.Workspace)))
+		top = append(top, chrome.DefaultStyles.Muted.Render("moved to "+sessionText(s.Moved.Host))+chrome.DefaultStyles.Faint.Render(" · "+sessionText(s.Moved.Workspace)))
 	case s.MovePending != nil:
-		top = append(top, DefaultStyles.Warning.Render("moving to "+sessionText(s.MovePending.Host)+" · checklist pending"), DefaultStyles.Faint.Render("open it, then enter or /cd reopens the checklist"))
+		top = append(top, chrome.DefaultStyles.Warning.Render("moving to "+sessionText(s.MovePending.Host)+" · checklist pending"), chrome.DefaultStyles.Faint.Render("open it, then enter or /cd reopens the checklist"))
 	}
-	top = append(top, DefaultStyles.Decor.Render(strings.Repeat("─", inner)))
+	top = append(top, chrome.DefaultStyles.Decor.Render(strings.Repeat("─", inner)))
 	bottom := m.transcript(s, inner, max(0, height-len(top)-1))
 	return paneBox(append(top, bottom...), inner, width, height)
 }
@@ -516,17 +609,19 @@ func (m SessionViewer) actionPreview(id string, inner, height int) []string {
 		if logo := svLogo(); height >= len(logo)+8 {
 			lines = append(append(lines, ""), logo...)
 		}
-		lines = append(lines, "", gradientText("New session", true), "",
-			DefaultStyles.Muted.Render("start fresh in ")+lipgloss.NewStyle().Render(sessionText(m.workspacePlace())), "",
-			DefaultStyles.Faint.Render("enter ")+DefaultStyles.Muted.Render("begin"))
+		lines = append(lines, "", chrome.GradientText("New session", true), "",
+			chrome.DefaultStyles.Muted.Render("start fresh in ")+lipgloss.NewStyle().Render(sessionText(m.workspacePlace())), "",
+			chrome.DefaultStyles.Faint.Render("enter ")+chrome.DefaultStyles.Muted.Render("begin"))
+	case "settings":
+		lines = []string{"", chrome.DefaultStyles.Bold.Render("settings"), "", chrome.DefaultStyles.Muted.Render("connections and preferences"), "", chrome.DefaultStyles.Faint.Render("enter open")}
 	case "archive":
-		lines = []string{"", "", DefaultStyles.Muted.Bold(true).Render("▤ Archive"), "",
-			DefaultStyles.Muted.Render("Sessions kept out of the main list."), "",
-			DefaultStyles.Faint.Render("enter ") + DefaultStyles.Muted.Render("browse")}
+		lines = []string{"", "", chrome.DefaultStyles.Muted.Bold(true).Render("▤ Archive"), "",
+			chrome.DefaultStyles.Muted.Render("Sessions kept out of the main list."), "",
+			chrome.DefaultStyles.Faint.Render("enter ") + chrome.DefaultStyles.Muted.Render("browse")}
 	default:
-		lines = []string{"", "", DefaultStyles.Muted.Bold(true).Render("◇ Accounts"), "",
-			DefaultStyles.Muted.Render("sign in to Claude, ChatGPT, Gemini"), DefaultStyles.Muted.Render("or a key; rotation and sign-out."), "",
-			DefaultStyles.Faint.Render("enter ") + DefaultStyles.Muted.Render("manage")}
+		lines = []string{"", "", chrome.DefaultStyles.Muted.Bold(true).Render("◇ Accounts"), "",
+			chrome.DefaultStyles.Muted.Render("sign in to Claude, ChatGPT, Gemini"), chrome.DefaultStyles.Muted.Render("or a key; rotation and sign-out."), "",
+			chrome.DefaultStyles.Faint.Render("enter ") + chrome.DefaultStyles.Muted.Render("manage")}
 	}
 	for i, l := range lines {
 		lines[i] = strings.Repeat(" ", max(0, (inner-ansi.StringWidth(l))/2)) + l
@@ -543,7 +638,7 @@ func (m SessionViewer) transcript(s daemon.Session, width, height int) []string 
 	note := func(lines ...string) []string {
 		out := []string{""}
 		for _, l := range lines {
-			out = append(out, DefaultStyles.Faint.Render(l))
+			out = append(out, chrome.DefaultStyles.Faint.Render(l))
 		}
 		return out
 	}
@@ -594,7 +689,7 @@ func (m SessionViewer) transcript(s daemon.Session, width, height int) []string 
 		own := lanes[b.kind]
 		textStyle, maxLines := lipgloss.NewStyle(), 3
 		if b.kind == "tool" {
-			textStyle, maxLines = DefaultStyles.Faint, 2
+			textStyle, maxLines = chrome.DefaultStyles.Faint, 2
 			for i, name := range b.tools {
 				if n := b.counts[name]; n > 1 {
 					b.tools[i] = fmt.Sprintf("%s ×%d", name, n)
@@ -613,7 +708,7 @@ func (m SessionViewer) transcript(s daemon.Session, width, height int) []string 
 	lines = append([]string{""}, lines...)
 	if len(lines) > height {
 		lines = lines[len(lines)-height:]
-		lines[0] = DefaultStyles.Faint.Render("··· earlier")
+		lines[0] = chrome.DefaultStyles.Faint.Render("··· earlier")
 	}
 	return lines
 }

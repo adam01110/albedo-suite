@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"albedo/cli/internal/tui/chrome"
+
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -181,14 +183,14 @@ func (m ChatModel) glanceRows(g sidebarGlance, limit int) []string {
 	if len(g.Rows) > shown {
 		shown = limit - 2
 	}
-	rows := []string{DefaultStyles.Faint.Render(fmt.Sprintf("%s · %d", g.Title, g.count()))}
+	rows := []string{chrome.DefaultStyles.Faint.Render(fmt.Sprintf("%s · %d", g.Title, g.count()))}
 	for _, item := range g.Rows[:shown] {
-		mark, style := "○", DefaultStyles.Faint
+		mark, style := "○", chrome.DefaultStyles.Faint
 		switch item.Tone {
 		case ToneActive:
-			mark, style = "●", DefaultStyles.Success
+			mark, style = "●", chrome.DefaultStyles.Success
 		case ToneWarning:
-			mark, style = "!", DefaultStyles.Warning
+			mark, style = "!", chrome.DefaultStyles.Warning
 		case ToneMuted:
 			mark = "✓"
 		}
@@ -200,7 +202,7 @@ func (m ChatModel) glanceRows(g sidebarGlance, limit int) []string {
 		rows = append(rows, style.Render(mark)+" "+ansi.Truncate(label, max(1, m.sidebarWidth()-2), "…"))
 	}
 	if shown < len(g.Rows) {
-		rows = append(rows, DefaultStyles.Faint.Render(fmt.Sprintf("+%d more", len(g.Rows)-shown)))
+		rows = append(rows, chrome.DefaultStyles.Faint.Render(fmt.Sprintf("+%d more", len(g.Rows)-shown)))
 	}
 	return rows
 }
@@ -208,56 +210,54 @@ func (m ChatModel) glanceRows(g sidebarGlance, limit int) []string {
 func (m ChatModel) renderFooter() string {
 	width := m.chatWidth()
 	right, compact := m.contextStat()
-	cost := DefaultStyles.Faint.Render(" · " + m.costStat())
+	cost := chrome.DefaultStyles.Faint.Render(" · " + m.costStat())
 	right += cost
 	compact += cost
-	commands := hint{"i", "type"}
+	commands := chrome.Hint{Key: "i", Does: "type"}
+	modeStyle := chrome.DefaultStyles.You
 	if !m.vim.normal {
-		commands = hint{"esc", "normal"}
+		commands = chrome.Hint{Key: "esc", Does: "normal"}
+		modeStyle = chrome.DefaultStyles.Success
 	}
-	modeStyle := DefaultStyles.You
-	if !m.vim.normal {
-		modeStyle = DefaultStyles.Success
-	}
-	mode := hint{modeStyle.Bold(true).Render(m.vimMode()), ""}
-	sessions := hint{"←", "sessions"}
+	mode := chrome.Hint{Key: modeStyle.Bold(true).Render(m.vimMode())}
+	sessions := chrome.Hint{Key: "←", Does: "sessions"}
 	candidates := []struct {
 		right string
-		left  []hint
+		left  []chrome.Hint
 	}{
-		{left: []hint{mode, sessions, commands, {"shift+↑↓", "your messages"}, {"ctrl+j", "diffs"}, {"ctrl+o", "agents"}}, right: right},
-		{left: []hint{mode, sessions, commands, {"ctrl+j", "diffs"}, {"ctrl+o", "agents"}}, right: right},
-		{left: []hint{mode, sessions, commands, {"ctrl+o", "agents"}}, right: compact},
-		{left: []hint{mode, sessions, commands}, right: compact},
-		{left: []hint{mode, commands, {"ctrl+j", "diffs"}}, right: compact},
-		{left: []hint{mode, commands}, right: compact},
-		{left: []hint{mode, {"/", ""}}, right: compact},
+		{left: []chrome.Hint{mode, sessions, commands, {Key: "shift+↑↓", Does: "your messages"}, {Key: "ctrl+j", Does: "diffs"}, {Key: "ctrl+o", Does: "agents"}}, right: right},
+		{left: []chrome.Hint{mode, sessions, commands, {Key: "ctrl+j", Does: "diffs"}, {Key: "ctrl+o", Does: "agents"}}, right: right},
+		{left: []chrome.Hint{mode, sessions, commands, {Key: "ctrl+o", Does: "agents"}}, right: compact},
+		{left: []chrome.Hint{mode, sessions, commands}, right: compact},
+		{left: []chrome.Hint{mode, commands, {Key: "ctrl+j", Does: "diffs"}}, right: compact},
+		{left: []chrome.Hint{mode, commands}, right: compact},
+		{left: []chrome.Hint{mode, {Key: "/", Does: ""}}, right: compact},
 	}
 	if slices.ContainsFunc(m.History.Entries(), func(e HistoryEntry) bool { return e.Kind == EntryShell }) {
 		candidates = append([]struct {
 			right string
-			left  []hint
+			left  []chrome.Hint
 		}{
-			{left: []hint{mode, sessions, commands, {"ctrl+shift+o", "shell output"}, {"ctrl+shift+x", "stop shell"}}, right: right},
-			{left: []hint{mode, commands, {"ctrl+shift+o", "output"}, {"ctrl+shift+x", "stop"}}, right: compact},
-			{left: []hint{mode, commands, {"ctrl+shift+o", "output"}}, right: compact},
+			{left: []chrome.Hint{mode, sessions, commands, {Key: "ctrl+shift+o", Does: "shell output"}, {Key: "ctrl+shift+x", Does: "stop shell"}}, right: right},
+			{left: []chrome.Hint{mode, commands, {Key: "ctrl+shift+o", Does: "output"}, {Key: "ctrl+shift+x", Does: "stop"}}, right: compact},
+			{left: []chrome.Hint{mode, commands, {Key: "ctrl+shift+o", Does: "output"}}, right: compact},
 		}, candidates...)
 	}
 	if m.editing != nil {
 		candidates = append([]struct {
 			right string
-			left  []hint
+			left  []chrome.Hint
 		}{
-			{left: []hint{{"enter", "save edit"}, {"esc", "cancel edit"}}, right: compact},
+			{left: []chrome.Hint{{Key: "enter", Does: "save edit"}, {Key: "esc", Does: "cancel edit"}}, right: compact},
 		}, candidates...)
 	}
 	for _, c := range candidates {
-		left := keyHints(c.left...)
+		left := chrome.KeyHints(c.left...)
 		if gap := width - lipgloss.Width(left) - lipgloss.Width(c.right); gap > 0 {
 			return left + strings.Repeat(" ", gap) + c.right
 		}
 	}
-	return ansi.Truncate(keyHints(mode), width, "…")
+	return ansi.Truncate(chrome.KeyHints(mode), width, "…")
 }
 
 // contextStat is how much of the prompt was read from cache, fading as the
@@ -268,7 +268,7 @@ func (m ChatModel) renderFooter() string {
 func (m ChatModel) contextStat() (full, short string) {
 	usage := m.Usage
 	if usage == nil || usage.Model != "" && m.Model != "" && usage.Model != m.Model {
-		return DefaultStyles.Faint.Render("—/— cached"), DefaultStyles.Faint.Render("—/—")
+		return chrome.DefaultStyles.Faint.Render("—/— cached"), chrome.DefaultStyles.Faint.Render("—/—")
 	}
 	count := func(n *int) string {
 		if n == nil || *n < 0 {
@@ -276,20 +276,20 @@ func (m ChatModel) contextStat() (full, short string) {
 		}
 		return shortCount(*n)
 	}
-	ratio := DefaultStyles.Muted.Render(count(cachedNow(usage, time.Now())) + "/" + count(usage.PromptTokens))
-	fullRatio, shortRatio := ratio+DefaultStyles.Faint.Render(" cached"), ratio
+	ratio := chrome.DefaultStyles.Muted.Render(count(cachedNow(usage, time.Now())) + "/" + count(usage.PromptTokens))
+	fullRatio, shortRatio := ratio+chrome.DefaultStyles.Faint.Render(" cached"), ratio
 	if usage.Size != nil {
 		// No call measured this request, so there is no cache to show: show
 		// what the size is made of instead.
 		sizeFull, sizeShort := sizeStat(*usage.Size)
-		fullRatio, shortRatio = DefaultStyles.Muted.Render(sizeFull), DefaultStyles.Muted.Render(sizeShort)
+		fullRatio, shortRatio = chrome.DefaultStyles.Muted.Render(sizeFull), chrome.DefaultStyles.Muted.Render(sizeShort)
 	}
 	share := ""
 	if total := contextTokens(usage); total != nil && m.window != nil && m.windowModel != nil && *m.windowModel == usage.Model {
 		pct := int(math.Round(100 * float64(*total) / float64(*m.window)))
-		style := DefaultStyles.Faint
+		style := chrome.DefaultStyles.Faint
 		if pct >= 90 {
-			style = DefaultStyles.Warning
+			style = chrome.DefaultStyles.Warning
 		}
 		share = " " + style.Render(fmt.Sprintf("(%d%%)", pct))
 	}

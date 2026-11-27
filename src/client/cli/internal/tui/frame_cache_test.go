@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"albedo/cli/internal/daemon"
+
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -234,5 +235,44 @@ func TestComposerCacheFollowsTheTextarea(t *testing.T) {
 	}
 	if !strings.Contains(ansi.Strip(m.View()), "hello") {
 		t.Fatal("the draft vanished from the composer")
+	}
+}
+
+// An idle snapshot replays the persisted reply without its live completion event.
+func TestResumedReplyHasTimedCopyableSignoff(t *testing.T) {
+	for _, running := range []bool{false, true} {
+		conn := daemon.NewConnection(daemon.ConnectionSnapshot{Port: 1}, nil)
+		m := NewChatModel(&daemon.Session{ID: "s"}, daemon.NewChatClient(conn, "s"))
+		m.SetSize(80, 24)
+		start, end := int64(1000), int64(4200)
+		const reply = "**original** markdown"
+		for _, event := range []daemon.StreamEvent{
+			{Type: daemon.EventReset, Snapshot: &daemon.Session{Status: daemon.AgentStatus{Running: running, Idle: !running}}},
+			{Type: daemon.EventUser, Replayed: true, Timestamp: &start, Text: "hello"},
+			{Type: daemon.EventMessage, Replayed: true, Timestamp: &end, Text: reply},
+			{Type: daemon.EventUsage, Replayed: true, SnapshotOrigin: true, EndsIdleHistory: !running},
+		} {
+			m.handleStreamEvent(event)
+		}
+		m.refreshViewportContent()
+		rows := strings.Split(ansi.Strip(m.View()), "\n")
+		found := false
+		for _, row := range rows {
+			if strings.Contains(row, "⧉") {
+				found = true
+				if !strings.Contains(row, "3s") || !strings.Contains(row, outcome(false, false, end-start).face(end)) {
+					t.Fatalf("restored signoff lost face or elapsed time: %q", row)
+				}
+			}
+		}
+		if found == running {
+			t.Fatalf("running=%v: signoff visible=%v", running, found)
+		}
+		if found {
+			last := m.History.Entries()[m.History.Len()-1]
+			if got, ok := m.replyMarkdown(entryKey(last)); !ok || got != reply {
+				t.Fatalf("restored copy returned %q, %v", got, ok)
+			}
+		}
 	}
 }

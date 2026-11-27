@@ -14,6 +14,7 @@ import albedo_sdk/capabilities
 import albedo_sdk/extension
 import albedo_sdk/storage
 import albedo_sdk/store
+import albedo_sqlite
 import gleam/dict.{type Dict}
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
@@ -74,15 +75,15 @@ pub fn main() -> Nil {
   proptest.putenv("ALBEDO_HOME", home)
   let _ = del_dir_r(home)
   let _ = make_dir(home)
-  let assert Ok(ledger) = store.start(home <> "/preferences.db", "", core_store.tables())
+  let assert Ok(ledger) = store.start(home <> "/preferences.db", fn(_) { Ok(Nil) }, core_store.tables())
   let scope = storage.host(ledger)
   let assert Ok(Nil) =
-    storage.query(scope, fn(db) { storage.exec(db, "CREATE TABLE sessions(id TEXT PRIMARY KEY);") })
-  let assert Ok(Nil) = loads.initialise(scope)
+    storage.query(scope, fn(db) { albedo_sqlite.exec("CREATE TABLE sessions(id TEXT PRIMARY KEY);", on: db) })
+  let assert Ok(Nil) = storage.query(scope, loads.initialise_schema)
   proptest.check("lazy manager follows the lifecycle model", 10, qcheck.generic_list(op(), qcheck.bounded_int(1, 20)), fn(ops) {
     let session = "s" <> int.to_string(proptest.unique())
     let assert Ok(Nil) =
-      storage.query(scope, fn(db) { storage.exec(db, "INSERT INTO sessions(id) VALUES('" <> session <> "');") })
+      storage.query(scope, fn(db) { albedo_sqlite.exec("INSERT INTO sessions(id) VALUES('" <> session <> "');", on: db) })
     let controls = list.map(live, fn(name) {
       let dir = home <> "/" <> session <> "-" <> name
       let _ = make_dir(dir)

@@ -13,13 +13,15 @@ import albedo_sdk/extension
 import albedo_sdk/page
 import albedo_sdk/session_info
 import albedo_sdk/store
+import albedo_sqlite
 import gleam/io
 import gleam/list
 import gleam/option.{None}
 import sqlight
 
 pub fn main() -> Nil {
-  let assert Ok(ledger) = store.start(":memory:", "", core_store.tables())
+  let assert Ok(ledger) =
+    store.start(":memory:", fn(_) { Ok(Nil) }, core_store.tables())
   let assert Ok(_) = conversation.initialise(ledger)
   let assert Ok(_) = core_family.initialise(ledger)
   session(ledger, "lead", session_info.Model)
@@ -86,10 +88,12 @@ fn session(ledger: store.Store, id: String, stage: session_info.Stage) -> Nil {
     )
   // create starts every session idle; the stage is what a turn later writes.
   let assert Ok(_) =
-    store.write(ledger, "UPDATE sessions SET stage=? WHERE id=?", [
-      sqlight.text(session_info.stage_name(stage)),
-      sqlight.text(id),
-    ])
+    store.writing(ledger, fn(db) {
+      albedo_sqlite.run("UPDATE sessions SET stage=? WHERE id=?", on: db, with: [
+        sqlight.text(session_info.stage_name(stage)),
+        sqlight.text(id),
+      ])
+    })
   Nil
 }
 
@@ -105,16 +109,18 @@ fn child(
     False -> sqlight.null()
   }
   let assert Ok(_) =
-    store.write(
-      ledger,
-      "INSERT INTO session_family(session,parent,name,depth,created_at,closed_at) VALUES(?,?,?,1,?,?)",
-      [
-        sqlight.text(id),
-        sqlight.text(parent),
-        sqlight.text(id),
-        sqlight.int(created_at),
-        closed_at,
-      ],
-    )
+    store.writing(ledger, fn(db) {
+      albedo_sqlite.run(
+        "INSERT INTO session_family(session,parent,name,depth,created_at,closed_at) VALUES(?,?,?,1,?,?)",
+        on: db,
+        with: [
+          sqlight.text(id),
+          sqlight.text(parent),
+          sqlight.text(id),
+          sqlight.int(created_at),
+          closed_at,
+        ],
+      )
+    })
   Nil
 }

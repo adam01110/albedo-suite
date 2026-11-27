@@ -338,14 +338,14 @@ def refuse_listing(content: str) -> None:
     )
 
 
-def _readable(path: str) -> Path:
+def _readable(path: str | os.PathLike[str]) -> Path:
     """The file at `path`, or the error saying why `read` and `cat` refuse it."""
     target = Path(path).expanduser()
     _refuse_secrets([target])
     if not target.is_file():
         if target.is_dir():
             raise IsADirectoryError(
-                f"{path} is a directory; files.ls({path!r}) lists it"
+                f"{path} is a directory; files.ls({os.fspath(path)!r}) lists it"
             )
         raise FileNotFoundError(_missing(target, path))
     return target
@@ -1017,7 +1017,7 @@ class Files:
 
     def read(
         self,
-        path: str,
+        path: str | os.PathLike[str],
         start_line: int = 1,
         end_line: int | None = None,
         *,
@@ -1094,7 +1094,7 @@ class Files:
         body.clear()
         return Text(result)
 
-    def cat(self, path: str) -> Text:
+    def cat(self, path: str | os.PathLike[str]) -> Text:
         """The whole file as text, unnumbered and with its line endings kept,
         for code to transform and `write` back. Raises rather than shorten: over
         4 MiB or not UTF-8 is a ValueError. `read` is the bounded view."""
@@ -1114,7 +1114,11 @@ class Files:
             ) from None
 
     def ls(
-        self, path: str = ".", pattern: str | None = None, *, hidden: bool = False
+        self,
+        path: str | os.PathLike[str] = ".",
+        pattern: str | None = None,
+        *,
+        hidden: bool = False,
     ) -> Rows:
         """One directory, directories suffixed with `/`."""
         directory = Path(path).expanduser()
@@ -1130,7 +1134,7 @@ class Files:
     def find(
         self,
         pattern: str,
-        path: str | Sequence[str] = ".",
+        path: str | os.PathLike[str] | Sequence[str | os.PathLike[str]] = ".",
         *,
         glob: str | Sequence[str] | None = None,
         context: int = 0,
@@ -1170,7 +1174,7 @@ class Files:
     async def _find(
         self,
         pattern: str,
-        path: str | Sequence[str],
+        path: str | os.PathLike[str] | Sequence[str | os.PathLike[str]],
         glob: str | Sequence[str] | None,
         context: int,
         max_results: int,
@@ -1261,7 +1265,7 @@ class Files:
     def paths(
         self,
         pattern: str | None = None,
-        path: str | Sequence[str] = ".",
+        path: str | os.PathLike[str] | Sequence[str | os.PathLike[str]] = ".",
         *,
         glob: str | Sequence[str] | None = None,
         max_results: int = 100,
@@ -1278,7 +1282,7 @@ class Files:
     async def _paths(
         self,
         pattern: str | None,
-        path: str | Sequence[str],
+        path: str | os.PathLike[str] | Sequence[str | os.PathLike[str]],
         glob: str | Sequence[str] | None,
         max_results: int,
         hidden: bool,
@@ -1329,7 +1333,7 @@ class Files:
     )
     def edit(
         self,
-        path: str,
+        path: str | os.PathLike[str],
         old_str: str | Sequence[tuple[str, str]],
         new_str: str | None = None,
         line_hint: int | None = None,
@@ -1378,7 +1382,7 @@ class Files:
         )
 
     @hook.reported("files.write", {"path": "file_path", "content": "content"})
-    def write(self, path: str, content: str) -> Text:
+    def write(self, path: str | os.PathLike[str], content: str) -> Text:
         """Create or replace a whole file. Use `edit` to change part of one.
         A `read` listing is refused: `cat` returns the text to write back.
         `$ALBEDO_HOME/creds.json` is refused, as for `read`."""
@@ -1408,7 +1412,11 @@ def _pairs(edits: object) -> list[tuple[str, str]]:
 
 
 def _replace_one(
-    content: str, old_str: str, new_str: str, line_hint: int | None, path: str
+    content: str,
+    old_str: str,
+    new_str: str,
+    line_hint: int | None,
+    path: str | os.PathLike[str],
 ) -> str:
     """`content` with the one occurrence of `old_str` replaced, or ValueError
     saying why there is not exactly one."""
@@ -1474,10 +1482,11 @@ def _empty_note(
     return note
 
 
-def _targets(path: str | Sequence[str]) -> list[Path]:
-    return [
-        Path(item).expanduser() for item in ([path] if isinstance(path, str) else path)
-    ]
+def _targets(
+    path: str | os.PathLike[str] | Sequence[str | os.PathLike[str]],
+) -> list[Path]:
+    items = [path] if isinstance(path, (str, os.PathLike)) else path
+    return [Path(item).expanduser() for item in items]
 
 
 def _globs(glob: str | Sequence[str] | None) -> list[str]:
@@ -1569,7 +1578,7 @@ def _choose(
     old_str: str,
     found: list[_Occurrence],
     line_hint: int | None,
-    path: str,
+    path: str | os.PathLike[str],
 ) -> _Occurrence:
     if len(found) == 1:
         return found[0]
@@ -1675,7 +1684,7 @@ def _closest(content: str, needle: str) -> str:
     return "\n\n".join(blocks)
 
 
-def _missing(target: Path, original: str) -> str:
+def _missing(target: Path, original: str | os.PathLike[str]) -> str:
     message = f"{original} not found (cwd: {Path.cwd()})"
     parent = target.parent
     if not parent.is_dir():

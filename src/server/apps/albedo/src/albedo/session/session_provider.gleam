@@ -317,7 +317,7 @@ pub fn read_compact_at(
       state.info.model,
       endpoint,
     )
-  let model_window = option.then(info, selection.window)
+  let model_window = selection.window(state.info.model, info)
   let effective = option.or(session_window, model_window)
   let #(source, message) = case session_window, model_window {
     option.Some(tokens), option.Some(default_tokens) -> #(

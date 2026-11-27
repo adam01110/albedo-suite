@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 
+	"albedo/cli/internal/tui/chrome"
+
 	tea "charm.land/bubbletea/v2"
 )
 
@@ -164,7 +166,7 @@ func (m *LoginModel) chooseCredential() tea.Cmd {
 		item := loginItem{ID: accountRowStart + account.ID, Label: account.Label,
 			Detail: accountDetail(account), lead: accountLead(account), tag: accountTag(account), facts: m.accountFacts(account)}
 		if m.CredentialTicks[item.ID] {
-			item.lead = DefaultStyles.Success.Render("✓")
+			item.lead = chrome.DefaultStyles.Success.Render("✓")
 		}
 		switch len(ids) {
 		case 0:
@@ -181,7 +183,7 @@ func (m *LoginModel) chooseCredential() tea.Cmd {
 		label, detail = "another key", "enter an API key for this endpoint"
 	}
 	items = append(items, loginItem{ID: anotherAccount, Label: label, Detail: detail,
-		lead: DefaultStyles.Muted.Render("+"), note: "enter adds a credential; a rotation asks before adding it"})
+		lead: chrome.DefaultStyles.Muted.Render("+"), note: "enter adds a credential; a rotation asks before adding it"})
 	initial := ""
 	if m.Draft.AccountID != nil {
 		initial = accountRowStart + *m.Draft.AccountID
@@ -266,7 +268,7 @@ func (m *LoginModel) addedCredential(account daemon.Account) tea.Cmd {
 	if len(m.Draft.AccountIDs) > 0 {
 		m.SelectedAccount = &account
 		m.Step = StepRotationPrompt
-		m.confirm.ask("rotate", account.ID, "continue", "add "+account.Label+" to "+m.Name+"'s rotation?")
+		m.confirm.Ask("rotate", account.ID, "continue", "add "+account.Label+" to "+m.Name+"'s rotation?")
 		m.ChoosePicker = newLoginPick("add to rotation?", []loginItem{
 			{ID: "no", Label: "no", Detail: "keep the rotation unchanged"},
 			{ID: "yes", Label: "yes", Detail: "add " + account.Label},
@@ -282,7 +284,7 @@ func (m *LoginModel) rotationAnswer(add bool) tea.Cmd {
 		m.Draft.AccountIDs = append(slices.Clone(m.Draft.AccountIDs), m.SelectedAccount.ID)
 	}
 	m.SelectedAccount = nil
-	m.confirm.dismiss()
+	m.confirm.Dismiss()
 	return m.credentialChosen()
 }
 

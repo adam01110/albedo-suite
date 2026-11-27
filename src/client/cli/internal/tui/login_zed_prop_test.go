@@ -59,6 +59,8 @@ func zedScreen(t *testing.T) LoginModel {
 	m := NewLoginModel(&daemon.Connection{}, "", nil)
 	t.Cleanup(func() { m.Close() })
 	m.SetSize(120, 30)
+	// Zed signs in with the browser alone; its listing offers no manual flow.
+	m.SignIns = []daemon.SignIn{{Provider: "zed", Label: "Zed", Flows: []string{"browser"}}}
 	m.Provider = "zed"
 	m.LoginID = "login-one"
 	m.LoginETag = "waiting-etag"

@@ -1,6 +1,7 @@
 import albedo_models_dev/catalog_cache
 import albedo_sdk/settings
 import albedo_sdk/store
+import albedo_sqlite
 import gleam/dict
 import gleam/dynamic
 import gleam/dynamic/decode
@@ -110,7 +111,7 @@ fn estimates(
     Error(_) -> {
       // The cache table is created on first use; a fresh ledger lacks it.
       use _ <- result.try(
-        store.query(ledger, fn(db) { store.exec(db, schema) })
+        store.query(ledger, fn(db) { albedo_sqlite.exec(schema, on: db) })
         |> result.replace_error(Nil),
       )
       load() |> result.replace_error(Nil)
@@ -134,13 +135,13 @@ fn read(
   arguments: List(sqlight.Value),
 ) -> Result(#(List(Estimate), List(Estimate)), String) {
   use cached <- result.try(
-    store.rows(
-      db,
+    albedo_sqlite.rows(
       "WITH target(session) AS ("
         <> target
         <> ") SELECT t.session,c.session IS NOT NULL AND c.requests=(SELECT COUNT(*) FROM provider_requests p WHERE p.session=t.session AND p.id<=c.through),c.usd,COALESCE(c.requests,0),COALESCE(c.through,0) FROM target t LEFT JOIN suite_session_costs c ON c.session=t.session AND c.catalog=?",
-      list.append(arguments, [sqlight.text(revision)]),
-      {
+      on: db,
+      with: list.append(arguments, [sqlight.text(revision)]),
+      expecting: {
         use session <- decode.field(0, decode.string)
         use valid <- decode.field(1, decode.int)
         use usd <- decode.field(2, decode.optional(decode.float))
@@ -166,12 +167,12 @@ fn read(
   let pending =
     "WITH after(session,id) AS (SELECT json_extract(value,'$[0]'),json_extract(value,'$[1]') FROM json_each(?)) "
   use stats <- result.try(
-    store.rows(
-      db,
+    albedo_sqlite.rows(
       pending
         <> "SELECT p.session,COUNT(*),MAX(p.id) FROM after a JOIN provider_requests p ON p.session=a.session AND p.id>a.id GROUP BY p.session",
-      [sqlight.text(after)],
-      {
+      on: db,
+      with: [sqlight.text(after)],
+      expecting: {
         use session <- decode.field(0, decode.string)
         use count <- decode.field(1, decode.int)
         use through <- decode.field(2, decode.int)
@@ -182,15 +183,15 @@ fn read(
   use priced <- result.try(case stats {
     [] -> Ok(dict.new())
     _ -> {
-      use rows <- result.try(store.rows(
-        db,
+      use rows <- result.try(albedo_sqlite.rows(
         pending
           <> "SELECT p.session,"
           <> columns
           <> ",COUNT(*) FROM after a JOIN provider_requests p ON p.session=a.session AND p.id>a.id GROUP BY p.session,"
           <> columns,
-        [sqlight.text(after)],
-        decode.dynamic,
+        on: db,
+        with: [sqlight.text(after)],
+        expecting: decode.dynamic,
       ))
       Ok(dict.from_list(estimate_grouped(catalog_cache.prices(catalog), rows)))
     }
@@ -226,12 +227,12 @@ fn save(
   changed: List(Estimate),
 ) -> Result(Nil, String) {
   use <- store.transaction(db)
-  use _ <- result.try(store.exec(db, schema))
+  use _ <- result.try(albedo_sqlite.exec(schema, on: db))
   list.try_each(changed, fn(estimate) {
-    store.run(
-      db,
+    albedo_sqlite.run(
       "INSERT INTO suite_session_costs(session,catalog,usd,requests,through) VALUES(?,?,?,?,?) ON CONFLICT(session) DO UPDATE SET catalog=excluded.catalog,usd=excluded.usd,requests=excluded.requests,through=excluded.through WHERE excluded.catalog<>suite_session_costs.catalog OR excluded.through>=suite_session_costs.through",
-      [
+      on: db,
+      with: [
         sqlight.text(estimate.session),
         sqlight.text(revision),
         sqlight.nullable(sqlight.float, estimate.usd),

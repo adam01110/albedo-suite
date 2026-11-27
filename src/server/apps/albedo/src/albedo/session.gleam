@@ -19,6 +19,7 @@ import albedo/acp/acp_attachments
 import albedo/acp/acp_session
 import albedo/commands/shell_commands
 import albedo/composition/selection
+import albedo/generated/sql/commands/shell_commands_sql
 import albedo/history/conversation
 import albedo/history/history
 import albedo/http/http_history
@@ -567,6 +568,7 @@ pub type Message {
   WorkspaceReady(String, WorkspaceProbe, Result(Nil, String))
   /// Start a turn for what waits in the queue, now that the kernel is here.
   StartQueued
+  EventHoldLapsed(until: Int)
   /// The receipt goes to the first subject once the store commits it.
   AdmitOperation(
     operations.Request,
@@ -621,7 +623,10 @@ pub fn start(
           family.open_in(db, info.id) |> result.map_error(refusal.explain),
         )
         live_register(info.id, self)
-        use _ <- result.try(shell_commands.interrupt_orphans_in(db, info.id))
+        use _ <- result.try(shell_commands_sql.interrupt_orphans_in(
+          db:,
+          session: info.id,
+        ))
         use _ <- result.try(operations.interrupt_compactions_in(db, info.id))
         Ok(active)
       }),
@@ -826,7 +831,10 @@ pub fn start(
         blocked_until: 0,
         kernel_blocked: False,
         blocking: None,
+        safety_halted: None,
         holding_failure: False,
+        event_hold: None,
+        inbox_changed_during_run: False,
         held: held_map,
         generation: generation,
         tool_progress: tool_progress_state.new(),
@@ -2085,15 +2093,20 @@ fn handle(
     InboxChanged -> actor.continue(inbox_changed(state))
     MovedAway(detail) ->
       actor.continue(
-        session_state.State(..session_naming.cancel(state), moved: Some(detail)),
+        session_state.State(..session_naming.cancel(state), moved: Some(detail))
+        |> clear_event_hold,
       )
     ShakeMedia(selectors, reply) -> {
+      let was_halted = session_state.halted_for_safety(state)
       let #(state, shaken) = session_shake.shake(state, selectors)
+      let state = wake_if_unhalted(state, was_halted)
       answer(state, reply, shaken)
     }
     SwitchModel(caller, provider, model, reply) -> {
+      let was_halted = session_state.halted_for_safety(state)
       let #(state, changed) =
         session_switch.queue(state, caller, provider, model)
+      let state = wake_if_unhalted(state, was_halted)
       answer(state, reply, changed)
     }
     RequestBoundary(id, reply) -> {
@@ -2116,6 +2129,7 @@ fn handle(
       case option.map(attachment, acp_attachments.holds(state.info.id, _)) {
         Some(False) -> answer(state, reply, Error(refusal.AttachmentLost))
         _ -> {
+          let was_halted = session_state.halted_for_safety(state)
           let #(state, changed) =
             session_configure.change(
               state,
@@ -2123,7 +2137,12 @@ fn handle(
             )
           case changed {
             Error(error) -> answer(state, reply, Error(error))
-            Ok(_) -> answer(state, reply, capture_state(state))
+            Ok(_) ->
+              answer(
+                wake_if_unhalted(state, was_halted),
+                reply,
+                capture_state(state),
+              )
           }
         }
       }
@@ -2216,6 +2235,16 @@ fn handle(
       actor.continue(start_queued(
         session_state.State(..state, start_pending: False),
       ))
+    EventHoldLapsed(until) ->
+      case state.event_hold {
+        Some(#(current, _)) if current == until ->
+          actor.continue(
+            session_state.State(..state, event_hold: None)
+            |> start_queued
+            |> session_state.announce,
+          )
+        _ -> actor.continue(state)
+      }
     AdmitOperation(operation, submission, committed, reply) ->
       admit_operation(state, operation, submission, committed, reply)
     AdmitACP(operation, submission, digest, committed, reply) ->
@@ -2433,11 +2462,13 @@ fn handle(
       }
     }
     ChangeModel(model, provider_name, effort, reply) -> {
+      let was_halted = session_state.halted_for_safety(state)
       let #(state, outcome) =
         session_configure.change(
           stirred(state),
           session_configure.SelectModel(model, provider_name, effort),
         )
+      let state = wake_if_unhalted(state, was_halted)
       answer(
         state,
         reply,
@@ -2786,6 +2817,7 @@ fn handle(
                     session_info.Idle,
                   ),
                 )
+                  |> restart_for_waiting_event
                   |> session_state.announce,
                 reply,
                 True,
@@ -4944,15 +4976,49 @@ fn blocked_queued(state: State, error: String, retry_at: Option(Int)) -> State {
 /// A session that ends still owing replies sends each requester the last words
 /// of the turn that ended, marked unreviewed. Letters already queued here mean
 /// it is not done yet.
+fn session_awaits_wake(state: State) -> Bool {
+  case state.kernel {
+    Some(kernel) ->
+      runtime.kernel_observation(kernel)
+      |> result.map(python.awaits_wake)
+      |> result.unwrap(False)
+    None ->
+      case runtime.observe_loaded(state.host, state.info.id, waiting: 5000) {
+        Ok(runtime_state.LoadedObservation(kernel: Some(observed), ..)) ->
+          python.awaits_wake(observed)
+        _ -> False
+      }
+  }
+}
+
 fn answer_parent(
   state: State,
   run_id: String,
   outcome: Result(Option(String), loop.Failure),
 ) -> #(State, Option(fn() -> List(Result(mail_value.Letter, String)))) {
   let db = runtime.ledger(state.host)
-  let owed = case queue_starts(state) {
+  let awaits = case outcome {
+    Ok(_) -> session_awaits_wake(state)
+    Error(_) -> False
+  }
+  let owed = case awaits || queue_starts(state) {
     True -> []
     False -> mail.owed_requesters(db, state.info.id) |> result.unwrap([])
+  }
+  let owed = case outcome, owed {
+    Error(_), _ | _, [] -> owed
+    Ok(_), _ -> {
+      let parent =
+        families.get(storage.host(db), state.info.id)
+        |> result.unwrap(None)
+        |> option.map(fn(member) { member.parent })
+      list.filter(owed, fn(requester) {
+        Some(requester) == parent
+        || !{
+          mail.crossed(db, state.info.id, requester) |> result.unwrap(False)
+        }
+      })
+    }
   }
   case owed {
     [] -> #(state, None)
@@ -5099,7 +5165,7 @@ fn resume(state: State) -> State {
       failed_queued(session_state.State(..state, activity: turn.Resting), error)
     Ok(_) ->
       session_state.State(..state, activity: turn.Resting)
-      |> open_queued(turn.opening)
+      |> open_queued
   }
 }
 
@@ -5374,6 +5440,7 @@ fn prepare_turn_pipeline(
       active_submissions: submissions,
       blocked_until: 0,
       kernel_blocked: False,
+      safety_halted: None,
     )
   Ok(#(
     state,
@@ -5430,7 +5497,14 @@ fn opened(
   case committed, turn.owner(state.activity, run_id) {
     Ok(#(timestamp, boundary)), run -> {
       let activity = case run {
-        Some(run) -> turn.Running(turn.open(run, boundary.upper))
+        Some(run) -> {
+          // Extensions hear the turn begin before its worker may act.
+          observe(
+            state,
+            extension.TurnStarted(turn.isolated_event(submissions)),
+          )
+          turn.Running(turn.open(run, boundary.upper))
+        }
         None -> state.activity
       }
       session_state.State(..state, activity: activity)
@@ -5553,6 +5627,30 @@ fn finish_turn(
       fn(conn) { list.try_each(recorders, fn(record) { record(conn, answer) }) }
     }
     _, _, _, _, _, _ -> fn(_) { Ok(Nil) }
+  }
+  let state = case run.work, run.cancelled, state.closing, failure {
+    turn.Turn(..),
+      False,
+      False,
+      Error(loop.ProviderFailed(types.Refused(types.ContentRefused(..), ..), _))
+    ->
+      session_state.State(
+        ..state,
+        safety_halted: Some(session_state.SafetyHalt(
+          state.info.provider,
+          state.info.model,
+          state.info.cyber_access,
+        )),
+      )
+      |> session_state.emit(view.note(
+        "daemon",
+        "auto-wake on mail paused after safety refusal on "
+          <> state.info.provider
+          <> "/"
+          <> state.info.model
+          <> "; switch models, compact, or send a message to continue",
+      ))
+    _, _, _, _ -> state
   }
   // The run holds the session until its end is durable, so nothing starts
   // behind a turn the store still calls running.
@@ -5708,6 +5806,14 @@ fn finished_turn(
       ))
     }
     _, _ -> state
+  }
+  let state = case run.work, run.cancelled, outcome, persisted {
+    turn.Compaction(_, _, turn.CompactionReport(observation: Some(_), ..)),
+      False,
+      Ok(_),
+      Ok(_)
+    -> session_state.State(..state, safety_halted: None)
+    _, _, _, _ -> state
   }
   let state =
     session_state.State(..state, active_submissions: [])
@@ -6165,7 +6271,7 @@ fn start_waiting_in_workspace(state: State) -> State {
   // arriving kernel was then dropped with no notice, killing the old kernel
   // and the wakes it still owed.
   case queue_starts(state) {
-    False -> state
+    False -> clear_event_hold(state) |> session_state.announce
     True ->
       // Remote readiness can wait for SSH. Probe outside the actor so status,
       // capture, and summary requests continue to be answered while it waits.
@@ -6253,17 +6359,55 @@ fn workspace_ready(
 fn start_in_workspace(state: State) -> State {
   case turn_or_park(state, StartQueued) {
     Error(state) -> state
-    Ok(state) -> open_queued(state, turn.opening)
+    Ok(state) -> open_queued(state)
   }
 }
 
-/// Starts a turn with the rows `pick` chooses from the inbox; with none, the
-/// session rests.
-fn open_queued(
-  state: State,
-  pick: fn(List(turn.Queued)) -> List(String),
-) -> State {
-  case take_queued(state, pick) {
+fn open_queued(state: State) -> State {
+  case queued(state) {
+    Error(error) -> failed_queued(clear_event_hold(state), error)
+    Ok(waiting) -> {
+      let opening = turn.opening(waiting)
+      let now = albedo_clock.system_ms()
+      let delay =
+        turn.opening_delay(
+          opening,
+          now,
+          albedo_clock.delay_ms(input.event_hold_max_ms),
+        )
+      case delay {
+        0 -> open_batch(clear_event_hold(state), opening)
+        _ -> hold_events(state, now + delay, delay)
+      }
+    }
+  }
+}
+
+fn hold_events(state: State, until: Int, delay: Int) -> State {
+  case state.event_hold {
+    Some(#(current, _)) if current == until -> state
+    _ -> {
+      let state = clear_event_hold(state)
+      let timer = process.send_after(state.self, delay, EventHoldLapsed(until))
+      session_state.State(..state, event_hold: Some(#(until, timer)))
+      |> session_state.announce
+    }
+  }
+}
+
+fn clear_event_hold(state: State) -> State {
+  case state.event_hold {
+    Some(#(_, timer)) -> {
+      process.cancel_timer(timer)
+      session_state.State(..state, event_hold: None)
+    }
+    None -> state
+  }
+}
+
+fn open_batch(state: State, opening: List(turn.Queued)) -> State {
+  let ids = list.map(opening, fn(row) { row.id })
+  case inbox.take(runtime.ledger(state.host), state.info.id, ids) {
     Error(error) -> failed_queued(state, error)
     Ok([]) -> state
     Ok(batch) ->
@@ -6283,7 +6427,8 @@ fn start_worker(
   run_id: String,
 ) -> State {
   bus.running(state.info.id, True)
-  let state = stirred(state)
+  let state =
+    stirred(session_state.State(..state, inbox_changed_during_run: False))
   session_run.start(
     state,
     kernel,
@@ -7214,7 +7359,7 @@ fn inbox_changed(state: State) -> State {
     }
     None, True, _ -> state
     None, False, None ->
-      case failure_waits(state) {
+      case !session_state.halted_for_safety(state) && failure_waits(state) {
         True -> {
           let _ =
             albedo_clock.send_after(state.self, failure_hold_ms, StartQueued)
@@ -7223,7 +7368,24 @@ fn inbox_changed(state: State) -> State {
         }
         False -> start_queued(state)
       }
-    None, False, Some(_) -> start_queued(state)
+    None, False, Some(_) ->
+      session_state.State(..state, inbox_changed_during_run: True)
+      |> restart_for_waiting_event
+      |> start_queued
+  }
+}
+
+fn restart_for_waiting_event(state: State) -> State {
+  case state.inbox_changed_during_run, turn.running(state.activity) {
+    True, Some(run) -> {
+      use <- bool.guard(!turn.request_restartable(run), state)
+      case queued(state) |> result.map(turn.event_steers) {
+        Ok(True) -> turn.restart_request(run)
+        _ -> Nil
+      }
+      session_state.State(..state, inbox_changed_during_run: False)
+    }
+    _, _ -> state
   }
 }
 
@@ -7242,9 +7404,25 @@ fn failure_waits(state: State) -> Bool {
   })
 }
 
+fn wake_if_unhalted(state: State, was_halted: Bool) -> State {
+  case
+    was_halted
+    && !session_state.halted_for_safety(state)
+    && turn.running(state.activity) == None
+    && queue_starts(state)
+  {
+    True -> queue_start(state)
+    False -> state
+  }
+}
+
 /// Whether a row waiting in the inbox starts a turn.
 fn queue_starts(state: State) -> Bool {
-  queued(state) |> result.map(turn.starts_turn) |> result.unwrap(False)
+  let check = case session_state.halted_for_safety(state) {
+    True -> turn.starts_turn_while_halted
+    False -> turn.starts_turn
+  }
+  queued(state) |> result.map(check) |> result.unwrap(False)
 }
 
 /// The waiting rows `pick` chooses, as submissions, in queue order.

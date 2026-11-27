@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 
+	"albedo/cli/internal/tui/chrome"
+
 	"charm.land/glamour/v2"
 	"charm.land/glamour/v2/ansi"
 	"charm.land/glamour/v2/styles"
@@ -25,7 +27,7 @@ func HighlightLines(lines []string, lexer chroma.Lexer, cache *highlightCache) [
 	if lexer == nil || len(lines) == 0 {
 		return lines
 	}
-	style := codeStyle(transcriptInk)
+	style := codeStyle(chrome.CurrentInk)
 	key := func(line string) highlightKey {
 		return highlightKey{lexer.Config().Name, style.Name, line}
 	}
@@ -56,7 +58,7 @@ func HighlightLines(lines []string, lexer chroma.Lexer, cache *highlightCache) [
 	}
 	var b strings.Builder
 	formatter := formatters.TTY256
-	if base16Active {
+	if chrome.CurrentInk.Base16() {
 		formatter = formatters.TTY16m
 	}
 	if formatter.Format(&b, style, chroma.Literator(tokens...)) != nil {
@@ -80,9 +82,9 @@ type highlightKey struct{ lexer, theme, line string }
 // starts over: toggling diffs re-renders every diff in the transcript, and
 // lexing is most of that work. It goes with the chat that owns it.
 type highlightCache struct {
-	mu    sync.Mutex
 	lines map[highlightKey]string
 	bytes int
+	mu    sync.Mutex
 }
 
 const highlightBudget = 4 << 20
@@ -123,8 +125,8 @@ const (
 
 // codeFence is a code block's frame row in Decor, and quoteBar leads each
 // quoted row. Both are decoration, which a copy does not carry.
-func codeFence(mark string) string { return decorInk() + mark + ansiReset }
-func quoteBar() string             { return decorInk() + "│ " + ansiReset }
+func codeFence(mark string) string { return chrome.DecorInk() + mark + chrome.AnsiReset }
+func quoteBar() string             { return chrome.DecorInk() + "│ " + chrome.AnsiReset }
 
 // codeStyles builds each palette's theme once: parsing style entries into a
 // chroma theme is most of a highlighting pass.
@@ -134,21 +136,21 @@ var codeStyles sync.Map
 // bundled themes come from a stylesheet, and a terminal's palette, made legible
 // against its own background, is what this one follows. Each palette gets its
 // own name, so a theme change cannot reuse the previous palette's colors.
-func codeStyle(colors ink) *chroma.Style {
+func codeStyle(colors chrome.Ink) *chroma.Style {
 	if cached, ok := codeStyles.Load(colors); ok {
 		return cached.(*chroma.Style)
 	}
 	style := chromastyles.Get("monokai")
-	if colors.code != "" {
-		palette := colors.code + colors.secondary + colors.brandFrom + colors.brandTo
+	if colors.Code != "" {
+		palette := colors.Code + colors.Secondary + colors.BrandFrom + colors.BrandTo
 		hash := sha256.Sum256([]byte(palette))
 		style = chroma.MustNewStyle(fmt.Sprintf("albedo-%x", hash[:6]), chroma.StyleEntries{
-			chroma.Text:          colors.code,
-			chroma.Comment:       colors.secondary + " italic",
-			chroma.Keyword:       colors.brandFrom,
-			chroma.NameFunction:  colors.brandTo,
-			chroma.LiteralString: colors.brandTo,
-			chroma.LiteralNumber: colors.brandFrom,
+			chroma.Text:          colors.Code,
+			chroma.Comment:       colors.Secondary + " italic",
+			chroma.Keyword:       colors.BrandFrom,
+			chroma.NameFunction:  colors.BrandTo,
+			chroma.LiteralString: colors.BrandTo,
+			chroma.LiteralNumber: colors.BrandFrom,
 		})
 	}
 	codeStyles.Store(colors, style)
@@ -157,7 +159,7 @@ func codeStyle(colors ink) *chroma.Style {
 
 // codeTheme names the palette's theme in chroma's registry: glamour looks a
 // code block's theme up by name, not by value.
-func codeTheme(colors ink) string {
+func codeTheme(colors chrome.Ink) string {
 	style := codeStyle(colors)
 	markdownThemes.Lock()
 	defer markdownThemes.Unlock()
@@ -180,12 +182,12 @@ func markdownStyle() ansi.StyleConfig {
 	for _, heading := range []*ansi.StyleBlock{&style.H1, &style.H2, &style.H3, &style.H4, &style.H5, &style.H6} {
 		heading.Prefix = ""
 		heading.Bold = &bold
-		heading.Color = accent(transcriptInk.heading, "5")
+		heading.Color = accent(chrome.CurrentInk.Heading, "5")
 	}
-	style.Strong = ansi.StylePrimitive{Bold: &bold, Color: accent(transcriptInk.strong, "3")}
+	style.Strong = ansi.StylePrimitive{Bold: &bold, Color: accent(chrome.CurrentInk.Strong, "3")}
 	style.Emph = ansi.StylePrimitive{Italic: &bold}
-	style.Code = ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{Color: accent(transcriptInk.inlineCode, "2")}}
-	style.LinkText = ansi.StylePrimitive{Color: accent(transcriptInk.link, "4")}
+	style.Code = ansi.StyleBlock{Color: accent(chrome.CurrentInk.InlineCode, "2")}
+	style.LinkText = ansi.StylePrimitive{Color: accent(chrome.CurrentInk.Link, "4")}
 	style.List.LevelIndent = 0
 	style.Table.Margin = &zero
 	style.BlockQuote.IndentToken = new(quoteBar())
@@ -193,10 +195,10 @@ func markdownStyle() ansi.StyleConfig {
 	style.CodeBlock.BlockPrefix = codeFence(fenceOpen) + "\n"
 	style.CodeBlock.BlockSuffix = codeFence(fenceClose)
 	style.HorizontalRule.Format = "\n────────────\n"
-	if transcriptInk.decor != "" {
-		style.HorizontalRule.Color = &transcriptInk.decor
+	if chrome.CurrentInk.Decor != "" {
+		style.HorizontalRule.Color = &chrome.CurrentInk.Decor
 	}
-	style.CodeBlock.Theme = codeTheme(transcriptInk)
+	style.CodeBlock.Theme = codeTheme(chrome.CurrentInk)
 	return style
 }
 
@@ -240,17 +242,17 @@ func renderBlocks(text string, width int, whole bool) string {
 // reply. A whole rendering stays equal to a stepwise one: both are the same
 // pieces in the same order.
 type growingMarkdown struct {
-	// width is what the pieces were rendered at: text rendered at another one
-	// cannot extend them.
-	width int
 	// text is the text scanned so far and scanned is how far into it the scan
 	// went, with fence and blank the state there; blockStart is where the
 	// block still growing begins, and prev the finished block it follows.
-	text                string
+	text  string
+	fence string
+	prev  string
+	// width is what the pieces were rendered at: text rendered at another one
+	// cannot extend them.
+	width               int
 	scanned, blockStart int
-	fence               string
 	blank               bool
-	prev                string
 	// started is whether a block has finished: the piece that finishes first
 	// carries the rendering's start, which a whole rendering trims.
 	started bool
@@ -283,8 +285,8 @@ func (g *growingMarkdown) grow(text string, width int, cacheTail bool) (finished
 	}
 	for _, start := range starts {
 		block := text[g.blockStart:start]
-		piece, ok := markdownPiece(g.prev, block, width, true)
-		if !ok {
+		piece, fits := markdownPiece(g.prev, block, width, true)
+		if !fits {
 			g.unsplit = true
 			return nil, "", false
 		}
@@ -374,7 +376,7 @@ func markdownPiece(prev, block string, width int, finished bool) (string, bool) 
 
 // rendererKey is what a glamour renderer is built for.
 type rendererKey struct {
-	ink   ink
+	ink   chrome.Ink
 	width int
 }
 
@@ -382,18 +384,18 @@ type rendererKey struct {
 // costs more than most renders it does. A resize adds a width, so the map is
 // emptied once it holds a handful.
 var renderers = struct {
-	sync.Mutex
 	byKey map[rendererKey]*glamour.TermRenderer
+	sync.Mutex
 }{byKey: map[rendererKey]*glamour.TermRenderer{}}
 
 func markdownRenderer(width int) (*glamour.TermRenderer, error) {
-	key := rendererKey{ink: transcriptInk, width: width}
+	key := rendererKey{ink: chrome.CurrentInk, width: width}
 	if renderer, ok := renderers.byKey[key]; ok {
 		return renderer, nil
 	}
 	renderer, err := glamour.NewTermRenderer(
 		glamour.WithStyles(markdownStyle()), glamour.WithWordWrap(width), glamour.WithPreservedNewLines(),
-		mathOptions(accent(transcriptInk.math, "6")),
+		mathOptions(accent(chrome.CurrentInk.Math, "6")),
 	)
 	if err != nil {
 		return nil, err
@@ -453,23 +455,6 @@ var (
 	spansBlocks = regexp.MustCompile(`(?i)^ {0,3}(\[[^\]]+\]:|<(pre|script|style|textarea)\b|<!--)`)
 )
 
-// markdownBlocks is text split into the top-level blocks a rendering is built
-// from, or text whole when it cannot be split.
-func markdownBlocks(text string) []string {
-	var scan blockScan
-	starts, ok := scan.seeks(text, 0, true)
-	if !ok {
-		return []string{text}
-	}
-	blocks := make([]string, 0, len(starts)+1)
-	from := 0
-	for _, start := range starts {
-		blocks = append(blocks, text[from:start])
-		from = start
-	}
-	return append(blocks, text[from:])
-}
-
 func opensBlock(line string) bool {
 	return line != "" && strings.IndexByte(" \t-*+>|", line[0]) < 0 && !orderedItem.MatchString(line)
 }
@@ -511,9 +496,9 @@ func fenceAfter(open, line string) string {
 // key holding it would keep every block in a reply twice, once as itself and
 // once as whatever the next block follows.
 type pieceKey struct {
-	prev  [sha256.Size]byte
 	block string
 	width int
+	prev  [sha256.Size]byte
 }
 
 // pieceCache keeps rendered pieces in two generations: a hit moves a piece
@@ -522,7 +507,7 @@ type pieceKey struct {
 // at most maxPieceBytes of key and rendered text, excluding map overhead.
 type pieceCache struct {
 	fresh, stale map[pieceKey]string
-	ink          ink
+	ink          chrome.Ink
 	bytes        int
 	mu           sync.Mutex
 }
@@ -534,8 +519,8 @@ var pieces pieceCache
 func (c *pieceCache) get(key pieceKey) (string, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.ink != transcriptInk {
-		c.ink, c.fresh, c.stale, c.bytes = transcriptInk, nil, nil, 0
+	if c.ink != chrome.CurrentInk {
+		c.ink, c.fresh, c.stale, c.bytes = chrome.CurrentInk, nil, nil, 0
 	}
 	if piece, ok := c.fresh[key]; ok {
 		return piece, true

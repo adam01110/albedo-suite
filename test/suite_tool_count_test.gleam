@@ -11,7 +11,8 @@ import gleam/io
 import gleam/option.{None, Some}
 
 pub fn main() -> Nil {
-  let assert Ok(ledger) = store.start(":memory:", "", core_store.tables())
+  let assert Ok(ledger) =
+    store.start(":memory:", fn(_) { Ok(Nil) }, core_store.tables())
   let assert Ok(_) = conversation.initialise(ledger)
   session(ledger, "busy")
   session(ledger, "quiet")

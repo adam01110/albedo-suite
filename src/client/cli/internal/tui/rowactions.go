@@ -14,7 +14,7 @@ import (
 
 // A row action is a click target. Like the copy marks in selection.go, its
 // mark is a zero-width APC string, so the row itself says what a click on it
-// does and survives wrapping, trimming, and rebuilds. AppModel.View removes
+// does and survives wrapping, trimming, and rebuilds. The transcript renderer removes
 // it before rendering to the terminal.
 const (
 	// verbCopy copies a turn's replies as the markdown they were written in.
@@ -51,11 +51,6 @@ func entryKey(entry HistoryEntry) string {
 	}
 	h := fnv1a(fnvOffset64, string(entry.Kind)+"\x00"+entry.ToolName+"\x00"+entry.Text+"\x00"+entry.ToolResult+"\x00"+shellID+"\x00"+fmt.Sprint(entry.ToolArgs))
 	return fmt.Sprintf("%x-%x", entry.Timestamp, h)
-}
-
-// actAt runs the action of the transcript row at absolute index row.
-func (m *ChatModel) actAt(row int) tea.Cmd {
-	return m.actAtCol(row, 0)
 }
 
 func (m *ChatModel) actAtCol(row, col int) tea.Cmd {

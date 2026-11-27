@@ -17,6 +17,7 @@ import albedo_sdk/location
 import albedo_sdk/session_info
 import albedo_sdk/storage
 import albedo_sdk/store
+import albedo_sqlite
 import files_route_context as routes
 import gleam/bit_array
 import gleam/dynamic.{type Dynamic}
@@ -58,11 +59,11 @@ fn new_session(ledger: store.Store) -> String {
   let id = "s" <> int.to_string(proptest.unique())
   let assert Ok(Nil) =
     storage.query(storage.host(ledger), fn(db) {
-      storage.exec(
-        db,
+      albedo_sqlite.exec(
         "INSERT INTO sessions(id,cwd,model,protocol) VALUES('"
           <> id
           <> "','/tmp','test-model','test-protocol')",
+        on: db,
       )
     })
   id
@@ -72,12 +73,14 @@ fn new_session(ledger: store.Store) -> String {
 fn latest_seq(ledger: store.Store, session: String) -> Int {
   let assert Ok(maximum) =
     storage.query(storage.host(ledger), fn(db) {
-      storage.one(
-        db,
-        "SELECT MAX(seq) FROM transcript WHERE session='" <> session <> "'",
-        [],
-        decode.field(0, decode.int, decode.success),
-        "transcript maximum",
+      albedo_sqlite.first(
+        albedo_sqlite.rows(
+          "SELECT MAX(seq) FROM transcript WHERE session='" <> session <> "'",
+          on: db,
+          with: [],
+          expecting: decode.field(0, decode.int, decode.success),
+        ),
+        missing: "transcript maximum",
       )
     })
   maximum
@@ -897,7 +900,7 @@ pub fn main() -> Nil {
   let home = "/tmp/albedo-proptest-files-" <> int.to_string(proptest.unique())
   let _ = make_dir(home)
   let assert Ok(ledger) =
-    store.start(home <> "/files.db", "", core_store.tables())
+    store.start(home <> "/files.db", fn(_) { Ok(Nil) }, core_store.tables())
   let assert Ok(Nil) = conversation.initialise(ledger)
   let route = files_route()
   argument_properties(ledger, route)

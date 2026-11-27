@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"albedo/cli/internal/terminalui"
 	"context"
 	"errors"
 	"fmt"
@@ -8,6 +9,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"albedo/cli/internal/tui/chrome"
 
 	"albedo/cli/internal/daemon"
 
@@ -135,34 +138,44 @@ func (p usageProfile) key(key string, width int) usageProfile {
 	return p
 }
 
-// usageInner is the width the profile draws in, inside the frame's edge.
-func usageInner(width int) int { return max(1, width-2) }
+// usageInner is the width the profile draws in on a terminal width cells
+// wide: the page's list width, less the list's own edge.
+func usageInner(width int) int {
+	margin := 1
+	if width >= terminalui.SideWidth {
+		margin = 2
+	}
+	return profileInner(width - 2*margin)
+}
+
+// profileInner is the width the profile draws in on a list width cells wide.
+func profileInner(width int) int { return max(1, width-2) }
 
 // usageHeat is a calendar level's ink: Decor for a day without use, then four
 // steps mixed from Decor toward the brand.
 func usageHeat(level int) lipgloss.Style {
-	from, to := parseHex(transcriptInk.decor), parseHex(transcriptInk.brandFrom)
+	from, to := chrome.ParseHex(chrome.CurrentInk.Decor), chrome.ParseHex(chrome.CurrentInk.BrandFrom)
 	if from == nil || to == nil {
 		switch level {
 		case 0:
-			return DefaultStyles.Decor
+			return chrome.DefaultStyles.Decor
 		case 1:
-			return DefaultStyles.Agent.Faint(true)
+			return chrome.DefaultStyles.Agent.Faint(true)
 		case 4:
-			return DefaultStyles.Agent.Bold(true)
+			return chrome.DefaultStyles.Agent.Bold(true)
 		}
-		return DefaultStyles.Agent
+		return chrome.DefaultStyles.Agent
 	}
 	if level == 0 {
 		// An empty day steps back from Decor toward the background, so a
 		// mostly idle year reads as quiet, not as a grid of noise.
-		if bg := parseHex(transcriptInk.bg); bg != nil {
-			return lipgloss.NewStyle().Foreground(lipgloss.Color(bg.mix(*from, 0.55).hex()))
+		if bg := chrome.ParseHex(chrome.CurrentInk.Background()); bg != nil {
+			return lipgloss.NewStyle().Foreground(lipgloss.Color(bg.Mix(*from, 0.55).Hex()))
 		}
-		return DefaultStyles.Decor
+		return chrome.DefaultStyles.Decor
 	}
 	t := 0.3 + 0.7*float64(level-1)/3
-	return lipgloss.NewStyle().Foreground(lipgloss.Color(from.mix(*to, t).hex()))
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(from.Mix(*to, t).Hex()))
 }
 
 // usageLevels are the quartiles of the days with use, as GitHub grades its
@@ -200,7 +213,7 @@ const usageSquare = "\U000F14FB"
 
 // profileLines is the tab's body in at most height rows of width cells.
 func (p usageProfile) profileLines(width, height int) []string {
-	w := usageInner(width)
+	w := profileInner(width)
 	cal, ok := newUsageCalendar(p.year, w)
 	if !ok {
 		return nil
@@ -209,7 +222,7 @@ func (p usageProfile) profileLines(width, height int) []string {
 	var out []string
 	if prof := p.year.Profile; prof != nil {
 		out = append(out, usageStatStrip(*prof, w)...)
-		out = append(out, "", DefaultStyles.Faint.Render(ansi.Truncate(usageProfileFacts(*prof, cal.zone), w, "…")), "")
+		out = append(out, "", chrome.DefaultStyles.Faint.Render(ansi.Truncate(usageProfileFacts(*prof, cal.zone), w, "…")), "")
 	}
 	out = append(out, usageHeading("Token activity", p.modeTabs(), w))
 	out = append(out, p.grid(cal)...)
@@ -240,9 +253,9 @@ func usageStatStrip(prof daemon.UsageProfile, w int) []string {
 	if cell < 12 {
 		parts := make([]string, len(stats))
 		for i, s := range stats {
-			parts[i] = DefaultStyles.Bold.Render(s.value) + " " + DefaultStyles.Faint.Render(s.short)
+			parts[i] = chrome.DefaultStyles.Bold.Render(s.value) + " " + chrome.DefaultStyles.Faint.Render(s.short)
 		}
-		return []string{ansi.Truncate(strings.Join(parts, DefaultStyles.Decor.Render(" · ")), w, "…")}
+		return []string{ansi.Truncate(strings.Join(parts, chrome.DefaultStyles.Decor.Render(" · ")), w, "…")}
 	}
 	center := func(s string) string {
 		s = ansi.Truncate(s, cell, "…")
@@ -255,8 +268,8 @@ func usageStatStrip(prof daemon.UsageProfile, w int) []string {
 		if len(label) > cell-2 {
 			label = s.short
 		}
-		values.WriteString(DefaultStyles.Bold.Render(center(s.value)))
-		labels.WriteString(DefaultStyles.Faint.Render(center(label)))
+		values.WriteString(chrome.DefaultStyles.Bold.Render(center(s.value)))
+		labels.WriteString(chrome.DefaultStyles.Faint.Render(center(label)))
 	}
 	return []string{values.String(), labels.String()}
 }
@@ -297,12 +310,12 @@ func usageDuration(d time.Duration) string {
 // usageHeading heads a block the way a list's section rule does, with right at
 // its end.
 func usageHeading(label, right string, w int) string {
-	head := DefaultStyles.Muted.Bold(true).Render(label)
+	head := chrome.DefaultStyles.Muted.Bold(true).Render(label)
 	n := w - ansi.StringWidth(label) - ansi.StringWidth(right) - 2
 	if n < 1 {
 		return ansi.Truncate(head+" "+right, w, "…")
 	}
-	return head + " " + DefaultStyles.Decor.Render(strings.Repeat("─", n)) + " " + right
+	return head + " " + chrome.DefaultStyles.Decor.Render(strings.Repeat("─", n)) + " " + right
 }
 
 // modeTabs names the modes, the current one in bold.
@@ -310,9 +323,9 @@ func (p usageProfile) modeTabs() string {
 	parts := make([]string, len(usageModeNames))
 	for i, name := range usageModeNames {
 		if usageMode(i) == p.mode {
-			parts[i] = DefaultStyles.Bold.Render(name)
+			parts[i] = chrome.DefaultStyles.Bold.Render(name)
 		} else {
-			parts[i] = DefaultStyles.Faint.Render(name)
+			parts[i] = chrome.DefaultStyles.Faint.Render(name)
 		}
 	}
 	return strings.Join(parts, "  ")
@@ -329,7 +342,7 @@ func (p usageProfile) grid(cal usageCalendar) []string {
 		if p.mode == usageDaily {
 			label = usageWeekdays[row]
 		}
-		rows[row].WriteString(DefaultStyles.Faint.Render(fmt.Sprintf("%-*s", usageGutter, label)))
+		rows[row].WriteString(chrome.DefaultStyles.Faint.Render(fmt.Sprintf("%-*s", usageGutter, label)))
 	}
 	cursorCol := cal.weeks - 1 - (p.back-cal.lead+6)/7
 	if p.mode == usageDaily {
@@ -350,7 +363,7 @@ func (p usageProfile) grid(cal usageCalendar) []string {
 					rows[row].WriteString("  ")
 				case cal.back(col, row) == p.back:
 					// The cursor keeps its level on the selection surface.
-					rows[row].WriteString(usageHeat(max(1, level(usageSize(day.UsageTotals)))).Inherit(DefaultStyles.Selected).Render(usageSquare) + " ")
+					rows[row].WriteString(usageHeat(max(1, level(usageSize(day.UsageTotals)))).Inherit(chrome.DefaultStyles.Selected).Render(usageSquare) + " ")
 				default:
 					rows[row].WriteString(usageHeat(level(usageSize(day.UsageTotals))).Render(usageSquare) + " ")
 				}
@@ -368,13 +381,13 @@ func (p usageProfile) grid(cal usageCalendar) []string {
 				fill := min(8, max(0, eighths-(6-row)*8))
 				style := usageHeat(3)
 				if col == cursorCol {
-					style = usageHeat(4).Inherit(DefaultStyles.Selected)
+					style = usageHeat(4).Inherit(chrome.DefaultStyles.Selected)
 				}
 				glyph := string(usageEighths[fill])
 				if fill == 0 {
 					style = usageHeat(0)
 					if col == cursorCol {
-						style = style.Inherit(DefaultStyles.Selected)
+						style = style.Inherit(chrome.DefaultStyles.Selected)
 					}
 				}
 				rows[row].WriteString(style.Render(glyph) + " ")
@@ -437,7 +450,7 @@ func usageMonths(cal usageCalendar) string {
 		}
 		copy(line[l.at:], []rune(l.name))
 	}
-	return DefaultStyles.Faint.Render(strings.TrimRight(string(line), " "))
+	return chrome.DefaultStyles.Faint.Render(strings.TrimRight(string(line), " "))
 }
 
 // detailLine is what the cursor is on, with the calendar's legend at its end.
@@ -457,19 +470,19 @@ func (p usageProfile) detailLine(cal usageCalendar, w int) string {
 		for level := range squares {
 			squares[level] = usageHeat(level).Render(usageSquare)
 		}
-		legend = DefaultStyles.Faint.Render("less ") + strings.Join(squares, " ") + DefaultStyles.Faint.Render(" more")
+		legend = chrome.DefaultStyles.Faint.Render("less ") + strings.Join(squares, " ") + chrome.DefaultStyles.Faint.Render(" more")
 	default:
 		col := cal.weeks - 1 - (p.back-cal.lead+6)/7
 		tokens, calls, monday := cal.week(col)
 		if p.mode == usageWeekly {
 			text = "week of " + monday.Format("Mon 2 Jan") + " · " + usageUnits(tokens) + " tokens · " + countedText(calls, "call")
-			legend = DefaultStyles.Faint.Render("busiest week " + usageUnits(slices.Max(p.columnSizes(cal))))
+			legend = chrome.DefaultStyles.Faint.Render("busiest week " + usageUnits(slices.Max(p.columnSizes(cal))))
 		} else {
 			sizes := p.columnSizes(cal)
 			text = "through " + monday.AddDate(0, 0, 6).Format("Sun 2 Jan") + " · " + usageUnits(sizes[col]) + " of " + usageUnits(sizes[len(sizes)-1])
 		}
 	}
-	text = DefaultStyles.Muted.Render(text)
+	text = chrome.DefaultStyles.Muted.Render(text)
 	gap := w - ansi.StringWidth(text) - ansi.StringWidth(legend)
 	if legend == "" || gap < 2 {
 		return ansi.Truncate(text, w, "…")
@@ -532,7 +545,7 @@ func (p usageProfile) panels(cal usageCalendar, w, rows int) []string {
 	if sideBySide {
 		left = w * 3 / 5
 	}
-	block := []string{usageHeading("Models", DefaultStyles.Faint.Render("past year"), left)}
+	block := []string{usageHeading("Models", chrome.DefaultStyles.Faint.Render("past year"), left)}
 	nameW := min(28, max(10, left/3))
 	barW := max(4, left-nameW-14)
 	top := int64(0)
@@ -548,17 +561,17 @@ func (p usageProfile) panels(cal usageCalendar, w, rows int) []string {
 		if all > 0 {
 			share = int(mt.tokens * 100 / all)
 		}
-		block = append(block, svCell(mt.model, nameW, false)+" "+ink.Render(usageHBar(mt.tokens, top, barW))+" "+
-			DefaultStyles.Muted.Render(fmt.Sprintf("%6s %3d%%", usageUnits(mt.tokens), share)))
+		block = append(block, chrome.Cell(mt.model, nameW, false)+" "+ink.Render(usageHBar(mt.tokens, top, barW))+" "+
+			chrome.DefaultStyles.Muted.Render(fmt.Sprintf("%6s %3d%%", usageUnits(mt.tokens), share)))
 	}
 	if len(models) == 0 {
-		block = append(block, DefaultStyles.Faint.Render("no models used this year"))
+		block = append(block, chrome.DefaultStyles.Faint.Render("no models used this year"))
 	}
 	if !sideBySide {
 		return block
 	}
 	right := w - left - 3
-	week := []string{usageHeading("Weekdays", DefaultStyles.Faint.Render("past year"), right)}
+	week := []string{usageHeading("Weekdays", chrome.DefaultStyles.Faint.Render("past year"), right)}
 	busiest := slices.Max(weekdays[:])
 	names := [7]string{"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"}
 	for i := range min(7, rows) {
@@ -566,8 +579,8 @@ func (p usageProfile) panels(cal usageCalendar, w, rows int) []string {
 		if weekdays[i] == busiest && busiest > 0 {
 			ink = usageHeat(4)
 		}
-		week = append(week, DefaultStyles.Faint.Render(names[i])+" "+ink.Render(usageHBar(weekdays[i], busiest, max(4, right-12)))+" "+
-			DefaultStyles.Muted.Render(fmt.Sprintf("%6s", usageUnits(weekdays[i]))))
+		week = append(week, chrome.DefaultStyles.Faint.Render(names[i])+" "+ink.Render(usageHBar(weekdays[i], busiest, max(4, right-12)))+" "+
+			chrome.DefaultStyles.Muted.Render(fmt.Sprintf("%6s", usageUnits(weekdays[i]))))
 	}
 	out := make([]string, max(len(block), len(week)))
 	for i := range out {
@@ -588,30 +601,30 @@ func (m UsageModel) tabsText() string {
 	names := []string{"days", "profile"}
 	for i, name := range names {
 		if usageTab(i) == m.tab {
-			names[i] = DefaultStyles.Bold.Render(name)
+			names[i] = chrome.DefaultStyles.Bold.Render(name)
 		} else {
-			names[i] = DefaultStyles.Faint.Render(name)
+			names[i] = chrome.DefaultStyles.Faint.Render(name)
 		}
 	}
-	return strings.Join(names, DefaultStyles.Decor.Render(" · "))
+	return strings.Join(names, chrome.DefaultStyles.Decor.Render(" · "))
 }
 
 // profileView is the profile tab in the frame every list screen shares.
-func (m UsageModel) profileView(title string) string {
+func (m UsageModel) profileView(title string) terminalui.Page {
 	width := max(1, m.Width)
-	hints := []hint{{"tab", "days"}, {"hjkl", "move"}, {"d/w/c", "view"}, {"ctrl+r", "refresh"}, {"esc", "back"}}
+	hints := []chrome.Hint{{Key: "tab", Does: "days"}, {Key: "hjkl", Does: "move"}, {Key: "d/w/c", Does: "view"}, {Key: "ctrl+r", Does: "refresh"}, {Key: "esc", Does: "back"}}
 	status, urgent := "", false
 	switch {
 	case m.Loading || m.profile.loading:
-		status = DefaultStyles.Faint.Render("loading…")
+		status = chrome.DefaultStyles.Faint.Render("loading…")
 	case m.Error != "":
-		status, urgent = DefaultStyles.Error.Render(m.Error), true
+		status, urgent = chrome.DefaultStyles.Error.Render(m.Error), true
 	}
-	f := listFrame{
-		title:  title,
-		right:  DefaultStyles.Faint.Render(m.stale()),
-		footer: footerLine(width, hints, status, urgent),
-		list: func(w, h int) []string {
+	return terminalui.Page{
+		Title:  title,
+		Meta:   chrome.DefaultStyles.Faint.Render(m.stale()),
+		Footer: chrome.FooterLine(width, hints, status, urgent),
+		List: func(w, h int) []string {
 			if lines := m.profile.profileLines(w, h); len(lines) > 0 {
 				return lines
 			}
@@ -622,10 +635,9 @@ func (m UsageModel) profileView(title string) string {
 			case m.Error != "":
 				empty = "Could not read usage from the daemon."
 			}
-			return inset([]string{DefaultStyles.Faint.Render(empty)})
+			return inset([]string{chrome.DefaultStyles.Faint.Render(empty)})
 		},
 	}
-	return f.view(m.Width, m.Height)
 }
 
 // usageYearMsg is the profile's year, read under the screen's generation.

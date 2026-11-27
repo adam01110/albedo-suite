@@ -1,8 +1,8 @@
 import albedo_json/fields
 import albedo_model as types
 import albedo_model/cost
-import albedo_model/refusal
 import albedo_model/replay
+import albedo_openai/refusal
 import gleam/dict.{type Dict}
 import gleam/dynamic
 import gleam/dynamic/decode
@@ -456,7 +456,7 @@ fn provider_failure(
     Ok(message) -> message
     Error(errors) -> "malformed " <> context <> ": " <> string.inspect(errors)
   }
-  Error(refusal.openai_event(error, fallback))
+  Error(refusal.event(error, fallback))
 }
 
 fn response_decoder(incomplete: Bool) -> decode.Decoder(Response) {

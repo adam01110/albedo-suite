@@ -1,12 +1,15 @@
 package tui
 
 import (
+	"albedo/cli/internal/terminalui"
 	"fmt"
 	"math"
 	"strings"
 	"time"
 
 	"albedo/cli/internal/daemon"
+
+	"albedo/cli/internal/tui/chrome"
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -60,7 +63,7 @@ func quotaName(r daemon.QuotaObservation) string {
 	case r.Label != "":
 		return r.Label
 	case r.Error != nil:
-		return "last poll failed"
+		return "last check failed"
 	case r.LimitID != "":
 		return r.LimitID
 	}
@@ -136,11 +139,11 @@ func quotaSpan(d time.Duration) string {
 func quotaInk(percent, t float64) lipgloss.Style {
 	switch {
 	case percent >= quotaHot:
-		return DefaultStyles.Error
+		return chrome.DefaultStyles.Error
 	case percent >= quotaWarm:
-		return DefaultStyles.Warning
+		return chrome.DefaultStyles.Warning
 	}
-	return brandInk(t)
+	return chrome.BrandInk(t)
 }
 
 // quotaBar fills slots toward percent. A reading that is not current keeps
@@ -154,9 +157,9 @@ func quotaBar(percent float64, current bool) string {
 	for i := range quotaBarSlots {
 		switch {
 		case i >= filled:
-			b.WriteString(DefaultStyles.Decor.Render("▱"))
+			b.WriteString(chrome.DefaultStyles.Decor.Render("▱"))
 		case !current:
-			b.WriteString(DefaultStyles.Faint.Render("▰"))
+			b.WriteString(chrome.DefaultStyles.Faint.Render("▰"))
 		default:
 			b.WriteString(quotaInk(100-percent, float64(i)/(quotaBarSlots-1)).Render("▰"))
 		}
@@ -169,9 +172,9 @@ func quotaBar(percent float64, current bool) string {
 func quotaTag(r daemon.QuotaObservation, at time.Time) string {
 	switch standing := standingOf(r, at); standing {
 	case quotaFailed:
-		return DefaultStyles.Error.Render("no reading")
+		return chrome.DefaultStyles.Error.Render("no reading")
 	case quotaUnknown:
-		return DefaultStyles.Faint.Render("no percentage")
+		return chrome.DefaultStyles.Faint.Render("no percentage")
 	default:
 		percent := max(0, min(100, 100-*r.UsedPercent))
 		seen, _ := parseStamp(r.ObservedAt)
@@ -184,9 +187,9 @@ func quotaTag(r daemon.QuotaObservation, at time.Time) string {
 		}
 		percentText := fmt.Sprintf("%3.0f%% left", percent)
 		if standing == quotaOld {
-			percentText = DefaultStyles.Faint.Render(percentText)
+			percentText = chrome.DefaultStyles.Faint.Render(percentText)
 		}
-		return quotaBar(percent, standing == quotaFresh) + " " + percentText + "  " + DefaultStyles.Faint.Render(svCell(note, 9, true))
+		return quotaBar(percent, standing == quotaFresh) + " " + percentText + "  " + chrome.DefaultStyles.Faint.Render(chrome.Cell(note, 9, true))
 	}
 }
 
@@ -196,7 +199,7 @@ func (m QuotaModel) summary(r daemon.QuotaObservation) string {
 	var parts []string
 	switch standingOf(r, m.at) {
 	case quotaFailed:
-		parts = append(parts, "last poll failed")
+		parts = append(parts, "last check failed")
 	case quotaUnknown:
 		parts = append(parts, "no percentage reported")
 	default:
@@ -205,7 +208,7 @@ func (m QuotaModel) summary(r daemon.QuotaObservation) string {
 			parts = append(parts, "resets in "+quotaSpan(resets.Sub(m.at)))
 		}
 	}
-	return DefaultStyles.Faint.Render(strings.Join(parts, " · "))
+	return chrome.DefaultStyles.Faint.Render(strings.Join(parts, " · "))
 }
 
 // details is the pane: what the reading says, then the limit's recent past.
@@ -249,18 +252,18 @@ func (m QuotaModel) details(r daemon.QuotaObservation, width int) []string {
 	trail, asked := m.trails[quotaKey(r)]
 	switch {
 	case !asked || trail.pending:
-		lines = append(lines, DefaultStyles.Faint.Render("reading history…"))
+		lines = append(lines, chrome.DefaultStyles.Faint.Render("reading history…"))
 	case trail.failed:
-		lines = append(lines, DefaultStyles.Faint.Render("history unavailable"))
+		lines = append(lines, chrome.DefaultStyles.Faint.Render("history unavailable"))
 	case len(trail.points) < 2:
-		lines = append(lines, DefaultStyles.Faint.Render("not enough readings yet"))
+		lines = append(lines, chrome.DefaultStyles.Faint.Render("not enough readings yet"))
 	default:
 		from := quotaTrailFrom(trail.points, m.trailSince(r))
 		reach := quotaReach(m.at.Sub(from))
 		if pace := quotaPace(trail.points, r, m.at); pace != "" {
 			lines = append(lines, factRows("pace", pace, width)...)
 		}
-		lines = append(lines, DefaultStyles.Muted.Render("last "+reach))
+		lines = append(lines, chrome.DefaultStyles.Muted.Render("last "+reach))
 		lines = append(lines, quotaSpark(trail.points, from, m.at, width)...)
 		lines = append(lines, quotaAxis(reach+" ago", "now", width))
 	}
@@ -300,7 +303,7 @@ func quotaReach(span time.Duration) string {
 
 func quotaAxis(left, right string, width int) string {
 	gap := max(1, width-ansi.StringWidth(left)-ansi.StringWidth(right))
-	return DefaultStyles.Faint.Render(left + strings.Repeat(" ", gap) + right)
+	return chrome.DefaultStyles.Faint.Render(left + strings.Repeat(" ", gap) + right)
 }
 
 // quotaSpark draws the points between from and to as two rows of bars, so a
@@ -330,7 +333,7 @@ func quotaSpark(points []quotaPoint, from, to time.Time, width int) []string {
 		ink := quotaInk(last, last/100)
 		switch {
 		case level == 0:
-			bottom[col] = DefaultStyles.Decor.Render("▁")
+			bottom[col] = chrome.DefaultStyles.Decor.Render("▁")
 		case level > 8:
 			bottom[col], top[col] = ink.Render("█"), ink.Render(string(bars[level-9]))
 		default:
@@ -377,21 +380,21 @@ func quotaPace(points []quotaPoint, r daemon.QuotaObservation, at time.Time) str
 }
 
 func (m QuotaModel) footer(width int) string {
-	hints := []hint{{"↑↓", "move"}, {"ctrl+r", "refresh"}, {"esc", "back"}}
+	hints := []chrome.Hint{{Key: "↑↓", Does: "move"}, {Key: "ctrl+r", Does: "refresh"}, {Key: "esc", Does: "back"}}
 	if m.Error != "" {
-		hints = []hint{{"ctrl+r", "retry"}, {"esc", "back"}}
+		hints = []chrome.Hint{{Key: "ctrl+r", Does: "retry"}, {Key: "esc", Does: "back"}}
 	}
 	var status string
 	urgent := true
 	switch {
 	case m.Loading:
-		status, urgent = DefaultStyles.Faint.Render("loading…"), false
+		status, urgent = chrome.DefaultStyles.Faint.Render("loading…"), false
 	case m.Error != "":
-		status = DefaultStyles.Error.Render(m.Error)
+		status = chrome.DefaultStyles.Error.Render(m.Error)
 	case len(m.readings) > 0:
-		status, urgent = DefaultStyles.Faint.Render(m.polled()), false
+		status, urgent = chrome.DefaultStyles.Faint.Render(m.polled()), false
 	}
-	return footerLine(width, hints, status, urgent)
+	return chrome.FooterLine(width, hints, status, urgent)
 }
 
 // polled is how long before the fetch the daemon last polled any account.
@@ -406,13 +409,13 @@ func (m QuotaModel) polled() string {
 	case newest.IsZero():
 		return ""
 	case age < time.Minute:
-		return "polled just now"
+		return "checked just now"
 	default:
-		return "polled " + quotaSpan(age) + " ago"
+		return "checked " + quotaSpan(age) + " ago"
 	}
 }
 
-func (m QuotaModel) View() string {
+func (m QuotaModel) Page() terminalui.Page {
 	lv := m.listView
 	switch {
 	case m.Loading:
@@ -420,12 +423,12 @@ func (m QuotaModel) View() string {
 	case m.Error != "":
 		lv.Empty = "Could not read quota from the daemon."
 	default:
-		lv.Empty = "No quota readings yet. The daemon polls each account every few minutes."
+		lv.Empty = "No quota readings yet. Check back in a few minutes."
 	}
-	title := brand("albedo") + " " + DefaultStyles.Muted.Render("/quota")
-	f := lv.frame(title, DefaultStyles.Faint.Render("provider limits"), m.footer(max(1, m.Width)))
+	title := chrome.Brand("albedo") + " " + chrome.DefaultStyles.Muted.Render("/quota")
+	f := lv.frame(title, chrome.DefaultStyles.Faint.Render("provider limits"), m.footer(max(1, m.Width)))
 	if r, ok := m.current(); ok {
-		f.summary = m.summary(r)
+		f.Summary = m.summary(r)
 	}
-	return f.view(m.Width, m.Height)
+	return f
 }

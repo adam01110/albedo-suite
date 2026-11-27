@@ -2,12 +2,15 @@ package tui
 
 import (
 	"albedo/cli/internal/daemon"
+	"albedo/cli/internal/terminalui"
 	"cmp"
 	"fmt"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"albedo/cli/internal/tui/chrome"
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -106,7 +109,7 @@ func pythonSourceLine(preview *daemon.ToolCodePreview) string {
 	if preview == nil {
 		return ""
 	}
-	return firstLine(preview.Text)
+	return chrome.FirstLine(preview.Text)
 }
 
 // renderProgress holds the last tool action in one row; a call still being
@@ -127,14 +130,14 @@ func (m ChatModel) renderProgress() string {
 			}
 		}
 	}
-	return markChrome + DefaultStyles.Faint.Render(ansi.Truncate(row, width, "…"))
+	return markChrome + chrome.DefaultStyles.Faint.Render(ansi.Truncate(row, width, "…"))
 }
 
 // renderThought follows the newest line while the thought streams.
 func (m ChatModel) renderThought() string {
 	header := cmp.Or(thinkingLine(m.transcript.activeText), "thinking")
 	width := max(1, m.Renderer.BodyWidth-railWidth)
-	return markChrome + DefaultStyles.Faint.Render(ansi.Truncate(header+"…", width, "…"))
+	return markChrome + chrome.DefaultStyles.Faint.Render(ansi.Truncate(header+"…", width, "…"))
 }
 
 func (m ChatModel) statusLine() string {
@@ -142,7 +145,7 @@ func (m ChatModel) statusLine() string {
 		return m.moveStatus
 	}
 	if m.TurnFailed || m.Notices.HasError() {
-		return "Reply failed · see error above"
+		return "Reply failed"
 	}
 	if m.Stopping {
 		return "stopping…"
@@ -295,11 +298,11 @@ func (m ChatModel) header(width int) string {
 	// a remote workspace's host stays whole in every layout
 	lead := ""
 	if host == "" {
-		workspace = homePath(workspace)
+		workspace = chrome.HomePath(workspace)
 	} else {
 		host = cmp.Or(m.Host, host)
 		lead = "● " + host + ":"
-		workspace = scpRelative(underHome(workspace, m.hostHome))
+		workspace = chrome.ScpRelative(chrome.UnderHome(workspace, m.hostHome))
 	}
 	model := m.displayModelName()
 	if m.CyberAccess == "daybreak_blue" {
@@ -316,7 +319,7 @@ func (m ChatModel) header(width int) string {
 		model += "  ϟ"
 	}
 	counts := m.glanceCounts()
-	folds := pathFolds(workspace)
+	folds := chrome.PathFolds(workspace)
 	type layout struct {
 		place  string
 		counts int
@@ -340,16 +343,16 @@ func (m ChatModel) header(width int) string {
 		if lipgloss.Width(left)+lipgloss.Width(right)+l.rule+2 > width {
 			continue
 		}
-		place := DefaultStyles.Muted.Render(l.place)
+		place := chrome.DefaultStyles.Muted.Render(l.place)
 		if host != "" {
-			place = m.hostSegment(host) + DefaultStyles.Muted.Render(":"+l.place)
+			place = m.hostSegment(host) + chrome.DefaultStyles.Muted.Render(":"+l.place)
 		}
 		if l.brand {
-			return titleRule(width, brand(m.AgentName)+DefaultStyles.Faint.Render(" on ")+place, DefaultStyles.Faint.Render(right))
+			return chrome.TitleRule(width, chrome.Brand(m.AgentName)+chrome.DefaultStyles.Faint.Render(" on ")+place, chrome.DefaultStyles.Faint.Render(right))
 		}
-		return titleRule(width, place, DefaultStyles.Faint.Render(right))
+		return chrome.TitleRule(width, place, chrome.DefaultStyles.Faint.Render(right))
 	}
-	return DefaultStyles.Faint.Render(ansi.Truncate(model, width, "…"))
+	return chrome.DefaultStyles.Faint.Render(ansi.Truncate(model, width, "…"))
 }
 
 // hostSegment is the header's host in its own color once the kernel there is
@@ -358,11 +361,11 @@ func (m ChatModel) header(width int) string {
 func (m ChatModel) hostSegment(host string) string {
 	switch m.Status.KernelLink {
 	case "booting", "reattaching", "busy":
-		return DefaultStyles.Faint.Render("◌ " + host)
+		return chrome.DefaultStyles.Faint.Render("◌ " + host)
 	case "lost":
-		return DefaultStyles.Error.Render("○ " + host)
+		return chrome.DefaultStyles.Error.Render("○ " + host)
 	}
-	return hostStyle(host).Render("● " + host)
+	return chrome.HostStyle(host).Render("● " + host)
 }
 
 // reaching is the remote host a booting or reattaching kernel is on.
@@ -383,12 +386,13 @@ func (m *ChatModel) View() string {
 		m.frame = &frameCache{}
 	}
 	width := m.chatWidth()
-	pad := strings.Repeat(" ", chatMargin)
-	rows := m.frame.scratch[:0]
-	rows = append(rows, m.header(width), "")
-	rows = append(rows, m.noticeRows(width)...)
-
-	rows = append(rows, m.body()...)
+	page := terminalui.Conversation{
+		Heading:  m.header(width),
+		Notices:  m.noticeRows(width),
+		Messages: m.body(),
+		Rule:     m.composeRule(width),
+		Footer:   m.renderFooter(),
+	}
 	// one row: a job's command may span lines, or run past the width
 	status := ansi.Truncate(oneLine(m.statusLine()), width, "…")
 	// the face trails the text, so its frames never move anything
@@ -396,11 +400,15 @@ func (m *ChatModel) View() string {
 		face := m.phaseMood().frame(m.moodSeed, m.ProgressFrame, m.Fast)
 		if host := m.reaching(); host != "" {
 			face = connectingFace(host, m.ProgressFrame) // the picker's face for this host
+		} else if turn := m.transcript.turn; turn != nil && m.Status.Running && m.Status.Compaction == nil {
+			face = formatElapsed(max(0, m.progressAt-turn.start)) + " " + face
 		}
-		if m.Width > 0 {
-			status = ansi.Truncate(status, max(1, m.chatWidth()-ansi.StringWidth(face)-1), "…")
+		face = ansi.Truncate(face, width, "…")
+		status = ansi.Truncate(status, max(0, width-ansi.StringWidth(face)-1), "…")
+		if status != "" {
+			status = chrome.DefaultStyles.Faint.Render(status) + " "
 		}
-		status = DefaultStyles.Faint.Render(status) + " " + DefaultStyles.Agent.Render(face)
+		status += chrome.DefaultStyles.Agent.Render(face)
 	}
 	if !m.Follow {
 		status = fmt.Sprintf("history · %d rows below · pgdn", max(0, m.scrollLimit-m.scrollOffset))
@@ -408,37 +416,24 @@ func (m *ChatModel) View() string {
 	if m.CopyStatus != "" {
 		status = m.CopyStatus
 	}
-	statusStyle := DefaultStyles.Faint
+	statusStyle := chrome.DefaultStyles.Faint
 	if m.TurnFailed || m.Notices.HasError() {
-		statusStyle = DefaultStyles.Error
+		statusStyle = chrome.DefaultStyles.Error
 	}
-	rows = append(rows, statusStyle.Render(status))
-	if len(m.effortOptions) == 0 {
-		rows = append(rows, m.chipStrip(width)...)
-		rows = append(rows, m.direnvRows(width)...)
-		rows = append(rows, m.movedRows(width)...)
-	}
-	rows = append(rows, m.composeRule(width))
+	page.Status = statusStyle.Render(status)
 	if len(m.effortOptions) > 0 {
-		rows = append(rows, "", DefaultStyles.Bold.Render(ansi.Truncate("Reasoning · "+reasoningValue(m.selectedEffort(), m.effortDefault, m.effortProfile), width, "")), DefaultStyles.Faint.Render(ansi.Truncate(m.effortSelectorDescription(), width, "…")), m.effortSelectorView(), DefaultStyles.Faint.Render(ansi.Truncate(m.effortSelectorHint(), width, "")))
+		page.Input = []string{"", chrome.DefaultStyles.Bold.Render(ansi.Truncate("Reasoning · "+reasoningValue(m.selectedEffort(), m.effortDefault, m.effortProfile), width, "")), chrome.DefaultStyles.Faint.Render(ansi.Truncate(m.effortSelectorDescription(), width, "…")), m.effortSelectorView(), chrome.DefaultStyles.Faint.Render(ansi.Truncate(m.effortSelectorHint(), width, ""))}
 	} else {
-		rows = append(rows, m.editRows(width)...)
-		rows = append(rows, m.composer()...)
+		page.Accessories = append(page.Accessories, m.chipStrip(width)...)
+		page.Accessories = append(page.Accessories, m.direnvRows(width)...)
+		page.Accessories = append(page.Accessories, m.movedRows(width)...)
+		page.Input = append(page.Input, m.editRows(width)...)
+		page.Input = append(page.Input, m.composer()...)
 		if menu := m.CommandMenu.View(m.TextArea.Value(), m.composerCursor(), width); menu != "" {
-			rows = append(rows, strings.Split(strings.TrimSuffix(menu, "\n"), "\n")...)
+			page.Input = append(page.Input, strings.Split(strings.TrimSuffix(menu, "\n"), "\n")...)
 		}
 	}
-	rows = append(rows, DefaultStyles.Decor.Render(strings.Repeat("─", width)))
-	rows = append(rows, m.renderFooter())
-	for i := range rows {
-		rows[i] = pad + rows[i]
-	}
-
-	m.frame.scratch = rows
-	if m.frame.content == "" || !sameStrings(rows, m.frame.rows) {
-		m.frame.rows = append(m.frame.rows[:0], rows...)
-		m.frame.content = stripPrivateMarks(strings.Join(rows, "\n"))
-	}
+	m.frame.content = m.frame.transcript.Render(page, chatMargin, stripPrivateMarks)
 	if m.terms != nil {
 		return overlay(m.frame.content, m.terms.view(m.Width, m.Height), m.Width, m.Height)
 	}
@@ -457,7 +452,7 @@ func (m ChatModel) noticeRows(width int) []string {
 	}
 	var rows []string
 	for _, n := range m.Notices {
-		text := DefaultStyles.Faint.Render(n.Message)
+		text := chrome.DefaultStyles.Faint.Render(n.Message)
 		if n.Error {
 			text = m.Renderer.errorRow(n.Message)
 		}
@@ -481,12 +476,8 @@ type frameCache struct {
 	body     []string
 	composer []string
 
-	// rows is the padded frame as last drawn and content the string handed to
-	// Bubble Tea, so a frame that changed nothing is not joined again.
-	rows    []string
-	content string
-	// scratch is the row slice the next frame is assembled into.
-	scratch []string
+	transcript terminalui.TranscriptFrame
+	content    string
 
 	sidebarKey  sidebarKey
 	bodyKey     bodyKey
@@ -645,7 +636,7 @@ func (m *ChatModel) body() []string {
 		textWidth := max(1, min(m.Renderer.BodyWidth, m.Viewport.Width())-railWidth)
 		shown.rows = nil
 		for _, line := range wrapOrChunkLine("What would you like to work on?", textWidth) {
-			shown.rows = append(shown.rows, m.Renderer.rail(laneNone)+DefaultStyles.Faint.Render(line))
+			shown.rows = append(shown.rows, m.Renderer.rail(laneNone)+chrome.DefaultStyles.Faint.Render(line))
 		}
 	}
 	column := m.sidebarColumn()
@@ -690,7 +681,7 @@ func joinBody(rows, column []string, width, sidebar int) []string {
 }
 
 func (m ChatModel) composeRule(width int) string {
-	return DefaultStyles.Decor.Render(strings.Repeat("─", width))
+	return chrome.DefaultStyles.Decor.Render(strings.Repeat("─", width))
 }
 
 // composer is the input block as rows, drawn again only when the textarea's

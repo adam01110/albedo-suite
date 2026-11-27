@@ -92,6 +92,9 @@ func (m *ChatModel) forgetProgress(callID string) *daemon.ToolProgress {
 
 func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 	defer m.reseedMood()
+	if evt.Replayed && evt.Position > 0 {
+		defer m.History.Stamp(evt.Position)
+	}
 	defer func() {
 		if m.sidebarWidth() != m.layoutSidebar {
 			m.SetSize(m.Width, m.Height)
@@ -110,7 +113,7 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 				entry.Text = evt.Text
 				entry.ElapsedMs = evt.ElapsedMs
 			case daemon.EventNote:
-				entry.Text = evt.Text
+				entry.Text, entry.NoteOrigin = evt.Text, evt.Origin
 			case daemon.EventTool:
 				entry.ToolArgs, entry.ToolResult, entry.ToolTrace, entry.ToolStatus = evt.ToolArgs, evt.ToolResult, evt.ToolTrace, evt.ToolStatus
 				entry.Images = evt.Images
@@ -164,6 +167,11 @@ func (m *ChatModel) handleStreamEvent(evt daemon.StreamEvent) {
 	}
 	watchedThought := !m.transcript.thinkingSince.IsZero()
 	entries := m.transcript.apply(evt, m.AgentName)
+	// The snapshot's usage summary follows its complete history. An idle
+	// snapshot has no live completion event left to close its last reply.
+	if evt.EndsIdleHistory {
+		entries = append(entries, m.transcript.closeTurn(false)...)
+	}
 	if retired {
 		m.replaceHistory(anchor, func() {
 			for _, entry := range entries {

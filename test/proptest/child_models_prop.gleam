@@ -327,7 +327,7 @@ pub type Bench {
 }
 
 fn bench() -> Bench {
-  let assert Ok(ledger) = store.start(":memory:", "", core_store.tables())
+  let assert Ok(ledger) = store.start(":memory:", fn(_) { Ok(Nil) }, core_store.tables())
   let pool =
     admission.start(process.new_subject(), fn(_, message) { message }, fn(_) {
       Nil

@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"albedo/cli/internal/tui/chrome"
+
 	"albedo/cli/internal/daemon"
 	"albedo/cli/internal/daemon/protocol"
 
@@ -172,10 +174,10 @@ func TestQuotaTagAndBar(t *testing.T) {
 
 	t.Run("seventy nine point nine percent uses normal brand styling", func(t *testing.T) {
 		bar := quotaBar(79.9, true)
-		if strings.Contains(bar, DefaultStyles.Warning.Render("▰")) {
+		if strings.Contains(bar, chrome.DefaultStyles.Warning.Render("▰")) {
 			t.Fatal("79.9% should not have warning style")
 		}
-		if strings.Contains(bar, DefaultStyles.Error.Render("▰")) {
+		if strings.Contains(bar, chrome.DefaultStyles.Error.Render("▰")) {
 			t.Fatal("79.9% should not have error style")
 		}
 		stripped := ansi.Strip(bar)
@@ -186,10 +188,10 @@ func TestQuotaTagAndBar(t *testing.T) {
 
 	t.Run("twenty percent remaining switches bar fill to warm warning style", func(t *testing.T) {
 		bar := quotaBar(20.0, true)
-		if !strings.Contains(bar, DefaultStyles.Warning.Render("▰")) {
+		if !strings.Contains(bar, chrome.DefaultStyles.Warning.Render("▰")) {
 			t.Fatal("80% should contain warning styled fill")
 		}
-		if strings.Contains(bar, DefaultStyles.Error.Render("▰")) {
+		if strings.Contains(bar, chrome.DefaultStyles.Error.Render("▰")) {
 			t.Fatal("80% should not contain error style")
 		}
 		stripped := ansi.Strip(bar)
@@ -200,10 +202,10 @@ func TestQuotaTagAndBar(t *testing.T) {
 
 	t.Run("five percent remaining switches bar fill to hot error style", func(t *testing.T) {
 		bar := quotaBar(5.0, true)
-		if !strings.Contains(bar, DefaultStyles.Error.Render("▰")) {
+		if !strings.Contains(bar, chrome.DefaultStyles.Error.Render("▰")) {
 			t.Fatal("95% should contain error styled fill")
 		}
-		if strings.Contains(bar, DefaultStyles.Warning.Render("▰")) {
+		if strings.Contains(bar, chrome.DefaultStyles.Warning.Render("▰")) {
 			t.Fatal("95% should not contain warning style")
 		}
 		stripped := ansi.Strip(bar)
@@ -722,7 +724,7 @@ func TestQuotaRowsFromTheDaemonsOwnLabels(t *testing.T) {
 		{"a failed poll with no label says what happened", func(r *daemon.QuotaObservation) {
 			r.Label, r.UsedPercent = "", nil
 			r.Error = &protocol.SafeReason{Code: "quota_failed", Detail: "HTTP 403"}
-		}, "last poll failed"},
+		}, "last check failed"},
 		{"an unlabelled limit is named by its id", func(r *daemon.QuotaObservation) { r.Label = "" }, "primary"},
 		{"nothing to name it by says so", func(r *daemon.QuotaObservation) { r.Label, r.LimitID = "", "" }, "no limits reported"},
 	}
@@ -746,7 +748,7 @@ func TestQuotaRowsFromTheDaemonsOwnLabels(t *testing.T) {
 		m.SetSize(120, 30)
 		m, _ = m.Update(quotaLoadedMsg{Gen: m.Generation, At: quotaNow, Readings: []daemon.QuotaObservation{failed}})
 		pane := ansi.Strip(strings.Join(m.details(failed, 60), "\n"))
-		if !strings.HasPrefix(pane, "last poll failed") {
+		if !strings.HasPrefix(pane, "last check failed") {
 			t.Fatalf("the pane should be titled by what happened, not left blank:\n%s", pane)
 		}
 	})

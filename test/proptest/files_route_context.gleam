@@ -48,6 +48,7 @@ pub fn context(
     daemon_family.correspondents(ledger),
     command_state.context(session),
     session_control.call,
+    fn(_, _) { Error("property tests stage no media") },
     resources.capability(),
     worktree.origins(),
     storage.host(ledger),

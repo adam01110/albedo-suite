@@ -3,6 +3,7 @@
 //// cannot count calls in history it never loaded.
 
 import albedo_sdk/store
+import albedo_sqlite
 import gleam/dynamic/decode
 import gleam/option.{type Option}
 import sqlight
@@ -13,12 +14,14 @@ import sqlight
 /// `test/suite_tool_count_test.gleam` pins the offset to the codec.
 pub fn total(ledger: store.Store, session: String) -> Option(Int) {
   store.snapshot(ledger, fn(db) {
-    store.one(
-      db,
-      "SELECT COUNT(*) FROM transcript WHERE session=? AND substr(payload,10,11)=CAST('tool_output' AS BLOB)",
-      [sqlight.text(session)],
-      decode.field(0, decode.int, decode.success),
-      "no count",
+    albedo_sqlite.first(
+      albedo_sqlite.rows(
+        "SELECT COUNT(*) FROM transcript WHERE session=? AND substr(payload,10,11)=CAST('tool_output' AS BLOB)",
+        on: db,
+        with: [sqlight.text(session)],
+        expecting: decode.field(0, decode.int, decode.success),
+      ),
+      missing: "no count",
     )
   })
   |> option.from_result

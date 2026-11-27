@@ -4,6 +4,9 @@ import (
 	"slices"
 	"strings"
 
+	"albedo/cli/internal/pickersearch"
+	"albedo/cli/internal/tui/chrome"
+
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -32,10 +35,12 @@ type PickerModel struct {
 	Width       int
 	Height      int
 	WithSearch  bool
+	// Text is the part of the search that matches items; all of it when nil.
+	Text func(search string) string
 }
 
 func NewPickerModel(title string, items []PickerItem, withSearch bool, initialSelection string) PickerModel {
-	ti := newTextInput()
+	ti := chrome.NewTextInput()
 	ti.Placeholder = ""
 	ti.Focus()
 	ti.Prompt = ""
@@ -79,10 +84,14 @@ func (m *PickerModel) applyFilter() {
 	if ok {
 		old = item.ID
 	}
-	words := searchWords(m.SearchInput.Value())
+	search := m.SearchInput.Value()
+	if m.Text != nil {
+		search = m.Text(search)
+	}
+	words := pickersearch.Words(search)
 	m.Filtered = nil
 	for _, item := range m.Items {
-		if _, _, matched := matchFields(words, item.Label, item.Detail, item.Note, item.ID); matched {
+		if _, _, matched := pickersearch.Match(words, item.Label, item.Detail, item.Note, item.ID); matched {
 			m.Filtered = append(m.Filtered, item)
 		}
 	}
@@ -101,10 +110,10 @@ func selectableRows(lines []string, selected, height, limit, width int) string {
 	available := max(1, min(limit, height-8))
 	first := min(max(0, selected-available+1), max(0, len(lines)-available))
 	if len(lines) == 0 {
-		return DefaultStyles.Faint.Render("no matches")
+		return chrome.DefaultStyles.Faint.Render("no matches")
 	}
 	var b strings.Builder
-	bar := selectBar() + " "
+	bar := chrome.SelectBar() + " "
 	for i := first; i < min(len(lines), first+available); i++ {
 		lead := "  "
 		if i == selected {
@@ -115,7 +124,7 @@ func selectableRows(lines []string, selected, height, limit, width int) string {
 			line = ansi.Truncate(line, width, "…")
 		}
 		if i == selected {
-			line = selectedLine(line, width)
+			line = chrome.SelectedLine(line, width)
 		}
 		if i > first {
 			b.WriteByte('\n')
@@ -128,7 +137,7 @@ func selectableRows(lines []string, selected, height, limit, width int) string {
 func pickerRow(item PickerItem) string {
 	line := item.Label
 	if item.Detail != "" {
-		line += DefaultStyles.Faint.Render("  " + item.Detail)
+		line += chrome.DefaultStyles.Faint.Render("  " + item.Detail)
 	}
 	return line
 }
@@ -189,10 +198,10 @@ func (m PickerModel) View() string {
 	b.WriteString(selectableRows(lines, m.Cursor, m.Height, m.Height, m.Width))
 	b.WriteByte('\n')
 	if m.WithSearch {
-		b.WriteString(promptLead())
+		b.WriteString(chrome.PromptLead())
 		b.WriteString(m.SearchInput.View())
 	}
 	b.WriteByte('\n')
-	b.WriteString(keyHints(hint{"↑↓", "select"}, hint{"enter", "choose"}, hint{"esc", "cancel"}))
+	b.WriteString(chrome.KeyHints(chrome.Hint{Key: "↑↓", Does: "select"}, chrome.Hint{Key: "enter", Does: "choose"}, chrome.Hint{Key: "esc", Does: "cancel"}))
 	return b.String()
 }

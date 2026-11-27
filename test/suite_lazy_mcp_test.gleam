@@ -14,6 +14,7 @@ import albedo_sdk/page
 import albedo_sdk/storage
 import albedo_sdk/store
 import albedo_sdk/worktree
+import albedo_sqlite
 import gleam/dict
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
@@ -33,16 +34,20 @@ pub fn main() -> Nil {
   assert_reused_home_starts_clean(home)
   set_env("ALBEDO_HOME", home)
   let assert Ok(ledger) =
-    store.start(home <> "/preferences.db", "", core_store.tables())
+    store.start(
+      home <> "/preferences.db",
+      fn(_) { Ok(Nil) },
+      core_store.tables(),
+    )
   let scope = storage.host(ledger)
   let assert Ok(Nil) =
     storage.query(scope, fn(db) {
-      storage.exec(
-        db,
+      albedo_sqlite.exec(
         "CREATE TABLE sessions(id TEXT PRIMARY KEY);INSERT INTO sessions(id) VALUES('session');",
+        on: db,
       )
     })
-  let assert Ok(Nil) = loads.initialise(scope)
+  let assert Ok(Nil) = storage.query(scope, loads.initialise_schema)
   loads_keep_order_within_one_second(scope)
   descriptions_are_validated(scope)
   startup_contacts_nothing_and_loads_once(home, scope)
@@ -79,20 +84,28 @@ fn assert_run_is_private(home: String) -> Nil {
 
 fn assert_reused_home_starts_clean(home: String) -> Nil {
   let assert Ok(stale) =
-    store.start(home <> "/preferences.db", "", core_store.tables())
+    store.start(
+      home <> "/preferences.db",
+      fn(_) { Ok(Nil) },
+      core_store.tables(),
+    )
   let stale_scope = storage.host(stale)
   let assert Ok(Nil) =
     storage.query(stale_scope, fn(db) {
-      storage.exec(db, "CREATE TABLE sessions(id TEXT PRIMARY KEY);")
+      albedo_sqlite.exec("CREATE TABLE sessions(id TEXT PRIMARY KEY);", on: db)
     })
   store.close(stale)
   prepare_home(home)
   let assert Ok(ledger) =
-    store.start(home <> "/preferences.db", "", core_store.tables())
+    store.start(
+      home <> "/preferences.db",
+      fn(_) { Ok(Nil) },
+      core_store.tables(),
+    )
   let scope = storage.host(ledger)
   let assert Ok(Nil) =
     storage.query(scope, fn(db) {
-      storage.exec(db, "CREATE TABLE sessions(id TEXT PRIMARY KEY);")
+      albedo_sqlite.exec("CREATE TABLE sessions(id TEXT PRIMARY KEY);", on: db)
     })
   store.close(ledger)
   prepare_home(home)
@@ -104,7 +117,10 @@ fn assert_reused_home_starts_clean(home: String) -> Nil {
 fn loads_keep_order_within_one_second(scope: storage.Storage) -> Nil {
   let assert Ok(Nil) =
     storage.query(scope, fn(db) {
-      storage.exec(db, "INSERT INTO sessions(id) VALUES('load-order');")
+      albedo_sqlite.exec(
+        "INSERT INTO sessions(id) VALUES('load-order');",
+        on: db,
+      )
     })
   let names = string.to_graphemes("zyxwvutsrqponmlkjihgfedcba")
   list.each(names, fn(name) {

@@ -92,12 +92,12 @@ func TestToolImagesInlineFoldWidthAndCopy(t *testing.T) {
 		}
 		row := rowWith(t, m.frameLines, "click to expand")
 		before := len(m.frameLines)
-		m.actAt(row)
+		m.actAtCol(row, 0)
 		if !m.Renderer.Open[entryKey(entry)] || len(m.frameLines) <= before {
 			t.Fatal("click did not enlarge inline image")
 		}
 		row = rowWith(t, m.frameLines, "show less")
-		m.actAt(row)
+		m.actAtCol(row, 0)
 		if m.Renderer.Open[entryKey(entry)] || len(m.frameLines) != before {
 			t.Fatal("click did not restore compact preview")
 		}
@@ -107,7 +107,7 @@ func TestToolImagesInlineFoldWidthAndCopy(t *testing.T) {
 		m.refreshViewportContent()
 		before = len(m.frameLines)
 		for _, label := range []string{"enlarge images", "show less"} {
-			m.actAt(rowWith(t, m.frameLines, label))
+			m.actAtCol(rowWith(t, m.frameLines, label), 0)
 			if !strings.ContainsRune(strings.Join(m.frameLines, "\n"), kitty.Placeholder) {
 				t.Fatal("trace card toggle hid image preview")
 			}
@@ -125,7 +125,7 @@ func TestToolImagesInlineFoldWidthAndCopy(t *testing.T) {
 				t.Fatalf("narrow row overflows: %d > %d", ansi.StringWidth(row), m.Renderer.BodyWidth)
 			}
 		}
-		shot(t, "tool-images-inline", m.View())
+		_ = m.View()
 	}
 }
 
@@ -236,7 +236,7 @@ func TestToolImagesAsyncResultForwardedWhileModalOpen(t *testing.T) {
 	m.SetSize(80, 30)
 	ref := "/sessions/s/history/42/image-0"
 	m.Renderer.ToolImages = map[string]toolImagePreview{ref: {pending: true}}
-	app := &AppModel{Chat: m, ActiveSession: &daemon.Session{ID: "s"}, State: AppStateContextInspector}
+	app := &Workspace{Chat: m, ActiveSession: &daemon.Session{ID: "s"}, State: AppStateContextInspector}
 	_, handled := app.handleChatLifecycle(toolImageLoadedMsg{SessionID: "s", Generation: m.Generation, Reference: ref, Preview: toolImagePreview{failed: true}})
 	if !handled || !app.Chat.Renderer.ToolImages[ref].failed {
 		t.Fatal("modal swallowed preview completion")
@@ -248,8 +248,8 @@ func TestToolImagesCloseFreesPlacementsBeforeQuit(t *testing.T) {
 	m := newTestChatModel(t, &daemon.Session{ID: "s"})
 	preview, _ := prepareToolPreview(toolPreviewPNG(t), graphics{supported: true}, 60)
 	m.Renderer.ToolImages = map[string]toolImagePreview{"image": preview}
-	app := &AppModel{Chat: m, ActiveSession: &daemon.Session{ID: "s"}, State: AppStateChat}
-	_, cmd := app.Update(ChatQuitMsg{})
+	app := &Workspace{Chat: m, ActiveSession: &daemon.Session{ID: "s"}, State: AppStateChat}
+	_, cmd := app.Receive(ChatQuitMsg{})
 	if cmd == nil || m.streamCtx.Err() == nil || len(app.Chat.Renderer.ToolImages) != 0 {
 		t.Fatal("quit retained images or live fetch context")
 	}

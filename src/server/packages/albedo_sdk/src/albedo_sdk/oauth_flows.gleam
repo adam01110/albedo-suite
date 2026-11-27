@@ -22,6 +22,7 @@ import albedo_sdk/http_api
 import albedo_sdk/network
 import albedo_sdk/network_context
 import albedo_sdk/oauth.{type Account, type Keep, type Login}
+import albedo_sdk/oauth_page
 import albedo_sdk/settings_store
 import albedo_web/etag
 import gleam/bit_array
@@ -43,12 +44,13 @@ import gleam/uri
 const flow_timeout_ms = 300_000
 
 /// What the browser shows when a sign-in's redirect reaches the listener.
-const pages =
+fn pages() -> listener.Pages {
   listener.Pages(
     title: "albedo",
-    completed: "Authentication completed. You can close this window and return to albedo.",
-    failed: "Authentication failed. Return to albedo for details.",
+    completed: listener.Html(oauth_page.completed()),
+    failed: listener.Html(oauth_page.failed()),
   )
+}
 
 /// How long a caller waits for the owner, which may be queued behind
 /// durable writes on a slow disk.
@@ -1048,7 +1050,9 @@ fn run_flow(
       }
     oauth.Callback(host:, port:, path:, fixed:) -> {
       let callbacks = process.new_subject()
-      case listener.listen(host:, port:, fixed:, path:, pages:, callbacks:) {
+      case
+        listener.listen(host:, port:, fixed:, path:, pages: pages(), callbacks:)
+      {
         Error(listener.ListenError(reason)) ->
           process.send(
             ready,

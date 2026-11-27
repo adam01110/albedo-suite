@@ -15,7 +15,7 @@ to command mode -- only rem.run() -- and says so at connect.
 
 from __future__ import annotations
 
-from albedo_output import JobOutput
+from albedo_output import JobOutput, plain
 
 import asyncio
 import base64
@@ -43,12 +43,13 @@ import albedo_rtk
 import albedo_ssh
 from albedo_plugins import hook
 from albedo_plugins.files import refuse_listing
-from albedo_plugins.run import NOTICE_RETRY, notice, notices
+from albedo_plugins.run import NOTICE_RETRY, JobFailed, PendingText, notice, notices
 
 CONNECT_TIMEOUT = 60  # seconds before an unreachable target gives up
 HANDSHAKE_TIMEOUT = 60  # seconds for the remote kernel to say ready
 INVOKE_TIMEOUT = 3600  # anti-wedge bound; the cell deadline is the real limit
 COMMAND_TIMEOUT = 120  # degraded-mode command default
+WRITE_BYTES_PER_SECOND = 128 * 1024  # conservative floor for upload deadlines
 MAX_FRAME = 8 * 1024 * 1024  # control-frame ceiling, as in the kernel
 STDERR_TAIL = 65536  # bytes of ssh diagnostics kept for failures
 # one byte past the clip limit. an oversized file comes back over it.
@@ -123,6 +124,16 @@ def _report_live() -> None:
         )
     except Exception:
         pass  # no channel or shutdown; the supervisor keeps the last count
+
+
+def idle_seconds() -> int:
+    """Remote connection idle limit, clamped to one second through one week."""
+    try:
+        return max(
+            1, min(604800, int(os.environ.get("ALBEDO_REMOTE_IDLE_SECONDS", "3600")))
+        )
+    except ValueError:
+        return 3600
 
 
 configured: dict[str, str | None] = {}
@@ -249,10 +260,28 @@ in_login_shell = albedo_ssh.in_login_shell
 ssh_base = albedo_ssh.base
 
 
+def _transfer_timeout(size: int) -> float:
+    """Scale an upload deadline with payload size while keeping small runs bounded."""
+    return min(
+        float(INVOKE_TIMEOUT),
+        COMMAND_TIMEOUT + max(0, size) / WRITE_BYTES_PER_SECOND,
+    )
+
+
 async def ssh_run(
-    target: str, script: str, *, timeout: float, stdin: bytes | None = None
+    target: str,
+    script: str,
+    *,
+    timeout: float | None = None,
+    stdin: bytes | None = None,
 ) -> tuple[int | None, bytes, str]:
     """One command over the control connection; its exit code is data."""
+    effective = (
+        _transfer_timeout(len(stdin) if stdin is not None else 0)
+        if timeout is None
+        else timeout
+    )
+    check_timeout(effective)
     process = await asyncio.create_subprocess_exec(
         *ssh_base(target),
         target,
@@ -265,11 +294,14 @@ async def ssh_run(
         env=ssh_env(target),
     )
     try:
-        stdout, stderr = await asyncio.wait_for(process.communicate(stdin), timeout)
+        stdout, stderr = await asyncio.wait_for(process.communicate(stdin), effective)
     except asyncio.TimeoutError:
-        process.kill()
+        with contextlib.suppress(ProcessLookupError):
+            process.kill()
+        with contextlib.suppress(Exception):
+            await process.wait()
         raise RemoteTimeout(
-            f"ssh command did not finish in {timeout:g}s: {script}"
+            f"ssh command did not finish in {effective:g}s: {script}"
         ) from None
     return process.returncode, stdout, stderr.decode(errors="replace")
 
@@ -597,6 +629,47 @@ class RemoteConnection:
         # say so rather than reporting a job that never ended.
         self.lost: str | None = None
         self.degraded: RemoteBootError | None = None
+        self._idle_seconds = idle_seconds()
+        # connect() stamps this when it starts the idle watch.
+        self._used_at = 0.0
+        self._calls = 0
+        self._idle_watch: asyncio.Task[None] | None = None
+
+    def _require_open(self) -> None:
+        if self.closed:
+            raise RemoteLost(
+                self.lost or f"the connection to {self.host} is closed; connect again"
+            )
+
+    def _idle_delay(self, now: float) -> float:
+        busy = (
+            self._calls
+            or self._pending
+            or self._unsent
+            or self._live
+            or self._refs
+            or any(job._connection is self for job in _fallback_jobs.values())
+        )
+        if busy:
+            self._used_at = now
+        return max(0.0, self._idle_seconds - (now - self._used_at))
+
+    async def _expire_idle(self) -> None:
+        while not self.closed:
+            delay = self._idle_delay(loop.time())
+            if delay > 0:
+                await asyncio.sleep(delay)
+                continue
+            self.lost = (
+                f"the connection to {self.host} was closed after "
+                f"{self._idle_seconds / 60:g} minutes idle; connect again with remote.connect()"
+            )
+            await self.close()
+
+    def __reduce__(self):
+        if not self.closed:
+            raise TypeError("a live remote connection cannot be saved; close it first")
+        return _closed_connection, (self.target, self.lost)
 
     # --- boot ---
 
@@ -684,6 +757,7 @@ class RemoteConnection:
             self._lost()
 
     def _dispatch(self, frame: RemoteMessage) -> None:
+        self._used_at = loop.time()
         if (
             frame["type"] == "invoked"
             or frame["type"] == "introspected"
@@ -731,6 +805,14 @@ class RemoteConnection:
 
     async def _relay(self, frame: RemoteCall) -> None:
         """Answer one remote host-route call against this session's daemon."""
+        self._calls += 1
+        try:
+            await self._relay_call(frame)
+        finally:
+            self._calls -= 1
+            self._used_at = loop.time()
+
+    async def _relay_call(self, frame: RemoteCall) -> None:
         try:
             if frame["method"] == "jobs.completed":
                 value = await self._wake(frame["args"])
@@ -771,7 +853,9 @@ class RemoteConnection:
         )
 
     async def _send(self, frame: dict[str, Any]) -> None:
-        if self.closed or self._stdin is None:
+        self._require_open()
+        self._used_at = loop.time()
+        if self._stdin is None:
             raise RemoteLost(f"the connection to {self.host} is closed")
         data = json.dumps(frame).encode()
         if len(data) > MAX_FRAME:
@@ -786,6 +870,9 @@ class RemoteConnection:
         """The channel died: every pending call and reference learns it once,
         and the jobs nobody here claimed wake the session instead of running
         forever in a supervisor that no longer has a connection."""
+        if self._idle_watch is not None:
+            self._idle_watch.cancel()
+            self._idle_watch = None
         if self._handshake is not None and not self._handshake.done():
             self._handshake.set_exception(
                 RemoteBootError(
@@ -853,6 +940,7 @@ class RemoteConnection:
         outgrow the replay limit, as it does locally, however the two calls'
         bytes cross the channel.
         """
+        self._require_open()
         call_id = secrets.token_hex(16)
         reference = RemoteRef(self, call_id=call_id, label=call._label)
         try:
@@ -912,6 +1000,7 @@ class RemoteConnection:
         `placeholder` is the reference the caller already holds; a handle reply
         adopts into it rather than minting a second object.
         """
+        self._require_open()
         frame = self._frame(name, handle, pending, args, kwargs or {})
         call_id = call_id or secrets.token_hex(16)
         frame["id"] = call_id
@@ -1053,6 +1142,7 @@ class RemoteConnection:
 
     async def tools(self) -> dict[str, Any]:
         """What the remote namespace holds, and the live references it kept."""
+        self._require_open()
         if self.degraded is not None:
             return {"names": ["run"], "handles": [], "degraded": str(self.degraded)}
         call_id = secrets.token_hex(16)
@@ -1140,9 +1230,15 @@ class RemoteConnection:
     async def _ssh(
         self, script: str, timeout: float, stdin: bytes | None = None
     ) -> bytes:
-        code, stdout, stderr = await ssh_run(
-            self.host, in_login_shell(script), timeout=timeout, stdin=stdin
-        )
+        self._require_open()
+        self._calls += 1
+        try:
+            code, stdout, stderr = await ssh_run(
+                self.host, in_login_shell(script), timeout=timeout, stdin=stdin
+            )
+        finally:
+            self._calls -= 1
+            self._used_at = loop.time()
         if code != 0:
             raise RemoteError(f"SSH failed ({code}): {stderr.strip()}")
         return stdout
@@ -1152,11 +1248,13 @@ class RemoteConnection:
         path: str,
         content: str | bytes | bytearray | memoryview,
         *,
-        timeout: float = COMMAND_TIMEOUT,
+        timeout: float | None = None,
     ) -> None:
         """Replace a remote file, text or binary. The content travels on
         stdin, never in the command line, which a host caps (128 KiB per
         argument on Linux). A `files.read` listing is refused."""
+        if timeout is not None:
+            check_timeout(timeout)
         if isinstance(content, str):
             refuse_listing(content)
         data = content.encode() if isinstance(content, str) else bytes(content)
@@ -1166,7 +1264,8 @@ class RemoteConnection:
             text = given["content"]
             body = data if text == shown else str(text).encode()
             remote = _remote_path(self, str(given["file_path"]))
-            await self._ssh(f"cat > {shlex.quote(remote)}", timeout, body)
+            effective = _transfer_timeout(len(body)) if timeout is None else timeout
+            await self._ssh(f"cat > {shlex.quote(remote)}", effective, body)
 
         arguments: dict[str, object] = {
             "file_path": path,
@@ -1180,9 +1279,8 @@ class RemoteConnection:
     @property
     def run(self) -> Any:
         """rem.run: the remote binding in kernel mode, command mode otherwise."""
+        self._require_open()
         if self.degraded is None:
-            if self.closed:
-                raise RemoteLost(f"the connection to {self.host} is closed")
             return _RemoteCall(self, None, "run")
 
         def run(
@@ -1193,6 +1291,7 @@ class RemoteConnection:
             stdin: str | bytes | None = None,
             timeout: float = 300,
         ) -> FallbackJob:
+            self._require_open()
             check_timeout(timeout)
             if not (stdin is None or isinstance(stdin, (str, bytes))):
                 raise TypeError("in ssh command mode stdin is text or bytes")
@@ -1222,8 +1321,7 @@ class RemoteConnection:
         """A shell escape hatch only when the remote kernel could not boot."""
         if self.degraded is None:
             raise AttributeError(SHELL_ONLY_DEGRADED)
-        if self.closed:
-            raise RemoteLost(f"the connection to {self.host} is closed")
+        self._require_open()
 
         def shell(
             script: str,
@@ -1233,6 +1331,7 @@ class RemoteConnection:
             stdin: str | bytes | None = None,
             timeout: float = 300,
         ) -> FallbackJob:
+            self._require_open()
             if not isinstance(script, str):
                 raise ValueError("shell script must be text")
             check_timeout(timeout)
@@ -1265,8 +1364,7 @@ class RemoteConnection:
                 f"{name!r} is unavailable: this connection is degraded to ssh command "
                 f"mode ({self.degraded}); only rem.run(), rem.shell(), rem.read, and rem.write work"
             )
-        if self.closed:
-            raise RemoteLost(f"the connection to {self.host} is closed")
+        self._require_open()
         return _RemoteCall(self, None, name)
 
     def __repr__(self) -> str:
@@ -1279,6 +1377,9 @@ class RemoteConnection:
 
     async def close(self) -> None:
         """End the kernel and its channel: shutdown frame, then the signal ladder."""
+        watch, self._idle_watch = self._idle_watch, None
+        if watch is not None and watch is not asyncio.current_task():
+            watch.cancel()
         if self.closed and self._process is None:
             return
         if self._process is not None and self._process.returncode is None:
@@ -1294,6 +1395,7 @@ class RemoteConnection:
                     await asyncio.wait_for(self._process.wait(), 1.0)
                 except asyncio.TimeoutError:
                     self._process.kill()
+                    await self._process.wait()
         self.closed = True
         self.lost = self.lost or f"the connection to {self.host} was closed"
         self._live.clear()
@@ -1307,6 +1409,10 @@ class RemoteConnection:
         for task in (self._reader, self._drain):
             if task is not None:
                 task.cancel()
+        await asyncio.gather(
+            *(task for task in (self._reader, self._drain) if task is not None),
+            return_exceptions=True,
+        )
         if self in connections:
             connections.remove(self)
 
@@ -1517,6 +1623,7 @@ class FallbackJob(JobOutput):
             self.duration = loop.time() - self.started
             _fallback_live.pop(self.id, None)
             _fallback_jobs.pop(self.id, None)
+            self._connection._used_at = loop.time()
             _report_live()
             self._owe_unread()
         return self
@@ -1602,6 +1709,24 @@ class FallbackJob(JobOutput):
             if self._task.done():
                 self._owe_unread()
         return self
+
+    @property
+    def pipeline(self) -> str:
+        """The command line this job ran, matching `Job.pipeline`."""
+        return self.command
+
+    def text(self, check: bool = True) -> PendingText:
+        """Wait for the command and return its whole output as plain text:
+        escape codes dropped, a redrawn line at its last draw. Nonzero
+        exits and timeouts raise JobFailed unless check=False."""
+        return PendingText(lambda: self._text(check))
+
+    async def _text(self, check: bool) -> Text:
+        await self
+        output = plain(self.read())
+        if check and (self.exit_code != 0 or self.timed_out):
+            raise JobFailed(cast(Any, self), output)
+        return Text(output)
 
     def poll(self) -> int | None:
         if self.exit_code is not None:
@@ -1716,6 +1841,8 @@ class Remote:
                 "(bash on the host; no remote process supervision)"
             )
         connections.append(connection)
+        connection._used_at = loop.time()
+        connection._idle_watch = loop.create_task(connection._expire_idle())
         return connection
 
     @staticmethod
@@ -1728,6 +1855,15 @@ class Remote:
         """Kernel shutdown: end every connection inside the cleanup deadline."""
         for connection in list(connections):
             await connection.close()
+
+
+def _closed_connection(
+    target: dict[str, str | None], reason: str | None
+) -> RemoteConnection:
+    connection = RemoteConnection(target)
+    connection.closed = True
+    connection.lost = reason
+    return connection
 
 
 remote = Remote()

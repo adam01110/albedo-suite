@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"albedo/cli/internal/tui/chrome"
+
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -59,10 +61,10 @@ type pageShortcutPreparedMsg struct {
 }
 
 type pageActionExecutedMsg struct {
-	Prepared *PageDocument
-	Err      error
-	Message  string
 	Action   PageAction
+	Err      error
+	Prepared *PageDocument
+	Message  string
 	Gen      int
 }
 
@@ -80,16 +82,16 @@ type PageViewModel struct {
 	Conn          *daemon.Connection
 	Doc           *PageDocument
 	CurrentAction *PageAction
+	FormValues    map[string]json.RawMessage
 	SessionID     string
 	Command       string
+	confirm       chrome.Confirm
 	TextInput     textinput.Model
-	pageStatus
 	listView
-	confirm
+	pageStatus
 	Mode                    pageModeKind
 	ChoiceIndex             int
 	FieldIndex, ActionIndex int
-	FormValues              map[string]json.RawMessage
 	refreshTickGen          int
 	Busy                    bool
 }
@@ -99,7 +101,7 @@ func NewPageViewModel(conn *daemon.Connection, sessionID, command string) PageVi
 		Conn:       conn,
 		SessionID:  sessionID,
 		Command:    command,
-		TextInput:  newField(),
+		TextInput:  chrome.NewField(),
 		pageStatus: newPageStatus(false),
 		listView:   newListView("Search " + strings.TrimPrefix(command, "/")),
 		Busy:       true,
@@ -108,7 +110,7 @@ func NewPageViewModel(conn *daemon.Connection, sessionID, command string) PageVi
 
 func (m *PageViewModel) SetSize(width, height int) {
 	m.pageStatus.SetSize(width, height)
-	m.listView.setSize(width, height)
+	m.setSize(width, height)
 	m.fitInput()
 }
 
@@ -145,7 +147,7 @@ func (m PageViewModel) silentRefreshCmd(gen int) tea.Cmd {
 }
 
 // Confirming reports a question waiting for enter or esc.
-func (m PageViewModel) Confirming() bool { return m.confirm.asking() }
+func (m PageViewModel) Confirming() bool { return m.confirm.Asking() }
 
 func (m PageViewModel) loadPageCmd(gen int) tea.Cmd {
 	previous := m.Doc
@@ -220,14 +222,14 @@ func (m *PageViewModel) ask(act PageAction) {
 	m.Notice, m.Error = "", ""
 	m.CurrentAction, m.Mode = &act, modeConfirm
 	target := m.target(act)
-	m.confirm.ask(act.ID, target, act.Label, cmp.Or(act.Confirmation, act.Label+target+"?"))
+	m.confirm.Ask(act.ID, target, act.Label, cmp.Or(act.Confirmation, act.Label+target+"?"))
 }
 
 // cancelPrompt drops whatever a prompt or question was collecting.
 func (m *PageViewModel) cancelPrompt() {
 	m.Mode, m.CurrentAction, m.FormValues, m.FieldIndex = modeBrowse, nil, nil, 0
 	m.TextInput.Reset()
-	m.confirm.dismiss()
+	m.confirm.Dismiss()
 }
 
 // runAction marks the page busy and asks the daemon to run act.
@@ -358,7 +360,7 @@ func (m PageViewModel) Update(msg tea.Msg) (PageViewModel, tea.Cmd) {
 		m.TextInput, cmd = m.TextInput.Update(msg)
 		return m, cmd
 	}
-	cmd := m.listView.update(msg)
+	cmd := m.update(msg)
 	return m, cmd
 }
 
@@ -367,14 +369,14 @@ func (m PageViewModel) Update(msg tea.Msg) (PageViewModel, tea.Cmd) {
 func (m PageViewModel) keyPress(msg tea.KeyPressMsg) (PageViewModel, tea.Cmd) {
 	key := msg.String()
 	if m.Mode == modeConfirm {
-		if m.confirm.key(msg) {
+		if m.confirm.Key(msg) {
 			act := *m.CurrentAction
 			m.CurrentAction, m.Mode = nil, modeBrowse
-			m.confirm.dismiss()
+			m.confirm.Dismiss()
 			cmd := m.beginAction(act, false)
 			return m, cmd
 		}
-		if !m.confirm.asking() {
+		if !m.confirm.Asking() {
 			m.CurrentAction, m.Mode = nil, modeBrowse
 		}
 		return m, nil
@@ -438,7 +440,7 @@ func (m PageViewModel) browseKey(msg tea.KeyPressMsg) (PageViewModel, tea.Cmd) {
 		cmd := m.beginAction(act, true)
 		return m, cmd
 	}
-	cmd := m.listView.update(msg)
+	cmd := m.update(msg)
 	return m, cmd
 }
 

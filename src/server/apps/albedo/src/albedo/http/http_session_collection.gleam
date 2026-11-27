@@ -72,6 +72,8 @@ fn collection_filter(
   )
   use archived <- result.try(http_api.boolean_parameter(parameters, "archived"))
   use acp <- result.try(http_api.boolean_parameter(parameters, "acp"))
+  use worktree <- result.try(http_api.boolean_parameter(parameters, "worktree"))
+  use pinned <- result.try(http_api.boolean_parameter(parameters, "pinned"))
   use needs_reload <- result.try(http_api.boolean_parameter(
     parameters,
     "needs_reload",
@@ -91,6 +93,8 @@ fn collection_filter(
       value("search"),
       archived,
       acp,
+      worktree,
+      pinned,
       sort == "frequent",
       case needs_reload {
         Some(True) -> Some(pending)
@@ -108,7 +112,7 @@ fn collection_key() -> decode.Decoder(session_collection.Key) {
   use opens <- decode.field("opens", decode.int)
   use activity <- decode.field("activity", decode.int)
   use id <- decode.field("id", decode.string)
-  decode.success(session_collection.Key(opens, activity, id))
+  decode.success(session_collection.key(id:, opens:, activity:))
 }
 
 pub fn read(
@@ -127,6 +131,8 @@ pub fn read(
         "search",
         "archived",
         "acp",
+        "worktree",
+        "pinned",
         "needs_reload",
         "sort",
         "limit",

@@ -5,6 +5,7 @@
 import albedo/storage/core_store
 import albedo/usage/session_cost
 import albedo_sdk/store
+import albedo_sqlite
 import gleam/dynamic.{type Dynamic}
 import gleam/int
 import gleam/io
@@ -28,14 +29,20 @@ pub fn main() -> Nil {
   let _ = putenv(charlist("ALBEDO_HOME"), charlist(home))
   let _ = write_file(home <> "/models.json", catalog)
   let assert Ok(ledger) =
-    store.start(home <> "/ledger.db", schema, core_store.tables())
+    store.start(
+      home <> "/ledger.db",
+      albedo_sqlite.exec(schema, on: _),
+      core_store.tables(),
+    )
   // One million input tokens at 1 USD per million.
   let assert Ok(_) =
-    store.write(
-      ledger,
-      "INSERT INTO provider_requests(session,profile,provider,model,outcome,input_tokens,output_tokens) VALUES('a','p','chat_completions:https://p.example/v1','m','ok',1000000,0)",
-      [],
-    )
+    store.writing(ledger, fn(db) {
+      albedo_sqlite.run(
+        "INSERT INTO provider_requests(session,profile,provider,model,outcome,input_tokens,output_tokens) VALUES('a','p','chat_completions:https://p.example/v1','m','ok',1000000,0)",
+        on: db,
+        with: [],
+      )
+    })
   let page = session_cost.totals(ledger, ["a", "a", "b"])
   assert page("a") == Some(1.0)
   assert page("b") == Some(0.0)

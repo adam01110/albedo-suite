@@ -10,6 +10,7 @@
 
 import albedo_clock
 import albedo_sdk/store
+import albedo_sqlite
 import gleam/dynamic/decode
 import gleam/float
 import gleam/int
@@ -63,11 +64,11 @@ pub fn read(
 ) -> Result(Profile, String) {
   store.snapshot(ledger, fn(db) {
     use hours <- result.try(
-      store.rows(
-        db,
+      albedo_sqlite.rows(
         "SELECT (hour_ms+?)/86400000,input_tokens,output_tokens,calls FROM usage_hours ORDER BY 1",
-        [sqlight.int(offset_ms)],
-        {
+        on: db,
+        with: [sqlight.int(offset_ms)],
+        expecting: {
           use day <- decode.field(0, decode.int)
           use input <- decode.field(1, count())
           use output <- decode.field(2, count())
@@ -76,11 +77,11 @@ pub fn read(
         },
       ),
     )
-    use turns <- result.try(store.rows(
-      db,
+    use turns <- result.try(albedo_sqlite.rows(
       "SELECT MAX(ended_at-started_at) FROM input_turns WHERE state='completed' AND ended_at IS NOT NULL",
-      [],
-      decode.field(0, decode.optional(count()), decode.success),
+      on: db,
+      with: [],
+      expecting: decode.field(0, decode.optional(count()), decode.success),
     ))
     let longest_turn = list.first(turns) |> result.unwrap(None)
     let profile =

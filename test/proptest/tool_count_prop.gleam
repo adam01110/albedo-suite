@@ -109,7 +109,8 @@ fn open(ledger: store.Store, id: String) -> Nil {
 
 pub fn main() -> Nil {
   proptest.check("total counts committed tool results", 100, scenario(), fn(c) {
-    let assert Ok(ledger) = store.start(":memory:", "", core_store.tables())
+    let assert Ok(ledger) =
+      store.start(":memory:", fn(_) { Ok(Nil) }, core_store.tables())
     let assert Ok(_) = conversation.initialise(ledger)
     open(ledger, "s")
     let #(before, after) = list.split(c.rows, c.split)
@@ -152,7 +153,8 @@ pub fn main() -> Nil {
     60,
     qcheck.generic_list(text(), qcheck.bounded_int(0, 6)),
     fn(texts) {
-      let assert Ok(ledger) = store.start(":memory:", "", core_store.tables())
+      let assert Ok(ledger) =
+        store.start(":memory:", fn(_) { Ok(Nil) }, core_store.tables())
       let assert Ok(_) = conversation.initialise(ledger)
       open(ledger, "talk")
       open(ledger, "quiet")
@@ -181,7 +183,8 @@ pub fn main() -> Nil {
     60,
     qcheck.generic_list(qcheck.bounded_int(0, 4), qcheck.bounded_int(1, 5)),
     fn(batches) {
-      let assert Ok(ledger) = store.start(":memory:", "", core_store.tables())
+      let assert Ok(ledger) =
+        store.start(":memory:", fn(_) { Ok(Nil) }, core_store.tables())
       let assert Ok(_) = conversation.initialise(ledger)
       open(ledger, "one")
       open(ledger, "two")

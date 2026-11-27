@@ -597,7 +597,9 @@ func (m *ChatModel) handleSubmittedCommand(input string, cmds *[]tea.Cmd) {
 		emit(ChatOpenWebhooksPageMsg{})
 	case "/discord":
 		emit(ChatOpenDiscordPageMsg{})
-	case "/config", "/settings":
+	case "/settings":
+		emit(openSettingsMsg{})
+	case "/config":
 		emit(ChatOpenConfigPageMsg{})
 	case "/skills", "/instructions", "/mcp":
 		emit(ChatOpenCapabilityPageMsg{Kind: trimmed[1:]})

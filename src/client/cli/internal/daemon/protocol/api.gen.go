@@ -973,7 +973,7 @@ type DeclaredSetting struct {
 	// Key The key in the section of extensions.json.
 	Key string `json:"key"`
 
-	// Kind integer takes a whole number from minimum to maximum; text takes a non-empty string of at most 4096 bytes; limit takes a whole number from minimum to maximum, or -1 for no limit; map takes an object of at most 64 names to text, each name 1 to 64 bytes without whitespace or =, each value text, and unset reads as empty; choices takes an object like map whose values are each one of options or a name in the section's options_from map, a row left out being unset.
+	// Kind integer takes a whole number from minimum to maximum; text takes a non-empty string of at most 4096 bytes; limit takes a whole number from minimum to maximum, or -1 for no limit; map takes an object of at most 64 names to text, each name 1 to 64 bytes without whitespace or =, each value text, and unset reads as empty; choices takes an object like map whose values are each one of options or a name in the section's options_from map, a row left out being unset. An info field reports live text from its owner and cannot be patched.
 	Kind  string `json:"kind"`
 	Label string `json:"label"`
 
@@ -1532,6 +1532,9 @@ type GlobalExtension struct {
 	ID          ID   `json:"id"`
 	Quarantined bool `json:"quarantined"`
 	Requires    []ID `json:"requires"`
+
+	// Title Display name from the extension's declarations. Absent from older daemons.
+	Title *string `json:"title,omitempty"`
 }
 
 // HTTPCommand defines model for HTTPCommand.
@@ -1611,6 +1614,24 @@ type HistoryPage struct {
 
 // HistoryRead The requested view determines the item type. Empty pages are valid for either view.
 type HistoryRead = json.RawMessage
+
+// HonchoSession defines model for HonchoSession.
+type HonchoSession struct {
+	Page   PageDescriptor `json:"page"`
+	Status struct {
+		AssistantPeer  *string `json:"assistant_peer" nullable:"true"`
+		Endpoint       *string `json:"endpoint" nullable:"true"`
+		Enrolled       bool    `json:"enrolled"`
+		ForkCopy       *string `json:"fork_copy" nullable:"true"`
+		HumanPeer      *string `json:"human_peer" nullable:"true"`
+		LastDeliveryMs *int64  `json:"last_delivery_ms" nullable:"true"`
+		NextAttemptMs  *int64  `json:"next_attempt_ms" nullable:"true"`
+		Paused         *string `json:"paused" nullable:"true"`
+		Pending        Counter `json:"pending"`
+		RemoteSession  *string `json:"remote_session" nullable:"true"`
+		Workspace      *string `json:"workspace" nullable:"true"`
+	} `json:"status"`
+}
 
 // Hook defines model for Hook.
 type Hook struct {
@@ -2333,7 +2354,7 @@ type ModelSettingsChange struct {
 	Resource    ModelSettingsResource `json:"resource"`
 }
 
-// ModelSettingsPatch Keys are cap_key values from model metadata. For raised_caps, true raises to the advertised maximum; false uses the ordinary limit; null clears the choice. A missing choice defaults to false. For compact_at, a token count is the window every session on that model compacts against, as long as it is below the model's window; null clears it. Only raised_caps and compact_at are writable.
+// ModelSettingsPatch Keys are cap_key values from model metadata. For raised_caps, true raises to the advertised maximum; false uses the ordinary limit; null clears the choice. A missing choice defaults to false. For compact_at, a token count sets the compaction window for sessions on that model ID. A known model window caps the saved value. Null clears it. Only raised_caps and compact_at are writable.
 type ModelSettingsPatch struct {
 	CompactAt  PatchField[map[string]*int64] `json:"compact_at,omitempty"`
 	RaisedCaps PatchField[map[string]*bool]  `json:"raised_caps,omitempty"`
@@ -4962,6 +4983,11 @@ type DeleteDiscordBotParams struct {
 	Revision int64 `form:"revision" json:"revision"`
 }
 
+// ChangeHonchoSessionJSONBody defines parameters for ChangeHonchoSession.
+type ChangeHonchoSessionJSONBody struct {
+	Action string `json:"action"`
+}
+
 // UnlinkWorkspaceParams defines parameters for UnlinkWorkspace.
 type UnlinkWorkspaceParams struct {
 	Workspace Workspace `form:"workspace" json:"workspace"`
@@ -5221,10 +5247,16 @@ type ListSessionsParams struct {
 	NeedsReload *bool      `form:"needs_reload,omitempty" json:"needs_reload,omitempty"`
 
 	// Acp true lists only ACP-owned sessions, false only the others. Combine with workspace for an exact canonical workspace match.
-	Acp   *bool   `form:"acp,omitempty" json:"acp,omitempty"`
-	Sort  *string `form:"sort,omitempty" json:"sort,omitempty"`
-	Limit *Limit  `form:"limit,omitempty" json:"limit,omitempty"`
-	Next  *Next   `form:"next,omitempty" json:"next,omitempty"`
+	Acp *bool `form:"acp,omitempty" json:"acp,omitempty"`
+
+	// Worktree true lists only sessions in managed worktrees, including paths under the daemon's managed checkout directory after removal. false lists only the others.
+	Worktree *bool `form:"worktree,omitempty" json:"worktree,omitempty"`
+
+	// Pinned true lists only pinned sessions, false only the others.
+	Pinned *bool   `form:"pinned,omitempty" json:"pinned,omitempty"`
+	Sort   *string `form:"sort,omitempty" json:"sort,omitempty"`
+	Limit  *Limit  `form:"limit,omitempty" json:"limit,omitempty"`
+	Next   *Next   `form:"next,omitempty" json:"next,omitempty"`
 }
 
 // DeleteSessionParams defines parameters for DeleteSession.
@@ -5549,8 +5581,11 @@ type GetWorkspacesParams struct {
 
 	// Include `preview` adds repository facts and a tree; `files` lists the directory's files after its directories, each item with `kind`, `size` and `ignored`.
 	Include *string `form:"include,omitempty" json:"include,omitempty"`
-	Limit   *Limit  `form:"limit,omitempty" json:"limit,omitempty"`
-	Next    *Next   `form:"next,omitempty" json:"next,omitempty"`
+
+	// Worktree Filters recent workspaces only, without location. True includes only managed worktrees, including removed checkouts; false excludes them.
+	Worktree *bool  `form:"worktree,omitempty" json:"worktree,omitempty"`
+	Limit    *Limit `form:"limit,omitempty" json:"limit,omitempty"`
+	Next     *Next  `form:"next,omitempty" json:"next,omitempty"`
 }
 
 // PatchAccountJSONRequestBody defines body for PatchAccount for application/json ContentType.
@@ -5585,6 +5620,9 @@ type PutDiscordChannelJSONRequestBody = DiscordChannelSetting
 
 // PutDiscordDMJSONRequestBody defines body for PutDiscordDM for application/json ContentType.
 type PutDiscordDMJSONRequestBody = DiscordAllow
+
+// ChangeHonchoSessionJSONRequestBody defines body for ChangeHonchoSession for application/json ContentType.
+type ChangeHonchoSessionJSONRequestBody ChangeHonchoSessionJSONBody
 
 // MergeLinkGroupsJSONRequestBody defines body for MergeLinkGroups for application/json ContentType.
 type MergeLinkGroupsJSONRequestBody = LinkMerge
@@ -6154,6 +6192,25 @@ type ClientInterface interface {
 	//
 	// Corresponds with DELETE /extensions/discord/bots/{bot_id}/requests/{user_id} (the `DeleteDiscordRequest` operationId).
 	DeleteDiscordRequest(ctx context.Context, botID ID, userID ID, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ReadHonchoSession Read Honcho enrollment and delivery status
+	//
+	// Corresponds with GET /extensions/honcho/sessions/{session_id} (the `ReadHonchoSession` operationId).
+	ReadHonchoSession(ctx context.Context, sessionID ID, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ChangeHonchoSessionWithBody Change Honcho delivery for this session
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /extensions/honcho/sessions/{session_id} (the `ChangeHonchoSession` operationId).
+	ChangeHonchoSessionWithBody(ctx context.Context, sessionID ID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ChangeHonchoSession Change Honcho delivery for this session
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /extensions/honcho/sessions/{session_id} (the `ChangeHonchoSession` operationId).
+	ChangeHonchoSession(ctx context.Context, sessionID ID, body ChangeHonchoSessionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// UnlinkWorkspace Remove a member from the observed group
 	//
@@ -8395,6 +8452,55 @@ func (c *Client) ListDiscordGuilds(ctx context.Context, botID ID, reqEditors ...
 // Corresponds with DELETE /extensions/discord/bots/{bot_id}/requests/{user_id} (the `DeleteDiscordRequest` operationId).
 func (c *Client) DeleteDiscordRequest(ctx context.Context, botID ID, userID ID, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewDeleteDiscordRequestRequest(c.Server, botID, userID)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// ReadHonchoSession Read Honcho enrollment and delivery status
+//
+// Corresponds with GET /extensions/honcho/sessions/{session_id} (the `ReadHonchoSession` operationId).
+func (c *Client) ReadHonchoSession(ctx context.Context, sessionID ID, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewReadHonchoSessionRequest(c.Server, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// ChangeHonchoSessionWithBody Change Honcho delivery for this session
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /extensions/honcho/sessions/{session_id} (the `ChangeHonchoSession` operationId).
+func (c *Client) ChangeHonchoSessionWithBody(ctx context.Context, sessionID ID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewChangeHonchoSessionRequestWithBody(c.Server, sessionID, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// ChangeHonchoSession Change Honcho delivery for this session
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /extensions/honcho/sessions/{session_id} (the `ChangeHonchoSession` operationId).
+func (c *Client) ChangeHonchoSession(ctx context.Context, sessionID ID, body ChangeHonchoSessionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewChangeHonchoSessionRequest(c.Server, sessionID, body)
 	if err != nil {
 		return nil, err
 	}
@@ -13213,6 +13319,87 @@ func NewDeleteDiscordRequestRequest(server string, botID ID, userID ID) (*http.R
 	return req, nil
 }
 
+// NewReadHonchoSessionRequest constructs an http.Request for the ReadHonchoSession method
+func NewReadHonchoSessionRequest(server string, sessionID ID) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/extensions/honcho/sessions/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewChangeHonchoSessionRequest calls the generic ChangeHonchoSession builder with application/json body
+func NewChangeHonchoSessionRequest(server string, sessionID ID, body ChangeHonchoSessionJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewChangeHonchoSessionRequestWithBody(server, sessionID, "application/json", bodyReader)
+}
+
+// NewChangeHonchoSessionRequestWithBody constructs an http.Request for the ChangeHonchoSession method, with any body, and a specified content type
+func NewChangeHonchoSessionRequestWithBody(server string, sessionID ID, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "session_id", sessionID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/extensions/honcho/sessions/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
 // NewUnlinkWorkspaceRequest constructs an http.Request for the UnlinkWorkspace method
 func NewUnlinkWorkspaceRequest(server string, params *UnlinkWorkspaceParams) (*http.Request, error) {
 	var err error
@@ -16329,6 +16516,30 @@ func NewListSessionsRequest(server string, params *ListSessionsParams) (*http.Re
 		if params.Acp != nil {
 
 			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "acp", *params.Acp, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "boolean", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.Worktree != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "worktree", *params.Worktree, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "boolean", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.Pinned != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "pinned", *params.Pinned, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "boolean", Format: ""}); err != nil {
 				return nil, err
 			} else {
 				for _, qp := range strings.Split(queryFrag, "&") {
@@ -21103,6 +21314,18 @@ func NewGetWorkspacesRequest(server string, params *GetWorkspacesParams) (*http.
 		if params.Include != nil {
 
 			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "include", *params.Include, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.Worktree != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "worktree", *params.Worktree, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "boolean", Format: ""}); err != nil {
 				return nil, err
 			} else {
 				for _, qp := range strings.Split(queryFrag, "&") {

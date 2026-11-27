@@ -388,6 +388,30 @@ pub fn adopt(composition: Composition) -> Result(Nil, String) {
   }
 }
 
+/// Publish the accepted composition before its waiters can start work.
+pub fn published(composition: Composition, session: String) -> Nil {
+  list.each(composition.managed, fn(item) {
+    case item.value.published {
+      option.None -> Nil
+      option.Some(run) -> {
+        let outcome = {
+          use owner <- result.try(
+            extension.named(composition.extensions, item.extension)
+            |> result.replace_error("missing extension owner"),
+          )
+          albedo_protect.guarded(fn() {
+            run(extension.session_storage_of(owner, composition.ledger, session))
+          })
+        }
+        case outcome {
+          Ok(_) -> Nil
+          Error(reason) -> report(item.extension, "publication", reason)
+        }
+      }
+    }
+  })
+}
+
 /// Every contribution's observer, in registry order, each guarded: these run
 /// inside the session actor, where a crash would take the session with it.
 pub fn observers(

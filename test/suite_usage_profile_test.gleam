@@ -1,13 +1,15 @@
 //// The usage profile: days counted on the client's clock, streak runs, the
 //// current streak surviving a day with no use yet, and only completed turns.
 
+import albedo/generated/sql/usage/usage_hours_sql
 import albedo/storage/core_store
-import albedo/usage/usage_hours
 import albedo/usage/usage_profile
 import albedo_sdk/store
+import albedo_sqlite
 import gleam/io
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import sqlight
 
 const day = 86_400_000
@@ -18,8 +20,13 @@ pub fn main() -> Nil {
   let assert Ok(ledger) =
     store.start(
       ":memory:",
-      usage_hours.schema
-        <> "CREATE TABLE input_turns(id TEXT PRIMARY KEY,session TEXT NOT NULL,state TEXT NOT NULL,started_at INTEGER NOT NULL,ended_at INTEGER);",
+      fn(db) {
+        use _ <- result.try(usage_hours_sql.create_usage_hours(db:))
+        albedo_sqlite.exec(
+          "CREATE TABLE input_turns(id TEXT PRIMARY KEY,session TEXT NOT NULL,state TEXT NOT NULL,started_at INTEGER NOT NULL,ended_at INTEGER);",
+          on: db,
+        )
+      },
       core_store.tables(),
     )
   let assert Ok(empty) = usage_profile.read(ledger, 100 * day, 0)
@@ -39,16 +46,18 @@ pub fn main() -> Nil {
     fn(row) {
       let #(at, tokens, calls) = row
       let assert Ok(_) =
-        store.write(
-          ledger,
-          "INSERT INTO usage_hours VALUES(?,'p','prov','','m','turn',?,0,?,0,0,?,0)",
-          [
-            sqlight.int(at),
-            sqlight.int(calls),
-            sqlight.int(tokens - 1),
-            sqlight.int(1),
-          ],
-        )
+        store.writing(ledger, fn(db) {
+          albedo_sqlite.run(
+            "INSERT INTO usage_hours VALUES(?,'p','prov','','m','turn',?,0,?,0,0,?,0)",
+            on: db,
+            with: [
+              sqlight.int(at),
+              sqlight.int(calls),
+              sqlight.int(tokens - 1),
+              sqlight.int(1),
+            ],
+          )
+        })
       Nil
     },
   )
@@ -61,12 +70,18 @@ pub fn main() -> Nil {
     fn(turn) {
       let #(id, state, started, ended) = turn
       let assert Ok(_) =
-        store.write(ledger, "INSERT INTO input_turns VALUES(?,'s',?,?,?)", [
-          sqlight.text(id),
-          sqlight.text(state),
-          sqlight.int(started),
-          sqlight.nullable(sqlight.int, ended),
-        ])
+        store.writing(ledger, fn(db) {
+          albedo_sqlite.run(
+            "INSERT INTO input_turns VALUES(?,'s',?,?,?)",
+            on: db,
+            with: [
+              sqlight.text(id),
+              sqlight.text(state),
+              sqlight.int(started),
+              sqlight.nullable(sqlight.int, ended),
+            ],
+          )
+        })
       Nil
     },
   )
@@ -98,11 +113,13 @@ pub fn main() -> Nil {
   // An hour stamped tomorrow (a clock set back since) is not today's streak:
   // the run ending today is still one day long.
   let assert Ok(_) =
-    store.write(
-      ledger,
-      "INSERT INTO usage_hours VALUES(?,'p','prov','','m','turn',1,0,1,0,0,1,0)",
-      [sqlight.int(101 * day + 9 * hour)],
-    )
+    store.writing(ledger, fn(db) {
+      albedo_sqlite.run(
+        "INSERT INTO usage_hours VALUES(?,'p','prov','','m','turn',1,0,1,0,0,1,0)",
+        on: db,
+        with: [sqlight.int(101 * day + 9 * hour)],
+      )
+    })
   let assert Ok(skewed) = usage_profile.read(ledger, now, 0)
   assert skewed.current_streak_days == 1
   assert skewed.active_days == 6

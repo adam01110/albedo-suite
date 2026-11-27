@@ -1,12 +1,15 @@
 {
   "project": "https://tangled.org/okami.mom/albedo",
-  "rev": "059136153e087d39337f9f5b0ba3a721d13f2ec4",
-  "narHash": "sha256-OtmBmPZ+ZZU4PaG4D8KJkwTA5GpDjGJltk2jYtEp6MI=",
+  "rev": "bad7623dffc8c09809f1be87fce7d91c0352af23",
+  "narHash": "sha256-Aj/bRz35cgmrffsygRDEa2ixVvzNIbkEVcgsMItVi34=",
   "sourceFiles": [
     "apps/albedo/src/albedo/accounts/quota.gleam",
+    "apps/albedo/src/albedo/accounts/quota/sql/create_quota_samples.sql",
+    "apps/albedo/src/albedo/accounts/quota/sql/latest.sql",
     "apps/albedo/src/albedo/composition/composition.gleam",
     "apps/albedo/src/albedo/composition/extensions.gleam",
     "apps/albedo/src/albedo/composition/prompt_docs.gleam",
+    "apps/albedo/src/albedo/generated/sql/accounts/quota_sql.gleam",
     "apps/albedo/src/albedo/history/tool_count.gleam",
     "apps/albedo/src/albedo/http/api_digest.gleam",
     "apps/albedo/src/albedo/http/http_resources.gleam",

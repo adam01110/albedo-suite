@@ -1,4 +1,5 @@
-package tui
+// Package chrome provides Albedo’s terminal palette and shared screen controls.
+package chrome
 
 import (
 	"cmp"
@@ -21,7 +22,7 @@ import (
 )
 
 // Styles defines the shared terminal palette. Screens compose these
-// styles and components, so the transcript, the session screen, and the
+// Styles and components, so the transcript, the session screen, and the
 // pickers cannot drift into their own palettes.
 //
 // Tokens come in three kinds:
@@ -75,22 +76,57 @@ var DefaultStyles = Styles{
 	Cursor:   lipgloss.NewStyle().Reverse(true),
 }
 
-func useInk(detected ink) {
-	transcriptInk = detected
+func UseInk(detected Ink) {
+	detected.agents = graphPalette(detected)
+	CurrentInk = detected
 	fg := func(hex string) lipgloss.Style { return lipgloss.NewStyle().Foreground(lipgloss.Color(hex)) }
-	DefaultStyles.Muted = fg(detected.code)
-	DefaultStyles.Faint = fg(detected.secondary)
-	DefaultStyles.Decor = fg(detected.decor)
+	if detected.success != "" {
+		DefaultStyles.Success = fg(detected.success)
+	}
+	if detected.warning != "" {
+		DefaultStyles.Warning = fg(detected.warning)
+	}
+	if detected.failure != "" {
+		DefaultStyles.Error = fg(detected.failure)
+	}
+	if detected.BrandFrom != "" {
+		DefaultStyles.Prompt = fg(detected.BrandFrom)
+	}
+	DefaultStyles.Muted = fg(detected.Code)
+	DefaultStyles.Faint = fg(cmp.Or(detected.hint, detected.Secondary))
+	DefaultStyles.Decor = fg(detected.Decor)
 	if detected.busy != "" {
 		DefaultStyles.Busy = fg(detected.busy)
 	}
 	DefaultStyles.Selected = lipgloss.NewStyle().Background(lipgloss.Color(detected.surface))
 }
 
-// newTextInput is a text input in the theme: plain text and prompt whether
+func Chip(text string, emphasized bool) string {
+	style, bg := DefaultStyles.Faint, CurrentInk.codeBg
+	if emphasized {
+		style, bg = DefaultStyles.Prompt.Bold(true), CurrentInk.surface
+	}
+	if bg == "" {
+		return style.Render("[" + text + "]")
+	}
+	return style.Background(lipgloss.Color(bg)).Render(" " + text + " ")
+}
+
+func PopoverStyle() lipgloss.Style {
+	style := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(DefaultStyles.Decor.GetForeground())
+	if CurrentInk.bg != "" {
+		bg := lipgloss.Color(CurrentInk.bg)
+		return style.Background(bg).BorderBackground(bg)
+	}
+	return style
+}
+
+// NewTextInput is a text input in the theme: plain text and prompt whether
 // focused or not, and a reverse-video cursor that holds still, so an idle
 // input never wakes the program to blink.
-func newTextInput() textinput.Model {
+func NewTextInput() textinput.Model {
 	ti := textinput.New()
 	s := ti.Styles()
 	s.Focused.Prompt, s.Focused.Text = lipgloss.NewStyle(), lipgloss.NewStyle()
@@ -101,17 +137,17 @@ func newTextInput() textinput.Model {
 }
 
 const (
-	ansiReset  = "\x1b[0m"
-	ansiItalic = "\x1b[3m"
+	AnsiReset  = "\x1b[0m"
+	AnsiItalic = "\x1b[3m"
 	ansiGray   = "\x1b[90m"
 )
 
-// sgr is a foreground color as an escape sequence, or fallback when the
+// Sgr is a foreground color as an escape sequence, or fallback when the
 // ramp is unknown. Bubble Tea downsamples it to the terminal's profile.
-func sgr(hex, fallback string) string { return sgrLayer(hex, fallback, false) }
+func Sgr(hex, fallback string) string { return sgrLayer(hex, fallback, false) }
 
 func sgrLayer(hex, fallback string, background bool) string {
-	if parseHex(hex) == nil {
+	if ParseHex(hex) == nil {
 		return fallback
 	}
 	if background {
@@ -120,50 +156,42 @@ func sgrLayer(hex, fallback string, background bool) string {
 	return ansi.NewStyle().ForegroundColor(lipgloss.Color(hex)).String()
 }
 
-// codeInk steps code down from prose so a reply that decorates every
-// identifier stays quiet.
-func codeInk() string { return sgr(transcriptInk.code, "\x1b[37m") }
+// DecorInk is the Decor token as a raw sequence.
+func DecorInk() string { return Sgr(CurrentInk.Decor, ansiGray) }
 
-// faintInk is the Faint token as a raw sequence, for markdown's own spans.
-func faintInk() string { return sgr(transcriptInk.secondary, ansiGray) }
+// DiffPanel supplies the base background for diff rows.
+func DiffPanel() string   { return sgrLayer(CurrentInk.surface, "\x1b[48;2;37;40;50m", true) }
+func DiffAdded() string   { return sgrLayer(CurrentInk.added, "\x1b[48;2;24;53;39m", true) }
+func DiffRemoved() string { return sgrLayer(CurrentInk.removed, "\x1b[48;2;59;35;40m", true) }
 
-// decorInk is the Decor token as a raw sequence.
-func decorInk() string { return sgr(transcriptInk.decor, ansiGray) }
-
-// Diff rows sit on tints mixed toward the palette's red and green. The
-// fallbacks are dark tints, the only case without reported colors.
-func diffPanel() string   { return sgrLayer(transcriptInk.surface, "\x1b[48;2;37;40;50m", true) }
-func diffAdded() string   { return sgrLayer(transcriptInk.added, "\x1b[48;2;24;53;39m", true) }
-func diffRemoved() string { return sgrLayer(transcriptInk.removed, "\x1b[48;2;59;35;40m", true) }
-
-// keepBackground turns full resets into foreground and attribute resets, so
+// KeepBackground turns full resets into foreground and attribute resets, so
 // a styled span inside a tinted row keeps the row's background. Lip Gloss
 // spells a full reset "ESC[m"; the raw ink spells it "ESC[0m".
-func keepBackground(s string) string {
-	return strings.NewReplacer(ansiReset, "\x1b[39;22;23m", "\x1b[m", "\x1b[39;22;23m").Replace(s)
+func KeepBackground(s string) string {
+	return strings.NewReplacer(AnsiReset, "\x1b[39;22;23m", "\x1b[m", "\x1b[39;22;23m").Replace(s)
 }
 
 // gradient is the brand ramp at t in [0, 1], or nil when the terminal did
 // not report the colors it is mixed from.
 func gradient(t float64) color.Color {
-	from, to := parseHex(transcriptInk.brandFrom), parseHex(transcriptInk.brandTo)
+	from, to := ParseHex(CurrentInk.BrandFrom), ParseHex(CurrentInk.BrandTo)
 	if from == nil || to == nil {
 		return nil
 	}
-	return lipgloss.Color(from.mix(*to, min(1, max(0, t))).hex())
+	return lipgloss.Color(from.Mix(*to, min(1, max(0, t))).Hex())
 }
 
-func parseHex(hex string) *rgb {
+func ParseHex(hex string) *RGB {
 	var r, g, b int
 	if _, err := fmt.Sscanf(hex, "#%02x%02x%02x", &r, &g, &b); err != nil {
 		return nil
 	}
-	return &rgb{float64(r) / 255, float64(g) / 255, float64(b) / 255}
+	return &RGB{float64(r) / 255, float64(g) / 255, float64(b) / 255}
 }
 
-// gradientText sweeps the brand ramp across s. Without it s takes the agent
+// GradientText sweeps the brand ramp across s. Without it s takes the agent
 // color.
-func gradientText(s string, bold bool) string {
+func GradientText(s string, bold bool) string {
 	if gradient(0) == nil {
 		return DefaultStyles.Agent.Bold(bold).Render(s)
 	}
@@ -191,15 +219,15 @@ type rampKey struct {
 // detected ink, and every frame's header asks for the same few again.
 var ramps struct {
 	byKey map[rampKey]string
-	ink   ink
+	ink   Ink
 	sync.Mutex
 }
 
 func ramp(key rampKey, render func() string) string {
 	ramps.Lock()
 	defer ramps.Unlock()
-	if ramps.byKey == nil || ramps.ink != transcriptInk || len(ramps.byKey) > 256 {
-		ramps.ink, ramps.byKey = transcriptInk, map[rampKey]string{}
+	if ramps.byKey == nil || ramps.ink != CurrentInk || len(ramps.byKey) > 256 {
+		ramps.ink, ramps.byKey = CurrentInk, map[rampKey]string{}
 	}
 	s, ok := ramps.byKey[key]
 	if !ok {
@@ -209,19 +237,19 @@ func ramp(key rampKey, render func() string) string {
 	return s
 }
 
-// brandInk colors a mark along the brand ramp, or in the agent color.
-func brandInk(t float64) lipgloss.Style {
+// BrandInk colors a mark along the brand ramp, or in the agent color.
+func BrandInk(t float64) lipgloss.Style {
 	if c := gradient(t); c != nil {
 		return lipgloss.NewStyle().Foreground(c)
 	}
 	return DefaultStyles.Agent
 }
 
-func brand(name string) string { return gradientText("✦ "+name, true) }
+func Brand(name string) string { return GradientText("✦ "+name, true) }
 
-// titleRule heads a screen: left, a rule that fades from the brand's end
+// TitleRule heads a screen: left, a rule that fades from the brand's end
 // into Decor, then right. Without room for one rule cell it is left alone.
-func titleRule(width int, left, right string) string {
+func TitleRule(width int, left, right string) string {
 	if right != "" {
 		right = " " + right
 	}
@@ -235,11 +263,11 @@ func titleRule(width int, left, right string) string {
 // fadeRule is n rule cells fading from the brand's end into Decor.
 func fadeRule(n int) string {
 	var rule strings.Builder
-	from, to := parseHex(transcriptInk.brandTo), parseHex(transcriptInk.decor)
+	from, to := ParseHex(CurrentInk.BrandTo), ParseHex(CurrentInk.Decor)
 	for i := range n {
 		t := float64(i) / float64(n)
 		if from != nil && to != nil && t < 0.35 {
-			rule.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(from.mix(*to, t/0.35).hex())).Render("─"))
+			rule.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(from.Mix(*to, t/0.35).Hex())).Render("─"))
 			continue
 		}
 		rule.WriteString(DefaultStyles.Decor.Render("─"))
@@ -247,76 +275,76 @@ func fadeRule(n int) string {
 	return rule.String()
 }
 
-// located is the brand at a place: "✦ albedo on ~/path".
-func located(name, place string) string {
+// Located is the brand at a place: "✦ albedo on ~/path".
+func Located(name, place string) string {
 	if place == "" {
-		return brand(name)
+		return Brand(name)
 	}
-	return brand(name) + DefaultStyles.Faint.Render(" on ") + DefaultStyles.Muted.Render(place)
+	return Brand(name) + DefaultStyles.Faint.Render(" on ") + DefaultStyles.Muted.Render(place)
 }
 
-// hint is a key and what it does.
-type hint struct{ key, does string }
+// Hint is a key and what it does.
+type Hint struct{ Key, Does string }
 
-// keyHints lists keys in Muted and what they do in Faint. A hint without a
+// KeyHints lists keys in Muted and what they do in Faint. A hint without a
 // key is a plain note.
-func keyHints(hints ...hint) string {
+func KeyHints(hints ...Hint) string {
 	parts := make([]string, len(hints))
 	for i, h := range hints {
 		switch {
-		case h.key == "":
-			parts[i] = DefaultStyles.Faint.Render(h.does)
-		case h.does == "":
-			parts[i] = DefaultStyles.Muted.Render(h.key)
+		case h.Key == "":
+			parts[i] = DefaultStyles.Faint.Render(h.Does)
+		case h.Does == "":
+			parts[i] = DefaultStyles.Prompt.Bold(true).Render(h.Key)
 		default:
-			parts[i] = DefaultStyles.Muted.Render(h.key) + " " + DefaultStyles.Faint.Render(h.does)
+			parts[i] = DefaultStyles.Prompt.Bold(true).Render(h.Key) + " " + DefaultStyles.Faint.Render(h.Does)
 		}
 	}
 	return strings.Join(parts, DefaultStyles.Decor.Render(" · "))
 }
 
-// sectionRule heads a group in a list: " ─ label count ────".
-func sectionRule(label string, count, width int) string {
+// SectionRule heads a group in a list: " ─ label count ────".
+func SectionRule(label string, count, width int) string {
 	head := " " + label + " "
 	tail := fmt.Sprintf("%d ", count)
 	rule := strings.Repeat("─", max(0, width-2-ansi.StringWidth(head+tail)))
 	return DefaultStyles.Decor.Render(" ─") + DefaultStyles.Muted.Bold(true).Render(head) + DefaultStyles.Decor.Render(tail+rule)
 }
 
-// groupHeading heads a group of sections in a list, above their rules.
-func groupHeading(label string, width int) string {
+// GroupHeading heads a group of sections in a list, above their rules.
+func GroupHeading(label string, width int) string {
 	return DefaultStyles.Bold.Render(ansi.Truncate(" "+label, width, "…"))
 }
 
-// promptMark is where you type.
-const promptMark = "› "
-const promptMarkWidth = 2
+// PromptMark precedes the focused input.
+const PromptMark = "› "
+const PromptMarkWidth = 2
 
-func promptLead() string { return DefaultStyles.Prompt.Render(promptMark) }
+func PromptLead() string { return DefaultStyles.Prompt.Render(PromptMark) }
 
-// selectBar marks the selected row.
-func selectBar() string { return DefaultStyles.Agent.Render("▌") }
+// SelectBar marks the selected row.
+func SelectBar() string { return DefaultStyles.Agent.Render("▌") }
 
-// selectedLine lays the selection surface under a styled line, reopening it
+// SelectedLine lays the selection surface under a styled line, reopening it
 // after every reset inside the line, and fills it out to width.
-func selectedLine(line string, width int) string {
+func SelectedLine(line string, width int) string {
 	marked := DefaultStyles.Selected.Render("\x00")
 	open := marked[:strings.IndexByte(marked, 0)]
 	if pad := width - ansi.StringWidth(line); pad > 0 {
 		line += strings.Repeat(" ", pad)
 	}
-	return open + strings.NewReplacer(ansiReset, ansiReset+open, "\x1b[m", "\x1b[m"+open).Replace(line) + ansiReset
+	return open + strings.NewReplacer(AnsiReset, AnsiReset+open, "\x1b[m", "\x1b[m"+open).Replace(line) + AnsiReset
 }
 
-// homePath shortens a path under your home directory to start with ~.
-func homePath(p string) string {
+// HomePath shortens a path under your home directory to start with ~.
+func HomePath(p string) string {
 	home, _ := os.UserHomeDir()
-	return underHome(p, home)
+	return UnderHome(p, home)
 }
 
-// pathFolds shortens a path by folding its middle into "…" one more segment
+// PathFolds shortens a path by folding its middle into "…" one more segment
 // at a time, keeping its root and its name: ~/a/b/c, ~/…/b/c, ~/…/c.
-func pathFolds(p string) []string {
+func PathFolds(p string) []string {
 	sep := string(filepath.Separator)
 	parts := strings.Split(p, sep)
 	folds := []string{p}
@@ -326,8 +354,8 @@ func pathFolds(p string) []string {
 	return folds
 }
 
-// underHome shortens p under home to start with ~.
-func underHome(p, home string) string {
+// UnderHome shortens p under home to start with ~.
+func UnderHome(p, home string) string {
 	rest, ok := strings.CutPrefix(p, home)
 	if home == "" || !ok || rest != "" && rest[0] != filepath.Separator {
 		return p
@@ -335,9 +363,9 @@ func underHome(p, home string) string {
 	return "~" + rest
 }
 
-// scpRelative is a remote path after its host's colon as scp reads it:
+// ScpRelative is a remote path after its host's colon as scp reads it:
 // one under ~ relative to the home, which itself stays ~.
-func scpRelative(p string) string {
+func ScpRelative(p string) string {
 	if rest, ok := strings.CutPrefix(p, "~/"); ok {
 		return rest
 	}
@@ -367,79 +395,98 @@ var languageHues = map[string]string{
 // file names are read, so about what content text gets.
 const languageLc = 60
 
-// languageStyle colors a language: our hue for it, else linguist's, adapted
+// LanguageStyle colors a language: our hue for it, else linguist's, adapted
 // to the terminal. A language with neither steps back like other metadata.
-func languageStyle(name, linguist string) lipgloss.Style {
-	if base16Active {
+func LanguageStyle(name, linguist string) lipgloss.Style {
+	if CurrentInk.Base16() {
 		return lipgloss.NewStyle().Foreground(lipgloss.Color(base16Nearest(cmp.Or(languageHues[name], linguist))))
 	}
-	c := parseHex(cmp.Or(languageHues[name], linguist))
+	c := ParseHex(cmp.Or(languageHues[name], linguist))
 	if c == nil {
 		return DefaultStyles.Muted
 	}
-	if bg := parseHex(transcriptInk.bg); bg != nil {
+	if bg := ParseHex(CurrentInk.bg); bg != nil {
 		*c = legible(*c, *bg, languageLc)
 	}
-	return lipgloss.NewStyle().Foreground(lipgloss.Color(c.hex()))
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(c.Hex()))
 }
 
 // identityHues tell things apart that have no meaning of their own to show:
 // agents in the orchestrator view, hosts beside their paths.
 var identityHues = []string{"#e08cf5", "#6fd1c4", "#b6e37a", "#b9a6f5", "#80aaf9", "#f5a97f"}
 
-// hostStyle colors a host label the same way every time, legible on the
+// HostStyle colors a host label the same way every time, legible on the
 // terminal's background like a language's color.
-func hostStyle(host string) lipgloss.Style {
+func HostStyle(host string) lipgloss.Style {
 	h := fnv.New32a()
 	h.Write([]byte(host))
-	c := parseHex(identityHues[h.Sum32()%uint32(len(identityHues))])
-	if base16Active {
-		return lipgloss.NewStyle().Foreground(lipgloss.Color(c.hex()))
+	if CurrentInk.Base16() {
+		hues := base16Hues(CurrentInk.base16)
+		return lipgloss.NewStyle().Foreground(lipgloss.Color(hues[h.Sum32()%uint32(len(hues))]))
 	}
-	if bg := parseHex(transcriptInk.bg); bg != nil {
+	c := ParseHex(identityHues[h.Sum32()%uint32(len(identityHues))])
+	if bg := ParseHex(CurrentInk.bg); bg != nil {
 		*c = legible(*c, *bg, languageLc)
 	}
-	return lipgloss.NewStyle().Foreground(lipgloss.Color(c.hex()))
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(c.Hex()))
 }
 
 // agentPalette colors the orchestrator view. Each agent keeps one identity
 // hue wherever it appears; structure and quiet text follow the terminal's
 // own ink like every other screen.
 type agentPalette struct {
-	hues                        []rgb
-	you, mail, faint, decor, hi rgb
+	Hues                        []RGB
+	You, Mail, Faint, Decor, Hi RGB
 }
 
-func agentColors() agentPalette {
-	if base16Active {
-		hues := make([]rgb, len(identityHues))
-		for i, h := range identityHues {
-			hues[i] = *parseHex(h)
-		}
-		return agentPalette{hues: hues, you: *parseHex(base16Palette[12]), mail: *parseHex(base16Palette[10]), faint: *parseHex(base16Palette[4]), decor: *parseHex(base16Palette[3]), hi: *parseHex(base16Palette[5])}
+var fallbackAgentColors = graphPalette(Ink{})
+
+func AgentColors() *agentPalette {
+	if CurrentInk.agents != nil {
+		return CurrentInk.agents
 	}
-	hex := func(val, fallback string) rgb {
-		if c := parseHex(val); c != nil {
+	return fallbackAgentColors
+}
+
+func graphPalette(colors Ink) *agentPalette {
+	hex := func(val, fallback string) RGB {
+		if c := ParseHex(val); c != nil {
 			return *c
 		}
-		return *parseHex(fallback)
+		return *ParseHex(fallback)
 	}
-	hues := make([]rgb, len(identityHues))
-	for i, h := range identityHues {
-		hues[i] = *parseHex(h)
+	bg := ParseHex(colors.bg)
+	readable := func(value string) RGB {
+		c := *ParseHex(value)
+		if bg != nil {
+			return legible(c, *bg, languageLc)
+		}
+		return c
 	}
-	return agentPalette{
-		hues:  hues,
-		you:   *parseHex("#7fd8e6"),
-		mail:  *parseHex("#f0c674"),
-		faint: hex(transcriptInk.secondary, "#6a6378"),
-		decor: hex(transcriptInk.decor, "#3a3448"),
-		hi:    *parseHex("#ffffff"),
+	hues := make([]RGB, len(identityHues))
+	for i, hue := range identityHues {
+		hues[i] = readable(hue)
+	}
+	return &agentPalette{
+		Hues:  hues,
+		You:   readable("#7fd8e6"),
+		Mail:  readable("#f0c674"),
+		Faint: hex(colors.Secondary, "#6a6378"),
+		Decor: hex(colors.Decor, "#3a3448"),
+		Hi:    readable("#ffffff"),
 	}
 }
 
-var base16Active bool
-var base16Palette [16]string
+// Background is the terminal's background color, empty when unknown.
+func (c Ink) Background() string { return c.bg }
+
+// Base16 reports whether the ink came from an explicit Base16 palette.
+func (c Ink) Base16() bool { return c.base16[0] != "" }
+
+// base16Hues are a palette's identity hues, in the order identityHues sets.
+func base16Hues(p [16]string) []string {
+	return []string{p[14], p[12], p[8], p[10], p[11], p[13], p[9], p[15]}
+}
 
 // An explicit palette bypasses terminal queries, including unreliable multiplexer replies.
 func loadBase16Theme() (bool, error) {
@@ -463,7 +510,7 @@ func loadBase16Theme() (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("Albedo theme %s: %w", path, err)
 	}
-	useBase16Theme(palette)
+	UseBase16Theme(palette)
 	return true, nil
 }
 
@@ -488,30 +535,38 @@ func parseBase16Theme(data []byte) ([16]string, error) {
 	return palette, nil
 }
 
-func useBase16Theme(p [16]string) {
-	base16Active, base16Palette = true, p
-	useInk(ink{
-		code: p[5], secondary: p[4], decor: p[3], busy: p[14], codeBg: p[1],
-		surface: p[2], added: p[1], removed: p[1], brandFrom: p[12], brandTo: p[14],
-		bg: p[0], heading: p[13], strong: p[10], inlineCode: p[11], link: p[13], math: p[12],
+// UseBase16Theme colors every screen from p alone. The orchestrator's palette
+// takes the slots as they are rather than adapting them to the background.
+func UseBase16Theme(p [16]string) {
+	UseInk(Ink{
+		Code: p[5], Secondary: p[4], Decor: p[3], busy: p[14], codeBg: p[1],
+		surface: p[2], added: p[1], removed: p[1], BrandFrom: p[12], BrandTo: p[14],
+		success: p[11], warning: p[10], failure: p[8],
+		bg: p[0], Heading: p[13], Strong: p[10], InlineCode: p[11], Link: p[13], Math: p[12],
+		base16: p,
 	})
+	hues := base16Hues(p)
+	agents := &agentPalette{Hues: make([]RGB, len(hues)), You: *ParseHex(p[12]), Mail: *ParseHex(p[10]), Faint: *ParseHex(p[4]), Decor: *ParseHex(p[3]), Hi: *ParseHex(p[5])}
+	for i, hue := range hues {
+		agents.Hues[i] = *ParseHex(hue)
+	}
+	CurrentInk.agents = agents
 	fg := func(c string) lipgloss.Style { return lipgloss.NewStyle().Foreground(lipgloss.Color(c)) }
-	DefaultStyles.You, DefaultStyles.Prompt = fg(p[12]), fg(p[12])
-	DefaultStyles.Agent, DefaultStyles.Busy = fg(p[14]), fg(p[14])
-	DefaultStyles.Error, DefaultStyles.Warning, DefaultStyles.Success = fg(p[8]), fg(p[10]), fg(p[11])
-	identityHues = []string{p[14], p[12], p[8], p[10], p[11], p[13], p[9], p[15]}
+	DefaultStyles.You = fg(p[12])
+	DefaultStyles.Agent = fg(p[14])
 }
 
 // File labels keep their hue family without introducing colors outside the configured palette.
 func base16Nearest(hex string) string {
-	c := parseHex(hex)
+	p := CurrentInk.base16
+	c := ParseHex(hex)
 	if c == nil {
-		return base16Palette[5]
+		return p[5]
 	}
-	best, distance := base16Palette[8], math.Inf(1)
-	for _, value := range base16Palette[8:] {
-		p := parseHex(value)
-		d := math.Pow(c.r-p.r, 2) + math.Pow(c.g-p.g, 2) + math.Pow(c.b-p.b, 2)
+	best, distance := p[8], math.Inf(1)
+	for _, value := range p[8:] {
+		slot := ParseHex(value)
+		d := math.Pow(c.r-slot.r, 2) + math.Pow(c.g-slot.g, 2) + math.Pow(c.b-slot.b, 2)
 		if d < distance {
 			best, distance = value, d
 		}

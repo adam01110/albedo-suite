@@ -82,6 +82,10 @@ pub type Refusal =
 type Object =
   Dict(String, Dynamic)
 
+/// Publish the new global choices together with any state that follows them.
+pub type CommitDefaults =
+  fn(Dict(String, Bool), fn() -> Result(Nil, Refusal)) -> Result(Nil, Refusal)
+
 /// What a patch needs from the running daemon.
 type Inputs {
   Inputs(
@@ -93,6 +97,7 @@ type Inputs {
       Result(Dict(String, Dict(String, Option(Bool))), String),
     defaults: fn(List(#(String, Bool)), List(#(String, Option(Bool)))) ->
       Result(List(#(String, Bool)), Refusal),
+    commit_defaults: CommitDefaults,
     declarations: List(declared.Declared),
     mcp: Option(extension.McpServers),
     keys: KeyEnvironment,
@@ -191,6 +196,7 @@ pub fn patch_group(
     Result(Dict(String, Dict(String, Option(Bool))), String),
   defaults: fn(List(#(String, Bool)), List(#(String, Option(Bool)))) ->
     Result(List(#(String, Bool)), Refusal),
+  commit_defaults: CommitDefaults,
   declarations: List(declared.Declared),
   mcp: Option(extension.McpServers),
   keys: KeyEnvironment,
@@ -203,6 +209,7 @@ pub fn patch_group(
       logins:,
       resolve:,
       defaults:,
+      commit_defaults:,
       declarations:,
       mcp:,
       keys:,
@@ -332,7 +339,7 @@ fn publish(
         |> result.replace_error(invalid()),
       )
       let updated = dict.insert(revisions, group, dynamic.int(counter + 1))
-      use _ <- result.try(
+      let commit = fn() {
         settings_store.commit(
           inputs.home,
           dict.insert(changed, revisions_file, dynamic_of(updated)),
@@ -342,8 +349,21 @@ fn publish(
             settings_store.Unavailable(_) -> unpublished()
             settings_store.Refused -> invalid()
           }
-        }),
-      )
+        })
+      }
+      use _ <- result.try(case group {
+        "extensions" -> {
+          use choices <- result.try(
+            decode.run(
+              value,
+              decode.at(["defaults"], decode.dict(decode.string, decode.bool)),
+            )
+            |> result.replace_error(invalid()),
+          )
+          inputs.commit_defaults(choices, commit)
+        }
+        _ -> commit()
+      })
       Ok(updated)
     }
   })

@@ -221,38 +221,58 @@ fn answered(
         _ -> hook.proceed
       }
     }
-    hook.Stopping(held:, ..) ->
+    hook.Stopping(held:, quieted:, awaiting:, ..) ->
       case letters.owed_requesters(db, session) {
-        Ok([first, ..rest] as requesters) ->
-          case requesters, family.get(db, session) {
-            [parent], Ok(Some(member)) if member.parent == parent ->
-              case verify_child(db, session) {
-                Error(detail) ->
+        Ok([_, ..] as requesters) -> {
+          let member = family.get(db, session)
+          let parent = case member {
+            Ok(Some(member)) -> Some(member.parent)
+            _ -> None
+          }
+          case requesters, member {
+            [only], Ok(Some(member)) if member.parent == only ->
+              case awaiting {
+                True -> hook.proceed
+                False ->
+                  case verify_child(db, session) {
+                    Error(detail) ->
+                      hook.Verdict(
+                        ..hook.proceed,
+                        block: Some(
+                          detail
+                          <> "\n\nFix the failure so the verifier exits 0, then send your result with await mail.submit(\"parent\", result).\nIf you need help from your parent, ask with await mail.request(\"parent\", <question>), or report a blocker with await mail.submit(\"parent\", <blocker>, blocker=True).",
+                        ),
+                      )
+                    Ok(Nil) if held < reminders ->
+                      hook.Verdict(
+                        ..hook.proceed,
+                        block: Some(child_reminder(held)),
+                      )
+                    Ok(Nil) -> hook.proceed
+                  }
+              }
+            _, _ if awaiting || quieted || held > 0 -> hook.proceed
+            _, _ -> {
+              let uncrossed =
+                list.filter(requesters, fn(requester) {
+                  Some(requester) == parent
+                  || letters.crossed(db, session, requester) != Ok(True)
+                })
+              case uncrossed {
+                [] -> hook.proceed
+                _ ->
                   hook.Verdict(
                     ..hook.proceed,
                     block: Some(
-                      detail
-                      <> "\n\nFix the failure so the verifier exits 0, then send your result with await mail.submit(\"parent\", result).\nIf you need help from your parent, ask with await mail.request(\"parent\", <question>), or report a blocker with await mail.submit(\"parent\", <blocker>, blocker=True).",
+                      "You owe a reply to "
+                      <> string.join(uncrossed, ", ")
+                      <> ". Send it with await mail.submit(\"<id>\", result) before you finish.",
                     ),
                   )
-                Ok(Nil) if held < reminders ->
-                  hook.Verdict(
-                    ..hook.proceed,
-                    block: Some(child_reminder(held)),
-                  )
-                Ok(Nil) -> hook.proceed
               }
-            _, _ if held == 0 ->
-              hook.Verdict(
-                ..hook.proceed,
-                block: Some(
-                  "You owe a reply to "
-                  <> string.join([first, ..rest], ", ")
-                  <> ". Send it with await mail.submit(\"<id>\", result) before you finish.",
-                ),
-              )
-            _, _ -> hook.proceed
+            }
           }
+        }
         _ -> hook.proceed
       }
     _ -> hook.proceed

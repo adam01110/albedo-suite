@@ -9,6 +9,7 @@ import albedo/history/conversation
 import albedo/history/image_fit
 import albedo/history/tool_count
 import albedo/history/tool_results
+import albedo/kernel as python
 import albedo/kernel/journal
 import albedo/kernel/result_view as python_view
 import albedo/model_loop/measured
@@ -18,6 +19,7 @@ import albedo/observation/stream_trace
 import albedo/observation/tool_progress
 import albedo/runtime
 import albedo/runtime/clip_cost
+import albedo/runtime/state as runtime_state
 import albedo/session/turn
 import albedo/storage/requests
 import albedo/usage/cache_fade
@@ -159,6 +161,12 @@ pub type Loop {
     /// compacts once for it without replaying the refused request, and a
     /// second refusal ends it.
     overflowed: Bool,
+    restart: Option(turn.Latch),
+    /// Original human text admitted for this turn.
+    human_prompt: Option(String),
+    /// Tool outputs this turn already rendered for a request; each step's
+    /// request reuses them and renders only what the step added.
+    rendered: python_view.Rendered,
   )
 }
 
@@ -379,9 +387,8 @@ fn restored_usage(
       Error(Nil),
     )
     let chain =
-      requests.input_chain(
-        option.unwrap(request.instructions, ""),
-        request.tools,
+      requests.input_chain_from_head(
+        prefix.head_hash,
         list.take(request.input, before.inputs),
       )
     use <- bool.guard(previous.input_chain != Some(chain), Error(Nil))
@@ -446,8 +453,12 @@ fn converse(
   }
   let state = warn_small(state, prepared.observation)
   let history_entries = match_entries(original_entries, history)
+  // Before the request, whose history is a part of these entries: it then
+  // finds every view it needs already rendered.
+  let #(prefix_original, rendered) =
+    request_entries(original_entries, state.upstream.images, state.rendered)
+  let state = Loop(..state, rendered:)
   let request = request(state, request_prompt(state), history_entries)
-  let prefix_original = request_entries(original_entries, state.upstream.images)
   state.record_context(
     state.profile,
     state.upstream.protocol,
@@ -464,11 +475,13 @@ fn converse(
     state.progress_delta,
   )
   let answer = fn(request: types.Request) {
+    let prefix = request_prefix(request, prefix_original, prepared.observation)
     call(
       call_context(state),
       requests.Turn,
       request,
-      request_prefix(request, prefix_original, prepared.observation),
+      prefix,
+      requests.input_chain_from_head(prefix.head_hash, request.input),
       publish,
       fn(event) {
         case
@@ -496,6 +509,7 @@ fn converse(
       state.salvage,
       state.spent + 1,
       accepted_timeouts: state.accepted_timeouts,
+      restart: state.restart,
     )
     |> result.map_error(fn(error) {
       ProviderFailed(error, describe(state.upstream, state.model, error))
@@ -723,39 +737,49 @@ fn stop_or_continue(
   batches: List(List(transcript.Entry)),
   steering: List(transcript.Entry),
 ) -> Result(Option(String), Failure) {
-  use held <- result.try(plain(stopping(state, output)))
-  case held, steering {
-    [], [] -> {
-      let answer = case state.external_answer && !state.quieted() {
-        False -> None
-        True ->
-          output
-          |> list.map(types.Replay)
-          |> list.filter_map(fn(item) {
-            case message_content.assistant_phase(item, Some("final")) {
-              Some("final") ->
-                message_content.visible_assistant_text(item)
-                |> option.to_result(Nil)
-              _ -> Error(Nil)
-            }
-          })
-          |> string.join("\n\n")
-          |> fn(text) {
-            case string.trim(text) {
-              "" -> None
-              _ -> Some(text)
-            }
-          }
-      }
-      Ok(answer)
-    }
-    _, _ -> {
+  case steering {
+    [_, ..] -> {
       state.unquiet()
-      let state = case held {
-        [] -> state
-        _ -> Loop(..state, held: state.held + 1)
+      run(state, id, unshift(inputs, batches), step + 1)
+    }
+    [] -> {
+      use held <- result.try(plain(stopping(state, output)))
+      case held {
+        [] -> {
+          let answer = case state.external_answer && !state.quieted() {
+            False -> None
+            True ->
+              output
+              |> list.map(types.Replay)
+              |> list.filter_map(fn(item) {
+                case message_content.assistant_phase(item, Some("final")) {
+                  Some("final") ->
+                    message_content.visible_assistant_text(item)
+                    |> option.to_result(Nil)
+                  _ -> Error(Nil)
+                }
+              })
+              |> string.join("\n\n")
+              |> fn(text) {
+                case string.trim(text) {
+                  "" -> None
+                  _ -> Some(text)
+                }
+              }
+          }
+          Ok(answer)
+        }
+        _ -> {
+          state.unquiet()
+          let state = Loop(..state, held: state.held + 1)
+          run(
+            state,
+            id,
+            unshift(inputs, list.append(batches, [held])),
+            step + 1,
+          )
+        }
       }
-      run(state, id, unshift(inputs, list.append(batches, [held])), step + 1)
     }
   }
 }
@@ -960,6 +984,12 @@ fn auxiliary_turn(
     kind,
     request,
     prefix,
+    // An extension may supply prefix metadata for a different request.
+    requests.input_chain(
+      option.unwrap(request.instructions, ""),
+      request.tools,
+      request.input,
+    ),
     // Auxiliary calls do not publish stream events.
     fn(_event) { True },
     fn(_event) { types.Continue },
@@ -971,6 +1001,7 @@ fn auxiliary_turn(
       _ -> 1
     },
     accepted_timeouts: 0,
+    restart: None,
   )
   |> result.try(whole)
   |> result.map_error(describe(state.upstream, request.model, _))
@@ -1261,7 +1292,7 @@ fn prompted(
     -> {
       use hook.Answer(verdict, _, given) <- result.try(hooked(
         state,
-        hook.Prompted(text),
+        hook.Prompted(text, state.human_prompt),
       ))
       case verdict.block {
         Some(reason) -> {
@@ -1301,9 +1332,16 @@ fn stopping(
         |> list.map(message_content.output_text)
         |> list.filter(fn(text) { text != "" })
         |> string.join("\n\n")
+      let awaiting = case
+        runtime.observe_loaded(state.host, state.session, waiting: 5000)
+      {
+        Ok(runtime_state.LoadedObservation(kernel: Some(observed), ..)) ->
+          python.awaits_wake(observed)
+        _ -> False
+      }
       use hook.Answer(verdict, by, given) <- result.try(hooked(
         state,
-        hook.Stopping(reply, state.held),
+        hook.Stopping(reply, state.held, state.quieted(), awaiting),
       ))
       let block = option.map(verdict.block, hook.Given(by, _))
       let held =
@@ -1367,16 +1405,16 @@ fn prepare(
     fn(rows) {
       rows
       |> list.reverse
-      |> list.map(fn(row) {
-        transcript.Entry(row.1, None, row.0, None, None, None, False)
+      |> list.map(fn(row: transcript.SourcedEntry) {
+        transcript.Entry(..row.entry, source: Some(row.source))
       })
-      |> projection.for_model(
+      |> projection.entries_for_model(
         state.profile,
         state.upstream.protocol,
         replay_repair,
       )
       // The projection answers newest first, as the session keeps history.
-      |> result.map(list.reverse)
+      |> result.map(fn(entries) { sizing_history(list.reverse(entries)) })
     },
     fn() { cached(state) },
     Some(sizing(state, original_entries)),
@@ -1431,37 +1469,61 @@ fn sizing(
         },
       )
     },
-    inputs: fn(inputs) { row_sizes(state, route, original_entries, inputs) },
+    rows: fn(rows) {
+      row_sizes(runtime.ledger(state.host), state.session, route, rows)
+    },
+    history: fn() { sizing_history(original_entries) },
     image: fn(width, height) { size.estimate_image(route, width, height) },
   )
 }
 
-/// Each of `inputs` as reported usage priced the row it came from, else
-/// estimated.
-fn row_sizes(
-  state: Loop,
-  route: size.Route,
-  entries: List(transcript.Entry),
-  inputs: List(types.Input),
-) -> List(size.Size) {
-  let seqs =
-    entries
-    |> list.filter_map(fn(entry) {
+/// Projection can split one durable row into several inputs. Its reported
+/// tokens cannot price any one of the parts.
+fn sizing_history(entries: List(transcript.Entry)) -> List(compaction.Row) {
+  let counts =
+    list.fold(entries, dict.new(), fn(counts, entry) {
       case entry.source {
-        Some(transcript.SourceRef(session, seq)) if session == state.session ->
-          Ok(#(entry.input, seq))
-        _ -> Error(Nil)
+        Some(source) ->
+          dict.upsert(counts, source, fn(count) { option.unwrap(count, 0) + 1 })
+        None -> counts
       }
     })
-    |> dict.from_list
-  let asked = list.filter_map(inputs, fn(input) { dict.get(seqs, input) })
-  let costs =
-    requests.row_costs(runtime.ledger(state.host), state.session, asked)
-    |> result.unwrap(dict.new())
-  list.map(inputs, fn(input) {
-    case dict.get(seqs, input) |> result.try(dict.get(costs, _)) {
+  list.map(entries, fn(entry) {
+    let source = case entry.source {
+      Some(source) ->
+        case dict.get(counts, source) {
+          Ok(1) -> Some(source)
+          _ -> None
+        }
+      None -> None
+    }
+    compaction.Row(entry.input, source)
+  })
+}
+
+/// Each of `inputs` as reported usage priced the row it came from, else
+/// estimated.
+pub fn row_sizes(
+  ledger: store.Store,
+  session: String,
+  route: size.Route,
+  rows: List(compaction.Row),
+) -> List(size.Size) {
+  let source_seq = fn(row: compaction.Row) {
+    case row.source {
+      Some(transcript.SourceRef(origin, seq)) if origin == session -> Ok(seq)
+      _ -> Error(Nil)
+    }
+  }
+  let asked = list.filter_map(rows, source_seq)
+  let costs = case asked {
+    [] -> dict.new()
+    _ -> requests.row_costs(ledger, session, asked) |> result.unwrap(dict.new())
+  }
+  list.map(rows, fn(row) {
+    case source_seq(row) |> result.try(dict.get(costs, _)) {
       Ok(tokens) -> size.Measured(tokens, size.ReportedUsage)
-      Error(Nil) -> size.estimate(route, [input])
+      Error(Nil) -> size.estimate(route, [row.input])
     }
   })
 }
@@ -1570,6 +1632,7 @@ fn call(
   kind: requests.Kind,
   request: types.Request,
   prefix: requests.Prefix,
+  input_chain: String,
   publish: fn(view.Event) -> Bool,
   on_event: fn(types.Event) -> types.Control,
   progress_event: fn(Int, types.Event) -> types.Control,
@@ -1577,37 +1640,50 @@ fn call(
   salvage: fn(String) -> Result(#(Int, List(types.Input)), String),
   first: Int,
   accepted_timeouts accepted_timeouts: Int,
+  restart restart: Option(turn.Latch),
 ) -> Result(Attempt(Called), types.Error) {
-  let input_chain =
-    requests.input_chain(
-      option.unwrap(request.instructions, ""),
-      request.tools,
-      request.input,
-    )
   retry_stream(
     fn(attempt) {
       let started_event = case kind {
         requests.Summarizer -> view.Checkpoint
         _ -> view.ProviderStarted
       }
+      let gate = option.map(restart, turn.begin_request)
       use _ <- result.try(case publish(started_event) {
         True -> Ok(Nil)
         False -> Error(types.Cancelled)
       })
+      // a restart at ProviderStarted never reached the provider.
+      use <- bool.guard(
+        option.map(restart, turn.restart_pending) |> option.unwrap(False),
+        Error(types.Cancelled),
+      )
       let started = requests.now()
       let trace = stream_trace.new(started)
-      let outcome =
+      let streamed =
         state.upstream.stream(request, fn(event) {
           stream_trace.observe(trace, event, requests.now())
-          case on_event(event) {
-            types.Continue -> progress_event(attempt, event)
-            types.Stop -> types.Stop
+          case allow_stream_event(gate, event) {
+            False -> types.Stop
+            True ->
+              case on_event(event) {
+                types.Continue -> progress_event(attempt, event)
+                types.Stop -> types.Stop
+              }
           }
         })
+      let outcome = case gate {
+        Some(gate) ->
+          case turn.claim_request(gate, fn() { has_output(streamed) }) {
+            True -> streamed
+            False -> Error(types.Cancelled)
+          }
+        None -> streamed
+      }
       let finished = requests.now()
       let reported = stream_trace.reported(trace)
       // A failed call costs what its stream last metered.
-      let usage = case outcome {
+      let usage = case streamed {
         Ok(turn) -> turn.usage
         Error(_) -> reported.usage
       }
@@ -1629,7 +1705,13 @@ fn call(
             option.map(request.options.effort, types.effort_name),
             started,
             finished,
-            requests.outcome(outcome),
+            case
+              option.map(restart, turn.restart_pending) |> option.unwrap(False)
+            {
+              True ->
+                requests.Failed(None, "restarted to include a new message")
+              False -> requests.outcome(outcome)
+            },
             usage,
             prefix,
             marks,
@@ -1685,6 +1767,40 @@ fn call(
     first,
     accepted_timeouts,
   )
+  |> restart_or(restart)
+}
+
+fn restart_or(
+  outcome: Result(Attempt(a), types.Error),
+  restart: Option(turn.Latch),
+) -> Result(Attempt(a), types.Error) {
+  case option.map(restart, turn.take_request_restart) |> option.unwrap(False) {
+    True -> Ok(Restarted)
+    False -> outcome
+  }
+}
+
+fn allow_stream_event(gate: Option(turn.Request), event: types.Event) -> Bool {
+  case gate, event {
+    Some(gate), types.TextDelta(_, _, text)
+    | Some(gate), types.ThinkingDelta(text)
+    -> text == "" || turn.claim_request(gate, fn() { True })
+    Some(gate), types.ArgumentsDelta(..) ->
+      turn.claim_request(gate, fn() { True })
+    _, _ -> True
+  }
+}
+
+fn has_output(outcome: Result(types.Turn, types.Error)) -> Bool {
+  case outcome {
+    Ok(turn) ->
+      turn.tool_calls != []
+      || list.any(turn.output, fn(item) {
+        message_content.output_text(item) != ""
+        || message_content.thinking_text(item) != ""
+      })
+    Error(_) -> False
+  }
 }
 
 /// One provider call that ended: the attempt that made it, the request row
@@ -1701,6 +1817,7 @@ type Called {
 /// How a provider call ended for its turn.
 pub type Attempt(a) {
   Answered(a)
+  Restarted
   /// The stream broke after it showed output; `kept` is what was committed
   /// of it, and the turn goes on from there at attempt `next`.
   Resumed(
@@ -1721,6 +1838,7 @@ fn whole(called: Attempt(a)) -> Result(a, types.Error) {
   case called {
     Answered(value) -> Ok(value)
     Resumed(..) -> Error(types.UnexpectedEnd)
+    Restarted -> Error(types.Cancelled)
   }
 }
 
@@ -1778,6 +1896,12 @@ fn go_on(
 ) -> Result(Option(String), Failure) {
   case called {
     Answered(value) -> answered(value)
+    Restarted -> {
+      use #(timestamp, steering) <- result.try(plain(state.drain_steering()))
+      let steering = stamped_entries(steering, Some(timestamp))
+      use _ <- result.try(plain(checkpoint(state)))
+      converse(state, id, unshift(inputs, [steering]), step)
+    }
     Resumed(timestamp, kept, next, accepted_timeouts) -> {
       use kept <- result.try(
         kept
@@ -2011,6 +2135,7 @@ fn request(
     state.prepared,
     state.upstream.images,
     prompt,
+    state.rendered,
     history,
   )
 }
@@ -2034,21 +2159,15 @@ fn readable(
 const text_only =
   "This model reads text only, so no image reaches it: show_image, view_diff and view_code raise, and screenshots come back without the picture. Review changes with `git diff` and read code with files.read instead."
 
+/// `entries` as a model held to `images` reads them, and the tool output
+/// views to reuse for the turn's next request.
 fn request_entries(
   entries: List(transcript.Entry),
   images: types.ImageLimits,
-) -> List(types.Input) {
-  let cells =
-    python_view.cell_calls(list.map(entries, fn(entry) { entry.input }))
-  let stamped =
-    list.map(entries, fn(entry) {
-      python_view.request_entry(
-        entry.input,
-        transcript.model_timestamp(entry),
-        cells,
-      )
-    })
-  list.map(stamped, types.readable_input(images, _))
+  rendered: python_view.Rendered,
+) -> #(List(types.Input), python_view.Rendered) {
+  let #(stamped, rendered) = python_view.request_entries(entries, rendered)
+  #(list.map(stamped, types.readable_input(images, _)), rendered)
 }
 
 fn request_for(
@@ -2057,9 +2176,11 @@ fn request_for(
   kernel: runtime.Prepared,
   images: types.ImageLimits,
   prompt: Prompt,
+  rendered: python_view.Rendered,
   history: List(transcript.Entry),
 ) -> types.Request {
-  let history = list.append(prompt.opening, request_entries(history, images))
+  let #(history, _) = request_entries(history, images, rendered)
+  let history = list.append(prompt.opening, history)
   let #(instructions, history) = readable(images, prompt.instructions, history)
   types.Request(
     model,
@@ -2200,6 +2321,8 @@ pub fn rebuild_observed(
   })
   let history = prepared.inputs
   let prompt = prompt_for(settled(pin, original, history), kernel)
+  let #(prefix_original, rendered) =
+    request_entries(original_entries, upstream.images, python_view.fresh())
   let request =
     request_for(
       model,
@@ -2207,15 +2330,12 @@ pub fn rebuild_observed(
       kernel,
       upstream.images,
       prompt,
+      rendered,
       match_entries(original_entries, history),
     )
   #(
     request,
-    request_prefix(
-      request,
-      request_entries(original_entries, upstream.images),
-      prepared.observation,
-    ),
+    request_prefix(request, prefix_original, prepared.observation),
     prepared.observation,
   )
 }
@@ -2303,17 +2423,19 @@ fn summarize(
   let summary_request =
     types.Request(..summary_request, max_output_tokens: Some(max_output_tokens))
   state.report_compacting(compaction.CallStarted)
+  let prefix =
+    requests.direct_prefix(
+      option.unwrap(summary_request.instructions, ""),
+      summary_request.tools,
+      summary_request.input,
+    )
   let outcome =
     call(
       call_context(state),
       requests.Summarizer,
       summary_request,
-      // The summarizer's history is exactly what it says; nothing replaced.
-      requests.direct_prefix(
-        option.unwrap(summary_request.instructions, ""),
-        summary_request.tools,
-        summary_request.input,
-      ),
+      prefix,
+      requests.input_chain_from_head(prefix.head_hash, summary_request.input),
       state.publish,
       fn(_) { types.Continue },
       fn(_, _) { types.Continue },
@@ -2321,6 +2443,7 @@ fn summarize(
       keep_nothing,
       1,
       accepted_timeouts: 0,
+      restart: None,
     )
     |> result.try(whole)
     |> result.map_error(fn(error) {
@@ -2356,6 +2479,7 @@ fn replayed(
     state.prepared,
     state.upstream.images,
     request_prompt(state),
+    state.rendered,
     list.append(
       current,
       stamped_entries([types.User(note.wrap("compaction", instructions))], None),
@@ -2441,6 +2565,7 @@ fn separate(
       state.prepared,
       state.upstream.images,
       Prompt(instructions, 0, []),
+      state.rendered,
       history,
     )
   types.Request(

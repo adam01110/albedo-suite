@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"albedo/cli/internal/tui/chrome"
 )
 
 func vimKeys(m *ChatModel, keys ...string) {
@@ -142,21 +144,21 @@ func TestVimMultilineUnicode(t *testing.T) {
 
 func TestVimFooter(t *testing.T) {
 	saveBase16State(t)
-	original := DefaultStyles
+	original := chrome.DefaultStyles
 	for _, themed := range []bool{false, true} {
-		DefaultStyles = original
+		chrome.DefaultStyles = original
 		if themed {
 			_, palette := base16Fixture(t)
-			useBase16Theme(palette)
+			chrome.UseBase16Theme(palette)
 		}
 		for _, width := range []int{8, 40, 80, 120} {
 			m := newTestChatModel(t, &daemon.Session{ID: "s"})
 			m.SetSize(width, 24)
 			for _, normal := range []bool{false, true} {
 				m.vim.normal = normal
-				style := DefaultStyles.You
+				style := chrome.DefaultStyles.You
 				if !normal {
-					style = DefaultStyles.Success
+					style = chrome.DefaultStyles.Success
 				}
 				got := m.renderFooter()
 				footer := ansi.Strip(got)
@@ -305,4 +307,3 @@ func TestVimTerminalKeysAndShortcuts(t *testing.T) {
 		t.Fatal("menu submission retained composer history")
 	}
 }
-

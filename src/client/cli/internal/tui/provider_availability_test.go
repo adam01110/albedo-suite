@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"albedo/cli/internal/tui/chrome"
+
 	"github.com/charmbracelet/x/ansi"
 
 	"albedo/cli/internal/config"
@@ -27,7 +29,7 @@ func TestProviderAvailabilityTogglePatchesOnlyEnabledWithValidator(t *testing.T)
 			if enabled {
 				verb = "disable"
 			}
-			if !slices.Contains(m.hints(), hint{"ctrl+t", verb}) {
+			if !slices.Contains(m.hints(), chrome.Hint{Key: "ctrl+t", Does: verb}) {
 				t.Fatalf("missing toggle hint: %v", m.hints())
 			}
 			next, cmd := pressCtrl(m, 't')
@@ -162,7 +164,7 @@ func TestProviderAvailabilityToggleSupersedesPendingRead(t *testing.T) {
 	if stale.Profiles.Providers["work"].IsEnabled() || stale.Profiles.ETag != after.ETag {
 		t.Fatalf("a list read issued before the toggle reinstated %+v", stale.Profiles)
 	}
-	if !slices.Contains(stale.hints(), hint{"ctrl+t", "enable"}) {
+	if !slices.Contains(stale.hints(), chrome.Hint{Key: "ctrl+t", Does: "enable"}) {
 		t.Fatalf("row lost the disabled state: %v", stale.hints())
 	}
 }
@@ -181,11 +183,11 @@ func TestProviderAvailabilityDisabledRowOffersNoEnterAction(t *testing.T) {
 		t.Fatalf("disabled row offers enter %q", verb)
 	}
 	for _, h := range m.hints() {
-		if h.key == "enter" {
+		if h.Key == "enter" {
 			t.Fatalf("disabled row advertises enter: %v", m.hints())
 		}
 	}
-	if !slices.Contains(m.hints(), hint{"ctrl+t", "enable"}) {
+	if !slices.Contains(m.hints(), chrome.Hint{Key: "ctrl+t", Does: "enable"}) {
 		t.Fatalf("disabled row lost its enable hint: %v", m.hints())
 	}
 	profile.Enabled = &on

@@ -4,10 +4,12 @@
 //// on the client's clock. Windows run across year boundaries and leap days,
 //// and the clocks include half-hour zones and both offset limits.
 
+import albedo/generated/sql/usage/usage_hours_sql
 import albedo/storage/core_store
 import albedo/usage/usage_hours
 import albedo/usage/usage_profile
 import albedo_sdk/store
+import albedo_sqlite
 import gleam/dict
 import gleam/int
 import gleam/list
@@ -476,39 +478,50 @@ fn with_ledger(c: Case, uses: List(Use), body: fn(store.Store) -> a) -> a {
   let assert Ok(ledger) =
     store.start(
       ":memory:",
-      usage_hours.schema <> turns_schema,
+      fn(db) {
+        use _ <- result.try(usage_hours_sql.create_usage_hours(db:))
+        albedo_sqlite.exec(turns_schema, on: db)
+      },
       core_store.tables(),
     )
   list.each(uses, fn(u) {
     let assert Ok(_) =
-      store.write(
-        ledger,
-        "INSERT INTO usage_hours VALUES(?,?,?,?,?,'turn',?,?,?,?,?,?,?)",
-        [
-          sqlight.int(u.hour_ms),
-          sqlight.text(u.profile),
-          sqlight.text(u.provider),
-          sqlight.text(u.account),
-          sqlight.text(u.model),
-          sqlight.int(u.calls),
-          sqlight.int(u.errors),
-          sqlight.int(u.input),
-          sqlight.int(u.cached),
-          sqlight.int(u.creation),
-          sqlight.int(u.output),
-          sqlight.int(u.reasoning),
-        ],
-      )
+      store.writing(ledger, fn(db) {
+        albedo_sqlite.run(
+          "INSERT INTO usage_hours VALUES(?,?,?,?,?,'turn',?,?,?,?,?,?,?)",
+          on: db,
+          with: [
+            sqlight.int(u.hour_ms),
+            sqlight.text(u.profile),
+            sqlight.text(u.provider),
+            sqlight.text(u.account),
+            sqlight.text(u.model),
+            sqlight.int(u.calls),
+            sqlight.int(u.errors),
+            sqlight.int(u.input),
+            sqlight.int(u.cached),
+            sqlight.int(u.creation),
+            sqlight.int(u.output),
+            sqlight.int(u.reasoning),
+          ],
+        )
+      })
     Nil
   })
   list.index_map(c.turns, fn(t, index) {
     let assert Ok(_) =
-      store.write(ledger, "INSERT INTO input_turns VALUES(?,'s',?,?,?)", [
-        sqlight.text(int.to_string(index)),
-        sqlight.text(t.state),
-        sqlight.int(t.started),
-        sqlight.nullable(sqlight.int, t.ended),
-      ])
+      store.writing(ledger, fn(db) {
+        albedo_sqlite.run(
+          "INSERT INTO input_turns VALUES(?,'s',?,?,?)",
+          on: db,
+          with: [
+            sqlight.text(int.to_string(index)),
+            sqlight.text(t.state),
+            sqlight.int(t.started),
+            sqlight.nullable(sqlight.int, t.ended),
+          ],
+        )
+      })
     Nil
   })
   let found = body(ledger)

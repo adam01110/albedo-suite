@@ -219,9 +219,9 @@ func (m *ChatModel) handleOperationResults(msg tea.Msg) (tea.Cmd, bool) {
 					*m = updated
 					return cmd, true
 				}
-				message := "Message admission is uncertain. Checking its operation receipt."
+				message := "Not sure whether that message was accepted — checking."
 				if msg.Continue {
-					message = "Continue admission is uncertain. Checking its operation receipt."
+					message = "Not sure whether the continuation was accepted — checking."
 				}
 				m.AddError(message)
 				m.refreshViewportContent()

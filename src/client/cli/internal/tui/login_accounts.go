@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"albedo/cli/internal/tui/chrome"
+
 	tea "charm.land/bubbletea/v2"
 )
 
@@ -75,11 +77,11 @@ func (m *LoginModel) buildAdvancedPicker() {
 			note:    "enter makes this the one new sessions use",
 		}
 		if name == m.Profiles.Active {
-			item.tag = DefaultStyles.Muted.Render("active")
+			item.tag = chrome.DefaultStyles.Muted.Render("active")
 			item.note = "this is the one new sessions use"
 		}
 		if !settings.IsEnabled() {
-			item.tag = DefaultStyles.Faint.Render("disabled")
+			item.tag = chrome.DefaultStyles.Faint.Render("disabled")
 			item.note = "hidden from model discovery; ctrl+t enables without signing in again"
 		}
 		items = append(items, item)
@@ -90,7 +92,7 @@ func (m *LoginModel) buildAdvancedPicker() {
 			note = "enter chooses a profile to use this key"
 		}
 		if account.Kind == "service" {
-			note = "service account for tools; its tokens stay in creds.json"
+			note = "service account for tools"
 		}
 		items = append(items, loginItem{
 			ID:      "account:" + strconv.Itoa(index),
@@ -112,24 +114,24 @@ func (m *LoginModel) buildAdvancedPicker() {
 				detail = joinDetail(detail, "signed in")
 			}
 			services = append(services, loginItem{
-				ID: "signin:" + login.Provider, Label: login.Label, Detail: detail, section: sectionSignIn,
+				ID: "signin:" + login.Provider, Label: providerName(login.Provider, login.Label), Detail: detail, section: sectionSignIn,
 				facts: signInFacts(login, accounts),
-				note:  "service sign-in for tools; its tokens stay in creds.json",
+				note:  "service sign-in for tools",
 			})
 			continue
 		}
 		detail := cmp.Or(login.Detail, "sign in")
 		items = append(items, loginItem{
-			ID: "signin:" + login.Provider, Label: login.Label, Detail: detail, section: sectionNew,
-			lead:  DefaultStyles.Muted.Render("+"),
+			ID: "signin:" + login.Provider, Label: providerName(login.Provider, login.Label), Detail: detail, section: sectionNew,
+			lead:  chrome.DefaultStyles.Muted.Render("+"),
 			facts: append(signInFacts(login, accounts), loginFact{"auth", "one signed-in account, or a rotation of them"}),
 			note:  "enter names a new setup, then picks the account it signs in with",
 		})
 	}
 	for _, p := range customProviders {
 		items = append(items, loginItem{
-			ID: p.ID, Label: p.Label, Detail: p.Detail, section: sectionNew,
-			lead:  DefaultStyles.Muted.Render("+"),
+			ID: p.ID, Label: p.Label, Detail: p.Detail, section: sectionKeys,
+			lead:  chrome.DefaultStyles.Muted.Render("+"),
 			facts: p.facts(),
 			note:  "enter names a new setup, or updates the one you name",
 		})
@@ -176,7 +178,7 @@ func (m LoginModel) profileFacts(settings config.Settings, extension string) []l
 	case hasKey(settings) && browserOnly(extension):
 		facts = append(facts, loginFact{"key", "stored but unused; enter signs in"})
 	case hasKey(settings):
-		facts = append(facts, loginFact{"key", "held by the daemon"})
+		facts = append(facts, loginFact{"key", "saved"})
 	case signIn:
 		accounts := m.accountsFor(extension)
 		label := "none saved"
@@ -219,13 +221,14 @@ func (m LoginModel) accountLabel(id string) string {
 // for tools rather than sessions, and whatever the daemon says about it.
 func accountDetail(account daemon.Account) string {
 	parts := []string{account.Provider}
-	if account.Kind == "key" {
+	switch account.Kind {
+	case "key":
 		host := account.Detail
 		parts = []string{"key"}
 		if host != "" {
 			parts = append(parts, host)
 		}
-	} else if account.Kind == "service" {
+	case "service":
 		parts = append(parts, "service")
 	}
 	if account.Source == "env" {
@@ -245,7 +248,7 @@ func (m LoginModel) accountFacts(account daemon.Account) []loginFact {
 		{"used by", joinOr(account.SelectedByProfiles, ", ", "no profile yet")},
 	}
 	if account.Source == "env" {
-		facts = append([]loginFact{{"source", "read-only; re-read for each request"}}, facts...)
+		facts = append([]loginFact{{"source", "daemon environment · read-only"}}, facts...)
 	}
 	if len(account.RotatedByProfiles) > 0 {
 		facts = append(facts, loginFact{"rotates in", strings.Join(account.RotatedByProfiles, ", ")})
@@ -280,7 +283,7 @@ func signInFacts(login daemon.SignIn, accounts []daemon.Account) []loginFact {
 		labels[i] = account.Label
 	}
 	return []loginFact{
-		{"provider", login.Provider},
+		{"provider", providerName(login.Provider, login.Label)},
 		{"accounts", joinOr(labels, ", ", "none yet")},
 	}
 }
@@ -317,22 +320,22 @@ func (m *LoginModel) confirmRemoval(target removal) tea.Cmd {
 		if account, ok := m.accountByID(target.ID); ok {
 			consequence = m.signOutConsequence(account)
 		}
-		m.confirm.ask("sign out", target.ID, "sign out", consequence)
+		m.confirm.Ask("sign out", target.ID, "sign out", consequence)
 		return nil
 	}
-	m.confirm.ask("remove", target.ID, "remove", "This removes the setup and its saved key; accounts stay signed in. Remove setup "+target.Label+"?")
+	m.confirm.Ask("remove", target.ID, "remove", "This removes the setup and its saved key; accounts stay signed in. Remove setup "+target.Label+"?")
 	return nil
 }
 
 // confirmKey settles a key on the removal question: enter removes, esc keeps
 // what is there, and any other key is ignored.
 func (m *LoginModel) confirmKey(msg tea.KeyPressMsg) tea.Cmd {
-	if m.confirm.key(msg) {
-		m.confirm.dismiss()
+	if m.confirm.Key(msg) {
+		m.confirm.Dismiss()
 		m.Step = StepSaving
 		return m.removeCmd(m.Removing)
 	}
-	if m.confirm.asking() {
+	if m.confirm.Asking() {
 		return nil
 	}
 	return m.backToChoose()
@@ -398,9 +401,9 @@ func (m *LoginModel) chooseAccount(account daemon.Account) tea.Cmd {
 		}
 		switch {
 		case settings.AccountID != nil && *settings.AccountID == account.ID:
-			item.tag = DefaultStyles.Muted.Render("uses it")
+			item.tag = chrome.DefaultStyles.Muted.Render("uses it")
 		case name == m.Profiles.Active:
-			item.tag = DefaultStyles.Muted.Render("active")
+			item.tag = chrome.DefaultStyles.Muted.Render("active")
 		}
 		if initial == newProfileRow {
 			initial = item.ID
@@ -411,7 +414,7 @@ func (m *LoginModel) chooseAccount(account daemon.Account) tea.Cmd {
 		ID:     newProfileRow,
 		Label:  "new profile",
 		Detail: "a new " + account.Provider + " profile",
-		lead:   DefaultStyles.Muted.Render("+"),
+		lead:   chrome.DefaultStyles.Muted.Render("+"),
 		facts:  []loginFact{{"account", account.Label}},
 		note:   "enter names a new profile that signs in as " + account.Label,
 	})
@@ -446,7 +449,7 @@ func (m *LoginModel) backToChoose() tea.Cmd {
 func flowDetail(flow string) string {
 	switch flow {
 	case "browser":
-		return "opens the provider's page; the daemon finishes it"
+		return "opens the provider's page; nothing to paste back"
 	case "manual":
 		return "paste the callback URL or code yourself"
 	}
@@ -692,17 +695,17 @@ func accountLimit(a daemon.Account) string {
 
 func accountLead(a daemon.Account) string {
 	if a.NeedsSignIn {
-		return DefaultStyles.Error.Render("✕")
+		return chrome.DefaultStyles.Error.Render("✕")
 	}
 	if accountLimit(a) != "" {
-		return DefaultStyles.Warning.Render("!")
+		return chrome.DefaultStyles.Warning.Render("!")
 	}
-	return DefaultStyles.Success.Render("●")
+	return chrome.DefaultStyles.Success.Render("●")
 }
 
 func accountTag(a daemon.Account) string {
 	if a.NeedsSignIn {
-		return DefaultStyles.Error.Render("needs sign-in")
+		return chrome.DefaultStyles.Error.Render("needs sign-in")
 	}
-	return DefaultStyles.Warning.Render(accountLimit(a))
+	return chrome.DefaultStyles.Warning.Render(accountLimit(a))
 }

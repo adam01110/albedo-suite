@@ -8,6 +8,9 @@ import (
 	"strings"
 	"time"
 
+	"albedo/cli/internal/pickersearch"
+	"albedo/cli/internal/tui/chrome"
+
 	"github.com/sahilm/fuzzy"
 )
 
@@ -179,7 +182,7 @@ func recentFolders(sessions []daemon.Session, current string, now time.Time) []r
 // fuzzyNames matches segment against names via matchFields, best first; an
 // empty segment keeps them all in order.
 func fuzzyNames(segment string, names []string) []fuzzy.Match {
-	words := searchWords(segment)
+	words := pickersearch.Words(segment)
 	if len(words) == 0 {
 		all := make([]fuzzy.Match, len(names))
 		for i, n := range names {
@@ -189,15 +192,15 @@ func fuzzyNames(segment string, names []string) []fuzzy.Match {
 	}
 	type scored struct {
 		match fuzzy.Match
-		rank  matchRank
+		rank  pickersearch.Rank
 	}
 	var out []scored
 	for i, n := range names {
-		if rank, hits, ok := matchFields(words, n); ok {
+		if rank, hits, ok := pickersearch.Match(words, n); ok {
 			out = append(out, scored{fuzzy.Match{Str: n, Index: i, MatchedIndexes: hits}, rank})
 		}
 	}
-	slices.SortStableFunc(out, func(a, b scored) int { return b.rank.compare(a.rank) })
+	slices.SortStableFunc(out, func(a, b scored) int { return b.rank.Compare(a.rank) })
 	res := make([]fuzzy.Match, len(out))
 	for i, s := range out {
 		res[i] = s.match
@@ -403,7 +406,7 @@ func (m FolderPicker) parentQuery() string {
 		if rest == "~" {
 			return m.input.Value()
 		}
-		return host + ":" + scpRelative(path.Dir(rest)) + "/"
+		return host + ":" + chrome.ScpRelative(path.Dir(rest)) + "/"
 	}
 	up := m.homed(parentPlace(dir))
 	if strings.HasSuffix(up, "/") {

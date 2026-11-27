@@ -8,10 +8,12 @@
 //// The window summary is upstream's: it is exact or refuses only where the
 //// exact answer does not fit in an int64.
 
+import albedo/generated/sql/usage/usage_hours_sql
 import albedo/storage/core_store
 import albedo/usage/usage_hours
 import albedo/usage/usage_profile
 import albedo_sdk/store
+import albedo_sqlite
 import gleam/dict
 import gleam/int
 import gleam/list
@@ -194,25 +196,19 @@ fn fits(c: Case) -> Bool {
 
 fn with_ledger(c: Case, body: fn(store.Store) -> a) -> a {
   let assert Ok(ledger) =
-    store.start(
-      ":memory:",
-      usage_hours.schema
-        <> "CREATE TABLE input_turns(id TEXT PRIMARY KEY,session TEXT NOT NULL,state TEXT NOT NULL,started_at INTEGER NOT NULL,ended_at INTEGER);",
-      core_store.tables(),
-    )
+    store.start(":memory:", fn(db) {
+      use _ <- result.try(usage_hours_sql.create_usage_hours(db:))
+      albedo_sqlite.exec("CREATE TABLE input_turns(id TEXT PRIMARY KEY,session TEXT NOT NULL,state TEXT NOT NULL,started_at INTEGER NOT NULL,ended_at INTEGER);", on: db)
+    }, core_store.tables())
   list.index_map(c.rows, fn(row, i) {
     let assert Ok(_) =
-      store.write(
-        ledger,
-        "INSERT INTO usage_hours(hour_ms,profile,provider,account,model,kind,calls,errors,input_tokens,cached_input_tokens,cache_creation_tokens,output_tokens,reasoning_tokens) VALUES(?,'p','prov','',?,'turn',?,0,?,0,0,?,0)",
-        [
+      store.writing(ledger, fn(db) { albedo_sqlite.run("INSERT INTO usage_hours(hour_ms,profile,provider,account,model,kind,calls,errors,input_tokens,cached_input_tokens,cache_creation_tokens,output_tokens,reasoning_tokens) VALUES(?,'p','prov','',?,'turn',?,0,?,0,0,?,0)", on: db, with: [
           sqlight.int(row_ms(row)),
           sqlight.text("m" <> int.to_string(i)),
           sqlight.int(row.calls),
           sqlight.int(row.input),
           sqlight.int(row.output),
-        ],
-      )
+        ]) })
     Nil
   })
   let found = body(ledger)

@@ -357,7 +357,7 @@ func TestPropListSessionsTotalCost(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(page)
 		})
-		sessions, cost, err := ListSessionsWithTotal(t.Context(), conn)
+		sessions, cost, err := ListSessionsUnderWithTotal(t.Context(), conn, SessionFilter{}, false)
 		if total != nil && total.usd < 0 {
 			if err == nil {
 				t.Fatalf("case %d: negative total cost accepted: %+v", i, cost)

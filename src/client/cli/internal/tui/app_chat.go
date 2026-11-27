@@ -2,11 +2,12 @@ package tui
 
 import (
 	"albedo/cli/internal/daemon"
+
 	tea "charm.land/bubbletea/v2"
 	uv "github.com/charmbracelet/ultraviolet"
 )
 
-func (m *AppModel) handleChatLifecycle(msg tea.Msg) (tea.Cmd, bool) {
+func (m *Workspace) handleChatLifecycle(msg tea.Msg) (tea.Cmd, bool) {
 	// First: forward chat lifecycle messages even while a modal is open.
 	var sid string
 	var forward bool

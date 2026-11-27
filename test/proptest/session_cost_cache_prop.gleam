@@ -6,6 +6,7 @@
 import albedo/storage/core_store
 import albedo/usage/session_cost
 import albedo_sdk/store
+import albedo_sqlite
 import gleam/float
 import gleam/int
 import gleam/json
@@ -124,10 +125,7 @@ fn insert(ledger: store.Store, row: Row) -> Nil {
   list.repeat(Nil, row.count)
   |> list.each(fn(_) {
     let assert Ok(_) =
-      store.write(
-        ledger,
-        "INSERT INTO provider_requests(session,profile,provider,model,outcome,input_tokens,cached_input_tokens,cache_creation_tokens,cache_write_5m_tokens,cache_write_1h_tokens,output_tokens) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-        [
+      store.writing(ledger, fn(db) { albedo_sqlite.run("INSERT INTO provider_requests(session,profile,provider,model,outcome,input_tokens,cached_input_tokens,cache_creation_tokens,cache_write_5m_tokens,cache_write_1h_tokens,output_tokens) VALUES(?,?,?,?,?,?,?,?,?,?,?)", on: db, with: [
           sqlight.text(row.session),
           sqlight.text(row.profile),
           sqlight.text("chat_completions:https://p.example/v1"),
@@ -142,8 +140,7 @@ fn insert(ledger: store.Store, row: Row) -> Nil {
           count(row.w5),
           count(row.w1),
           count(row.output),
-        ],
-      )
+        ]) })
     Nil
   })
 }
@@ -186,7 +183,7 @@ pub fn main() -> Nil {
       proptest.write_file(catalog_path, <<catalog_json(catalog):utf8>>, 1_700_000_000 + version)
     }
     write_catalog(c.catalog, 0)
-    let assert Ok(ledger) = store.start(home <> "/ledger.db", schema, core_store.tables())
+    let assert Ok(ledger) = store.start(home <> "/ledger.db", albedo_sqlite.exec(schema, on: _), core_store.tables())
     let _ =
       list.fold(c.ops, #(Model(c.catalog, []), 1), fn(state, op) {
         let #(model, version) = state
@@ -203,11 +200,7 @@ pub fn main() -> Nil {
               True -> {
                 proptest.bump("lose")
                 let assert Ok(_) =
-                  store.write(
-                    ledger,
-                    "DELETE FROM provider_requests WHERE id=(SELECT id FROM provider_requests WHERE session=? ORDER BY id LIMIT 1 OFFSET ?)",
-                    [sqlight.text(session), sqlight.int(nth)],
-                  )
+                  store.writing(ledger, fn(db) { albedo_sqlite.run("DELETE FROM provider_requests WHERE id=(SELECT id FROM provider_requests WHERE session=? ORDER BY id LIMIT 1 OFFSET ?)", on: db, with: [sqlight.text(session), sqlight.int(nth)]) })
                 let #(_, kept) =
                   list.fold(model.rows, #(0, []), fn(acc, row) {
                     let #(seen, kept) = acc

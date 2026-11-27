@@ -8,10 +8,12 @@ import (
 	"slices"
 	"time"
 
+	"albedo/cli/internal/tui/chrome"
+
 	tea "charm.land/bubbletea/v2"
 )
 
-func (m *AppModel) handleSessionResults(msg tea.Msg) (tea.Cmd, bool) {
+func (m *Workspace) handleSessionResults(msg tea.Msg) (tea.Cmd, bool) {
 	switch msg := msg.(type) {
 	case sessionFactsMsg:
 		if msg.Gen != m.SessionFactsGen {
@@ -49,7 +51,7 @@ func (m *AppModel) handleSessionResults(msg tea.Msg) (tea.Cmd, bool) {
 
 	case sessionDeletedMsg:
 		if msg.Err != nil {
-			m.AddError(operationError(msg.Err, "Could not delete the session: ", "Session may have been deleted; refresh the session list before trying again."))
+			m.AddError(chrome.OperationError(msg.Err, "Could not delete the session: ", "Session may have been deleted; refresh the session list before trying again."))
 			return nil, true
 		}
 		m.ClearNotices()
@@ -73,16 +75,16 @@ func (m *AppModel) handleSessionResults(msg tea.Msg) (tea.Cmd, bool) {
 			return m.loadSessionsCmd(m.SessionGen, msg.Result.Message), true
 		}
 		return nil, true
-	case SessionRenameMsg:
+	case chrome.SessionRenameMsg:
 		m.SessionGen++
 		return m.renameSessionCmd(msg), true
-	case sessionRenamedMsg:
+	case chrome.SessionRenamedMsg:
 		var cmd tea.Cmd
 		if m.State == AppStateAgents {
 			m.Agents, cmd = m.Agents.Update(msg)
 		}
 		if msg.Err != nil {
-			m.SessionPicker.notice = operationError(msg.Err, "Could not rename the session: ", "Session may have been renamed; refresh the session list before trying again.")
+			m.SessionPicker.notice = chrome.OperationError(msg.Err, "Could not rename the session: ", "Session may have been renamed; refresh the session list before trying again.")
 			return tea.Batch(cmd, m.refusedConfigurationCmd(msg.Err)), true
 		}
 		if current, ok := m.session(msg.Configuration.Value.ID); ok {
@@ -137,7 +139,7 @@ func (m *AppModel) handleSessionResults(msg tea.Msg) (tea.Cmd, bool) {
 		}
 		if msg.Err != nil && msg.Handle != nil {
 			if _, uncertain := errors.AsType[*daemon.UncertainOutcomeError](msg.Err); uncertain {
-				m.AddError("Session admission is uncertain. Checking operation " + msg.Handle.ID() + ".")
+				m.AddError("Not sure whether that session was created — checking.")
 				return creationRecoveryCmd(m.Tick, msg.Handle, msg.Gen), true
 			}
 			if api, ok := errors.AsType[*daemon.APIError](msg.Err); ok && (api.Code == "operation_unknown" || api.StatusCode >= 500) {
@@ -161,11 +163,11 @@ func (m *AppModel) handleSessionResults(msg tea.Msg) (tea.Cmd, bool) {
 			return nil, true
 		}
 		if msg.Err != nil && m.State == AppStateFolderPicker {
-			m.FolderPicker.Refused(errors.New(operationError(msg.Err, "", "Session may have been created; check the session list before creating another.")))
+			m.FolderPicker.Refused(errors.New(chrome.OperationError(msg.Err, "", "Session may have been created; check the session list before creating another.")))
 			return nil, true
 		}
 		if msg.Err != nil {
-			m.AddError(operationError(msg.Err, "Could not create a session: ", "Session may have been created; check the session list before creating another."))
+			m.AddError(chrome.OperationError(msg.Err, "Could not create a session: ", "Session may have been created; check the session list before creating another."))
 			return nil, true
 		}
 		return m.setChatSession(msg.Session, true), true
@@ -173,8 +175,47 @@ func (m *AppModel) handleSessionResults(msg tea.Msg) (tea.Cmd, bool) {
 	return nil, false
 }
 
-func (m *AppModel) loadSessionsCmd(gen int, notices ...string) tea.Cmd {
+// sessionFilter is the filter the start screen lists under: the saved one,
+// each field replaced by the tokens typed in the search, and those typed tokens.
+func (m *Workspace) sessionFilter() (filter, typed daemon.SessionFilter) {
+	_, inline := daemon.ParseSessionQuery(m.SessionPicker.SearchInput.Value())
+	typed = m.SessionPicker.TypedFilter().Over(inline)
+	return prefs.sessionFilter().Over(typed), typed
+}
+
+// relistForFilter lists again when typing has changed what the list is under.
+func (m *Workspace) relistForFilter() tea.Cmd {
+	if m.SessionPicker.ArchiveView {
+		return nil
+	}
+	if filter, _ := m.sessionFilter(); filter.Equal(m.listedFilter) {
+		return nil
+	}
+	m.SessionGen++
+	return m.loadSessionsCmd(m.SessionGen)
+}
+
+// SessionsUnderSavedFilter is the start screen's first listing: the sessions
+// under the saved filter. It is whole when the filter asks nothing or the
+// daemon cannot say.
+func SessionsUnderSavedFilter(ctx context.Context, conn *daemon.Connection, whole []daemon.Session) []daemon.Session {
+	filter := prefs.sessionFilter()
+	if filter.Equal(daemon.SessionFilter{}) {
+		return whole
+	}
+	listed, err := daemon.ListSessionsUnder(ctx, conn, filter, true)
+	if err != nil {
+		return whole
+	}
+	return listed
+}
+
+func (m *Workspace) loadSessionsCmd(gen int, notices ...string) tea.Cmd {
 	m.listingSessions = true
+	filter, typed := m.sessionFilter()
+	keepPins := typed.Worktree == nil
+	m.SessionPicker.Filter = filter.Chips(typed)
+	m.listedFilter = filter
 	conn := m.Conn
 	notice := ""
 	if len(notices) > 0 {
@@ -184,31 +225,31 @@ func (m *AppModel) loadSessionsCmd(gen int, notices ...string) tea.Cmd {
 		if conn == nil {
 			return sessionsLoadedMsg{Err: errors.New("daemon connection unavailable"), Gen: gen}
 		}
-		sessions, total, err := daemon.ListSessionsWithTotal(context.Background(), conn)
+		sessions, total, err := daemon.ListSessionsUnderWithTotal(context.Background(), conn, filter, keepPins)
 		return sessionsLoadedMsg{Sessions: sessions, TotalCost: total, Err: err, Gen: gen, Notice: notice}
 	}
 }
 
-func (m *AppModel) renameSessionCmd(rename SessionRenameMsg) tea.Cmd {
+func (m *Workspace) renameSessionCmd(rename chrome.SessionRenameMsg) tea.Cmd {
 	conn := m.Conn
 	return func() tea.Msg {
 		if conn == nil {
-			return sessionRenamedMsg{SessionRenameMsg: rename, Err: errors.New("daemon connection unavailable")}
+			return chrome.SessionRenamedMsg{SessionRenameMsg: rename, Err: errors.New("daemon connection unavailable")}
 		}
 		etag := rename.ETag
 		if etag == "" {
 			current, err := currentCondition(conn, rename.ID)
 			if err != nil {
-				return sessionRenamedMsg{SessionRenameMsg: rename, Err: err}
+				return chrome.SessionRenamedMsg{SessionRenameMsg: rename, Err: err}
 			}
 			etag = current.ETag
 		}
 		s, err := daemon.RenameSession(context.Background(), conn, rename.ID, rename.Name, etag)
-		return sessionRenamedMsg{SessionRenameMsg: rename, Configuration: s, Err: err}
+		return chrome.SessionRenamedMsg{SessionRenameMsg: rename, Configuration: s, Err: err}
 	}
 }
 
-func (m *AppModel) deleteSessionCmd(id string, condition daemon.SessionCondition) tea.Cmd {
+func (m *Workspace) deleteSessionCmd(id string, condition daemon.SessionCondition) tea.Cmd {
 	m.SessionGen++
 	conn := m.Conn
 	return func() tea.Msg {
@@ -240,7 +281,7 @@ func sessionPreviewCmd(conn *daemon.Connection, id, etag string) tea.Cmd {
 	}
 }
 
-func (m *AppModel) createSessionCmd(gen int, workspace string) tea.Cmd {
+func (m *Workspace) createSessionCmd(gen int, workspace string) tea.Cmd {
 	conn := m.Conn
 	handle, preparationErr := daemon.NewCreation(daemon.CreateSessionRequest{Workspace: workspace})
 	if preparationErr == nil {
@@ -268,11 +309,11 @@ func creationRecoveryCmd(tick TickFunc, handle *daemon.OperationHandle, gen int)
 // updateSessionPickerItems hands the sessions screen the listing it draws. The
 // screen keeps the listing rather than a copy and builds its rows when it is
 // drawn, so a refresh in the chat costs one slice header.
-func (m *AppModel) updateSessionPickerItems() {
+func (m *Workspace) updateSessionPickerItems() {
 	m.SessionPicker.SetSessions(m.Sessions, m.ActiveSession)
 }
 
-func (m *AppModel) setChatSession(s daemon.Session, prepend bool) tea.Cmd {
+func (m *Workspace) setChatSession(s daemon.Session, prepend bool) tea.Cmd {
 	m.SessionGen++
 	m.afterReset = ""
 	if m.pendingBySession == nil {
@@ -304,12 +345,12 @@ func (m *AppModel) setChatSession(s daemon.Session, prepend bool) tea.Cmd {
 }
 
 // openSession makes session the chat on screen.
-func (m *AppModel) openSession(s daemon.Session) tea.Cmd {
+func (m *Workspace) openSession(s daemon.Session) tea.Cmd {
 	m.ClearNotices()
 	return tea.Batch(m.setChatSession(s, false), m.recordOpenCmd(s.ID))
 }
 
-func (m *AppModel) newSessionCmd() tea.Cmd {
+func (m *Workspace) newSessionCmd() tea.Cmd {
 	m.SessionGen++
 	return m.createSessionCmd(m.SessionGen, m.Workspace)
 }

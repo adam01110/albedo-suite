@@ -7,6 +7,7 @@ import albedo/http/http_wire
 import albedo/refusal
 import albedo/runtime
 import albedo/session/registry.{type Config, type Message}
+import albedo/session/session_collection
 import albedo/session/session_lookup
 import albedo/session/session_provider
 import albedo/storage/storage_report
@@ -270,7 +271,13 @@ pub fn workspaces(
 ) -> response.Response(mist.ResponseData) {
   let outcome = {
     use parameters <- result.try(
-      http_api.json_parameters(req, ["location", "include", "limit", "next"]),
+      http_api.json_parameters(req, [
+        "location",
+        "include",
+        "worktree",
+        "limit",
+        "next",
+      ]),
     )
     use limit <- result.try(http_api.limit_parameter(parameters, 50))
     case list.key_find(parameters, "location") {
@@ -279,27 +286,17 @@ pub fn workspaces(
           Error(_) -> Ok(Nil)
           _ -> Error(sdk_http_api.invalid("include requires location"))
         })
-        use sessions <- result.try(
-          registry.list(registry) |> result.map_error(refusal.unavailable),
+        use worktree <- result.try(http_api.boolean_parameter(
+          parameters,
+          "worktree",
+        ))
+        use host <- result.try(
+          registry.host(registry) |> result.map_error(refusal.failure),
         )
-        let workspaces =
-          list.fold(sessions, dict.new(), fn(workspaces, info) {
-            dict.upsert(workspaces, info.cwd, fn(prior) {
-              case prior {
-                None -> #(1, info.last_assistant_at)
-                Some(#(count, at)) -> #(
-                  count + 1,
-                  case at, info.last_assistant_at {
-                    Some(old), Some(next) -> Some(int.max(old, next))
-                    None, next -> next
-                    old, _ -> old
-                  },
-                )
-              }
-            })
-          })
-          |> dict.to_list
-          |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
+        use workspaces <- result.try(
+          session_collection.workspaces(runtime.ledger(host), worktree)
+          |> result.map_error(refusal.unavailable),
+        )
         let revision = etag.strong(string.inspect(workspaces))
         use offset <- result.try(http_api.page_offset(
           config.token,
@@ -327,11 +324,11 @@ pub fn workspaces(
               "items",
               json.array(shown, fn(entry) {
                 json.object([
-                  #("location", json.string(entry.0)),
-                  #("use_count", json.int(entry.1.0)),
+                  #("location", json.string(entry.location)),
+                  #("use_count", json.int(entry.use_count)),
                   #(
                     "activity_at",
-                    json.nullable(entry.1.1, fn(seconds) {
+                    json.nullable(entry.activity_at, fn(seconds) {
                       http_wire.timestamp(seconds * 1000)
                     }),
                   ),
@@ -343,6 +340,13 @@ pub fn workspaces(
         ))
       }
       Ok(at) -> {
+        use _ <- result.try(case list.key_find(parameters, "worktree") {
+          Error(_) -> Ok(Nil)
+          _ ->
+            Error(sdk_http_api.invalid(
+              "worktree only filters recent workspaces",
+            ))
+        })
         use #(preview, files) <- result.try(
           workspace_include(list.key_find(parameters, "include")),
         )
@@ -1038,7 +1042,7 @@ fn model_json(
     ),
     #(
       "effective_context_tokens",
-      json.nullable(fact(selection.window), json.int),
+      json.nullable(selection.window(model.id, model.info), json.int),
     ),
     #(
       "max_context_tokens",

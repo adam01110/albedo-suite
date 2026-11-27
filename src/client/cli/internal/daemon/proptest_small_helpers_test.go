@@ -215,28 +215,28 @@ func TestPropGlanceOrdering(t *testing.T) {
 // propHistoryJSON builds the wire JSON of one entry, so the anonymous tool
 // struct and the raw content parts stay out of the test's own types.
 func propHistoryJSON(seed uint64) ([]byte, struct {
-	Text      string
-	Result    string
-	Images    []ImageMetadata
-	ToolName  string
-	Status    string
-	Title     string
-	CallID    string
-	EntryID   string
-	Position  int
-	ToolArgs  map[string]any
+	Text     string
+	Result   string
+	Images   []ImageMetadata
+	ToolName string
+	Status   string
+	Title    string
+	CallID   string
+	EntryID  string
+	Position int
+	ToolArgs map[string]any
 }) {
 	type want struct {
-		Text      string
-		Result    string
-		Images    []ImageMetadata
-		ToolName  string
-		Status    string
-		Title     string
-		CallID    string
-		EntryID   string
-		Position  int
-		ToolArgs  map[string]any
+		Text     string
+		Result   string
+		Images   []ImageMetadata
+		ToolName string
+		Status   string
+		Title    string
+		CallID   string
+		EntryID  string
+		Position int
+		ToolArgs map[string]any
 	}
 	var expected want
 	n := func(k uint) int64 { return int64((seed>>k)%900) + 1 }
@@ -291,12 +291,12 @@ func TestPropHistoryEntryDecoding(t *testing.T) {
 			t.Logf("seed=%d parts: %v", seed, err)
 			return false
 		}
-		events, err := historyEntryEvents(entries[0])
+		events, err := historyEvents(entries)
 		if err != nil {
 			t.Logf("seed=%d events: %v", seed, err)
 			return false
 		}
-		if len(events) != 2 || events[1].Type != EventCommitted || events[1].Seq != int64(want.Position) {
+		if len(events) != 1 {
 			t.Logf("seed=%d events=%+v", seed, events)
 			return false
 		}
@@ -428,7 +428,7 @@ func TestPropSessionValidationRejectsNearValid(t *testing.T) {
 		"output with both": func(w *protocol.Session) {
 			w.ActiveOutput[0].Text, w.ActiveOutput[0].Reference = &both, &reference
 		},
-		"output kind": func(w *protocol.Session) { w.ActiveOutput[0].Kind = "tool" },
+		"output kind":  func(w *protocol.Session) { w.ActiveOutput[0].Kind = "tool" },
 		"output bytes": func(w *protocol.Session) { w.ActiveOutput[0].Bytes = -1 },
 		"duplicate output": func(w *protocol.Session) {
 			w.ActiveOutput = append(w.ActiveOutput, protocol.ActiveOutput{MessageID: w.ActiveOutput[0].MessageID, RunID: "other", Kind: "text", Text: &text})

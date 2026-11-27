@@ -3,13 +3,15 @@
 //// crossed it is stored as a REAL. The profile still answers, exact below the
 //// ceiling and saturated at it.
 
+import albedo/generated/sql/usage/usage_hours_sql
 import albedo/storage/core_store
-import albedo/usage/usage_hours
 import albedo/usage/usage_profile
 import albedo_sdk/store
+import albedo_sqlite
 import gleam/io
 import gleam/list
 import gleam/option.{Some}
+import gleam/result
 import sqlight
 
 const day = 86_400_000
@@ -22,18 +24,25 @@ fn ledger(hours: List(#(Int, sqlight.Value, Int))) -> store.Store {
   let assert Ok(ledger) =
     store.start(
       ":memory:",
-      usage_hours.schema
-        <> "CREATE TABLE input_turns(id TEXT PRIMARY KEY,session TEXT NOT NULL,state TEXT NOT NULL,started_at INTEGER NOT NULL,ended_at INTEGER);",
+      fn(db) {
+        use _ <- result.try(usage_hours_sql.create_usage_hours(db:))
+        albedo_sqlite.exec(
+          "CREATE TABLE input_turns(id TEXT PRIMARY KEY,session TEXT NOT NULL,state TEXT NOT NULL,started_at INTEGER NOT NULL,ended_at INTEGER);",
+          on: db,
+        )
+      },
       core_store.tables(),
     )
   list.index_map(hours, fn(row, i) {
     let #(at, input, calls) = row
     let assert Ok(_) =
-      store.write(
-        ledger,
-        "INSERT INTO usage_hours VALUES(?,'p','prov','',?,'turn',?,0,?,0,0,0,0)",
-        [sqlight.int(at), sqlight.int(i), sqlight.int(calls), input],
-      )
+      store.writing(ledger, fn(db) {
+        albedo_sqlite.run(
+          "INSERT INTO usage_hours VALUES(?,'p','prov','',?,'turn',?,0,?,0,0,0,0)",
+          on: db,
+          with: [sqlight.int(at), sqlight.int(i), sqlight.int(calls), input],
+        )
+      })
     Nil
   })
   ledger
@@ -87,11 +96,13 @@ pub fn main() -> Nil {
   // A completed turn whose span leaves int64 saturates too.
   let turns = ledger([])
   let assert Ok(_) =
-    store.write(
-      turns,
-      "INSERT INTO input_turns VALUES('t','s','completed',?,?)",
-      [sqlight.int(-max), sqlight.int(max)],
-    )
+    store.writing(turns, fn(db) {
+      albedo_sqlite.run(
+        "INSERT INTO input_turns VALUES('t','s','completed',?,?)",
+        on: db,
+        with: [sqlight.int(-max), sqlight.int(max)],
+      )
+    })
   let assert Ok(profile) = usage_profile.read(turns, now, 0)
   assert profile.longest_turn_ms == Some(max)
   store.close(turns)

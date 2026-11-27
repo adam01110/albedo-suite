@@ -8,6 +8,7 @@ import albedo_sdk/extension
 import albedo_sdk/page
 import albedo_sdk/storage
 import albedo_sdk/transfer
+import albedo_sqlite
 import gleam/dynamic/decode
 import gleam/list
 import gleam/result
@@ -30,8 +31,8 @@ CREATE TABLE IF NOT EXISTS mcp_loads (
 ) WITHOUT ROWID;
 "
 
-pub fn initialise(handle: storage.Storage) -> Result(Nil, String) {
-  storage.query(handle, storage.exec(_, schema))
+pub fn initialise_schema(db: sqlight.Connection) -> Result(Nil, String) {
+  albedo_sqlite.exec(schema, on: db)
 }
 
 /// `adapter` carrying moved sessions' load history too.
@@ -43,7 +44,9 @@ pub fn transferred(adapter: transfer.Adapter) -> transfer.Adapter {
 }
 
 pub fn forget(db: sqlight.Connection, session: String) -> Result(Nil, String) {
-  storage.forget_session(db, ["mcp_loads"], session)
+  albedo_sqlite.run("DELETE FROM mcp_loads WHERE session=?", on: db, with: [
+    sqlight.text(session),
+  ])
 }
 
 /// Notes that `server` was loaded or unloaded; a server keeps the place its
@@ -56,10 +59,11 @@ pub fn record(
   loaded: Bool,
 ) -> Result(Nil, String) {
   let now = albedo_clock.system_seconds()
-  storage.write(
-    handle,
+  use db <- storage.writing(handle)
+  albedo_sqlite.run(
     "INSERT INTO mcp_loads(session,server,loaded,first_at,last_at) SELECT ?,?,?,MAX(?,COALESCE(MAX(first_at)+1,0)),? FROM mcp_loads WHERE session=? ON CONFLICT(session,server) DO UPDATE SET loaded=excluded.loaded,last_at=excluded.last_at",
-    [
+    on: db,
+    with: [
       sqlight.text(session),
       sqlight.text(server),
       sqlight.bool(loaded),
@@ -73,10 +77,11 @@ pub fn record(
 /// A new manager starts with nothing loaded, so earlier loads become
 /// history.
 pub fn reset(handle: storage.Storage, session: String) -> Result(Nil, String) {
-  storage.write(
-    handle,
+  use db <- storage.writing(handle)
+  albedo_sqlite.run(
     "UPDATE mcp_loads SET loaded=0 WHERE session=? AND loaded=1",
-    [sqlight.text(session)],
+    on: db,
+    with: [sqlight.text(session)],
   )
 }
 
@@ -85,11 +90,12 @@ pub fn list(
   handle: storage.Storage,
   session: String,
 ) -> Result(List(Load), String) {
-  storage.read(
-    handle,
+  use db <- storage.reading(handle)
+  albedo_sqlite.rows(
     "SELECT server,loaded FROM mcp_loads WHERE session=? ORDER BY first_at,server LIMIT 256",
-    [sqlight.text(session)],
-    {
+    on: db,
+    with: [sqlight.text(session)],
+    expecting: {
       use server <- decode.field(0, decode.string)
       use loaded <- decode.field(1, sqlight.decode_bool())
       decode.success(Load(server, loaded))

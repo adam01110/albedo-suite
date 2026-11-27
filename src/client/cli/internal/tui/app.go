@@ -5,109 +5,57 @@ import (
 	"albedo/cli/internal/attach"
 	"albedo/cli/internal/config"
 	"albedo/cli/internal/daemon"
+	"albedo/cli/internal/terminalclient"
 	"context"
 	"errors"
 	"maps"
 	"slices"
 	"strings"
 
+	"albedo/cli/internal/tui/agents"
+	"albedo/cli/internal/tui/chrome"
+
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
-type AppState int
+type AppState = terminalclient.Route
 
 const (
-	AppStateChat AppState = iota
-	AppStateSessionPicker
-	AppStateModelPicker
-	AppStateExtensionPicker
-	AppStateTreePicker
-	AppStateContextInspector
-	AppStatePageView
-	AppStateLogin
-	AppStateCapabilityPage
-	AppStateWebhooksPage
-	AppStateDiscordPage
-	AppStateConfigPage
-	AppStateAgents
-	AppStateFolderPicker
-	AppStateQuota
-	AppStateUsage
+	AppStateSettings         = terminalclient.Settings
+	AppStateChat             = terminalclient.Chat
+	AppStateSessionPicker    = terminalclient.Sessions
+	AppStateModelPicker      = terminalclient.Models
+	AppStateExtensionPicker  = terminalclient.Extensions
+	AppStateTreePicker       = terminalclient.Tree
+	AppStateContextInspector = terminalclient.Context
+	AppStatePageView         = terminalclient.Page
+	AppStateLogin            = terminalclient.Accounts
+	AppStateCapabilityPage   = terminalclient.Capabilities
+	AppStateWebhooksPage     = terminalclient.Webhooks
+	AppStateDiscordPage      = terminalclient.Discord
+	AppStateConfigPage       = terminalclient.Config
+	AppStateAgents           = terminalclient.Agents
+	AppStateFolderPicker     = terminalclient.Folders
+	AppStateQuota            = terminalclient.Quota
+	AppStateUsage            = terminalclient.Usage
 )
 
 type pendingSessionIntents struct {
-	users         []PendingUserTurn
 	continuations map[string]pendingOperation
+	users         []PendingUserTurn
 }
 
-type AppModel struct {
-	pendingBySession map[string]pendingSessionIntents
-	// afterReset is a note for the chat to show once its stream's first reset has
-	// hydrated it, which clears any notice added sooner.
-	afterReset       string
-	pendingCreations map[string]pendingOperation
-	ActiveSession    *daemon.Session
-	titleMode        titleMode
-	openBrowser      func(url string)
-	Conn             *daemon.Connection
-	Profiles         config.Profiles
-	SettingsETags    map[string]string
+type Workspace struct {
 	UI               daemon.UIPreferences
-	Workspace        string
-	Sessions         []daemon.Session
-	Notices          Notices
-	CommandCatalog   []daemon.SessionCommand
-	// signIns are the daemon's sign-ins, read once for their terms warnings.
-	signIns          []daemon.SignIn
-	ExtensionPicker  ExtensionPickerModel
-	CapabilityPage   CapabilityPageModel
-	WebhooksPage     WebhooksPageModel
-	DiscordPage      DiscordPageModel
-	ConfigPage       ConfigPageModel
-	TreePicker       TreePickerModel
-	SessionPicker    SessionViewer
-	PageView         PageViewModel
-	ContextInspector ContextInspectorModel
-	Login            LoginModel
-	ModelPicker      ModelPickerModel
-	FolderPicker     FolderPicker
-	Agents           AgentsViewModel
-	Quota            QuotaModel
-	Usage            UsageModel
-
-	Chat        ChatModel
-	SettingsGen int
-	State       AppState
-	Width       int
-	Height      int
-
-	// SessionGen invalidates earlier session-list and session-creation replies.
-	SessionGen int
-	CatalogGen int
-	ModelGen   int
-	CommandGen int
-	ProfileGen int
-	// folderReturn is the screen the folder picker goes back to.
-	folderReturn    AppState
-	UISaving        bool
-	StandaloneLogin bool
-	// listingSessions says a session listing is in flight.
-	listingSessions bool
-	// refreshingSession says a session read is in flight, and SessionFactsGen
-	// dates the reply. A read asked for meanwhile is read once more when the
-	// answer arrives.
-	refreshingSession     bool
-	sessionRefreshPending bool
-	SessionFactsGen       int
-
-	// Graphemes says the terminal measures grapheme clusters; see ChatModel.
-	Graphemes bool
-	// nested marks the model of an attached view, whose quitting returns to
-	// the view it is attached under.
-	nested bool
-	Tick   TickFunc
-
+	Client           *terminalclient.Client
+	Conn             *daemon.Connection
+	ActiveSession    *daemon.Session
+	SettingsETags    map[string]string
+	pendingBySession map[string]pendingSessionIntents
+	pendingCreations map[string]pendingOperation
+	Tick             TickFunc
+	openBrowser      func(url string)
 	// cd is the /cd question while it is open or its move goes on.
 	cd *cdQuestion
 	// attachedTo is a moved session's new daemon while its view is open; it
@@ -115,9 +63,68 @@ type AppModel struct {
 	attachedTo *attachedApp
 	// openAttachment reaches a daemon on another host; nil uses ssh.
 	openAttachment func(ctx context.Context, host, home string) (*attach.Attachment, error)
+	Profiles       config.Profiles
+	Workspace      string
+	// afterReset is a note for the chat to show once its stream's first reset has
+	// hydrated it, which clears any notice added sooner.
+	afterReset     string
+	Sessions       []daemon.Session
+	Notices        Notices
+	CommandCatalog []daemon.SessionCommand
+	// signIns are the daemon's sign-ins, read once for their terms warnings.
+	signIns          []daemon.SignIn
+	Usage            UsageModel
+	Quota            QuotaModel
+	ContextInspector ContextInspectorModel
+	ConfigPage       ConfigPageModel
+	Settings         settingsIndex
+	settingsPath     []AppState
+	CapabilityPage   CapabilityPageModel
+	WebhooksPage     WebhooksPageModel
+	ExtensionPicker  ExtensionPickerModel
+	TreePicker       TreePickerModel
+	DiscordPage      DiscordPageModel
+	ModelPicker      ModelPickerModel
+	FolderPicker     FolderPicker
+	PageView         PageViewModel
+	Login            LoginModel
+	Agents           agents.Model
+	SessionPicker    SessionViewer
+	// listedFilter is the filter the last listing was asked under.
+	listedFilter   daemon.SessionFilter
+	Chat           ChatModel
+	Width          int
+	Height         int
+	State          AppState
+	settingsReturn AppState
+	// folderReturn is the screen the folder picker goes back to.
+	folderReturn AppState
+	titleMode    titleMode
+	SettingsGen  int
+	// SessionGen invalidates earlier session-list and session-creation replies.
+	SessionGen      int
+	SessionFactsGen int
+	CatalogGen      int
+	ModelGen        int
+	CommandGen      int
+	ProfileGen      int
+	UISaving        bool
+	StandaloneLogin bool
+	// Graphemes says the terminal measures grapheme clusters; see ChatModel.
+	Graphemes bool
+	// nested marks the model of an attached view, whose quitting returns to
+	// the view it is attached under.
+	nested bool
+	// listingSessions says a session listing is in flight.
+	listingSessions bool
+	// refreshingSession says a session read is in flight, and SessionFactsGen
+	// dates the reply. A read asked for meanwhile is read once more when the
+	// answer arrives.
+	refreshingSession     bool
+	sessionRefreshPending bool
 }
 
-func (m *AppModel) newChatModel(session *daemon.Session) ChatModel {
+func (m *Workspace) newChatModel(session *daemon.Session) ChatModel {
 	chat := NewChatModel(session, daemon.NewChatClient(m.Conn, session.ID))
 	chat.artifactConn = m.Conn
 	chat.openBrowser = m.openBrowser
@@ -142,12 +149,12 @@ func (m *AppModel) newChatModel(session *daemon.Session) ChatModel {
 	return chat
 }
 
-// NewAppModel requires an established daemon connection and panics if conn is nil.
-func NewAppModel(conn *daemon.Connection, bootstrap Bootstrap, initialSession *daemon.Session, workspace string, needsLogin bool, openBrowser func(string)) *AppModel {
+// NewWorkspace requires an established daemon connection and panics if conn is nil.
+func NewWorkspace(conn *daemon.Connection, bootstrap Bootstrap, initialSession *daemon.Session, workspace string, needsLogin bool, openBrowser func(string)) *Workspace {
 	if conn == nil {
-		panic("tui.NewAppModel requires a daemon connection")
+		panic("tui.NewWorkspace requires a daemon connection")
 	}
-	m := &AppModel{
+	m := &Workspace{
 		titleMode:     windowTitleMode(),
 		Conn:          conn,
 		Profiles:      bootstrap.Settings.Profiles,
@@ -163,6 +170,9 @@ func NewAppModel(conn *daemon.Connection, bootstrap Bootstrap, initialSession *d
 		current, _ := m.session(id)
 		return sessionPreviewCmd(conn, id, current.ETag)
 	}
+	baseFilter := prefs.sessionFilter()
+	m.SessionPicker.Filter = baseFilter.Chips(daemon.SessionFilter{})
+	m.listedFilter = baseFilter
 	m.SettingsETags = maps.Clone(bootstrap.Settings.ETags)
 	m.applySessionList(bootstrap.Sessions)
 	m.ApplyUI(bootstrap.Settings.UI)
@@ -176,23 +186,24 @@ func NewAppModel(conn *daemon.Connection, bootstrap Bootstrap, initialSession *d
 		m.State = AppStateSessionPicker
 	}
 
+	m.mount()
 	return m
 }
 
-// NewLoginAppModel starts the standalone login flow, which exits when finished.
-func NewLoginAppModel(conn *daemon.Connection, bootstrap Bootstrap, workspace, nameHint string, openBrowser func(string)) *AppModel {
-	m := NewAppModel(conn, bootstrap, nil, workspace, false, openBrowser)
+// NewLoginWorkspace starts the standalone login flow, which exits when finished.
+func NewLoginWorkspace(conn *daemon.Connection, bootstrap Bootstrap, workspace, nameHint string, openBrowser func(string)) *Workspace {
+	m := NewWorkspace(conn, bootstrap, nil, workspace, false, openBrowser)
 	m.State = AppStateLogin
 	m.StandaloneLogin = true
 	m.Login = NewLoginModel(conn, nameHint, openBrowser)
 	return m
 }
 
-func (m *AppModel) Init() tea.Cmd {
+func (m *Workspace) Start() tea.Cmd {
 	return tea.Batch(m.initScreen(), m.loadTermsCmd())
 }
 
-func (m *AppModel) AddNotice(message string) {
+func (m *Workspace) AddNotice(message string) {
 	if m.ActiveSession != nil && m.Chat.History != nil {
 		m.Chat.AddNotice(message)
 		return
@@ -200,7 +211,7 @@ func (m *AppModel) AddNotice(message string) {
 	m.Notices.AddNotice(message)
 }
 
-func (m *AppModel) AddError(message string) {
+func (m *Workspace) AddError(message string) {
 	if m.ActiveSession != nil && m.Chat.History != nil {
 		m.Chat.AddError(message)
 		return
@@ -208,14 +219,14 @@ func (m *AppModel) AddError(message string) {
 	m.Notices.AddError(message)
 }
 
-func (m *AppModel) ClearNotices() {
+func (m *Workspace) ClearNotices() {
 	m.Notices.Clear()
 	if m.ActiveSession != nil && m.Chat.History != nil {
 		m.Chat.ClearNotices()
 	}
 }
 
-func (m *AppModel) Update(msg tea.Msg) (model tea.Model, resultCmd tea.Cmd) {
+func (m *Workspace) Receive(msg tea.Msg) (handled bool, resultCmd tea.Cmd) {
 	previous := m.Chat
 	defer func() {
 		if previous.Generation != m.Chat.Generation || previous.streamCtx != nil && previous.streamCtx.Err() != nil {
@@ -232,65 +243,42 @@ func (m *AppModel) Update(msg tea.Msg) (model tea.Model, resultCmd tea.Cmd) {
 		}
 	}()
 	if cmd, handled := m.updateAttached(msg); handled {
-		return m, cmd
+		return true, cmd
 	}
 	if cmd, handled := m.handleCD(msg); handled {
-		return m, cmd
+		return true, cmd
 	}
 	if cmd, handled := m.handleCommandInvocation(msg); handled {
-		return m, cmd
+		return true, cmd
 	}
 	if handled, cmd := m.handleLoginOutcome(msg); handled {
-		return m, cmd
+		return true, cmd
 	}
 	if cmd, handled := m.handleChatLifecycle(msg); handled {
-		return m, cmd
+		return true, cmd
 	}
 
 	if cmd, handled := m.handlePreferences(msg); handled {
-		return m, cmd
+		return true, cmd
 	}
 	if cmd, handled := m.handleTerms(msg); handled {
-		return m, cmd
+		return true, cmd
 	}
 	if cmd, handled := m.handleSessionResults(msg); handled {
-		return m, cmd
+		return true, cmd
 	}
 	if cmd, handled := m.handleCommandResults(msg); handled {
-		return m, cmd
+		return true, cmd
 	}
 
 	switch msg := msg.(type) {
 
-	case tea.WindowSizeMsg:
-		m.Width = msg.Width
-		m.Height = msg.Height
-		if m.ActiveSession != nil && m.Chat.History != nil {
-			m.Chat.SetSize(msg.Width, msg.Height)
-		}
-		m.SessionPicker.SetSize(msg.Width, msg.Height)
-		m.ModelPicker.SetSize(msg.Width, msg.Height)
-		m.ExtensionPicker.SetSize(msg.Width, msg.Height)
-		m.TreePicker.SetSize(msg.Width, msg.Height)
-		m.ContextInspector.SetSize(msg.Width, msg.Height)
-		m.PageView.SetSize(msg.Width, msg.Height)
-		m.CapabilityPage.SetSize(msg.Width, msg.Height)
-		m.WebhooksPage.SetSize(msg.Width, msg.Height)
-		m.DiscordPage.SetSize(msg.Width, msg.Height)
-		m.ConfigPage.SetSize(msg.Width, msg.Height)
-		m.Agents.SetSize(msg.Width, msg.Height)
-		m.FolderPicker.SetSize(msg.Width, msg.Height)
-		m.Login.SetSize(msg.Width, msg.Height)
-		m.Quota.SetSize(msg.Width, msg.Height)
-		m.Usage.SetSize(msg.Width, msg.Height)
-		return m, nil
-
 	case tea.FocusMsg:
 		// the chat is the one screen that wakes up for input
-		return m, m.Chat.focus(true)
+		return true, m.Chat.focus(true)
 
 	case tea.BlurMsg:
-		return m, m.Chat.focus(false)
+		return true, m.Chat.focus(false)
 
 	case tea.ModeReportMsg:
 		// the reply Bubble Tea switches to grapheme widths on
@@ -301,53 +289,53 @@ func (m *AppModel) Update(msg tea.Msg) (model tea.Model, resultCmd tea.Cmd) {
 				m.Chat.graphemes = true
 			}
 		}
-		return m, nil
+		return true, nil
 
 	case SessionDeleteMsg:
 		if m.State != AppStateSessionPicker || !m.SessionPicker.ArchiveView || m.ActiveSession != nil && m.ActiveSession.ID == msg.ID {
-			return m, nil
+			return true, nil
 		}
-		return m, m.deleteSessionCmd(msg.ID, msg.Condition)
+		return true, m.deleteSessionCmd(msg.ID, msg.Condition)
 
 	case commandCatalogLoadedMsg:
 		if msg.Gen != m.CatalogGen {
-			return m, nil
+			return true, nil
 		}
 		if msg.Err != nil {
 			if _, ok := errors.AsType[*daemon.UpgradeRequiredError](msg.Err); ok {
 				m.AddError("Could not load commands: " + msg.Err.Error())
 			}
-			return m, nil
+			return true, nil
 		}
 		m.CommandCatalog = msg.Commands
 		m.Chat.CommandMenu.Catalog = msg.Commands
 		if m.ActiveSession != nil {
 			m.Chat.syncLayout()
 		}
-		return m, nil
+		return true, nil
 
 	case ChatQuitMsg:
 		m.Chat.Close()
-		return m, m.quit()
+		return true, m.quit()
 
 	case ChatBackToSessionsMsg:
-		return m, m.openSessions()
+		return true, m.openSessions()
 
 	case ChatNewSessionMsg:
-		return m, m.newSessionCmd()
+		return true, m.newSessionCmd()
 
 	case ChatOpenModelPickerMsg:
-		return m, m.openModelPicker()
+		return true, m.openModelPicker()
 
 	case ModelPickerSelectMsg:
 		m.ModelPicker.Close()
 		m.ModelPicker.Saving = true
 		m.ModelPicker.Error = ""
 		m.ModelGen++
-		return m, m.changeModelAccessCmd(msg.Model, msg.Provider, msg.Effort, new(msg.CyberAccess), msg.MakeDefault, m.ModelGen)
+		return true, m.changeModelAccessCmd(msg.Model, msg.Provider, msg.Effort, new(msg.CyberAccess), msg.MakeDefault, m.ModelGen)
 
 	case ModelPickerCapsMsg:
-		return m, m.saveCapsCmd(msg)
+		return true, m.saveCapsCmd(msg)
 
 	case modelCapsSavedMsg:
 		if msg.Err == nil {
@@ -358,127 +346,160 @@ func (m *AppModel) Update(msg tea.Msg) (model tea.Model, resultCmd tea.Cmd) {
 		}
 		var cmd tea.Cmd
 		m.ModelPicker, cmd = m.ModelPicker.Update(msg)
-		return m, cmd
+		return true, cmd
 
 	case ChatOpenExtensionPickerMsg:
-		return m, m.openExtensionPicker()
+		return true, m.openExtensionPicker()
 
 	case ChatOpenWebhooksPageMsg:
 		if m.ActiveSession != nil {
 			m.WebhooksPage = NewWebhooksPageModel(m.Conn, m.ActiveSession.ID)
-			return m, m.openScreen(AppStateWebhooksPage, &m.WebhooksPage)
+			return true, m.openScreen(AppStateWebhooksPage, &m.WebhooksPage)
 		}
 
 	case ChatOpenDiscordPageMsg:
 		if m.ActiveSession != nil {
 			m.DiscordPage = NewDiscordPageModel(m.Conn, m.ActiveSession.ID)
-			return m, m.openScreen(AppStateDiscordPage, &m.DiscordPage)
+			return true, m.openScreen(AppStateDiscordPage, &m.DiscordPage)
 		}
+	case refreshSettingsPanesMsg:
+		return true, m.loadSettingsPanes()
+	case settingsPanesMsg:
+		if msg.gen == m.Settings.generation {
+			if msg.err == nil || msg.panes != nil {
+				m.Settings.panes = msg.panes
+				m.Settings.setDestinations(m.ActiveSession != nil)
+			}
+			if msg.err != nil {
+				m.Settings.problem = "couldn’t load extension panes: " + msg.err.Error()
+			} else {
+				m.Settings.problem = ""
+			}
+		}
+		return true, nil
+	case openToolAccountMsg:
+		if m.State == AppStateConfigPage && msg.owner == m.ConfigPage.paneOwner && m.ConfigPage.hasAccount {
+			return true, m.openToolAccount(msg.owner)
+		}
+		return true, nil
+	case openSettingsMsg:
+		return true, m.openSettings()
+	case closeSettingsMsg:
+		if m.State == AppStateSettings {
+			m.State = m.settingsReturn
+			m.settingsPath = nil
+		}
+		return true, nil
+	case settingsDestination:
+		return true, m.openSettingsDestination(msg)
 	case ChatOpenConfigPageMsg:
-		return m, m.openConfigPage()
+		return true, m.openConfigPage()
 
 	case ChatOpenAgentsMsg:
 		if m.ActiveSession != nil {
-			m.Agents.Close()
-			pending := m.Agents.pendingOperations
-			draft := m.Agents.input.Value()
-			m.Agents = NewAgentsViewModel(m.Conn, m.ActiveSession.ID)
-			m.Agents.pendingOperations = pending
-			m.Agents.input.SetValue(draft)
-			return m, m.openScreen(AppStateAgents, &m.Agents)
+			m.Agents.Reopen(m.Conn, m.ActiveSession.ID)
+			return true, m.openScreen(AppStateAgents, &m.Agents)
 		}
-	case agentsSentMsg:
+	case agents.OperationResultMsg:
 		if m.State != AppStateAgents && msg.Handle != nil {
 			var cmd tea.Cmd
 			m.Agents, cmd = m.Agents.Update(msg)
-			return m, cmd
+			return true, cmd
 		}
 
 	case ChatOpenFolderPickerMsg:
-		return m, m.openFolderPicker(msg.Retry)
+		return true, m.openFolderPicker(msg.Retry)
 
 	case FolderMovedMsg:
-		return m, m.moved(msg)
+		return true, m.moved(msg)
 
 	case FolderPickerCancelMsg:
 		m.FolderPicker.Close()
 		m.State = m.folderReturn
-		return m, nil
+		return true, nil
 
 	case SessionFoldersMsg:
-		return m, m.openFolderBrowser(msg.Query)
+		return true, m.openFolderBrowser(msg.Query)
 
 	case FolderOpenSessionMsg:
 		m.FolderPicker.Close()
-		return m, m.openSession(msg.Session)
+		return true, m.openSession(msg.Session)
 
 	case FolderNewSessionMsg:
 		m.FolderPicker.Close()
 		m.SessionGen++
-		return m, m.createSessionCmd(m.SessionGen, msg.Workspace)
+		return true, m.createSessionCmd(m.SessionGen, msg.Workspace)
 
-	case AgentsDoneMsg:
+	case agents.DoneMsg:
 		m.Agents.Close()
 		m.State = AppStateChat
-		return m, nil
+		return true, nil
 
-	case AgentsAttachMsg:
+	case agents.AttachMsg:
 		m.Agents.Close()
 		session := msg.Session
 		if i := slices.IndexFunc(m.Sessions, func(s daemon.Session) bool { return s.ID == session.ID }); i >= 0 {
 			session = m.Sessions[i]
 		}
-		return m, m.openSession(session)
+		return true, m.openSession(session)
 
 	case ModelPickerCancelMsg:
 		m.ModelPicker.Close()
 		m.State = AppStateChat
-		return m, nil
+		return true, nil
 
 	case WebhooksPageDoneMsg, DiscordPageDoneMsg, ExtensionPickerDoneMsg,
 		TreeCancelMsg, ContextDoneMsg, CapabilityPageDoneMsg, PageCancelMsg,
 		QuotaCancelMsg, UsageCancelMsg:
-		m.State = AppStateChat
-		return m, nil
+		if !m.restoreSettings() {
+			m.State = AppStateChat
+		}
+		return true, nil
 	case ConfigPageDoneMsg:
-		m.State = AppStateChat
-		return m, m.refreshSettingsCmd()
+		if !m.restoreSettings() {
+			m.State = AppStateChat
+		}
+		return true, m.refreshSettingsCmd()
 
 	case ExtensionPickerChangedMsg:
 		m.CatalogGen++
-		return m, m.loadCommandCatalogCmd(m.CatalogGen)
+		cmd := m.loadCommandCatalogCmd(m.CatalogGen)
+		if len(m.settingsPath) > 0 {
+			cmd = tea.Batch(cmd, m.loadSettingsPanes())
+		}
+		return true, cmd
 
 	case CapabilityPageChangedMsg:
 		m.CatalogGen++
-		return m, m.loadCommandCatalogCmd(m.CatalogGen)
+		return true, m.loadCommandCatalogCmd(m.CatalogGen)
 
 	case ChatOpenTreePickerMsg:
-		return m, m.openTreePicker(false)
+		return true, m.openTreePicker(false)
 
 	case ChatOpenForkPickerMsg:
-		return m, m.openTreePicker(true)
+		return true, m.openTreePicker(true)
 
 	case ChatOpenQuotaMsg:
-		return m, m.openQuota()
+		return true, m.openQuota()
 
 	case ChatOpenUsageMsg:
-		return m, m.openUsage()
+		return true, m.openUsage()
 
 	case TreeRewindSuccessMsg:
 		if m.State != AppStateTreePicker || msg.Generation != m.TreePicker.Generation || m.ActiveSession == nil {
-			return m, nil
+			return true, nil
 		}
 		conn, id, outcome, gen := m.Conn, m.ActiveSession.ID, msg.Outcome, msg.Generation
-		return m, func() tea.Msg {
+		return true, func() tea.Msg {
 			s, err := daemon.GetSession(context.Background(), conn, id)
 			return TreeRewindReloadMsg{Session: s, Outcome: outcome, Generation: gen, Err: err}
 		}
 
 	case TreeRewindReloadMsg:
 		if msg.Err != nil {
-			m.AddError(operationError(msg.Err, "Could not reload rewound session: ", "Reconnect to refresh this session."))
+			m.AddError(chrome.OperationError(msg.Err, "Could not reload rewound session: ", "Reconnect to refresh this session."))
 			m.State = AppStateChat
-			return m, nil
+			return true, nil
 		}
 		note := "Rewound. The earlier conversation is archived as " + msg.Outcome.ArchiveSessionID[:min(8, len(msg.Outcome.ArchiveSessionID))] + "."
 		if msg.Outcome.Summary != "" {
@@ -494,80 +515,88 @@ func (m *AppModel) Update(msg tea.Msg) (model tea.Model, resultCmd tea.Cmd) {
 		case msg.Outcome.HasInput:
 			m.Chat.TextArea.SetValue(msg.Outcome.Input)
 		}
-		return m, cmd
+		return true, cmd
 
 	case TreeForkSuccessMsg:
 		if m.State != AppStateTreePicker || msg.Generation != m.TreePicker.Generation {
-			return m, nil
+			return true, nil
 		}
-		return m, m.setChatSession(msg.Session, true)
+		return true, m.setChatSession(msg.Session, true)
 
 	case ChatSideQuestionOpenMsg:
 		if m.ActiveSession == nil || msg.SessionID != m.ActiveSession.ID || msg.Generation != m.Chat.Generation {
-			return m, nil
+			return true, nil
 		}
-		return m, m.openSession(msg.Session)
+		return true, m.openSession(msg.Session)
 
 	case ChatOpenContextInspectorMsg:
-		return m, m.openContextInspector()
+		return true, m.openContextInspector()
 
 	case ChatOpenCapabilityPageMsg:
 		if m.ActiveSession != nil {
 			m.CapabilityPage = NewCapabilityPageModel(m.Conn, m.ActiveSession.ID, msg.Kind)
 			m.CapabilityPage.openBrowser = m.openBrowser
-			return m, m.openScreen(AppStateCapabilityPage, &m.CapabilityPage)
+			return true, m.openScreen(AppStateCapabilityPage, &m.CapabilityPage)
 		}
 
 	case ChatOpenPageMsg:
 		if m.ActiveSession != nil {
 			m.PageView = NewPageViewModel(m.Conn, m.ActiveSession.ID, msg.Command)
-			return m, m.openScreen(AppStatePageView, &m.PageView)
+			return true, m.openScreen(AppStatePageView, &m.PageView)
 		}
 
 	case PageViewChangedMsg:
 		m.Chat.statusRevision++
-		return m, m.Chat.statusCmd()
+		return true, m.Chat.statusCmd()
 
 	case ChatOpenLoginMsg:
-		return m, m.openLogin(msg.Name)
+		return true, m.openLogin(msg.Name)
 
 	case LoginCancelMsg:
 		cleanup := m.Login.Close()
 		m.ProfileGen++
+		if m.restoreSettings() {
+			return true, tea.Batch(cleanup, m.refreshSettingsCmd(), m.loadSettingsPanes())
+		}
 		// /login may have removed providers even when it ends without a choice.
 
 		if m.StandaloneLogin {
-			return m, tea.Batch(cleanup, tea.Quit)
+			return true, tea.Batch(cleanup, tea.Quit)
 		}
 		if m.ActiveSession != nil {
-			return m, tea.Batch(cleanup, m.returnToChat(), m.loadProfilesCmd("", m.ProfileGen))
+			return true, tea.Batch(cleanup, m.returnToChat(), m.loadProfilesCmd("", m.ProfileGen))
 		}
 		m.State = AppStateSessionPicker
 		m.updateSessionPickerItems()
 		m.SessionGen++
-		return m, tea.Batch(cleanup, m.SessionPicker.Init(), m.loadSessionsCmd(m.SessionGen))
+		return true, tea.Batch(cleanup, m.SessionPicker.Init(), m.loadSessionsCmd(m.SessionGen))
 
 	case LoginDoneMsg:
 		if m.State != AppStateLogin || msg.Gen != m.Login.Generation {
-			return m, nil
+			return true, nil
 		}
 		cleanup := m.Login.Close()
 		if len(m.Login.SignIns) > 0 {
 			m.signIns = m.Login.SignIns
 		}
 		m.ProfileGen++
-		return m, tea.Batch(cleanup, m.loadProfilesCmd(msg.Name, m.ProfileGen))
+		if m.restoreSettings() {
+			return true, tea.Batch(cleanup, m.refreshSettingsCmd(), m.loadSettingsPanes())
+		}
+		return true, tea.Batch(cleanup, m.loadProfilesCmd(msg.Name, m.ProfileGen))
 
 	case PickerSelectMsg:
 		if m.State == AppStateSessionPicker {
 			switch msg.ID {
 			case "new":
-				return m, m.newSessionCmd()
+				return true, m.newSessionCmd()
 			case "archive":
 				m.SessionPicker.OpenArchive()
-				return m, nil
+				return true, nil
+			case "settings":
+				return true, m.openSettings()
 			case "login":
-				return m, m.openLogin("")
+				return true, m.openLogin("")
 			default:
 				// The active session may not yet appear in the daemon's recent list.
 				listed := m.Sessions
@@ -575,7 +604,7 @@ func (m *AppModel) Update(msg tea.Msg) (model tea.Model, resultCmd tea.Cmd) {
 					listed = append([]daemon.Session{*m.ActiveSession}, listed...)
 				}
 				if i := slices.IndexFunc(listed, func(s daemon.Session) bool { return s.ID == msg.ID }); i >= 0 {
-					return m, m.openSession(listed[i])
+					return true, m.openSession(listed[i])
 				}
 			}
 		}
@@ -584,73 +613,91 @@ func (m *AppModel) Update(msg tea.Msg) (model tea.Model, resultCmd tea.Cmd) {
 		if m.State == AppStateSessionPicker {
 			if m.SessionPicker.ArchiveView {
 				m.SessionPicker.CloseArchive()
-				return m, nil
+				return true, nil
 			}
 			if m.ActiveSession != nil {
 				m.State = AppStateChat
-				return m, nil
+				return true, nil
 			}
-			return m, m.quit()
+			return true, m.quit()
 		}
 	}
 
-	// Route to active state model
+	return false, nil
+}
+
+func (m *Workspace) chatInput(msg tea.Msg) tea.Cmd {
 	var cmd tea.Cmd
-	switch m.State {
-	case AppStateChat:
-		beforePending := len(m.Chat.pendingUsers)
-		before := m.Chat.Flags
-		m.Chat, cmd = m.Chat.Update(msg)
-		if len(m.Chat.pendingUsers) > beforePending {
-			m.ClearNotices()
-		}
-		if m.Chat.Flags.Thinking != before.Thinking || m.Chat.Flags.Tools != before.Tools {
-			draft := m.Chat.Flags
-			m.Chat.Flags = before
-			if !m.UISaving {
-				m.UISaving = true
-				m.SettingsGen++
-				patch := daemon.UIPreferencesPatch{}
-				if draft.Thinking != before.Thinking {
-					patch.Thinking = &draft.Thinking
-				}
-				if draft.Tools != before.Tools {
-					patch.Tools = &draft.Tools
-				}
-				cmd = tea.Batch(cmd, m.patchUICmd("", patch, m.SettingsGen))
-			}
-		}
-	case AppStateSessionPicker:
-		m.SessionPicker, cmd = m.SessionPicker.Update(msg)
-	case AppStateModelPicker:
-		m.ModelPicker, cmd = m.ModelPicker.Update(msg)
-	case AppStateExtensionPicker:
-		m.ExtensionPicker, cmd = m.ExtensionPicker.Update(msg)
-	case AppStateTreePicker:
-		m.TreePicker, cmd = m.TreePicker.Update(msg)
-	case AppStateContextInspector:
-		m.ContextInspector, cmd = m.ContextInspector.Update(msg)
-	case AppStatePageView:
-		m.PageView, cmd = m.PageView.Update(msg)
-	case AppStateCapabilityPage:
-		m.CapabilityPage, cmd = m.CapabilityPage.Update(msg)
-	case AppStateWebhooksPage:
-		m.WebhooksPage, cmd = m.WebhooksPage.Update(msg)
-	case AppStateDiscordPage:
-		m.DiscordPage, cmd = m.DiscordPage.Update(msg)
-	case AppStateConfigPage:
-		m.ConfigPage, cmd = m.ConfigPage.Update(msg)
-	case AppStateAgents:
-		m.Agents, cmd = m.Agents.Update(msg)
-	case AppStateFolderPicker:
-		m.FolderPicker, cmd = m.FolderPicker.Update(msg)
-	case AppStateLogin:
-		m.Login, cmd = m.Login.Update(msg)
-	case AppStateQuota:
-		m.Quota, cmd = m.Quota.Update(msg)
-	case AppStateUsage:
-		m.Usage, cmd = m.Usage.Update(msg)
+	beforePending := len(m.Chat.pendingUsers)
+	before := m.Chat.Flags
+	m.Chat, cmd = m.Chat.Update(msg)
+	if len(m.Chat.pendingUsers) > beforePending {
+		m.ClearNotices()
 	}
-
-	return m, cmd
+	if m.Chat.Flags.Thinking != before.Thinking || m.Chat.Flags.Tools != before.Tools {
+		draft := m.Chat.Flags
+		m.Chat.Flags = before
+		if !m.UISaving {
+			m.UISaving = true
+			m.SettingsGen++
+			patch := daemon.UIPreferencesPatch{}
+			if draft.Thinking != before.Thinking {
+				patch.Thinking = &draft.Thinking
+			}
+			if draft.Tools != before.Tools {
+				patch.Tools = &draft.Tools
+			}
+			cmd = tea.Batch(cmd, m.patchUICmd("", patch, m.SettingsGen))
+		}
+	}
+	return cmd
+}
+func (m *Workspace) mount() {
+	chat := terminalclient.Screen{Input: m.chatInput, Draw: m.Chat.View, Resize: func(w, h int) {
+		if m.ActiveSession != nil && m.Chat.History != nil {
+			m.Chat.SetSize(w, h)
+		}
+	}}
+	sessions := terminalclient.BindPage(&m.SessionPicker)
+	input := sessions.Input
+	sessions.Input = func(msg tea.Msg) tea.Cmd {
+		cmd := input(msg)
+		switch msg.(type) {
+		case tea.KeyPressMsg, tea.PasteMsg:
+			cmd = tea.Batch(cmd, m.relistForFilter())
+		}
+		return cmd
+	}
+	sessions.Page = nil
+	sessions.Draw = func() string {
+		base := m.sessionsPage().Render(m.Width, m.Height, pageTheme())
+		return m.SessionPicker.filterOverlay(base)
+	}
+	m.Client = terminalclient.New(m, [terminalclient.RouteCount]terminalclient.Screen{
+		terminalclient.Chat:         chat,
+		terminalclient.Sessions:     sessions,
+		terminalclient.Models:       terminalclient.BindPage(&m.ModelPicker),
+		terminalclient.Extensions:   terminalclient.BindPage(&m.ExtensionPicker),
+		terminalclient.Tree:         terminalclient.BindPage(&m.TreePicker),
+		terminalclient.Context:      terminalclient.BindPage(&m.ContextInspector),
+		terminalclient.Page:         terminalclient.BindPage(&m.PageView),
+		terminalclient.Accounts:     terminalclient.BindPage(&m.Login),
+		terminalclient.Capabilities: terminalclient.BindPage(&m.CapabilityPage),
+		terminalclient.Webhooks:     terminalclient.BindPage(&m.WebhooksPage),
+		terminalclient.Discord:      terminalclient.BindPage(&m.DiscordPage),
+		terminalclient.Config:       terminalclient.BindPage(&m.ConfigPage),
+		terminalclient.Settings:     terminalclient.BindPage(&m.Settings),
+		terminalclient.Agents: {
+			Draw:   func() string { return m.Agents.View() },
+			Resize: m.Agents.SetSize,
+			Input: func(msg tea.Msg) tea.Cmd {
+				next, cmd := m.Agents.Update(msg)
+				m.Agents = next
+				return cmd
+			},
+		},
+		terminalclient.Folders: terminalclient.BindPage(&m.FolderPicker),
+		terminalclient.Quota:   terminalclient.BindPage(&m.Quota),
+		terminalclient.Usage:   terminalclient.BindPage(&m.Usage),
+	}, pageTheme)
 }

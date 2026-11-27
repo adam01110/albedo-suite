@@ -59,6 +59,12 @@ pub type KernelNotice {
   KernelNotice(text: String, resets: Bool)
 }
 
+/// Why mail wakes are paused until the model, safety tier, or history
+/// changes.
+pub type SafetyHalt {
+  SafetyHalt(provider: String, model: String, cyber_access: Option(String))
+}
+
 pub type State(message) {
   State(
     title_job: Option(TitleJob),
@@ -146,9 +152,12 @@ pub type State(message) {
     kernel_blocked: Bool,
     /// Why waiting inputs could not start a turn, until `blocked_until`.
     blocking: Option(String),
+    safety_halted: Option(SafetyHalt),
     /// A child's failure letter waits briefly for its siblings' before its
     /// turn starts; the session reports itself preparing meanwhile.
     holding_failure: Bool,
+    event_hold: Option(#(Int, process.Timer)),
+    inbox_changed_during_run: Bool,
     /// People's waiting inputs held while they edit them, by input id, with
     /// the monotonic deadline of each hold. The queue stops at the first held
     /// row, so neither it nor what waits behind it is read until the hold ends.
@@ -489,6 +498,18 @@ pub fn unwatch_glances(state: State(message)) -> State(message) {
   }
 }
 
+/// Whether automatic mail/job wakes are paused after a content/safety refusal
+/// on the current provider, model, and cyber-access tier.
+pub fn halted_for_safety(state: State(message)) -> Bool {
+  case state.safety_halted {
+    Some(halt) ->
+      halt.provider == state.info.provider
+      && halt.model == state.info.model
+      && halt.cyber_access == state.info.cyber_access
+    None -> False
+  }
+}
+
 /// A zero deadline means no retry wait, even when monotonic time is negative.
 pub fn retry_pending(deadline: Int, monotonic_now: Int) -> Bool {
   deadline != 0 && monotonic_now < deadline
@@ -507,6 +528,7 @@ pub fn current_status(state: State(message)) -> session_activity.Status {
     state.booting != None
       || state.workspace_reset != None
       || state.holding_failure
+      || state.event_hold != None
       || state.start_pending,
     blocking,
   )

@@ -6,6 +6,8 @@ import (
 	"math"
 	"strings"
 
+	"albedo/cli/internal/tui/chrome"
+
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -42,8 +44,8 @@ const (
 )
 
 // freeStyle is the empty track; reserveStyle the track past the trigger.
-func freeStyle() lipgloss.Style    { return DefaultStyles.Decor }
-func reserveStyle() lipgloss.Style { return DefaultStyles.Warning.Faint(true) }
+func freeStyle() lipgloss.Style    { return chrome.DefaultStyles.Decor }
+func reserveStyle() lipgloss.Style { return chrome.DefaultStyles.Warning.Faint(true) }
 
 // bytesPerToken approximates a size when a snapshot reports none.
 const bytesPerToken = 4
@@ -51,7 +53,7 @@ const bytesPerToken = 4
 // partStyles colour the parts in a stable order: instructions, tools,
 // conversation, then anything else.
 func partStyles() []lipgloss.Style {
-	return []lipgloss.Style{DefaultStyles.Agent, DefaultStyles.You, DefaultStyles.Success, DefaultStyles.Warning}
+	return []lipgloss.Style{chrome.DefaultStyles.Agent, chrome.DefaultStyles.You, chrome.DefaultStyles.Success, chrome.DefaultStyles.Warning}
 }
 
 // partLabel names a section by what it holds rather than by its wire label.
@@ -277,9 +279,9 @@ func (u contextUsage) legend(width int) []string {
 			amount = "~" + amount
 		}
 		if pct := u.percent(r.tokens); pct != "" {
-			amount += " " + DefaultStyles.Faint.Render(pct)
+			amount += " " + chrome.DefaultStyles.Faint.Render(pct)
 		}
-		line := r.mark + " " + r.label + strings.Repeat(" ", labelW-ansi.StringWidth(r.label)+2) + DefaultStyles.Muted.Render(amount)
+		line := r.mark + " " + r.label + strings.Repeat(" ", labelW-ansi.StringWidth(r.label)+2) + chrome.DefaultStyles.Muted.Render(amount)
 		out = append(out, ansi.Truncate(line, max(1, width), "…"))
 	}
 	return out
@@ -292,7 +294,7 @@ func (u contextUsage) block(width, height int) []string {
 	if height < 2 {
 		return nil
 	}
-	head := []string{DefaultStyles.Bold.Render(ansi.Truncate(u.headline(), width, "…")), u.bar(width)}
+	head := []string{chrome.DefaultStyles.Bold.Render(ansi.Truncate(u.headline(), width, "…")), u.bar(width)}
 	legend := u.legend(width)
 	if height < len(head)+1+len(legend) {
 		return head

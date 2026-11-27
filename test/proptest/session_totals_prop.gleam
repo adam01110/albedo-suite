@@ -16,6 +16,7 @@ import albedo_model as types
 import albedo_sdk/oauth_flows
 import albedo_sdk/session_info
 import albedo_sdk/store
+import albedo_sqlite
 import gleam/bit_array
 import gleam/bytes_tree
 import gleam/dynamic/decode
@@ -102,26 +103,28 @@ fn insert(ledger: store.Store, row: Row) -> Nil {
   list.repeat(Nil, row.count)
   |> list.each(fn(_) {
     let assert Ok(_) =
-      store.write(
-        ledger,
-        "INSERT INTO provider_requests(session,kind,profile,provider,model,started_ms,finished_ms,outcome,head_hash,inputs,input_tokens,cached_input_tokens,cache_creation_tokens,cache_write_5m_tokens,cache_write_1h_tokens,output_tokens) VALUES(?,'turn',?,?,?,0,0,?,'',0,?,?,?,?,?,?)",
-        [
-          sqlight.text(row.session),
-          sqlight.text(row.profile),
-          sqlight.text("chat_completions:https://p.example/v1"),
-          sqlight.text(row.model),
-          sqlight.text(case row.ok {
-            True -> "ok"
-            False -> "error"
-          }),
-          count(row.input),
-          count(row.cached),
-          count(row.created),
-          count(row.w5),
-          count(row.w1),
-          count(row.output),
-        ],
-      )
+      store.writing(ledger, fn(db) {
+        albedo_sqlite.run(
+          "INSERT INTO provider_requests(session,kind,profile,provider,model,started_ms,finished_ms,outcome,head_hash,inputs,input_tokens,cached_input_tokens,cache_creation_tokens,cache_write_5m_tokens,cache_write_1h_tokens,output_tokens) VALUES(?,'turn',?,?,?,0,0,?,'',0,?,?,?,?,?,?)",
+          on: db,
+          with: [
+            sqlight.text(row.session),
+            sqlight.text(row.profile),
+            sqlight.text("chat_completions:https://p.example/v1"),
+            sqlight.text(row.model),
+            sqlight.text(case row.ok {
+              True -> "ok"
+              False -> "error"
+            }),
+            count(row.input),
+            count(row.cached),
+            count(row.created),
+            count(row.w5),
+            count(row.w1),
+            count(row.output),
+          ],
+        )
+      })
     Nil
   })
 }
@@ -207,9 +210,9 @@ fn prepare(ledger: store.Store) -> Nil {
     store.query(ledger, fn(db) { session_workspace.initialise_in(db) })
   let assert Ok(_) =
     store.query(ledger, fn(db) {
-      store.exec(
-        db,
+      albedo_sqlite.exec(
         "CREATE TABLE IF NOT EXISTS session_extensions(session TEXT NOT NULL,name TEXT NOT NULL,enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),PRIMARY KEY(session,name));",
+        on: db,
       )
     })
   Nil
@@ -484,7 +487,11 @@ pub fn main() -> Nil {
         1_700_000_000,
       )
       let assert Ok(ledger) =
-        store.start(home <> "/ledger.db", schema, core_store.tables())
+        store.start(
+          home <> "/ledger.db",
+          albedo_sqlite.exec(schema, on: _),
+          core_store.tables(),
+        )
       let assert Ok(_) = conversation.initialise(ledger)
       let assert Ok(_) = family.initialise(ledger)
       prepare(ledger)
@@ -492,22 +499,34 @@ pub fn main() -> Nil {
       // One activity stamp, so the listing's order is its id order.
       let assert Ok(_) =
         store.query(ledger, fn(db) {
-          store.exec(db, "UPDATE sessions SET activity_at=0")
+          albedo_sqlite.exec("UPDATE sessions SET activity_at=0", on: db)
         })
       list.each(c.rows, insert(ledger, _))
       list.each(c.opens, fn(entry) {
         let assert Ok(_) =
-          store.write(ledger, "UPDATE sessions SET opens=? WHERE id=?", [
-            sqlight.int(entry.1),
-            sqlight.text(entry.0),
-          ])
+          store.writing(ledger, fn(db) {
+            albedo_sqlite.run(
+              "UPDATE sessions SET opens=? WHERE id=?",
+              on: db,
+              with: [
+                sqlight.int(entry.1),
+                sqlight.text(entry.0),
+              ],
+            )
+          })
         Nil
       })
       list.each(c.archived, fn(id) {
         let assert Ok(_) =
-          store.write(ledger, "UPDATE sessions SET archived=1 WHERE id=?", [
-            sqlight.text(id),
-          ])
+          store.writing(ledger, fn(db) {
+            albedo_sqlite.run(
+              "UPDATE sessions SET archived=1 WHERE id=?",
+              on: db,
+              with: [
+                sqlight.text(id),
+              ],
+            )
+          })
         proptest.bump("archived")
       })
       let reg = fake_registry(fake_runtime(ledger))
@@ -673,7 +692,8 @@ fn counts_generator() -> qcheck.Generator(Counts) {
 }
 
 fn tool_counts_ledger() -> store.Store {
-  let assert Ok(ledger) = store.start(":memory:", "", core_store.tables())
+  let assert Ok(ledger) =
+    store.start(":memory:", fn(_) { Ok(Nil) }, core_store.tables())
   let assert Ok(_) = conversation.initialise(ledger)
   list.each(ids, create(ledger, _))
   ledger
@@ -750,11 +770,13 @@ const probe_catalog_b =
 
 fn probe_row(ledger: store.Store, session: String) -> Nil {
   let assert Ok(_) =
-    store.write(
-      ledger,
-      "INSERT INTO provider_requests(session,kind,profile,provider,model,started_ms,finished_ms,outcome,head_hash,inputs,input_tokens,output_tokens) VALUES(?,'turn','p','chat_completions:https://p.example/v1','m',0,0,'ok','',0,1000000,0)",
-      [sqlight.text(session)],
-    )
+    store.writing(ledger, fn(db) {
+      albedo_sqlite.run(
+        "INSERT INTO provider_requests(session,kind,profile,provider,model,started_ms,finished_ms,outcome,head_hash,inputs,input_tokens,output_tokens) VALUES(?,'turn','p','chat_completions:https://p.example/v1','m',0,0,'ok','',0,1000000,0)",
+        on: db,
+        with: [sqlight.text(session)],
+      )
+    })
   Nil
 }
 
@@ -771,7 +793,7 @@ pub fn catalog_revision_observation() -> Nil {
     string.byte_size(probe_catalog_a) == string.byte_size(probe_catalog_b)
   proptest.write_file(path, <<probe_catalog_a:utf8>>, 1_700_000_000)
   let assert Ok(ledger) =
-    store.start(home <> "/ledger.db", "", core_store.tables())
+    store.start(home <> "/ledger.db", fn(_) { Ok(Nil) }, core_store.tables())
   let assert Ok(_) = conversation.initialise(ledger)
   probe_row(ledger, "a")
   let before = session_cost.total(ledger, "a")

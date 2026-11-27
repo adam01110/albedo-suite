@@ -147,8 +147,9 @@ SOFTWARE.
 
 The canvas's key hints (`web/src/lib/Gesture.svelte`) draw four of Lucide's
 icons, copied as SVG paths rather than installed: hand-grab, move, mouse and
-mouse-pointer-click (https://lucide.dev). Lucide is distributed under the ISC
-License:
+mouse-pointer-click (https://lucide.dev). The settings sidebar uses SVGs from
+`lucide-static` 1.81.0 under `web/src/lib/settings/navigation-icons/`. Lucide is
+distributed under the ISC License:
 
 ```
 ISC License

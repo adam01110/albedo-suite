@@ -4,6 +4,8 @@ import (
 	"os"
 	"strings"
 
+	"albedo/cli/internal/tui/chrome"
+
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -133,7 +135,7 @@ func (m *ChatModel) turnDetail(end mood) string {
 // replyPreview is the first line of a reply without its leading Markdown
 // block marks or inline emphasis.
 func replyPreview(text string) string {
-	line := strings.TrimLeft(firstLine(text), "#>*-+ ")
+	line := strings.TrimLeft(chrome.FirstLine(text), "#>*-+ ")
 	return strings.NewReplacer("**", "", "__", "", "`", "").Replace(line)
 }
 

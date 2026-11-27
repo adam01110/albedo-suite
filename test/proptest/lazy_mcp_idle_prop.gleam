@@ -19,6 +19,7 @@ import albedo_sdk/page
 import albedo_sdk/storage
 import albedo_sdk/store
 import albedo_sdk/worktree
+import albedo_sqlite
 import gleam/dict.{type Dict}
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
@@ -104,13 +105,17 @@ pub fn main() -> Nil {
   proptest.remove_tree(home)
   let _ = make_dir(home)
   let assert Ok(ledger) =
-    store.start(home <> "/preferences.db", "", core_store.tables())
+    store.start(
+      home <> "/preferences.db",
+      fn(_) { Ok(Nil) },
+      core_store.tables(),
+    )
   let scope = storage.host(ledger)
   let assert Ok(Nil) =
     storage.query(scope, fn(db) {
-      storage.exec(db, "CREATE TABLE sessions(id TEXT PRIMARY KEY);")
+      albedo_sqlite.exec("CREATE TABLE sessions(id TEXT PRIMARY KEY);", on: db)
     })
-  let assert Ok(Nil) = loads.initialise(scope)
+  let assert Ok(Nil) = storage.query(scope, loads.initialise_schema)
   proptest.check(
     "lazy MCP idle expiry follows a per-server model",
     20,
@@ -184,7 +189,10 @@ fn run_case(home: String, scope: storage.Storage, scenario: Case) -> Nil {
   let session = "idle-" <> int.to_string(proptest.unique())
   let assert Ok(Nil) =
     storage.query(scope, fn(db) {
-      storage.exec(db, "INSERT INTO sessions(id) VALUES('" <> session <> "');")
+      albedo_sqlite.exec(
+        "INSERT INTO sessions(id) VALUES('" <> session <> "');",
+        on: db,
+      )
     })
   let controls =
     [short_name, long_name, keep_name, unused_name, disabled_name]
@@ -631,9 +639,9 @@ fn history(scope: storage.Storage, ops: List(HistoryOp)) -> Nil {
   list.each(sessions, fn(session) {
     let assert Ok(Nil) =
       storage.query(scope, fn(db) {
-        storage.exec(
-          db,
+        albedo_sqlite.exec(
           "INSERT INTO sessions(id) VALUES('" <> session <> "');",
+          on: db,
         )
       })
   })
@@ -693,7 +701,10 @@ fn first_places(scope: storage.Storage, names: List(String)) -> Nil {
   let session = "p-" <> int.to_string(proptest.unique())
   let assert Ok(Nil) =
     storage.query(scope, fn(db) {
-      storage.exec(db, "INSERT INTO sessions(id) VALUES('" <> session <> "');")
+      albedo_sqlite.exec(
+        "INSERT INTO sessions(id) VALUES('" <> session <> "');",
+        on: db,
+      )
     })
   list.each(names, fn(name) {
     let assert Ok(Nil) = loads.record(scope, session, name, True)

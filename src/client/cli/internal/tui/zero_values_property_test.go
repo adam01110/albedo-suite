@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"albedo/cli/internal/tui/chrome"
+
 	"albedo/cli/internal/daemon"
 
 	"github.com/charmbracelet/x/ansi"
@@ -517,7 +519,7 @@ func TestPropZeroContextUsage(t *testing.T) {
 		for _, window := range []int{0, 1, -1, 200_000, math.MaxInt32} {
 			for _, trigger := range []int{0, -1, 1, 200_000} {
 				for _, width := range []int{0, 1, 40, 200} {
-					u := contextUsage{Used: used, Window: window, Trigger: trigger, Parts: []contextPart{{Label: "conversation", Tokens: used, Style: DefaultStyles.Agent}}}
+					u := contextUsage{Used: used, Window: window, Trigger: trigger, Parts: []contextPart{{Label: "conversation", Tokens: used, Style: chrome.DefaultStyles.Agent}}}
 					what := fmt.Sprintf("used %d window %d trigger %d cells %d", used, window, trigger, width)
 					if bad, ok := zeroRun(what, func() {
 						bar := ansi.Strip(u.bar(width))

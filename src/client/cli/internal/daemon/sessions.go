@@ -352,8 +352,7 @@ func DeleteSession(ctx context.Context, conn *Connection, id string, tree bool, 
 	return result, err
 }
 func ListSessions(ctx context.Context, conn *Connection) ([]Session, error) {
-	sessions, _, err := ListSessionsWithTotal(ctx, conn)
-	return sessions, err
+	return listSessions(ctx, conn, protocol.ListSessionsParams{Scope: new("roots")})
 }
 
 // TotalCost is the estimated USD of every stored session, archived and child
@@ -363,14 +362,23 @@ type TotalCost struct {
 	Partial bool
 }
 
-// ListSessionsWithTotal is ListSessions with the daemon's all-session cost
-// estimate; nil when the daemon could not price or does not report it.
-func ListSessionsWithTotal(ctx context.Context, conn *Connection) ([]Session, *TotalCost, error) {
-	return listSessions(ctx, conn, protocol.ListSessionsParams{Scope: new("roots")})
-}
-func listSessions(ctx context.Context, conn *Connection, query protocol.ListSessionsParams) ([]Session, *TotalCost, error) {
-	result := []Session{}
+// totalSink is the context key of the **TotalCost a listing fills from the
+// first page that reports one, so filtered listings carry it unchanged.
+type totalSink struct{}
+
+// ListSessionsUnderWithTotal is ListSessionsUnder with the daemon's
+// all-session cost estimate; nil when the daemon does not report it.
+func ListSessionsUnderWithTotal(ctx context.Context, conn *Connection, filter SessionFilter, keepPins bool) ([]Session, *TotalCost, error) {
 	var total *TotalCost
+	sessions, err := ListSessionsUnder(context.WithValue(ctx, totalSink{}, &total), conn, filter, keepPins)
+	if err != nil {
+		return nil, nil, err
+	}
+	return sessions, total, nil
+}
+func listSessions(ctx context.Context, conn *Connection, query protocol.ListSessionsParams) ([]Session, error) {
+	result := []Session{}
+	total, _ := ctx.Value(totalSink{}).(**TotalCost)
 	query.Limit = new(int64(200))
 	err := walkPages(func(next *string) (protocol.SessionPage, *string, error) {
 		query.Next = next
@@ -383,11 +391,13 @@ func listSessions(ctx context.Context, conn *Connection, query protocol.ListSess
 		if page.Items == nil {
 			return fieldError("items")
 		}
-		if page.TotalCost != nil && total == nil {
+		if page.TotalCost != nil {
 			if page.TotalCost.Usd < 0 {
 				return fieldError("total cost")
 			}
-			total = &TotalCost{USD: page.TotalCost.Usd, Partial: page.TotalCost.Partial}
+			if total != nil && *total == nil {
+				*total = &TotalCost{USD: page.TotalCost.Usd, Partial: page.TotalCost.Partial}
+			}
 		}
 		for _, row := range page.Items {
 			if row.ID == "" || row.RootID == "" || row.Cursor != nil && (!validGeneration(row.Cursor.Generation) || row.Cursor.Sequence < 0) {
@@ -399,9 +409,9 @@ func listSessions(ctx context.Context, conn *Connection, query protocol.ListSess
 		return nil
 	}, "repeated session page")
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	return result, total, nil
+	return result, nil
 }
 
 func GetSessionPreview(ctx context.Context, conn *Connection, id string, limit int) (SessionPreview, error) {
@@ -444,9 +454,6 @@ func previewItems(ctx context.Context, conn *Connection, id string, entries []pr
 	}
 	items := []PreviewItem{}
 	for _, event := range events {
-		if event.Type == EventCommitted {
-			continue
-		}
 		text := event.Text
 		if event.Type == EventTool {
 			text = event.ToolName + ": " + event.ToolResult
@@ -462,8 +469,7 @@ func summaryValue(row protocol.SessionSummary) Session {
 	return session
 }
 func ListAllSessions(ctx context.Context, conn *Connection) ([]Session, error) {
-	sessions, _, err := listSessions(ctx, conn, protocol.ListSessionsParams{Scope: new("all")})
-	return sessions, err
+	return listSessions(ctx, conn, protocol.ListSessionsParams{Scope: new("all")})
 }
 
 func capturedStatus(w protocol.Session) AgentStatus {

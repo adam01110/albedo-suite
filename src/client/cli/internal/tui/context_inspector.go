@@ -2,6 +2,7 @@ package tui
 
 import (
 	"albedo/cli/internal/daemon"
+	"albedo/cli/internal/terminalui"
 	"cmp"
 	"context"
 	"errors"
@@ -10,6 +11,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"albedo/cli/internal/tui/chrome"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -163,12 +166,12 @@ func (d *ContextDetail) list(width, height int) []string {
 	var notes []string
 	switch {
 	case d.Error != "":
-		notes = append(notes, DefaultStyles.Error.Render(d.Error))
+		notes = append(notes, chrome.DefaultStyles.Error.Render(d.Error))
 	case d.Value == nil:
-		notes = append(notes, DefaultStyles.Faint.Render("loading prepared content…"))
+		notes = append(notes, chrome.DefaultStyles.Faint.Render("loading prepared content…"))
 	default:
 		if d.Value.Omitted != "" {
-			notes = append(notes, DefaultStyles.Warning.Render("omitted: "+d.Value.Omitted))
+			notes = append(notes, chrome.DefaultStyles.Warning.Render("omitted: "+d.Value.Omitted))
 		}
 		notes = append(notes, "")
 	}
@@ -184,7 +187,7 @@ func (d *ContextDetail) list(width, height int) []string {
 	if len(rows) > room || !d.formatted() && d.Value != nil {
 		facts = append(facts, fmt.Sprintf("%d%%", d.position(d.Scroll+room)))
 	}
-	head := append([]string{DefaultStyles.Faint.Render(strings.Join(facts, " · "))}, notes...)
+	head := append([]string{chrome.DefaultStyles.Faint.Render(strings.Join(facts, " · "))}, notes...)
 
 	out := make([]string, 0, height)
 	for _, line := range head {
@@ -246,7 +249,7 @@ func NewContextInspectorModel(conn *daemon.Connection, sessionID string) Context
 
 func (m *ContextInspectorModel) SetSize(width, height int) {
 	m.pageStatus.SetSize(width, height)
-	m.listView.setSize(width, height)
+	m.setSize(width, height)
 }
 
 func (m ContextInspectorModel) Init() tea.Cmd {
@@ -345,13 +348,13 @@ func (m *ContextInspectorModel) setSections() {
 }
 
 func sectionEntry(i int, sec daemon.ContextSection) listEntry {
-	tag := DefaultStyles.Faint.Render("no content")
+	tag := chrome.DefaultStyles.Faint.Render("no content")
 	if sec.Pages > 0 {
-		tag = DefaultStyles.Muted.Render(contextCount(sec.Pages, "page"))
+		tag = chrome.DefaultStyles.Muted.Render(contextCount(sec.Pages, "page"))
 	}
 	return listEntry{
 		key:    sec.ID,
-		lead:   DefaultStyles.Faint.Render(fmt.Sprintf("%d.", i+1)),
+		lead:   chrome.DefaultStyles.Faint.Render(fmt.Sprintf("%d.", i+1)),
 		name:   sec.Label,
 		desc:   sec.Source,
 		tag:    tag,
@@ -392,7 +395,7 @@ func (m ContextInspectorModel) requestFacts(width int) []string {
 		if snap.Reason != "" {
 			value += ": " + snap.Reason
 		}
-		return append(factRows("request", value, width), factRows("", DefaultStyles.Faint.Render("checking again every second"), width)...)
+		return append(factRows("request", value, width), factRows("", chrome.DefaultStyles.Faint.Render("checking again every second"), width)...)
 	}
 	label := snap.Model
 	if snap.Provider != "" {
@@ -408,7 +411,7 @@ func (m ContextInspectorModel) requestFacts(width int) []string {
 	compaction := snap.Compaction
 	lines := factRows("model", label, width)
 	if !slices.ContainsFunc(snap.Sections, func(sec daemon.ContextSection) bool { return sec.Kind == "history" }) {
-		lines = append(lines, factRows("request", DefaultStyles.Warning.Render("preview · nothing sent yet; the first turn adds your message"), width)...)
+		lines = append(lines, factRows("request", chrome.DefaultStyles.Warning.Render("preview · nothing sent yet; the first turn adds your message"), width)...)
 	}
 	lines = append(lines, factRows("window", window, width)...)
 	strategy := cmp.Or(compaction.Strategy, "none")
@@ -491,7 +494,7 @@ func (m ContextInspectorModel) list(width, height int) []string {
 	// sections; the facts and note fit in what is left. A rule like the
 	// pane's separates each part (albedo-suite).
 	full := height
-	rule := DefaultStyles.Decor.Render(strings.Repeat("─", max(1, width-2)))
+	rule := chrome.DefaultStyles.Decor.Render(strings.Repeat("─", max(1, width-2)))
 	var block []string
 	if usage, ok := usageOf(m.Snapshot); ok {
 		if block = usage.block(width-2, height-7); block != nil {
@@ -503,7 +506,7 @@ func (m ContextInspectorModel) list(width, height int) []string {
 	// The note and the facts give up their rows, in that order, to the
 	// sections when the list is short, as it is with the pane stacked below.
 	if height >= len(head)+8 {
-		head = append(head, paneNote("read-only · transcript and request-only context are separate", width-2)...)
+		head = append(head, paneNote("read-only", width-2)...)
 		head = append(head, rule)
 	} else if height >= len(head)+5 {
 		head = append(head, rule)
@@ -512,7 +515,7 @@ func (m ContextInspectorModel) list(width, height int) []string {
 	}
 	head = append(block, head...)
 	for i := range head {
-		head[i] = svFit("  "+head[i], width)
+		head[i] = chrome.Fit("  "+head[i], width)
 	}
 	lv := m.listView
 	lv.Empty = m.emptyText()
@@ -520,23 +523,23 @@ func (m ContextInspectorModel) list(width, height int) []string {
 }
 
 func (m ContextInspectorModel) footer(width int) string {
-	hints := []hint{{"↑↓", "move"}, {"enter", "inspect"}, {"ctrl+r", "refresh"}, {"esc", "back"}}
+	hints := []chrome.Hint{{Key: "↑↓", Does: "move"}, {Key: "enter", Does: "inspect"}, {Key: "ctrl+r", Does: "refresh"}, {Key: "esc", Does: "back"}}
 	var status string
 	urgent := true
 	switch {
 	case m.Error != "":
-		status = DefaultStyles.Error.Render(m.Error)
+		status = chrome.DefaultStyles.Error.Render(m.Error)
 	case m.Loading:
-		status, urgent = DefaultStyles.Faint.Render("loading…"), false
+		status, urgent = chrome.DefaultStyles.Faint.Render("loading…"), false
 	case m.Snapshot != nil:
-		status, urgent = DefaultStyles.Faint.Render(counted(len(m.Snapshot.Sections), "section")), false
+		status, urgent = chrome.DefaultStyles.Faint.Render(counted(len(m.Snapshot.Sections), "section")), false
 	}
-	return footerLine(width, hints, status, urgent)
+	return chrome.FooterLine(width, hints, status, urgent)
 }
 
 // readerFooter is the footer while a section's content is open.
 func readerFooter(width int) string {
-	return footerLine(width, []hint{{"↑↓", "scroll"}, {"pgup/pgdn", "jump"}, {"home/end", "ends"}, {"r", "raw/formatted"}, {"esc", "sections"}}, "", false)
+	return chrome.FooterLine(width, []chrome.Hint{{Key: "↑↓", Does: "scroll"}, {Key: "pgup/pgdn", Does: "jump"}, {Key: "home/end", Does: "ends"}, {Key: "r", Does: "raw/formatted"}, {Key: "esc", Does: "sections"}}, "", false)
 }
 
 func (m ContextInspectorModel) Update(msg tea.Msg) (ContextInspectorModel, tea.Cmd) {
@@ -583,7 +586,7 @@ func (m ContextInspectorModel) Update(msg tea.Msg) (ContextInspectorModel, tea.C
 		}
 		return m.sectionsKey(msg)
 	}
-	cmd := m.listView.update(msg)
+	cmd := m.update(msg)
 	return m, cmd
 }
 
@@ -634,7 +637,7 @@ func (m ContextInspectorModel) sectionsKey(msg tea.KeyPressMsg) (ContextInspecto
 		m.Generation = nextPageGeneration()
 		return m, m.loadSnapshotCmd(m.Generation)
 	}
-	cmd := m.listView.update(msg)
+	cmd := m.update(msg)
 	return m, cmd
 }
 
@@ -653,22 +656,22 @@ func contextCount(n int, unit string) string {
 }
 
 // reader is the section's content as a list with no filter and no pane.
-func (m ContextInspectorModel) reader() listFrame {
-	title := brand("albedo") + " " + DefaultStyles.Muted.Render("/context")
-	return listFrame{
-		title:  title,
-		right:  DefaultStyles.Faint.Render(m.Detail.Section.Label),
-		list:   m.Detail.list,
-		footer: readerFooter(max(1, m.Width)),
+func (m ContextInspectorModel) reader() terminalui.Page {
+	title := chrome.Brand("albedo") + " " + chrome.DefaultStyles.Muted.Render("/context")
+	return terminalui.Page{
+		Title:  title,
+		Meta:   chrome.DefaultStyles.Faint.Render(m.Detail.Section.Label),
+		List:   m.Detail.list,
+		Footer: readerFooter(max(1, m.Width)),
 	}
 }
 
-func (m ContextInspectorModel) View() string {
+func (m ContextInspectorModel) Page() terminalui.Page {
 	if m.Detail != nil {
-		return m.reader().view(m.Width, m.Height)
+		return m.reader()
 	}
-	title := brand("albedo") + " " + DefaultStyles.Muted.Render("/context")
-	f := m.listView.frame(title, DefaultStyles.Faint.Render("prepared request"), m.footer(max(1, m.Width)))
-	f.list = m.list
-	return f.view(m.Width, m.Height)
+	title := chrome.Brand("albedo") + " " + chrome.DefaultStyles.Muted.Render("/context")
+	f := m.frame(title, chrome.DefaultStyles.Faint.Render("prepared request"), m.footer(max(1, m.Width)))
+	f.List = m.list
+	return f
 }

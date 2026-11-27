@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"albedo/cli/internal/tui/chrome"
+
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/ansi/kitty"
@@ -63,7 +65,7 @@ func (r TranscriptRenderer) renderToolImages(entry HistoryEntry, width int) []st
 		default:
 			label += " · " + string(attachment.MimeType)
 		}
-		rows = append(rows, markChrome+DefaultStyles.Faint.Render(ansi.Truncate(label, width, "…")))
+		rows = append(rows, markChrome+chrome.DefaultStyles.Faint.Render(ansi.Truncate(label, width, "…")))
 		if thumb != nil {
 			// Clipping columns keeps their original coordinates and image aspect.
 			clipped := *thumb

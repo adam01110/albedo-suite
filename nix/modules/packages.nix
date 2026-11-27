@@ -349,7 +349,7 @@
               go test ./internal/app ./internal/cli ./internal/daemon ./internal/webui -count=1
               # One run links each test binary once; a prefix may name tests in
               # several packages, as TestProp names every property test.
-              go test ./internal/config ./internal/terminal ./internal/tui -run '^(TestActivity|TestAgentsGlance|TestBase16|TestComposerScope|TestContext|TestOpenCodeGo|TestProp|TestProviderAvailability|TestQuota|TestSessionListCostLeftOfAge|TestSessionViewerTotalCostTopRight|TestSuiteEscape|TestSuiteInline|TestToolImages|TestTurnNotify|TestUsage|TestVim|TestZed|TestZoxide${pkgs.lib.optionalString showDiffs "|TestDefaultDiffVisibility$"})' -count=1 -v
+              go test ./internal/config ./internal/terminal ./internal/tui ./internal/tui/chrome -run '^(TestActivity|TestAgentsGlance|TestBase16|TestComposerScope|TestContext|TestOpenCodeGo|TestProp|TestProviderAvailability|TestQuota|TestSessionListCostLeftOfAge|TestSessionViewerTotalCostTopRight|TestSuiteEscape|TestSuiteInline|TestToolImages|TestTurnNotify|TestUsage|TestVim|TestZed|TestZoxide${pkgs.lib.optionalString showDiffs "|TestDefaultDiffVisibility$"})' -count=1 -v
             '';
         }));
 

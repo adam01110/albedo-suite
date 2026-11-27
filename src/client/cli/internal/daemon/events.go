@@ -30,19 +30,19 @@ type SkillLoad struct {
 
 // ToolActivity records display-only execution evidence, not model-facing tool output.
 type ToolActivity struct {
-	Kind     string            `json:"kind"` // "read" | "search" | "list" | "run" | "web" | "display" | "mcp" | "cua" | "artifact" | "skill"
-	Target   string            `json:"target"`
 	Artifact *ArtifactActivity `json:"artifact,omitempty"`
 	Skill    *SkillActivity    `json:"skill,omitempty"`
+	// MS and OK are how long the call took and whether it worked, when it
+	// ended before its cell did; nil otherwise.
+	MS     *int64 `json:"ms,omitempty"`
+	OK     *bool  `json:"ok,omitempty"`
+	Kind   string `json:"kind"` // "read" | "search" | "list" | "run" | "web" | "display" | "mcp" | "cua" | "artifact" | "skill"
+	Target string `json:"target"`
 	// Title and Description are the display() metadata; they are separate from content.
 	Title       string `json:"title,omitempty"`
 	Description string `json:"description,omitempty"`
 	// Detail is the markdown a web search answered with or display() showed; empty otherwise.
 	Detail string `json:"detail,omitempty"`
-	// MS and OK are how long the call took and whether it worked, when it
-	// ended before its cell did; nil otherwise.
-	MS *int64 `json:"ms,omitempty"`
-	OK *bool  `json:"ok,omitempty"`
 }
 
 type FileChange struct {
@@ -182,7 +182,6 @@ const (
 
 type Usage struct {
 	SessionCostUSD     *float64 `json:"sessionCostUSD,omitempty"`
-	Model              string   `json:"model,omitempty"`
 	RecordedAt         *int64   `json:"recordedAt,omitempty"`
 	PromptTokens       *int     `json:"promptTokens,omitempty"`
 	CachedPromptTokens *int     `json:"cachedPromptTokens,omitempty"`
@@ -200,13 +199,14 @@ type Usage struct {
 	// Spent is the total cost of every call the session made, added up per
 	// statement. The figure for one call stays in the request ledger.
 	Spent *Cost `json:"spent,omitempty"`
-	// CacheFade is how CachedPromptTokens fades once the session goes quiet,
-	// in time order.
-	CacheFade []CacheStep `json:"cacheFade,omitempty"`
 	// Size is set when the token counts are a strategy's size for a request no
 	// call has measured yet, as after a compaction, and not one call's own
 	// report. It says how much of them was measured and how much estimated.
-	Size *Size `json:"size,omitempty"`
+	Size  *Size  `json:"size,omitempty"`
+	Model string `json:"model,omitempty"`
+	// CacheFade is how CachedPromptTokens fades once the session goes quiet,
+	// in time order.
+	CacheFade []CacheStep `json:"cacheFade,omitempty"`
 }
 
 // CacheStep says that from At (unix ms) on, a request would read Cached
@@ -217,38 +217,32 @@ type CacheStep struct {
 }
 
 type StreamEvent struct {
+	Invalidation *ResourceInvalidation
+	Status       *AgentStatus
+	// Kernel is the kernel object a kernel event carried, and Glances the
+	// sidebar values a glances event carried.
+	Kernel       *protocol.Kernel
+	Snapshot     *Session
+	ShellCommand *ShellCommand
+	SideQuestion *SideQuestion
+	Receipt      *InputReceipt
+	Usage        *Usage
+	ToolTrace    *ToolTrace
+	// Skill is the skill a user's slash activation loaded.
+	Skill           *SkillLoad
+	Timestamp       *int64
+	ToolArgs        map[string]any
+	Progress        *ToolProgress
 	MessageID       string
-	ReplacesAllLive bool
-	ReplacesLiveIDs []string
 	EntryID         string
-	Position        int64
 	TurnType        string
 	Speaker         string
 	MailKind        string
 	SenderSessionID string
-	Invalidation    *ResourceInvalidation
-	Status          *AgentStatus
-	// Kernel is the kernel object a kernel event carried, and Glances the
-	// sidebar values a glances event carried.
-	Kernel        *protocol.Kernel
-	Glances       []PageGlance
-	Snapshot      *Session
-	ShellCommand  *ShellCommand
-	ShellCommands []ShellCommand
-	SideQuestion  *SideQuestion
-	Receipt       *InputReceipt
-	OperationID   string
-	Images        []ImageMetadata
-	Usage         *Usage
-	ToolTrace     *ToolTrace
-	// Skill is the skill a user's slash activation loaded.
-	Skill     *SkillLoad
-	Timestamp *int64
-	ToolArgs  map[string]any
-	Progress  *ToolProgress
-	TurnID    string
-	Type      EventType
-	Text      string
+	OperationID     string
+	TurnID          string
+	Type            EventType
+	Text            string
 	// Source is who submitted a user entry; Origin names what wrote a note.
 	Source         InputSource
 	Origin         string
@@ -259,24 +253,30 @@ type StreamEvent struct {
 	ToolStatus     string
 	ToolTitle      string
 	ProgressCallID string
-	SubmissionIDs  []string
-	Evicted        int
-	// ElapsedMs is how long a replayed thought took, when the daemon timed it.
-	ElapsedMs       int64
-	ElapsedObserved bool
-	// Seq is the newest transcript row an EventCommitted covers.
-	Seq      int64
-	Sequence int64
-	// Before and More describe the history a reset or page carried: Before is
-	// its first row (the cursor for the next older page), More whether one exists.
-	Before int64
-	More   bool
 	// Reset is why a reset replaced the history.
 	Reset ResetReason
 	// Code is the failure code of an error event.
 	Code string
 	// Outcome is how a turn ended, for a turn_completed event.
-	Outcome TurnOutcome
+	Outcome         TurnOutcome
+	ReplacesLiveIDs []string
+	Glances         []PageGlance
+	ShellCommands   []ShellCommand
+	Images          []ImageMetadata
+	SubmissionIDs   []string
+	Position        int64
+	Evicted         int
+	// ElapsedMs is how long a replayed thought took, when the daemon timed it.
+	ElapsedMs int64
+	// Seq is the newest transcript row an EventCommitted covers.
+	Seq      int64
+	Sequence int64
+	// Before and More describe the history a reset or page carried: Before is
+	// its first row (the cursor for the next older page), More whether one exists.
+	Before          int64
+	ReplacesAllLive bool
+	ElapsedObserved bool
+	More            bool
 	// SessionToolCalls is the session's tool result count a live tool event
 	// carried, that result included; nil when the daemon sent none.
 	SessionToolCalls *int
@@ -284,6 +284,8 @@ type StreamEvent struct {
 	// reset: history, which says nothing about what the session does now.
 	Replayed       bool
 	SnapshotOrigin bool
+	// EndsIdleHistory marks the final history summary of an idle reset snapshot.
+	EndsIdleHistory bool
 }
 
 // InputSource is who submitted a user entry.
@@ -371,8 +373,8 @@ func progressValue(wire protocol.ToolProgress) *ToolProgress {
 // that the amount belongs to. The daemon derives both values, so all clients
 // show the same amount for the same reason.
 type Cost struct {
-	Usd   float64 `json:"usd"`
 	Basis string  `json:"basis"`
+	Usd   float64 `json:"usd"`
 }
 
 // The statements an amount can belong to: money charged, a plan allowance

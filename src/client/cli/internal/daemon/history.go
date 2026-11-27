@@ -109,7 +109,7 @@ func decodeHistoryParts(raw []json.RawMessage) ([]historyPart, error) {
 }
 
 func historyEvents(entries []historyEntry) ([]StreamEvent, error) {
-	events := []StreamEvent{}
+	events := make([]StreamEvent, 0, len(entries))
 	arguments := map[string][]historyPart{}
 	for _, entry := range entries {
 		if entry.wire.Kind == "tool_call" && entry.wire.Tool != nil {
@@ -119,27 +119,27 @@ func historyEvents(entries []historyEntry) ([]StreamEvent, error) {
 		if entry.wire.Kind == "tool_result" && entry.wire.Tool != nil {
 			entry.parts = slices.Concat(arguments[entry.wire.Tool.ToolCallID], entry.parts)
 		}
-		converted, err := historyEntryEvents(entry)
+		event, err := historyEntryEvent(entry)
 		if err != nil {
 			return nil, err
 		}
-		for i := range converted {
-			converted[i].Replayed = true
+		if event.Type != "" {
+			event.Replayed = true
+			events = append(events, event)
 		}
-		events = append(events, converted...)
 	}
 	return events, nil
 }
 
-func historyEntryEvents(entry historyEntry) ([]StreamEvent, error) {
+func historyEntryEvent(entry historyEntry) (StreamEvent, error) {
 	wire := entry.wire
 	if wire.Kind == "continuation" {
-		return nil, nil
+		return StreamEvent{}, nil
 	}
 	if wire.ID == "" || wire.Position < 1 || entry.parts == nil {
-		return nil, fieldError("history entry")
+		return StreamEvent{}, fieldError("history entry")
 	}
-	event := StreamEvent{EntryID: wire.ID, Position: wire.Position, TurnType: value(wire.TurnType), Timestamp: timestampMilliseconds(value(wire.CreatedAt)), TurnID: value(wire.TurnID), OperationID: value(wire.InputID), Replayed: true}
+	event := StreamEvent{EntryID: wire.ID, Position: wire.Position, TurnType: value(wire.TurnType), Timestamp: timestampMilliseconds(value(wire.CreatedAt)), TurnID: value(wire.TurnID), OperationID: value(wire.InputID)}
 	var text strings.Builder
 	for _, part := range entry.parts {
 		switch part.Kind {
@@ -161,7 +161,7 @@ func historyEntryEvents(entry historyEntry) ([]StreamEvent, error) {
 				_ = json.Unmarshal(part.Value, &event.ElapsedMs)
 			case "origin":
 				if err := json.Unmarshal(part.Value, &event.Origin); err != nil {
-					return nil, fieldError("history origin")
+					return StreamEvent{}, fieldError("history origin")
 				}
 			case "skill":
 				var load SkillLoad
@@ -171,10 +171,10 @@ func historyEntryEvents(entry historyEntry) ([]StreamEvent, error) {
 			case "shell_command":
 				var command ShellCommand
 				if err := json.Unmarshal(part.Value, &command); err != nil {
-					return nil, fieldError("history shell command")
+					return StreamEvent{}, fieldError("history shell command")
 				}
 				if err := validShellCommand(command); err != nil {
-					return nil, err
+					return StreamEvent{}, err
 				}
 				event.ShellCommand = &command
 			case "strategy":
@@ -190,10 +190,10 @@ func historyEntryEvents(entry historyEntry) ([]StreamEvent, error) {
 			event.ToolTrace = ParseToolTrace(part.Trace)
 		case "reference":
 			if !strings.HasPrefix(part.Reference.Field, "image-") {
-				return nil, fieldError("unresolved history content")
+				return StreamEvent{}, fieldError("unresolved history content")
 			}
 		default:
-			return nil, fieldError("history content kind")
+			return StreamEvent{}, fieldError("history content kind")
 		}
 	}
 	event.Text = text.String()
@@ -205,7 +205,7 @@ func historyEntryEvents(entry historyEntry) ([]StreamEvent, error) {
 	switch wire.Kind {
 	case "shell_command":
 		if event.ShellCommand == nil || event.ShellCommand.HistorySeq == nil || *event.ShellCommand.HistorySeq != wire.Position {
-			return nil, fieldError("history shell command identity")
+			return StreamEvent{}, fieldError("history shell command identity")
 		}
 		event.Type = EventShellCommand
 	case "user":
@@ -233,11 +233,11 @@ func historyEntryEvents(entry historyEntry) ([]StreamEvent, error) {
 			event.ElapsedObserved = true
 		}
 	case "tool_call":
-		return nil, nil
+		return StreamEvent{}, nil
 	case "tool_result":
 		event.Type = EventTool
 		if wire.Tool == nil {
-			return nil, fieldError("history tool")
+			return StreamEvent{}, fieldError("history tool")
 		}
 		event.ToolStatus = wire.Tool.Status
 		event.ToolName = wire.Tool.Name
@@ -256,9 +256,9 @@ func historyEntryEvents(entry historyEntry) ([]StreamEvent, error) {
 		event.Type = EventCompacted
 		event.Summary = event.Text
 	default:
-		return nil, fieldError("history entry kind")
+		return StreamEvent{}, fieldError("history entry kind")
 	}
-	return []StreamEvent{event, {Type: EventCommitted, Seq: wire.Position, Replayed: true}}, nil
+	return event, nil
 }
 
 // ReadEntryContent reconstructs complete stored fields with verified byte offsets.

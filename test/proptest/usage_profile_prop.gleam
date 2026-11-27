@@ -2,14 +2,17 @@
 //// client's day by floor division, and against the window summary, which
 //// reads the same hours by another query.
 
+import albedo/generated/sql/usage/usage_hours_sql
 import albedo/storage/core_store
 import albedo/usage/usage_hours
 import albedo/usage/usage_profile
 import albedo_sdk/store
+import albedo_sqlite
 import gleam/dict
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import proptest
 import qcheck
@@ -162,35 +165,29 @@ pub fn model(c: Case) -> usage_profile.Profile {
 
 fn with_ledger(c: Case, body: fn(store.Store) -> a) -> a {
   let assert Ok(ledger) =
-    store.start(
-      ":memory:",
-      usage_hours.schema
-        <> "CREATE TABLE input_turns(id TEXT PRIMARY KEY,session TEXT NOT NULL,state TEXT NOT NULL,started_at INTEGER NOT NULL,ended_at INTEGER);",
-      core_store.tables(),
-    )
+    store.start(":memory:", fn(db) {
+      use _ <- result.try(usage_hours_sql.create_usage_hours(db:))
+      albedo_sqlite.exec("CREATE TABLE input_turns(id TEXT PRIMARY KEY,session TEXT NOT NULL,state TEXT NOT NULL,started_at INTEGER NOT NULL,ended_at INTEGER);", on: db)
+    }, core_store.tables())
   list.index_map(c.hours, fn(h, i) {
     let assert Ok(_) =
-      store.write(
-        ledger,
-        "INSERT INTO usage_hours VALUES(?,'p','prov','',?,'turn',?,0,?,0,0,?,0)",
-        [
+      store.writing(ledger, fn(db) { albedo_sqlite.run("INSERT INTO usage_hours VALUES(?,'p','prov','',?,'turn',?,0,?,0,0,?,0)", on: db, with: [
           sqlight.int(hour_ms(h)),
           sqlight.text("m" <> int.to_string(i)),
           sqlight.int(h.calls),
           sqlight.int(h.input),
           sqlight.int(h.output),
-        ],
-      )
+        ]) })
     Nil
   })
   list.index_map(c.turns, fn(t, i) {
     let assert Ok(_) =
-      store.write(ledger, "INSERT INTO input_turns VALUES(?,'s',?,?,?)", [
+      store.writing(ledger, fn(db) { albedo_sqlite.run("INSERT INTO input_turns VALUES(?,'s',?,?,?)", on: db, with: [
         sqlight.text(int.to_string(i)),
         sqlight.text(t.state),
         sqlight.int(t.started),
         sqlight.nullable(sqlight.int, t.ended),
-      ])
+      ]) })
     Nil
   })
   let found = body(ledger)

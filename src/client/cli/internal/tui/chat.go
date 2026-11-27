@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"albedo/cli/internal/tui/chrome"
+
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -28,14 +30,14 @@ type pendingOperation struct {
 }
 
 type PendingUserTurn struct {
-	Expired        bool
 	Handle         *daemon.OperationHandle
 	OperationID    string
 	BlockingReason string
+	Text           string
 	Images         []daemon.ImageAttachment
 	Pastes         []string
-	Text           string
 	At             int64
+	Expired        bool
 	Queued         bool
 }
 
@@ -85,58 +87,74 @@ type burstRowsKey struct {
 // liveRowsKey is what the cached rows of the reply streaming in were
 // rendered for: the same transcript end as a burst, and the reply itself.
 type liveRowsKey struct {
-	burstRowsKey
 	text string
 	kind EntryKind
+	burstRowsKey
 }
 
 // liveFrame is the shortest wait between two renderings of a growing reply.
 const liveFrame = 120 * time.Millisecond
 
 type ChatModel struct {
+	transcript        transcriptState
+	Renderer          TranscriptRenderer
+	liveDrawn         time.Time
 	streamCtx         context.Context
 	Usage             *daemon.Usage
 	progressByCallID  map[string]*daemon.ToolProgress
-	progressOrder     []string
+	eventChan         chan streamDelivery
 	activityEnded     bool
 	activityRemainder PageRow
 	// activityTools counts tool calls in loaded history and live work.
 	activityTools int
 	// sessionTools is the daemon's whole-session tool count, which history
 	// outside the loaded pages cannot change; nil falls back to activityTools.
-	sessionTools  *int
-	eventChan     chan streamDelivery
-	streamStopped bool
-	// Images and Pastes are what was pasted into the composer as markers.
-	Images promptImages
-	Pastes promptPastes
+	sessionTools *int
 	// window is the context window of windowModel, read once per model so
 	// the footer can say how full the context is.
 	window             *int
 	client             *daemon.ChatClient
 	shellIDsByCommand  map[string]string
 	shellOutputLoading map[string]bool
-	shellSubmitting    bool
-	btw                btwState
 	artifactConn       *daemon.Connection
 	openBrowser        func(string)
 	// termsFor is the terms warning a message on a profile still owes, if
 	// any; terms holds termsHeld back until it is answered.
 	termsFor           func(profile string) *daemon.Terms
 	terms              *termsBox
-	termsHeld          string
 	History            *BoundedHistory
 	toolImageSelection *toolImageSelection
-
 	// Selection coordinates use frameLines, the whole transcript as last
 	// drawn, so a selection can extend beyond the viewport.
 	dragAnchor   *Point
 	streamCancel context.CancelFunc
 	windowModel  *string
+	// moved is where the session went when it moved to another daemon; the
+	// banner above the composer offers to open it there. movedNote is the
+	// attach in flight or, with movedFailed, why the last one failed.
+	moved *daemon.SessionMoved
+	// movePending is the session's move waiting in its checklist; the
+	// banner's enter reopens it.
+	movePending *daemon.SessionMovePending
+	// liveRows is the reply streaming in: its finished blocks are framed
+	// once and only the block still growing is rendered again, so a draw
+	// costs what arrived rather than the length of the reply. While only
+	// its text grows it redraws at most once per liveInterval, a few times
+	// what the last rendering took; liveDue is a later redraw on its way.
+	// settled is each named entry's rows from the last rebuild while reading
+	// older history; see rebuildSettledLines.
+	settled map[settledKey]settledBlock
+	// editing is the queued message the composer is editing, held meanwhile.
+	editing              *queuedEdit
+	pendingContinuations map[string]pendingOperation
+	// frame caches the pieces of the last frame; see frameCache in chat_view.go.
+	frame       *frameCache
+	hostAuth    *hostSignIn
+	liveRowsKey liveRowsKey
 	// stretch is the phase run the status face animates.
 	stretch             stretch
+	termsHeld           string
 	SessionID           string
-	Status              daemon.AgentStatus
 	AgentName           string
 	Workspace           string
 	Host                string // the label of a remote workspace's host; "" when local
@@ -146,21 +164,13 @@ type ChatModel struct {
 	modelNameProfile    string
 	CyberAccess         string
 	Effort              string
-	Fast                bool
 	Provider            string
 	CopyStatus          string
 	settledToolLabel    string
 	ThoughtProgressText string
-	Renderer            TranscriptRenderer
-
 	// hostHome is the remote home ~ names in the header, once the host's
 	// probe reported it for hostAsked, the workspace it was asked for.
 	hostHome, hostAsked string
-
-	// userRows are the settled rows where user messages start.
-	userRows            []int
-	effortOptions       []string
-	effortLevels        []string
 	effortDefault       string
 	effortDefaultSource string
 	effortDefaultChoice string
@@ -168,65 +178,47 @@ type ChatModel struct {
 	// direnvAsk is the blocked .envrc the question above the composer offers
 	// to allow; empty when nothing asks.
 	direnvAsk string
-	// moved is where the session went when it moved to another daemon; the
-	// banner above the composer offers to open it there. movedNote is the
-	// attach in flight or, with movedFailed, why the last one failed.
-	moved     *daemon.SessionMoved
 	movedNote string
-	// movePending is the session's move waiting in its checklist; the
-	// banner's enter reopens it.
-	movePending *daemon.SessionMovePending
 	// moveStatus is a move to another daemon whose box was put away.
-	moveStatus string
-
+	moveStatus    string
+	progressOrder []string
+	// Images and Pastes are what was pasted into the composer as markers.
+	Images promptImages
+	Pastes promptPastes
+	// userRows are the settled rows where user messages start.
+	userRows      []int
+	effortOptions []string
+	effortLevels  []string
 	// burstRows is the rendered frame of the trailing run of compact entries.
 	// Its key names every input the rows depend on, so a refresh that changes
 	// nothing redraws nothing, and nothing can ask for a stale frame.
-	burstRows []string
-	// liveRows is the reply streaming in: its finished blocks are framed
-	// once and only the block still growing is rendered again, so a draw
-	// costs what arrived rather than the length of the reply. While only
-	// its text grows it redraws at most once per liveInterval, a few times
-	// what the last rendering took; liveDue is a later redraw on its way.
-	// settled is each named entry's rows from the last rebuild while reading
-	// older history; see rebuildSettledLines.
-	settled      map[settledKey]settledBlock
-	liveRows     []string
-	liveRowsKey  liveRowsKey
-	liveDrawn    time.Time
-	liveInterval time.Duration
-	liveDue      bool
-	Notices      Notices
-	settledLines []string
-	settledSpans []settledSpan
-
-	pendingUsers []PendingUserTurn
-	// editing is the queued message the composer is editing, held meanwhile.
-	editing *queuedEdit
-	// queueHold is set while a hold on a queued message is in flight, so a
-	// second Up does not hold the same message twice.
-	queueHold            bool
-	pendingContinuations map[string]pendingOperation
-	Glances              []PageGlance
+	burstRows         []string
+	liveRows          []string
+	Notices           Notices
+	settledLines      []string
+	settledSpans      []settledSpan
+	pendingUsers      []PendingUserTurn
+	Glances           []PageGlance
+	frameLines        []string
+	Flags             DisplayFlags
+	CommandMenu       CommandMenuModel
+	Status            daemon.AgentStatus
+	btw               btwState
+	terminalClipboard terminalClipboardRead
+	Viewport          pane
+	TextArea          textarea.Model
+	burstRowsKey      burstRowsKey
+	dragHead          Point
+	liveInterval      time.Duration
 	// layoutSidebar is the sidebar width the last layout reserved.
-	layoutSidebar int
-	frameLines    []string
-	// frame caches the pieces of the last frame; see frameCache in chat_view.go.
-	frame       *frameCache
-	CommandMenu CommandMenuModel
-	Viewport    pane
-
-	transcript         transcriptState
+	layoutSidebar      int
 	vim                vimState
-	TextArea           textarea.Model
-	burstRowsKey       burstRowsKey
-	dragHead           Point
 	effortSelected     int
 	Generation         int64
-	terminalClipboard  terminalClipboardRead
 	copyStatusRevision uint64
 	burstEpoch         int
 	ProgressFrame      int
+	progressAt         int64 // Unix milliseconds at the most recent animation tick.
 	Width              int
 	// moodSeed selects the status-face animation for the current stretch.
 	moodSeed            int64
@@ -236,16 +228,21 @@ type ChatModel struct {
 	statusRevision      uint64
 	statusPoll          uint64
 	scrollOffset        int
-
-	scrollLimit int
-	dragDir     int
-	dragCtrl    bool
-	dragGen     int
+	scrollLimit         int
+	dragDir             int
+	dragGen             int
 	// olderBefore is the first transcript row carried by the reset or last older page.
 	olderBefore int64
 	// settledOffset counts notice rows above the settled transcript.
 	settledOffset   int
-	Flags           DisplayFlags
+	streamStopped   bool
+	shellSubmitting bool
+	Fast            bool
+	liveDue         bool
+	// queueHold is set while a hold on a queued message is in flight, so a
+	// second Up does not hold the same message twice.
+	queueHold       bool
+	dragCtrl        bool
 	Follow          bool
 	TurnFailed      bool
 	Stopping        bool
@@ -261,7 +258,6 @@ type ChatModel struct {
 	notifyPending string
 	// rebuilding defers trimming until a re-render has placed the reading position.
 	rebuilding bool
-
 	// olderMore reports whether transcript rows precede olderBefore.
 	olderMore bool
 	// loadingOlder prevents overlapping history fetches.
@@ -269,7 +265,6 @@ type ChatModel struct {
 	isSending         bool
 	interruptDeferred bool
 	interruptPending  bool
-	hostAuth          *hostSignIn
 	sentHere          bool
 	movedFailed       bool
 	// graphemes says the terminal measures grapheme clusters (mode 2027),
@@ -284,23 +279,23 @@ func NewChatModel(session *daemon.Session, client *daemon.ChatClient) ChatModel 
 	}
 	ta := textarea.New()
 	ta.Placeholder = ""
-	ta.Prompt = promptMark
+	ta.Prompt = chrome.PromptMark
 	ta.CharLimit = 0
 	ta.ShowLineNumbers = false
-	ta.SetPromptFunc(promptMarkWidth, func(info textarea.PromptInfo) string {
+	ta.SetPromptFunc(chrome.PromptMarkWidth, func(info textarea.PromptInfo) string {
 		if info.LineNumber == 0 {
-			return promptMark
+			return chrome.PromptMark
 		}
-		return strings.Repeat(" ", promptMarkWidth)
+		return strings.Repeat(" ", chrome.PromptMarkWidth)
 	})
 	ta.KeyMap.InsertNewline.SetKeys("enter", "ctrl+m", "alt+enter", "shift+enter")
 	ta.KeyMap.WordBackward.SetKeys("alt+left", "alt+b", "ctrl+left")
 	ta.KeyMap.WordForward.SetKeys("alt+right", "alt+f", "ctrl+right")
 	ta.SetHeight(6)
 	st := ta.Styles()
-	st.Focused.Prompt, st.Blurred.Prompt = DefaultStyles.Prompt, DefaultStyles.Prompt
+	st.Focused.Prompt, st.Blurred.Prompt = chrome.DefaultStyles.Prompt, chrome.DefaultStyles.Prompt
 	st.Focused.CursorLine, st.Blurred.CursorLine = lipgloss.NewStyle(), lipgloss.NewStyle()
-	st.Focused.Placeholder, st.Blurred.Placeholder = DefaultStyles.Faint, DefaultStyles.Faint
+	st.Focused.Placeholder, st.Blurred.Placeholder = chrome.DefaultStyles.Faint, chrome.DefaultStyles.Faint
 	st.Cursor.Blink, st.Cursor.Color = false, nil
 	ta.SetStyles(st)
 	ta.Focus()
@@ -578,6 +573,7 @@ func (m ChatModel) update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		}
 		// the face lives in the status line, so the transcript stays as it is
 		m.ProgressFrame++
+		m.progressAt = msg.At.UnixMilli()
 		return m, m.progressTickCmd()
 
 	case ChatStreamResultMsg:

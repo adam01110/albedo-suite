@@ -5,6 +5,7 @@ import albedo_ext_zed/quota as zed_quota
 import albedo_sdk/key_environment
 import albedo_sdk/store
 import albedo_sdk/usage_feed
+import albedo_sqlite
 import gleam/erlang/process
 import gleam/io
 import gleam/json
@@ -23,10 +24,10 @@ fn row(
 ) -> Nil {
   let assert Ok(_) =
     store.query(db, fn(connection) {
-      store.run(
-        connection,
+      albedo_sqlite.run(
         "INSERT INTO quota_sample(account, provider, limit_id, label, used_percent, status, error, observed_at, source) VALUES (?, 'fixture', ?, ?, 100, 'exhausted', ?, ?, 'poll')",
-        [
+        on: connection,
+        with: [
           sqlight.text(account),
           sqlight.text(meter),
           sqlight.text(meter),

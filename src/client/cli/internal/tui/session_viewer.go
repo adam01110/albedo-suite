@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"albedo/cli/internal/tui/chrome"
+
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -38,10 +40,10 @@ const (
 
 // SessionPreviewMsg carries a fetched preview back to the viewer.
 type SessionPreviewMsg struct {
-	ExpectedETag string
-	Err          error
-	ID           string
 	Preview      daemon.SessionPreview
+	Err          error
+	ExpectedETag string
+	ID           string
 }
 
 type sessionPreviewTickMsg struct{ ID string }
@@ -72,6 +74,7 @@ type SessionViewer struct {
 	archivedIDs  map[string]bool
 	Workspace    string
 	notice       string
+	confirm      chrome.Confirm
 	// raw is the root model's listing, held rather than copied: it is one
 	// slice the whole client shares, and every row here points into it.
 	raw []daemon.Session
@@ -79,22 +82,26 @@ type SessionViewer struct {
 	// standing for itself when the daemon's recent list does not carry it.
 	order  []*daemon.Session
 	groups []sessionGroup
+	// Filter is the chips the list is under, shown below the search.
+	Filter           []daemon.FilterChip
+	typed            daemon.SessionFilter
+	typedOrder       []int
+	suggestDismissed string
+	PickerModel
+	rename        chrome.RenameField
+	sectionCounts [len(sectionTitles)]int
+	suggestIdx    int
 	// stale says order and the picker rows predate the listing SetSessions
 	// kept, and first that this viewer has never built them: its first build
 	// picks the session to open on. ensure does both.
 	stale, first bool
-
-	rename renameField
-	confirm
-	PickerModel
-	sectionCounts [len(sectionTitles)]int
-	Loading       bool
+	Loading      bool
+	HasActive    bool
+	ArchiveView  bool
+	Saving       bool
+	filterMenu   bool
 	// TotalCost is the estimate over every stored session; nil hides it.
 	TotalCost *daemon.TotalCost
-
-	HasActive   bool
-	ArchiveView bool
-	Saving      bool
 }
 
 // workspacePlace is the viewer's folder as text, its host labelled the way
@@ -110,8 +117,12 @@ func NewSessionViewer(workspace string) SessionViewer {
 	p := NewPickerModel("", sessionViewerActions(workspace), true, "new")
 	p.SearchInput.Placeholder = "search sessions, models, folders…"
 	st := p.SearchInput.Styles()
-	st.Focused.Placeholder, st.Blurred.Placeholder = DefaultStyles.Faint, DefaultStyles.Faint
+	st.Focused.Placeholder, st.Blurred.Placeholder = chrome.DefaultStyles.Faint, chrome.DefaultStyles.Faint
 	p.SearchInput.SetStyles(st)
+	p.Text = func(search string) string {
+		text, _ := daemon.ParseSessionQuery(search)
+		return text
+	}
 	m := SessionViewer{
 		PickerModel: p,
 		Workspace:   workspace,
@@ -131,6 +142,7 @@ func sessionViewerActions(workspace string) []PickerItem {
 		{ID: "new", Label: "New session", Detail: workspace},
 		{ID: "login", Label: "Accounts", Detail: "sign in, rotation, sign-out"},
 		{ID: "archive", Label: "Archive", Detail: "browse archived sessions"},
+		{ID: "settings", Label: "settings", Detail: "connections and preferences"},
 	}
 }
 
@@ -277,10 +289,14 @@ func (m *SessionViewer) rebuild() {
 		}
 		dated[i] = older
 	}
-	var rest, active []*daemon.Session
+	showArchived := slices.ContainsFunc(m.Filter, func(c daemon.FilterChip) bool { return c.Token == "is:archived" })
+	var rest, archived, active []*daemon.Session
 	for i, s := range listed {
 		if m.archivedIDs[s.ID] {
 			m.section[s.ID] = secArchived
+			if showArchived {
+				archived = append(archived, s)
+			}
 			continue
 		}
 		if _, taken := m.section[s.ID]; taken {
@@ -300,7 +316,7 @@ func (m *SessionViewer) rebuild() {
 	slices.SortStableFunc(rest, func(a, b *daemon.Session) int {
 		return cmp.Or(cmp.Compare(m.section[a.ID], m.section[b.ID]), warmFirst(a, b))
 	})
-	m.order = slices.Concat(ordered, active, rest)
+	m.order = slices.Concat(ordered, active, rest, archived)
 
 	var items []PickerItem
 	visible := m.order
@@ -310,7 +326,7 @@ func (m *SessionViewer) rebuild() {
 		items = sessionViewerActions(m.Workspace)
 	}
 	for _, s := range visible {
-		if m.ArchiveView == m.archivedIDs[s.ID] {
+		if m.ArchiveView == m.archivedIDs[s.ID] || (!m.ArchiveView && showArchived) {
 			items = append(items, PickerItem{ID: s.ID, Label: sessionTitle(*s), Detail: sessionText(s.Workspace + " " + s.Model + " " + s.Provider)})
 		}
 	}
@@ -457,8 +473,8 @@ func (m *SessionViewer) startRename() {
 	if current == untitled {
 		current = ""
 	}
-	m.rename.open(s.ID, current, "Name this session")
-	m.rename.etag = s.ETag
+	m.rename.Open(s.ID, current, "Name this session")
+	m.rename.ETag = s.ETag
 }
 
 func (m *SessionViewer) toggleArchive() tea.Cmd {
@@ -482,8 +498,12 @@ func (m *SessionViewer) CloseArchive() { m.setArchive(false) }
 // delete confirmation and the search.
 func (m *SessionViewer) setArchive(open bool) {
 	m.ArchiveView = open
-	m.confirm.dismiss()
+	m.confirm.Dismiss()
 	m.SearchInput.SetValue("")
+	m.filterMenu = false
+	if !open {
+		m.syncChips()
+	}
 	m.stale = true
 	m.ensure()
 	m.Cursor = 0
@@ -494,7 +514,7 @@ func (m *SessionViewer) setArchive(open bool) {
 
 func (m *SessionViewer) ForgetPreview(id string) {
 	delete(m.previews, id)
-	m.confirm.dismiss()
+	m.confirm.Dismiss()
 }
 
 // Init is the sessions screen opening: it builds the rows it draws.
@@ -521,15 +541,15 @@ func (m SessionViewer) Update(msg tea.Msg) (SessionViewer, tea.Cmd) {
 		}
 		return m, nil
 	case tea.KeyPressMsg:
-		if m.rename.active() {
-			return m, m.rename.key(msg)
+		if m.rename.Active() {
+			return m, m.rename.Key(msg)
 		}
-		if m.confirm.asking() {
-			if !m.confirm.key(msg) {
+		if m.confirm.Asking() {
+			if !m.confirm.Key(msg) {
 				return m, nil
 			}
-			id := m.confirm.target
-			m.confirm.dismiss()
+			id := m.confirm.Target
+			m.confirm.Dismiss()
 			s, _ := m.session(id)
 			return m, func() tea.Msg {
 				return SessionDeleteMsg{ID: id, Condition: daemon.SessionCondition{ETag: s.ETag, FamilyRevision: s.FamilyRevision}}
@@ -539,10 +559,67 @@ func (m SessionViewer) Update(msg tea.Msg) (SessionViewer, tea.Cmd) {
 			m.CloseArchive()
 			return m, nil
 		}
+		if !m.ArchiveView && msg.String() == "ctrl+t" {
+			m.filterMenu = !m.filterMenu
+			m.suggestIdx = 0
+			return m, nil
+		}
+		if m.filterMenu && !m.ArchiveView {
+			items := daemon.SessionFilterOptions()
+			idx := max(0, min(m.suggestIdx, len(items)-1))
+			switch msg.String() {
+			case "up", "ctrl+p", "shift+tab":
+				m.suggestIdx = (idx - 1 + len(items)) % len(items)
+				return m, nil
+			case "down", "ctrl+n", "tab":
+				m.suggestIdx = (idx + 1) % len(items)
+				return m, nil
+			case "esc":
+				m.filterMenu = false
+				return m, nil
+			case " ", "space", "enter":
+				m.toggleMenuToken(items[idx].Token)
+				if msg.String() == "enter" {
+					m.filterMenu = false
+				}
+				m.applyFilter()
+				m.rebuildGroups()
+				return m, m.previewAfter(before.ID)
+			default:
+				m.filterMenu = false
+			}
+		}
+		if !m.ArchiveView && msg.String() == "backspace" && m.SearchInput.Value() == "" && len(m.typedOrder) > 0 {
+			last := m.typedOrder[len(m.typedOrder)-1]
+			m.typedOrder = m.typedOrder[:len(m.typedOrder)-1]
+			m.typed = m.typed.ClearField(last)
+			m.syncChips()
+			m.applyFilter()
+			m.rebuildGroups()
+			return m, m.previewAfter(before.ID)
+		}
+		if start, end, items := m.suggestions(); len(items) > 0 {
+			switch msg.String() {
+			case "tab":
+				idx := max(0, min(m.suggestIdx, len(items)-1))
+				m.promoteToken(items[idx].Token, start, end)
+				m.suggestIdx = 0
+				m.suggestDismissed = ""
+				m.applyFilter()
+				m.rebuildGroups()
+				return m, m.previewAfter(before.ID)
+			case "shift+tab":
+				m.suggestIdx = (m.suggestIdx + 1) % len(items)
+				return m, nil
+			case "esc":
+				m.suggestDismissed = m.SearchInput.Value()
+				return m, nil
+			}
+		}
 		switch key := msg.String(); {
 		case (key == "ctrl+d" || key == "ctrl+x") && m.ArchiveView:
 			if item, ok := m.Highlighted(); ok {
-				m.confirm.ask("delete", item.ID, "delete", sessionDeletePrompt)
+				m.confirm.Ask("delete", item.ID, "delete", sessionDeletePrompt)
 			}
 			return m, nil
 		case key == "ctrl+a":
@@ -567,9 +644,74 @@ func (m SessionViewer) Update(msg tea.Msg) (SessionViewer, tea.Cmd) {
 	picker, cmd := m.PickerModel.Update(msg)
 	m.PickerModel = picker
 	if m.SearchInput.Value() != query {
+		m.suggestIdx = 0
+		m.suggestDismissed = ""
+		if !m.ArchiveView {
+			if clean, promoted, order, changed := daemon.ExtractCompletedTokens(m.SearchInput.Value()); changed {
+				m.typed = m.typed.Over(promoted)
+				for _, field := range order {
+					m.recordOrder(field, true)
+				}
+				m.syncChips()
+				m.SearchInput.SetValue(clean)
+				m.SearchInput.CursorEnd()
+				m.applyFilter()
+			}
+		}
 		m.rebuildGroups()
 	}
 	return m, tea.Batch(cmd, m.previewAfter(before.ID))
+}
+
+// TypedFilter returns the filter chips currently toggled or completed on the viewer.
+func (m SessionViewer) TypedFilter() daemon.SessionFilter { return m.typed }
+
+func (m *SessionViewer) recordOrder(field int, add bool) {
+	m.typedOrder = slices.DeleteFunc(m.typedOrder, func(f int) bool { return f == field })
+	if add {
+		m.typedOrder = append(m.typedOrder, field)
+	}
+}
+
+func (m *SessionViewer) syncChips() {
+	_, inline := daemon.ParseSessionQuery(m.SearchInput.Value())
+	typed := m.typed.Over(inline)
+	m.Filter = prefs.sessionFilter().Over(typed).Chips(typed)
+}
+
+func (m *SessionViewer) toggleMenuToken(token string) {
+	query := m.SearchInput.Value()
+	if clean, inline, order, changed := daemon.ExtractCompletedTokens(query + " "); changed {
+		m.typed = m.typed.Over(inline)
+		for _, field := range order {
+			m.recordOrder(field, true)
+		}
+		m.SearchInput.SetValue(strings.TrimSpace(clean))
+	}
+	next, field, added := m.typed.ToggleToken(token, prefs.sessionFilter())
+	m.typed = next
+	m.recordOrder(field, added)
+	m.syncChips()
+}
+
+func (m *SessionViewer) promoteToken(token string, start, end int) {
+	next, field, ok := m.typed.SetToken(token)
+	if !ok {
+		return
+	}
+	m.typed = next
+	m.recordOrder(field, true)
+	cleaned, pos := daemon.RemoveSessionSpan(m.SearchInput.Value(), start, end)
+	m.SearchInput.SetValue(cleaned)
+	m.SearchInput.SetCursor(pos)
+	m.syncChips()
+}
+
+func (m SessionViewer) suggestions() (int, int, []daemon.FilterSuggestion) {
+	if m.ArchiveView || m.SearchInput.Value() == m.suggestDismissed {
+		return 0, 0, nil
+	}
+	return daemon.SuggestSessionTokensAt(m.SearchInput.Value(), m.SearchInput.Position())
 }
 
 // previewAfter schedules a preview once the highlight moves to a new row.

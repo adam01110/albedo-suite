@@ -1,4 +1,6 @@
 import albedo/composition/extension_cache
+import albedo/composition/selection
+import albedo/generated/sql/composition/selection_sql
 import albedo/workspace/worktree
 import albedo_ext_agents
 import albedo_ext_anthropic_api
@@ -19,6 +21,7 @@ import albedo_ext_formatter/extension as formatter
 import albedo_ext_git
 import albedo_ext_github_copilot
 import albedo_ext_google_ai_studio
+import albedo_ext_honcho
 import albedo_ext_hooks
 import albedo_ext_imagegen
 import albedo_ext_instructions
@@ -45,6 +48,7 @@ import albedo_ext_remote
 import albedo_ext_rolling
 import albedo_ext_run
 import albedo_ext_schedule
+import albedo_ext_searxng
 import albedo_ext_skills
 import albedo_ext_snapcompact
 import albedo_ext_vertex
@@ -56,8 +60,11 @@ import albedo_ext_work
 import albedo_ext_worktrees
 import albedo_ext_zed/extension as zed
 import albedo_sdk/extension
+import albedo_sdk/storage
 import albedo_sdk/store
 import gleam/json
+import gleam/list
+import gleam/result
 
 pub type Config {
   Config(extensions: List(extension.Extension), default_enabled: List(String))
@@ -70,6 +77,97 @@ pub fn defaults() -> Config {
     Ok(config) -> config
     Error(Nil) -> declared()
   }
+}
+
+/// Link the Discord gateway and memory worker for this runtime. Their manager
+/// names belong to this daemon and cannot be stored in the declaration cache.
+pub fn runtime_defaults() -> Config {
+  let config = defaults()
+  let gateway = albedo_ext_discord.memory_manager()
+  let memory = albedo_ext_honcho.memory_manager()
+  let defaults = selection.capability(config.extensions, config.default_enabled)
+  let permits = fn(conn, session) {
+    case defaults.enabled_by_default("discord") {
+      False -> Ok(False)
+      True -> {
+        use choices <- result.map(selection_sql.overrides(conn, session))
+        !list.any(choices, fn(row) { row.name == "discord" && row.enabled == 0 })
+      }
+    }
+  }
+  let honcho =
+    albedo_ext_honcho.with_discord(
+      memory,
+      albedo_ext_discord.memory_attachment,
+      fn(conn, session, bot, channel, author, message) {
+        use selected <- result.try(permits(conn, session))
+        case selected {
+          True ->
+            albedo_ext_discord.memory_allowed(
+              conn,
+              session,
+              bot,
+              channel,
+              author,
+              message,
+            )
+          False -> Ok(False)
+        }
+      },
+      fn(session, bot, channel, message, answer) {
+        albedo_ext_discord.memory_reply(
+          gateway,
+          session,
+          bot,
+          channel,
+          message,
+          answer,
+        )
+      },
+    )
+  let discord =
+    albedo_ext_discord.with_memory(
+      gateway,
+      fn(source, conn, enabled, event) {
+        use selected <- result.try(permits(conn, event.session))
+        case selected {
+          False -> Ok(False)
+          True -> {
+            let scoped =
+              extension.session_storage_of(
+                honcho,
+                storage.ledger(source),
+                event.session,
+              )
+            albedo_ext_honcho.capture_discord(
+              scoped,
+              conn,
+              enabled,
+              albedo_ext_discord.memory_attachment,
+              event.session,
+              event.bot,
+              event.author,
+              event.channel,
+              event.message,
+              event.content,
+              event.question,
+              event.created_at,
+            )
+          }
+        }
+      },
+      albedo_ext_honcho.wake_discord(memory, _),
+    )
+  Config(
+    ..config,
+    extensions: list.map(config.extensions, fn(item) {
+      case item.name {
+        "discord" -> discord
+        "honcho" -> honcho
+        _ -> item
+      }
+    }),
+  )
 }
 
 /// Calls every extension's constructor. Declarations must not capture the
@@ -142,9 +240,11 @@ pub fn declared() -> Config {
       albedo_ext_webhooks.extension(),
       albedo_ext_discord.extension(),
       albedo_ext_photon.extension(),
+      albedo_ext_honcho.extension(),
       albedo_ext_hooks.extension(),
       albedo_ext_warm.extension(),
       albedo_ext_exa.extension(),
+      albedo_ext_searxng.extension(),
       albedo_ext_web_search.extension(),
       albedo_ext_imagegen.extension(),
     ],

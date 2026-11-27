@@ -2,8 +2,12 @@ package tui
 
 import (
 	"albedo/cli/internal/config"
+	"albedo/cli/internal/terminalui"
 	"cmp"
+	"slices"
 	"strings"
+
+	"albedo/cli/internal/tui/chrome"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -20,7 +24,7 @@ func linkRows(url string, width int) []string {
 	id := "id=albedo-link"
 	out := make([]string, len(rows))
 	for i, row := range rows {
-		out[i] = ansi.SetHyperlink(url, id) + DefaultStyles.Faint.Render(row) + ansi.ResetHyperlink()
+		out[i] = ansi.SetHyperlink(url, id) + chrome.DefaultStyles.Faint.Render(row) + ansi.ResetHyperlink()
 	}
 	return out
 }
@@ -37,6 +41,23 @@ func (m LoginModel) openBrowserCmd(urlStr string) tea.Cmd {
 // inputWidth leaves the frame's margin and the field's label their room.
 func (m LoginModel) inputWidth() int {
 	return max(8, m.Width-10-ansi.StringWidth(m.fieldLabel()))
+}
+
+func (m LoginModel) acceptsSignInInput() bool {
+	login, ok := m.signInFor(m.Provider)
+	return !ok || m.LoginState == "confirming" || slices.Contains(login.Flows, "manual")
+}
+
+// Device grants supply the code in their instructions and complete in the browser.
+func (m LoginModel) deviceInstructions(width int) []string {
+	lines := paneNote(m.LoginInstructions, width)
+	if m.SignInURL != "" && !strings.Contains(m.LoginInstructions, m.SignInURL) {
+		lines = append(lines, linkRows(m.SignInURL, width)...)
+	}
+	if m.SignInURL == "" && m.LoginInstructions == "" {
+		return paneNote(cmp.Or(m.Status, "waiting for the sign-in page…"), width)
+	}
+	return lines
 }
 
 // signInOver reports a sign-in that failed, was cancelled or expired, so the
@@ -84,8 +105,7 @@ func (m *LoginModel) SetSize(width, height int) {
 // question's input in the search line for a text step, and the step's text
 // above it. Errors and progress sit in the footer. A terms warning sits over
 // all of it.
-func (m LoginModel) View() string {
-	screen := m.screen()
+func (m LoginModel) overlay(screen string) string {
 	if m.terms != nil {
 		width, height := cmp.Or(m.Width, 80), cmp.Or(m.Height, 24)
 		return overlay(screen, m.terms.view(width, height), width, height)
@@ -93,76 +113,92 @@ func (m LoginModel) View() string {
 	return screen
 }
 
-func (m LoginModel) screen() string {
+func (m LoginModel) Page() terminalui.Page {
 	width := cmp.Or(m.Width, 80)
-	title := brand("albedo") + " " + DefaultStyles.Muted.Render("/accounts")
+	path := "/accounts"
+	if m.destination != "" {
+		path = "/settings › " + string(m.destination)
+	}
+	if m.toolOwner != "" {
+		label, _ := m.serviceName(m.toolOwner)
+		path = "/settings › " + label + " › account"
+	}
+	if m.firstRunTools {
+		path = "/accounts › tool sign-ins"
+	}
+	title := chrome.Brand("albedo") + " " + chrome.DefaultStyles.Muted.Render(path)
 	if m.advanced {
-		title += DefaultStyles.Faint.Render(" › ") + DefaultStyles.Muted.Render("advanced")
+		title += chrome.DefaultStyles.Faint.Render(" › ") + chrome.DefaultStyles.Muted.Render("advanced")
 	}
 	right := m.Name
 	onList := m.Step == StepChoose || m.Step == StepAdvanced || m.Step == StepAddKey || m.Step == StepRemove || m.Step == StepRotationPrompt || m.signingInline() || (m.Step == StepSaving && m.listBusy != "")
 	if onList {
-		right = homePath(config.HomeDir())
+		right = chrome.HomePath(config.HomeDir())
 	}
 	if m.Step == StepChoose && m.accountsEmpty() {
 		right = "no accounts yet"
 	}
 	if right != "" {
-		right = DefaultStyles.Faint.Render(right)
+		right = chrome.DefaultStyles.Faint.Render(right)
 	}
 	footer := m.footer(width)
 	if m.Step == StepChoose && m.accountsEmpty() {
-		return listFrame{title: title, right: right, list: m.firstRunList, footer: footer}.view(m.Width, m.Height)
+		return terminalui.Page{Title: title, Meta: right, List: m.firstRunList, Footer: footer}
 	}
 	if m.signingInline() {
 		f := m.accountsFrame(title, right, footer)
-		if m.Provider == "zed" && m.LoginState != "confirming" && !m.signInOver() {
-			f.filter = promptLead() + DefaultStyles.Faint.Render("waiting for the browser sign-in")
+		if !m.signInOver() && !m.acceptsSignInInput() {
+			f.Filter = ""
+			// Short terminals have no detail pane. Use the whole body for the device code.
+			if m.Height < 16 {
+				f.List = func(w, _ int) []string { return inset(m.deviceInstructions(max(1, w-1))) }
+				f.Detail = nil
+			}
 		} else if !m.signInOver() {
-			f.filter = promptLead() + DefaultStyles.Muted.Render(m.fieldLabel()+"  ") + m.TextInput.View()
+			f.Filter = chrome.PromptLead() + chrome.DefaultStyles.Muted.Render(m.fieldLabel()+"  ") + m.TextInput.View()
 		} else {
-			f.filter = promptLead() + DefaultStyles.Faint.Render("the sign-in did not finish")
+			f.Filter = chrome.PromptLead() + chrome.DefaultStyles.Faint.Render("the sign-in did not finish")
 		}
-		return f.view(m.Width, m.Height)
+		return f
 	}
 	if m.Step == StepSaving && m.listBusy != "" {
-		return m.accountsFrame(title, right, footer).view(m.Width, m.Height)
+		return m.accountsFrame(title, right, footer)
 	}
 	// A removal question keeps the list it asks about on screen, the way every
 	// other confirm does.
 	if m.listing() || (m.Step == StepRemove || m.Step == StepRotationPrompt) {
 		if !m.advanced && (m.Step == StepChoose || m.Step == StepRemove) {
-			return m.accountsFrame(title, right, footer).view(m.Width, m.Height)
+			return m.accountsFrame(title, right, footer)
 		}
 		lv := m.pickerFor().listView
 		lv.Empty = cmp.Or(lv.Empty, "nothing to choose")
-		return lv.frame(title, right, footer).view(m.Width, m.Height)
+		return lv.frame(title, right, footer)
 	}
-	f := listFrame{
-		title:  title,
-		right:  right,
-		filter: m.filterLine(),
-		list:   m.bodyList,
-		footer: footer,
+	f := terminalui.Page{
+		Title:  title,
+		Meta:   right,
+		Filter: m.filterLine(),
+		List:   m.bodyList,
+		Footer: footer,
 	}
-	return f.view(m.Width, m.Height)
+	return f
 }
 
 // accountsFrame is the accounts list in the frame, with a pane wide enough
 // for an account's facts on one row each.
-func (m LoginModel) accountsFrame(title, right, footer string) listFrame {
+func (m LoginModel) accountsFrame(title, right, footer string) terminalui.Page {
 	f := m.ChoosePicker.frame(title, right, footer)
-	f.paneWidth = func(width int) int { return min(max(width*38/100, 36), 48) }
+	f.DetailWidth = func(width int) int { return min(max(width*38/100, 36), 48) }
 	return f
 }
 
 // filterLine is the question's input line; a step that is only waiting on the
 // daemon takes no input and shows none.
 func (m LoginModel) filterLine() string {
-	if m.Step == StepSaving || m.signInOver() || (m.Step == StepOAuth && m.Provider == "zed" && m.LoginState != "confirming") {
+	if m.Step == StepSaving || m.signInOver() || m.Step == StepOAuth && !m.acceptsSignInInput() {
 		return ""
 	}
-	return promptLead() + DefaultStyles.Muted.Render(m.fieldLabel()+"  ") + m.TextInput.View()
+	return chrome.PromptLead() + chrome.DefaultStyles.Muted.Render(m.fieldLabel()+"  ") + m.TextInput.View()
 }
 
 // bodyList is the body in the list's place, on the frame's gutter.
@@ -182,12 +218,15 @@ func (m LoginModel) body(width int) []string {
 		case m.Editing:
 			state = "saving " + m.Name + "…"
 		}
-		return []string{DefaultStyles.Faint.Render(state)}
+		return []string{chrome.DefaultStyles.Faint.Render(state)}
 	case StepOAuth:
 		if m.signInOver() {
-			return []string{DefaultStyles.Muted.Render("The sign-in did not finish; the reason is in the footer.")}
+			return []string{chrome.DefaultStyles.Muted.Render("The sign-in did not finish.")}
 		}
-		lines := []string{DefaultStyles.Muted.Render(cmp.Or(m.Status, "starting sign-in…"))}
+		if !m.acceptsSignInInput() {
+			return m.deviceInstructions(width)
+		}
+		lines := []string{chrome.DefaultStyles.Muted.Render(cmp.Or(m.Status, "starting sign-in…"))}
 		if m.LoginInstructions != "" {
 			lines = append(lines, paneNote(m.LoginInstructions, width)...)
 		}
@@ -198,7 +237,7 @@ func (m LoginModel) body(width int) []string {
 		lines = append(lines, "")
 		return append(lines, paneNote(m.signInHint(), width)...)
 	case StepModels, StepOAuthModels:
-		return []string{DefaultStyles.Faint.Render("loading models…")}
+		return []string{chrome.DefaultStyles.Faint.Render("loading models…")}
 	}
 	_, notes := m.question()
 	var lines []string
@@ -235,9 +274,9 @@ func (m LoginModel) question() (string, []string) {
 		return "API base URL", nil
 	case StepAPIKey:
 		if m.Draft.Extension == "anthropic-api" {
-			return "bearer token", []string{"the daemon keeps the token in creds.json, not in config.json"}
+			return "bearer token", nil
 		}
-		return "API key", []string{"the daemon keeps a key in creds.json, not in config.json"}
+		return "API key", nil
 	case StepProject:
 		return "Google Cloud project ID", nil
 	case StepLocation:
@@ -254,61 +293,62 @@ func (m LoginModel) question() (string, []string) {
 }
 
 // hints are the keys for the step, most important first.
-func (m LoginModel) hints() []hint {
+func (m LoginModel) hints() []chrome.Hint {
 	switch {
 	case m.Step == StepSaving:
 		return nil
 	case (m.Step == StepModels || m.Step == StepOAuthModels) && !m.listing():
-		return []hint{{"esc", "back"}}
+		return []chrome.Hint{{Key: "esc", Does: "back"}}
 	case m.Step == StepCredential:
-		return []hint{{"space", "tick"}, {"enter", m.enterVerb()}, {"↑↓", "move"}, {"esc", "back"}}
+		return []chrome.Hint{{Key: "space", Does: "tick"}, {Key: "enter", Does: m.enterVerb()}, {Key: "↑↓", Does: "move"}, {Key: "esc", Does: "back"}}
 	case m.listing():
-		hints := []hint{{"↑↓", "move"}}
+		hints := []chrome.Hint{{Key: "↑↓", Does: "move"}}
 		if verb := m.enterVerb(); verb != "" {
-			hints = append(hints, hint{"enter", verb})
+			hints = append(hints, chrome.Hint{Key: "enter", Does: verb})
 		}
 		if item, ok := m.ChoosePicker.Highlighted(); ok && m.Step == StepAdvanced {
 			if name, ok := m.highlightedProfile(); ok {
 				if m.editable(name) {
-					hints = append(hints, hint{"ctrl+e", "edit"})
+					hints = append(hints, chrome.Hint{Key: "ctrl+e", Does: "edit"})
 				}
 				verb := "disable"
 				if !m.Profiles.Providers[name].IsEnabled() {
 					verb = "enable"
 				}
-				hints = append(hints, hint{"ctrl+t", verb})
-				hints = append(hints, hint{"ctrl+r", "rename"})
+				hints = append(hints, chrome.Hint{Key: "ctrl+t", Does: verb})
+				hints = append(hints, chrome.Hint{Key: "ctrl+r", Does: "rename"})
 			}
 			account, isAccount := m.accountAt(item.ID)
 			external := isAccount && account.Source == "env"
 			if isAccount && !external {
-				hints = append(hints, hint{"ctrl+r", "rename"})
+				hints = append(hints, chrome.Hint{Key: "ctrl+r", Does: "rename"})
 			}
 			if _, removable := m.removalFor(item.ID); removable && !external {
 				verb := "remove"
 				if isAccount {
 					verb = "sign out"
 				}
-				hints = append(hints, hint{"ctrl+x", verb})
+				hints = append(hints, chrome.Hint{Key: "ctrl+x", Does: verb})
 			}
 		}
-		return append(hints, hint{"esc", "back"})
+		return append(hints, chrome.Hint{Key: "esc", Does: "back"})
 	case m.signInOver():
-		return []hint{{"enter", "try again"}, {"esc", "cancel"}}
+		return []chrome.Hint{{Key: "enter", Does: "try again"}, {Key: "esc", Does: "cancel"}}
 	case m.Step == StepOAuth && m.LoginState == "confirming":
-		return []hint{{"enter", "confirm account"}, {"esc", "cancel without saving"}}
-	case m.Step == StepOAuth && m.Provider == "zed":
-		return []hint{{"esc", "cancel without saving"}}
+		return []chrome.Hint{{Key: "enter", Does: "confirm account"}, {Key: "esc", Does: "cancel without saving"}}
 	case m.Step == StepOAuth:
-		return []hint{{"enter", "submit code"}, {"esc", "cancel"}}
+		if !m.acceptsSignInInput() {
+			return []chrome.Hint{{Key: "esc", Does: "cancel"}}
+		}
+		return []chrome.Hint{{Key: "enter", Does: "submit code"}, {Key: "esc", Does: "cancel"}}
 	case m.Step == StepAPIKey && m.Draft.APIKey != "":
-		return []hint{{"enter", "keeps the saved key"}, {"esc", "cancel"}}
+		return []chrome.Hint{{Key: "enter", Does: "keeps the saved key"}, {Key: "esc", Does: "cancel"}}
 	case m.Step == StepRename:
-		return []hint{{"enter", "rename"}, {"esc", "back"}}
+		return []chrome.Hint{{Key: "enter", Does: "rename"}, {Key: "esc", Does: "back"}}
 	case m.Step == StepProfileName:
-		return []hint{{"enter", "continue"}, {"esc", "back"}}
+		return []chrome.Hint{{Key: "enter", Does: "continue"}, {Key: "esc", Does: "back"}}
 	}
-	return []hint{{"enter", "continue"}, {"esc", "cancel"}}
+	return []chrome.Hint{{Key: "enter", Does: "continue"}, {Key: "esc", Does: "cancel"}}
 }
 
 // enterVerb says what enter does on the list the step shows, naming the
@@ -416,12 +456,12 @@ func (m LoginModel) signInHint() string {
 // and the identity the daemon verified is shown beside the confirmation keys.
 func (m LoginModel) zedSignInFooter(width int) string {
 	if m.Error != "" {
-		return footerLine(width, m.hints(), DefaultStyles.Error.Render(m.Error), true)
+		return chrome.FooterLine(width, m.hints(), chrome.DefaultStyles.Error.Render(m.Error), true)
 	}
 	if m.LoginState == "confirming" {
-		return footerLine(width, m.hints(), DefaultStyles.Warning.Render(m.Status), m.Status != "")
+		return chrome.FooterLine(width, m.hints(), chrome.DefaultStyles.Warning.Render(m.Status), m.Status != "")
 	}
-	return footerLine(width, m.hints(), DefaultStyles.Faint.Render(m.signInHint()), true)
+	return chrome.FooterLine(width, m.hints(), chrome.DefaultStyles.Faint.Render(m.signInHint()), true)
 }
 
 // footer is the keys, with an error or the catalog's note beside them.
@@ -436,19 +476,19 @@ func (m LoginModel) footer(width int) string {
 		return m.signOutFooter(width)
 	}
 	if m.Step == StepRotationPrompt {
-		return footerLine(width, []hint{{"↑↓", "choose"}, {"enter", "continue"}, {"esc", "no"}}, DefaultStyles.Warning.Render(m.confirm.prompt), true)
+		return chrome.FooterLine(width, []chrome.Hint{{Key: "↑↓", Does: "choose"}, {Key: "enter", Does: "continue"}, {Key: "esc", Does: "no"}}, chrome.DefaultStyles.Warning.Render(m.confirm.Prompt), true)
 	}
 	if m.Step == StepRemove {
-		return m.confirm.footer(width, m.Error)
+		return m.confirm.Footer(width, m.Error)
 	}
 	if m.Error != "" {
-		return footerLine(width, m.hints(), DefaultStyles.Error.Render(m.Error), true)
+		return chrome.FooterLine(width, m.hints(), chrome.DefaultStyles.Error.Render(m.Error), true)
 	}
 	status := ""
 	if m.CatalogNote != "" && (m.Step == StepModels || m.Step == StepOAuthModels) {
-		status = DefaultStyles.Faint.Render(m.CatalogNote)
+		status = chrome.DefaultStyles.Faint.Render(m.CatalogNote)
 	} else if m.Status != "" && (m.Step == StepChoose || m.Step == StepAdvanced) {
-		status = DefaultStyles.Faint.Render(m.Status)
+		status = chrome.DefaultStyles.Faint.Render(m.Status)
 	}
-	return footerLine(width, m.hints(), status, m.Status != "" && (m.Step == StepChoose || m.Step == StepAdvanced))
+	return chrome.FooterLine(width, m.hints(), status, m.Status != "" && (m.Step == StepChoose || m.Step == StepAdvanced))
 }

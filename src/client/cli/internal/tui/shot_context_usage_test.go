@@ -2,6 +2,7 @@ package tui
 
 import (
 	"albedo/cli/internal/daemon"
+	"albedo/cli/internal/testutil/tuishots"
 
 	tea "charm.land/bubbletea/v2"
 )
@@ -20,10 +21,10 @@ func init() {
 	preview := usageSnapshot()
 	preview.Sections = []daemon.ContextSection{preview.Sections[0], preview.Sections[2]}
 	preview.Compaction.Size = &daemon.Size{Tokens: 11_000, Estimated: &daemon.EstimatedSize{Tokens: 11_000}}
-	registerShots("contextusage",
-		shotState{"measured", inspector(usageSnapshot())},
-		shotState{"preview", inspector(preview)},
-		shotState{"reader-whole", func(width, height int) string {
+	tuishots.Register("contextusage",
+		tuishots.State{Name: "measured", View: inspector(usageSnapshot())},
+		tuishots.State{Name: "preview", View: inspector(preview)},
+		tuishots.State{Name: "reader-whole", View: func(width, height int) string {
 			m := contextModel(width, height)
 			m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 			m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})

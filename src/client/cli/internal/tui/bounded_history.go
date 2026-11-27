@@ -23,29 +23,29 @@ const (
 )
 
 type HistoryEntry struct {
-	MessageID       string
-	ID              string
-	Source          daemon.InputSource
-	MailKind        string
-	SenderSessionID string
-	Images          []daemon.ImageMetadata
-	ToolArgs        map[string]any
+	ToolArgs map[string]any
+	Images   []daemon.ImageMetadata
 	// activity caches only the safe compact row, never another result body.
 	activity *PageRow
 	// facts is what this entry contributes to a grouped row, computed once
 	// when the entry settles. Targets stay as recorded; naming is at render.
-	facts               *entryFacts
-	ToolTrace           *daemon.ToolTrace
-	ShellCommand        *daemon.ShellCommand
-	ShellOutputLoaded   bool
-	ShellExpandedOutput string
+	facts        *entryFacts
+	ToolTrace    *daemon.ToolTrace
+	ShellCommand *daemon.ShellCommand
 	// Skill is the skill a user's slash activation loaded.
-	Skill      *daemon.SkillLoad
-	Speaker    string
-	Mood       mood
-	Text       string
-	ToolName   string
-	ToolResult string
+	Skill               *daemon.SkillLoad
+	MessageID           string
+	ID                  string
+	Source              daemon.InputSource
+	MailKind            string
+	SenderSessionID     string
+	ShellExpandedOutput string
+	NoteOrigin          string
+	Speaker             string
+	Mood                mood
+	Text                string
+	ToolName            string
+	ToolResult          string
 	// ToolStatus is the daemon's outcome of the call: "completed" or "failed".
 	ToolStatus string
 	ToolTitle  string
@@ -70,7 +70,8 @@ type HistoryEntry struct {
 	CacheDriftTokens int
 	// Seq is the newest transcript row this entry came from; 0 until a
 	// `committed` event says which rows cover it.
-	Seq int64
+	Seq               int64
+	ShellOutputLoaded bool
 	// Live is a reply still streaming in. It renders on every token, so it
 	// skips the second rendering that marks wraps for a copy until it settles.
 	Live bool
@@ -130,7 +131,6 @@ type BoundedHistory struct {
 	MaxBytes       int64
 	totalBytes     int64
 	evictedEntries int
-	evictedBytes   int64
 	// evictedThrough is the newest transcript row among evicted entries: the
 	// daemon holds everything up to it, and older pages resume after it.
 	evictedThrough int64
@@ -159,7 +159,7 @@ func (h *BoundedHistory) Entries() []HistoryEntry { return h.entries }
 
 func (h *BoundedHistory) TruncationNotice() string {
 	if h.evictedEntries > 0 {
-		return fmt.Sprintf("[%d older messages hidden (%d KB); full history is saved by Albedo]", h.evictedEntries, h.evictedBytes/1024)
+		return fmt.Sprintf("[%d older messages hidden; the full history is saved]", h.evictedEntries)
 	}
 	return ""
 }
@@ -171,9 +171,13 @@ func (h *BoundedHistory) EvictedThrough() int64 {
 
 // Stamp marks the trailing entries no row covered yet as covered by seq.
 func (h *BoundedHistory) Stamp(seq int64) {
-	for i := len(h.entries) - 1; i >= 0 && h.entries[i].Seq == 0; i-- {
-		if h.entries[i].MessageID == "" {
-			h.entries[i].Seq = seq
+	stampTrailingEntries(h.entries, seq)
+}
+
+func stampTrailingEntries(entries []HistoryEntry, seq int64) {
+	for i := len(entries) - 1; i >= 0 && entries[i].Seq == 0; i-- {
+		if entries[i].MessageID == "" {
+			entries[i].Seq = seq
 		}
 	}
 }
@@ -196,6 +200,13 @@ func (h *BoundedHistory) Replace(entry HistoryEntry) bool {
 	h.entries[index] = entry
 	h.enforceBounds()
 	return true
+}
+
+// insert adds a reconstructed boundary while an older page is being joined.
+func (h *BoundedHistory) insert(at int, entry HistoryEntry) {
+	h.revision++
+	h.totalBytes += entry.ComputeSize()
+	h.entries = slices.Insert(h.entries, at, entry)
 }
 
 // Prepend puts older entries before the retained ones. It does not evict:
@@ -265,7 +276,6 @@ func (h *BoundedHistory) evictFirst() {
 	h.entries = h.entries[1:]
 	h.totalBytes = max(0, h.totalBytes-removed.SizeBytes)
 	h.evictedEntries++
-	h.evictedBytes += removed.SizeBytes
 	h.evictedThrough = max(h.evictedThrough, removed.Seq)
 }
 

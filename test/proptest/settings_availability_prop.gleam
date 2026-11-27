@@ -344,6 +344,7 @@ fn patch(
     [],
     unused_resolve,
     unused_defaults,
+    fn(_, commit) { commit() },
     [],
     None,
     key_environment.empty(),

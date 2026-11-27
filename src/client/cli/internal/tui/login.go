@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"albedo/cli/internal/tui/chrome"
+
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 )
@@ -59,10 +61,18 @@ type removal struct {
 }
 
 type LoginModel struct {
-	readCtx                      context.Context
-	cancelReads                  context.CancelFunc
-	Conn                         *daemon.Connection
-	openBrowser                  func(url string)
+	destination     settingsDestination
+	toolOwner       string
+	termsLogin      daemon.SignIn
+	readCtx         context.Context
+	cancelReads     context.CancelFunc
+	Conn            *daemon.Connection
+	openBrowser     func(url string)
+	LoginValues     map[string]json.RawMessage
+	SelectedAccount *daemon.Account
+	CredentialTicks map[string]bool
+	// terms warns before a sign-in in termsLogin starts.
+	terms                        *termsBox
 	Removing                     removal
 	Profiles                     config.Profiles
 	Hint                         string
@@ -71,29 +81,12 @@ type LoginModel struct {
 	LoginETag                    string
 	LoginState                   string
 	LoginFlow, LoginInstructions string
-	LoginFields                  []daemon.FormField
-	LoginFieldIndex              int
-	LoginValues                  map[string]json.RawMessage
-	SelectedAccount              *daemon.Account
 	LoginID                      string // daemon id of the sign-in in flight
 	SignInURL                    string
 	Status                       string // daemon progress line while a sign-in runs
 	CatalogNote                  string
 	Error                        string
-	Draft                        config.Settings
-	SignIns                      []daemon.SignIn
-	Accounts                     []daemon.Account
-	Catalog                      []string
-	TextInput                    textinput.Model
-	ChoosePicker                 loginPick
-	CredentialTicks              map[string]bool
-	ProtocolPicker               loginPick
-	ModelPicker                  loginPick
-	confirm
-	// terms warns before a sign-in in termsLogin starts.
-	terms           *termsBox
-	termsLogin      daemon.SignIn
-	RenameAccountID string
+	RenameAccountID              string
 	// reSignIn is the account an inline sign-in signs in again.
 	reSignIn string
 	// focus is the row the next rebuild of the accounts list highlights.
@@ -101,11 +94,23 @@ type LoginModel struct {
 	// listBusy is what the accounts list says while a change it made is
 	// saved; rotationNote is what it says once that change is saved.
 	listBusy, rotationNote string
+	confirm                chrome.Confirm
+	LoginFields            []daemon.FormField
+	SignIns                []daemon.SignIn
+	Accounts               []daemon.Account
+	Catalog                []string
+	TextInput              textinput.Model
+	Draft                  config.Settings
+	ChoosePicker           loginPick
+	ProtocolPicker         loginPick
+	ModelPicker            loginPick
+	LoginFieldIndex        int
 	Generation             int
 	Width                  int
 	Height                 int
 	Step                   LoginStep
 	firstCursor            int
+	firstRunTools          bool
 	// Editing changes the saved profile Name in place: it saves without
 	// making Name the default and comes back to the list.
 	Editing bool
@@ -137,7 +142,7 @@ func NewLoginModel(conn *daemon.Connection, nameHint string, openBrowser func(st
 		Profiles:    profiles,
 		Hint:        strings.TrimSpace(nameHint),
 		Draft:       config.Settings{Extension: "openai", BaseURL: "https://api.openai.com/v1", Protocol: "responses"},
-		TextInput:   newField(),
+		TextInput:   chrome.NewField(),
 		openBrowser: openBrowser,
 	}
 	m.buildChoosePicker()
@@ -217,7 +222,7 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 		m.LoginID = msg.ID
 		m.LoginETag = msg.ETag
 		if msg.Err != nil {
-			m.Error = operationError(msg.Err, "", "Sign-in may have started; check your accounts before starting another. Its outcome cannot be confirmed from this response.")
+			m.Error = chrome.OperationError(msg.Err, "", "Sign-in may have started; check your accounts before starting another.")
 			if m.inline {
 				m.buildChoosePicker()
 			}
@@ -303,10 +308,7 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 				return m, m.endInline()
 			}
 			if login, ok := m.signInFor(m.Provider); (ok && login.Kind == "service") || (len(msg.Accounts) > 0 && msg.Accounts[0].Kind == "service") {
-				label := m.Provider
-				if ok && login.Label != "" {
-					label = login.Label
-				}
+				label := providerName(m.Provider, login.Label)
 				m.Status = fmt.Sprintf("Signed in to %s!", label)
 				m.Error = ""
 				return m, m.backToChoose()
@@ -552,6 +554,11 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 			m.focus = rowAdvanced
 			return m, m.backToChoose()
 		case StepChoose, StepOAuthModels:
+			if m.firstRunTools {
+				m.firstRunTools = false
+				m.destination = ""
+				return m, m.backToChoose()
+			}
 			return m, func() tea.Msg { return LoginCancelMsg{} }
 		case StepProtocol:
 			m.Step = StepAPIKey
@@ -583,6 +590,9 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 		return m, m.pickUpdate(msg)
 	}
 
+	if m.Step == StepOAuth && !m.signInOver() && !m.acceptsSignInInput() {
+		return m, nil
+	}
 	if key, ok := msg.(tea.KeyPressMsg); ok && key.String() == "enter" {
 		switch m.Step {
 		case StepName:
@@ -689,15 +699,12 @@ func (m LoginModel) Update(msg tea.Msg) (LoginModel, tea.Cmd) {
 			if login, ok := m.signInFor(m.Provider); ok && m.signInOver() {
 				return m, m.startSignIn(login)
 			}
-			if m.Provider == "zed" && m.LoginState != "confirming" {
-				return m, nil
-			}
 			val := strings.TrimSpace(m.TextInput.Value())
 			if m.LoginState == "confirming" && val != "confirm" {
 				return m.fail("Type confirm to save the displayed account, or press Esc to cancel.")
 			}
 			if val != "" && m.LoginID != "" {
-				m.Status = "exchanging authorization code…"
+				m.Status = "signing in…"
 				if m.LoginState == "confirming" {
 					m.Status = "saving confirmed account…"
 				}

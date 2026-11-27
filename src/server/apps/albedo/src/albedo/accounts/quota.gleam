@@ -17,6 +17,7 @@
 //// derives what it needs from these rows.
 
 import albedo/accounts/quota_schedule as schedule
+import albedo/generated/sql/accounts/quota_sql
 import albedo_clock
 import albedo_ext_zed/quota as zed_quota
 import albedo_process
@@ -541,57 +542,13 @@ fn is_busy(report: Report, now: Int) -> Bool {
 // ---- the readings -------------------------------------------------------
 
 /// One stored reading, exactly as the feed reported it.
-pub type Sample {
-  Sample(
-    id: Int,
-    /// The account's non-secret label.
-    account: String,
-    provider: String,
-    /// The report plan: what 100 percent means can change with it.
-    plan: Option(String),
-    limit_id: String,
-    label: String,
-    used_percent: Option(Float),
-    window_label: Option(String),
-    window_seconds: Option(Int),
-    resets_at: Option(Int),
-    scope: Option(String),
-    status: String,
-    error: Option(String),
-    observed_at: Int,
-    source: String,
-  )
-}
-
-const schema =
-  "
-CREATE TABLE IF NOT EXISTS quota_sample (
- id INTEGER PRIMARY KEY AUTOINCREMENT,
- account TEXT NOT NULL,
- provider TEXT NOT NULL,
- plan TEXT,
- limit_id TEXT NOT NULL DEFAULT '',
- label TEXT NOT NULL DEFAULT '',
- used_percent REAL,
- window_label TEXT,
- window_seconds INTEGER,
- resets_at INTEGER,
- scope TEXT,
- status TEXT NOT NULL DEFAULT '',
- error TEXT,
- observed_at INTEGER NOT NULL,
- source TEXT NOT NULL DEFAULT 'poll'
-);
-CREATE INDEX IF NOT EXISTS quota_sample_latest
- ON quota_sample(account, provider, limit_id, id);
-CREATE INDEX IF NOT EXISTS quota_sample_report
- ON quota_sample(account, provider, id);
-"
+pub type Sample =
+  quota_sql.SampleRow
 
 /// The table, before any session or poller starts.
 pub fn initialise(database: store.Store) -> Result(Nil, String) {
   store.query(database, fn(db) {
-    store.transaction(db, fn() { store.exec(db, schema) })
+    store.transaction(db, fn() { quota_sql.create_quota_samples(db: db) })
   })
 }
 
@@ -644,7 +601,7 @@ pub fn record(
   }
   let outcome =
     store.query(database, fn(db) {
-      list.try_each(rows, fn(row) { insert(db, row) })
+      store.transaction(db, fn() { list.try_each(rows, insert(db, _)) })
     })
   case outcome {
     Ok(_) -> Nil
@@ -671,77 +628,28 @@ type Row {
 }
 
 fn insert(db: sqlight.Connection, row: Row) -> Result(Nil, String) {
-  store.run(
-    db,
-    "INSERT INTO quota_sample(account, provider, plan, limit_id, label, used_percent, window_label, window_seconds, resets_at, scope, status, error, observed_at, source)
-     VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'poll')",
-    [
-      sqlight.text(row.account),
-      sqlight.text(row.provider),
-      sqlight.nullable(sqlight.text, row.plan),
-      sqlight.text(row.limit_id),
-      sqlight.text(row.label),
-      sqlight.nullable(sqlight.float, row.used_percent),
-      sqlight.nullable(sqlight.text, row.window_label),
-      sqlight.nullable(sqlight.int, row.window_seconds),
-      sqlight.nullable(sqlight.int, row.resets_at),
-      sqlight.nullable(sqlight.text, row.scope),
-      sqlight.text(row.status),
-      sqlight.nullable(sqlight.text, row.error),
-      sqlight.int(row.observed_at),
-    ],
+  quota_sql.insert(
+    db: db,
+    account: row.account,
+    provider: row.provider,
+    plan: row.plan,
+    limit_id: row.limit_id,
+    label: row.label,
+    used_percent: row.used_percent,
+    window_label: row.window_label,
+    window_seconds: row.window_seconds,
+    resets_at: row.resets_at,
+    scope: row.scope,
+    status: row.status,
+    error: row.error,
+    observed_at: row.observed_at,
   )
-}
-
-const sample_columns =
-  "id, account, provider, plan, limit_id, label, used_percent, window_label, window_seconds, resets_at, scope, status, error, observed_at, source"
-
-fn sample_decoder() -> decode.Decoder(Sample) {
-  use id <- decode.field(0, decode.int)
-  use account <- decode.field(1, decode.string)
-  use provider <- decode.field(2, decode.string)
-  use plan <- decode.field(3, decode.optional(decode.string))
-  use limit_id <- decode.field(4, decode.string)
-  use label <- decode.field(5, decode.string)
-  use used_percent <- decode.field(6, decode.optional(decode.float))
-  use window_label <- decode.field(7, decode.optional(decode.string))
-  use window_seconds <- decode.field(8, decode.optional(decode.int))
-  use resets_at <- decode.field(9, decode.optional(decode.int))
-  use scope <- decode.field(10, decode.optional(decode.string))
-  use status <- decode.field(11, decode.string)
-  use error <- decode.field(12, decode.optional(decode.string))
-  use observed_at <- decode.field(13, decode.int)
-  use source <- decode.field(14, decode.string)
-  decode.success(Sample(
-    id,
-    account,
-    provider,
-    plan,
-    limit_id,
-    label,
-    used_percent,
-    window_label,
-    window_seconds,
-    resets_at,
-    scope,
-    status,
-    error,
-    observed_at,
-    source,
-  ))
 }
 
 /// Only the newest complete report per account/provider is current. Failed polls
 /// replace current windows too; historical readings remain available via history.
 pub fn latest(database: store.Store) -> Result(List(Sample), String) {
-  store.read(database, "SELECT " <> sample_columns <> " FROM quota_sample s
-     WHERE s.observed_at = (SELECT t.observed_at FROM quota_sample t
-                           WHERE t.account = s.account AND t.provider = s.provider
-                           ORDER BY t.id DESC LIMIT 1)
-       AND s.id = (SELECT MAX(r.id) FROM quota_sample r
-                   WHERE r.account = s.account AND r.provider = s.provider
-                     AND r.limit_id = s.limit_id)
-     ORDER BY s.account, s.provider, s.limit_id", [], sample_decoder())
+  store.reading(database, quota_sql.latest)
 }
 
 pub type Filter {
@@ -804,98 +712,29 @@ pub fn history(
   before: Int,
   limit: Int,
 ) -> Result(List(Sample), String) {
-  case filter {
-    Everything ->
-      case before <= 0 {
-        True ->
-          store.read(
-            database,
-            "SELECT "
-              <> sample_columns
-              <> " FROM quota_sample ORDER BY id DESC LIMIT ?",
-            [sqlight.int(limit)],
-            sample_decoder(),
-          )
-        False ->
-          store.read(
-            database,
-            "SELECT "
-              <> sample_columns
-              <> " FROM quota_sample WHERE id < ? ORDER BY id DESC LIMIT ?",
-            [sqlight.int(before), sqlight.int(limit)],
-            sample_decoder(),
-          )
-      }
-    Trail(provider, account, limit_id, since) ->
+  let predicates = case filter {
+    Everything -> []
+    Trail(provider, account, limit_id, since) -> {
+      let trail = #(quota_sql.trail_filter, [
+        sqlight.text(account),
+        sqlight.text(provider),
+        sqlight.text(limit_id),
+      ])
       case since {
-        None ->
-          case before <= 0 {
-            True ->
-              store.read(
-                database,
-                "SELECT "
-                  <> sample_columns
-                  <> " FROM quota_sample WHERE account = ? AND provider = ? AND limit_id = ? ORDER BY id DESC LIMIT ?",
-                [
-                  sqlight.text(account),
-                  sqlight.text(provider),
-                  sqlight.text(limit_id),
-                  sqlight.int(limit),
-                ],
-                sample_decoder(),
-              )
-            False ->
-              store.read(
-                database,
-                "SELECT "
-                  <> sample_columns
-                  <> " FROM quota_sample WHERE account = ? AND provider = ? AND limit_id = ? AND id < ? ORDER BY id DESC LIMIT ?",
-                [
-                  sqlight.text(account),
-                  sqlight.text(provider),
-                  sqlight.text(limit_id),
-                  sqlight.int(before),
-                  sqlight.int(limit),
-                ],
-                sample_decoder(),
-              )
-          }
-        Some(since_ms) ->
-          case before <= 0 {
-            True ->
-              store.read(
-                database,
-                "SELECT "
-                  <> sample_columns
-                  <> " FROM quota_sample WHERE account = ? AND provider = ? AND limit_id = ? AND observed_at >= ? ORDER BY id DESC LIMIT ?",
-                [
-                  sqlight.text(account),
-                  sqlight.text(provider),
-                  sqlight.text(limit_id),
-                  sqlight.int(since_ms),
-                  sqlight.int(limit),
-                ],
-                sample_decoder(),
-              )
-            False ->
-              store.read(
-                database,
-                "SELECT "
-                  <> sample_columns
-                  <> " FROM quota_sample WHERE account = ? AND provider = ? AND limit_id = ? AND observed_at >= ? AND id < ? ORDER BY id DESC LIMIT ?",
-                [
-                  sqlight.text(account),
-                  sqlight.text(provider),
-                  sqlight.text(limit_id),
-                  sqlight.int(since_ms),
-                  sqlight.int(before),
-                  sqlight.int(limit),
-                ],
-                sample_decoder(),
-              )
-          }
+        None -> [trail]
+        Some(ms) -> [trail, #(quota_sql.since_filter, [sqlight.int(ms)])]
       }
+    }
   }
+  let predicates = case before > 0 {
+    True -> [#(quota_sql.before_filter, [sqlight.int(before)]), ..predicates]
+    False -> predicates
+  }
+  store.reading(database, quota_sql.history(
+    db: _,
+    predicates:,
+    page_size: limit,
+  ))
 }
 
 fn key_of(target: Target) -> String {

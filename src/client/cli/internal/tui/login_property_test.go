@@ -18,6 +18,8 @@ import (
 	"testing/quick"
 	"time"
 
+	"albedo/cli/internal/tui/chrome"
+
 	tea "charm.land/bubbletea/v2"
 
 	"albedo/cli/internal/config"
@@ -160,7 +162,8 @@ func (d *fakeProvidersDaemon) serveHTTP(w http.ResponseWriter, r *http.Request) 
 func selectedRow(view string) (string, bool) {
 	for _, line := range strings.Split(view, "\n") {
 		plain := ansi.Strip(line)
-		if strings.HasPrefix(plain, ansi.Strip(selectBar())) {
+		// Wide frames inset every row from the terminal's edge.
+		if strings.HasPrefix(strings.TrimLeft(plain, " "), ansi.Strip(chrome.SelectBar())) {
 			return plain, true
 		}
 	}

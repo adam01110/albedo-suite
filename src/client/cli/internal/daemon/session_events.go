@@ -112,15 +112,14 @@ func decodeChatEnvelope(envelope sessionEventEnvelope, wireBytes int, content *e
 				return nil, classifyStreamFailure(err)
 			}
 		}
-		entries, err := historyEntryEvents(decoded[0])
+		entry, err := historyEntryEvent(decoded[0])
 		if err != nil {
 			return nil, err
 		}
-		if len(entries) == 0 {
+		if entry.Type == "" {
 			return nil, nil
 		}
-		event = entries[0]
-		event.Replayed = false
+		event = entry
 		event.ReplacesLiveIDs = data.ReplacesLiveIDs
 	case "note":
 		var data struct {

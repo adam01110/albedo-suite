@@ -50,6 +50,11 @@ ENV_TIMEOUT = 180
 # host -> (ssh -o values, environment) for hosts named by alias()
 ALIASES: dict[str, tuple[list[str], dict[str, str]]] = {}
 STAGED_DIR = ".albedo-remote"
+NIXOS_SYSTEM_PYTHON = "/run/current-system/sw/bin/python3"
+NIX_PROFILE_PYTHON = "/nix/var/nix/profiles/default/bin/python3"
+NIX_STORE_DIR = "/nix/store"
+NIXOS_MARKER = "/etc/NIXOS"
+OS_RELEASE = "/etc/os-release"
 
 
 def control_dir() -> str:
@@ -429,11 +434,58 @@ def supports_python(version: str, floor: tuple[int, int]) -> bool:
 PROBE = (
     "uname -s; uname -m; printf '%s\\n' \"$HOME\"; "
     "getconf _NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null || echo 1; "
-    "if {directory}true; then "
-    "{interpreter} -c 'import sys; print(\"%d.%d\" % sys.version_info[:2])' || echo none; "
-    "else echo invalid-cwd; fi; "
+    "if {directory}true; then {discover}; "
+    "else printf 'invalid-cwd\\n%s\\n' {default_cmd}; fi; "
     'test -f "$HOME/{bundle}/albedo_bridge.py" && echo staged || echo missing'
 )
+
+
+def _nixos_shell_test() -> str:
+    return (
+        f"[ -e {shlex.quote(NIXOS_MARKER)} ] || "
+        f"grep -qs '^ID=nixos$' {shlex.quote(OS_RELEASE)} 2>/dev/null"
+    )
+
+
+def _discover_python_script(candidate: str | None, floor: tuple[int, int]) -> str:
+    if candidate is not None:
+        q = shlex.quote(candidate)
+        return (
+            f"_v=$({q} -c 'import sys; print(\"%d.%d\" % sys.version_info[:2])') || _v=none; "
+            f'printf "%s\\n%s\\n" "$_v" {q}'
+        )
+    major, minor = floor
+    sys_py = shlex.quote(NIXOS_SYSTEM_PYTHON)
+    prof_py = shlex.quote(NIX_PROFILE_PYTHON)
+    store = shlex.quote(NIX_STORE_DIR)
+    return (
+        "albedo_py_ver=none; albedo_py_cmd=python3; albedo_py_ok=0; "
+        "albedo_check_py() { "
+        '  _v=$("$1" -c \'import sys; print("%d.%d" % sys.version_info[:2])\' 2>/dev/null) || return 1; '
+        '  case "$_v" in [0-9]*.[0-9]*) ;; *) return 1;; esac; '
+        "  _maj=${_v%%.*}; _min=${_v#*.}; "
+        '  if [ "$albedo_py_ver" = none ]; then albedo_py_ver=$_v; albedo_py_cmd=$1; fi; '
+        f'  if [ "$_maj" -gt {major} ] || {{ [ "$_maj" -eq {major} ] && [ "$_min" -ge {minor} ]; }}; then '
+        "    albedo_py_ver=$_v; albedo_py_cmd=$1; albedo_py_ok=1; return 0; "
+        "  fi; "
+        "  return 1; "
+        "}; "
+        "if albedo_check_py python3; then :; "
+        f"elif albedo_check_py {sys_py}; then :; "
+        f"elif albedo_check_py {prof_py}; then :; "
+        f"elif {{ {_nixos_shell_test()}; }} && ! command -v python3 >/dev/null 2>&1; then "
+        f"  for _p in {store}/*-python3-3.*/bin/python3; do "
+        '    case "$_p" in *-env/bin/python3) continue;; esac; '
+        '    [ -x "$_p" ] && albedo_check_py "$_p" && break; '
+        "  done; "
+        '  if [ "$albedo_py_ok" -eq 0 ]; then '
+        f"    for _p in {store}/*-python3-3.*-env/bin/python3; do "
+        '      [ -x "$_p" ] && albedo_check_py "$_p" && break; '
+        "    done; "
+        "  fi; "
+        "fi; "
+        'printf "%s\\n%s\\n" "$albedo_py_ver" "$albedo_py_cmd"'
+    )
 
 
 def probe(
@@ -450,15 +502,20 @@ def probe(
         "control": control,
     }
     bundle = staged_name()
+    floor = python_floor()
+    fallback = ".".join(map(str, floor))
     command = candidate if candidate is not None else "python3"
-    interpreter = shlex.quote(command)
+    discover = _discover_python_script(candidate, floor)
     directory = f"CDPATH= cd -- {shlex.quote(remote_cwd)} && " if remote_cwd else ""
     try:
         done = run(
             target,
             in_login_shell(
                 PROBE.format(
-                    bundle=bundle, interpreter=interpreter, directory=directory
+                    bundle=bundle,
+                    discover=discover,
+                    default_cmd=shlex.quote(command),
+                    directory=directory,
                 )
             ),
             PROBE_TIMEOUT,
@@ -468,10 +525,15 @@ def probe(
     except OSError as error:
         return {**answer, "state": "unreachable", "detail": f"ssh: {error}"}
     fields = done.stdout.decode(errors="replace").splitlines()
-    if done.returncode == 255 or len(fields) != 6:
+    if done.returncode == 255 or len(fields) != 7:
         state, detail = failure(done.stderr.decode(errors="replace"))
         return {**answer, "state": state, "detail": detail}
-    system, arch, home, cpus, python, staged = (field.strip() for field in fields)
+    system, arch, home, cpus, python, discovered, staged = (
+        field.strip() for field in fields
+    )
+    if candidate is None and discovered and python not in ("none", "invalid-cwd"):
+        command = discovered
+    interpreter = shlex.quote(command)
     answer.update(
         os=system,
         arch=arch,
@@ -479,8 +541,6 @@ def probe(
         cpus=int(cpus) if cpus.isdigit() and int(cpus) > 0 else 1,
         python=python,
     )
-    floor = python_floor()
-    fallback = ".".join(map(str, floor))
     supported = supports_python(python, floor)
     if python == "invalid-cwd":
         stderr = done.stderr.decode(errors="replace").strip()[-500:]
@@ -538,11 +598,35 @@ def probe(
             step("staging")
             tool = shlex.quote(albedo_uv.ensure_uv(target, system, arch, home))
             if not supported:
-                interpreter = (
+                uv_python = (
                     f"export UV_PYTHON_INSTALL_DIR={shlex.quote(home + '/' + STAGED_DIR + '/python')}; "
                     f"{tool} --no-config python install --no-bin {fallback} >&2 && "
-                    f'py=$({tool} --no-config python find --managed-python {fallback}) && "$py"'
+                    f"py=$({tool} --no-config python find --managed-python {fallback})"
                 )
+                if python == "none":
+                    py_ok = (
+                        '"$cand" -c "import sys; '
+                        f'raise SystemExit(0 if sys.version_info >= ({floor[0]}, {floor[1]}) else 1)" '
+                        "2>/dev/null"
+                    )
+                    interpreter = (
+                        "{ py=''; "
+                        f"if {_nixos_shell_test()}; then "
+                        "  if command -v nix >/dev/null 2>&1; then "
+                        "    out=$(nix build --no-link --print-out-paths nixpkgs#python3 2>/dev/null || true); "
+                        '    cand="$out/bin/python3"; '
+                        f'    [ -n "$out" ] && [ -x "$cand" ] && {py_ok} && py="$cand"; '
+                        "  fi; "
+                        '  if [ -z "$py" ] && command -v nix-build >/dev/null 2>&1; then '
+                        "    out=$(nix-build '<nixpkgs>' -A python3 --no-out-link 2>/dev/null || true); "
+                        '    cand="$out/bin/python3"; '
+                        f'    [ -n "$out" ] && [ -x "$cand" ] && {py_ok} && py="$cand"; '
+                        "  fi; "
+                        "fi; "
+                        f'if [ -z "$py" ]; then {uv_python}; fi; }} && "$py"'
+                    )
+                else:
+                    interpreter = f'{{ {uv_python}; }} && "$py"'
             prepared = run(
                 target,
                 in_login_shell(f"{directory}{interpreter} {setup} {tool}"),

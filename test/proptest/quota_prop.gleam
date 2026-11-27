@@ -21,6 +21,7 @@ import albedo_ext_zed/quota as zed_quota
 import albedo_protect
 import albedo_sdk/store
 import albedo_sdk/usage_feed
+import albedo_sqlite
 import gleam/dict
 import gleam/int
 import gleam/json
@@ -224,7 +225,8 @@ fn case_generator() -> qcheck.Generator(Case) {
 // ---- the database -------------------------------------------------------
 
 fn database() -> store.Store {
-  let assert Ok(db) = store.start(":memory:", "", core_store.tables())
+  let assert Ok(db) =
+    store.start(":memory:", fn(_) { Ok(Nil) }, core_store.tables())
   let assert Ok(Nil) = quota.initialise(db)
   db
 }
@@ -232,7 +234,7 @@ fn database() -> store.Store {
 fn clear(db: store.Store) -> Nil {
   let assert Ok(_) =
     store.query(db, fn(connection) {
-      store.run(connection, "DELETE FROM quota_sample", [])
+      albedo_sqlite.run("DELETE FROM quota_sample", on: connection, with: [])
     })
   Nil
 }
@@ -240,11 +242,11 @@ fn clear(db: store.Store) -> Nil {
 fn insert(db: store.Store, row: Row) -> Nil {
   let assert Ok(_) =
     store.query(db, fn(connection) {
-      store.run(
-        connection,
+      albedo_sqlite.run(
         "INSERT INTO quota_sample(account, provider, plan, limit_id, label, used_percent, window_label, window_seconds, resets_at, scope, status, error, observed_at, source)
          VALUES (?, ?, NULL, ?, ?, ?, NULL, NULL, NULL, NULL, 'ok', ?, ?, 'poll')",
-        [
+        on: connection,
+        with: [
           sqlight.text(row.account),
           sqlight.text(row.provider),
           sqlight.text(row.limit_id),

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"albedo/cli/internal/tui/chrome"
+
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 )
@@ -14,10 +16,10 @@ import (
 // WorkspaceRetry is a turn refused because the session's folder had gone
 // missing; it goes out again once the session moves.
 type WorkspaceRetry struct {
-	Images   []daemon.ImageAttachment
-	Pastes   []string
 	Missing  string
 	Prompt   string
+	Images   []daemon.ImageAttachment
+	Pastes   []string
 	Continue bool
 }
 
@@ -25,10 +27,10 @@ type WorkspaceRetry struct {
 type FolderMovedMsg struct {
 	Err       error
 	Retry     *WorkspaceRetry
-	SessionID string
-	Workspace string
 	Location  *daemon.Location
 	Session   *daemon.Session
+	SessionID string
+	Workspace string
 }
 
 type FolderPickerCancelMsg struct{}
@@ -40,23 +42,23 @@ type FolderOpenSessionMsg struct{ Session daemon.Session }
 type FolderNewSessionMsg struct{ Workspace string }
 
 type folderListMsg struct {
-	Gen  int64
 	Err  error
 	Path string
 	List daemon.FolderList
+	Gen  int64
 }
 
 type folderRepoMsg struct {
-	Gen  int64
 	Repo *daemon.Repo
 	Path string
+	Gen  int64
 }
 
 type folderPreviewMsg struct {
-	Gen     int64
 	Err     error
 	Path    string
 	Preview daemon.FolderPreview
+	Gen     int64
 }
 
 type folderPreviewTickMsg struct {
@@ -65,18 +67,18 @@ type folderPreviewTickMsg struct {
 }
 
 type hostsMsg struct {
-	Gen   int64
 	Err   error
 	Hosts []daemon.KnownHost
+	Gen   int64
 }
 
 // hostStatusMsg is a host's probe as the daemon answered it; Warmed marks
 // the answer to warming it, which has always settled.
 type hostStatusMsg struct {
-	Gen    int64
 	Err    error
-	Host   string
 	Status daemon.HostStatus
+	Host   string
+	Gen    int64
 	Warmed bool
 }
 
@@ -90,9 +92,9 @@ type hostPollMsg struct {
 type connectTickMsg struct{ Gen int64 }
 
 type hostSignedInMsg struct {
-	Gen  int64
 	Err  error
 	Host string
+	Gen  int64
 }
 
 type folderSessionsMsg struct {
@@ -140,20 +142,17 @@ type cachedFolderPreview struct {
 // folder. Browsing, from the sessions view, it starts a session in the
 // folder instead. Either way → steps into the folder's sessions to open one.
 type FolderPicker struct {
+	// session is the one being moved; browsing, only its workspace is set.
+	session     daemon.Session
 	readCtx     context.Context
-	cancelReads context.CancelFunc
 	src         folderSource
+	cancelReads context.CancelFunc
 	Tick        TickFunc
 	asked       map[string]bool
 	retry       *WorkspaceRetry
 	previews    map[string]*cachedFolderPreview
 	repos       map[string]*daemon.Repo
 	listings    map[string]*folderListMsg
-
-	// session is the one being moved; browsing, only its workspace is set.
-	session daemon.Session
-	// Session failures survive query edits; a reopened picker rejects the old load.
-	sessionsError string
 	// homes are the folders ~ names: the daemon's under "", a remote
 	// host's under its [user@]host, as listings and probes report them.
 	homes map[string]string
@@ -161,42 +160,40 @@ type FolderPicker struct {
 	// typed one turned out to be.
 	labels  map[string]string
 	aliases map[string]string
-	hosts   []daemon.KnownHost
 	// probes are hosts' reachability, warmed once each per picker.
-	probes   map[string]daemon.HostStatus
-	warmed   map[string]bool
-	section  string
-	listed   string
-	notice   string
-	sessions []daemon.Session
-	zoxide   map[string][]string
-
+	probes map[string]daemon.HostStatus
+	warmed map[string]bool
+	// Session failures survive query edits; a reopened picker rejects the old load.
+	sessionsError      string
+	section            string
+	listed             string
+	notice             string
+	hosts              []daemon.KnownHost
+	sessions           []daemon.Session
+	zoxide             map[string][]string
 	rows               []folderRow
 	input              textinput.Model
 	sessionsGeneration int64
 	Width, Height      int
 	cursor             int
 	sessionCursor      int
-	browse             bool
-
-	sessionsLoading bool
-	moving          bool
-
-	// inSessions moves the cursor through the highlighted folder's sessions.
-	inSessions bool
-
 	// frame animates the face beside a host still connecting; ticking is
 	// whether its next tick is already on its way.
-	frame   int
-	ticking bool
+	frame           int
+	browse          bool
+	sessionsLoading bool
+	moving          bool
+	// inSessions moves the cursor through the highlighted folder's sessions.
+	inSessions bool
+	ticking    bool
 }
 
 func NewFolderPicker(src folderSource, session daemon.Session, retry *WorkspaceRetry) FolderPicker {
-	ti := newTextInput()
+	ti := chrome.NewTextInput()
 	ti.Prompt = ""
 	ti.Placeholder = "Type a path, host:path, or @host"
 	st := ti.Styles()
-	st.Focused.Placeholder, st.Blurred.Placeholder = DefaultStyles.Faint, DefaultStyles.Faint
+	st.Focused.Placeholder, st.Blurred.Placeholder = chrome.DefaultStyles.Faint, chrome.DefaultStyles.Faint
 	ti.SetStyles(st)
 	ti.Focus()
 	readCtx, cancelReads := context.WithCancel(context.Background())

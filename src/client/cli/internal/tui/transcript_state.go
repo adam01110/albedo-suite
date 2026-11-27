@@ -14,17 +14,17 @@ type transcriptState struct {
 	thinkingSince time.Time
 	// Summarized thinking arrives after it is written, so its start is the last
 	// live event other than thinking rather than its first received delta.
-	lastEvent  time.Time
-	turn       *openTurn
-	activeKind ActiveStreamKind
+	lastEvent time.Time
+	turn      *openTurn
 	// Only the current update path appends to activeBuffer. Retained model
 	// copies read activeText, whose bytes stay unchanged after each append.
 	activeBuffer     *strings.Builder
-	activeText       string
-	thoughtMs        int64
-	activeMessageID  string
 	liveIDs          map[string]bool
 	pendingCanonical *BoundedHistory
+	activeKind       ActiveStreamKind
+	activeText       string
+	activeMessageID  string
+	thoughtMs        int64
 }
 
 func newTranscriptState() transcriptState {
@@ -123,7 +123,7 @@ func (t *transcriptState) apply(evt daemon.StreamEvent, agentName string) []Hist
 			entry.Kind = EntryThinking
 		case daemon.EventNote:
 			// A stopped response commits its note with its text.
-			entry.Kind, entry.Speaker = EntryNote, ""
+			entry.Kind, entry.Speaker, entry.NoteOrigin = EntryNote, "", evt.Origin
 		}
 		if evt.Timestamp != nil {
 			entry.Timestamp = *evt.Timestamp
@@ -214,14 +214,15 @@ func (t *transcriptState) apply(evt daemon.StreamEvent, agentName string) []Hist
 			}
 		}
 	case daemon.EventTool:
+		stamp := eventTime(evt)
 		entries = t.settle(agentName)
 		entries = append(entries, HistoryEntry{
 			Kind: EntryTool, ID: evt.EntryID, Seq: evt.Position, ToolName: evt.ToolName, ToolArgs: evt.ToolArgs,
 			ToolResult: evt.ToolResult, ToolStatus: evt.ToolStatus, ToolTrace: evt.ToolTrace, ToolTitle: evt.ToolTitle, Images: evt.Images,
-			Timestamp: time.Now().UnixMilli(),
+			Timestamp: stamp,
 		})
 		if t.turn == nil {
-			t.turn = newOpenTurn(0)
+			t.turn = newOpenTurn(stamp)
 		}
 		t.turn.tools++
 		t.turn.touch(evt.Timestamp)
@@ -239,7 +240,23 @@ func (t *transcriptState) apply(evt daemon.StreamEvent, agentName string) []Hist
 		t.turn.touch(evt.Timestamp)
 	case daemon.EventNote:
 		entries = t.settle(agentName)
-		entries = append(entries, HistoryEntry{Kind: EntryNote, ID: evt.EntryID, Seq: evt.Position, Text: evt.Text, Timestamp: time.Now().UnixMilli()})
+		stamp := eventTime(evt)
+		entries = append(entries, HistoryEntry{Kind: EntryNote, NoteOrigin: evt.Origin, ID: evt.EntryID, Seq: evt.Position, Text: evt.Text, Timestamp: stamp})
+		// Salvaged history records the outcome in a daemon note. Live turns
+		// receive a separate completion event after the note is committed.
+		if evt.Replayed && evt.Origin == "note" {
+			suffix, matched := strings.CutPrefix(evt.Text, "The user stopped this response here.")
+			stopped := matched && (suffix == "" || strings.HasPrefix(suffix, " A call to ") || strings.HasPrefix(suffix, " Calls to "))
+			failed := strings.HasPrefix(evt.Text, "This response stopped here: ")
+			if stopped || failed {
+				if t.turn == nil {
+					t.turn = newOpenTurn(stamp)
+				}
+				t.turn.touch(&stamp)
+				t.turn.failed = failed
+				entries = append(entries, t.closeTurn(stopped)...)
+			}
+		}
 	case daemon.EventError:
 		entries = t.settle(agentName)
 		entries = append(entries, HistoryEntry{Kind: EntryError, Text: evt.Text, Timestamp: time.Now().UnixMilli()})
@@ -275,44 +292,47 @@ func (t *transcriptState) apply(evt daemon.StreamEvent, agentName string) []Hist
 	return entries
 }
 
+func eventTime(evt daemon.StreamEvent) int64 {
+	if evt.Timestamp != nil && *evt.Timestamp > 0 {
+		return *evt.Timestamp
+	}
+	return time.Now().UnixMilli()
+}
+
 // A page boundary settles buffered text but does not finish the turn.
 // History retention is applied by the caller.
-func replayTranscript(events []daemon.StreamEvent, agentName string) []HistoryEntry {
+func replayTranscript(events []daemon.StreamEvent, agentName string) ([]HistoryEntry, *openTurn) {
 	state := newTranscriptState()
 	var entries []HistoryEntry
 	for _, evt := range events {
 		entries = append(entries, state.apply(evt, agentName)...)
-		switch evt.Type {
-		case daemon.EventReset:
+		if evt.Type == daemon.EventReset {
 			entries = nil
-		case daemon.EventCommitted:
-			for i := len(entries) - 1; i >= 0 && entries[i].Seq == 0; i-- {
-				if entries[i].MessageID == "" {
-					entries[i].Seq = evt.Seq
-				}
-			}
+		}
+		if evt.Replayed && evt.Position > 0 {
+			stampTrailingEntries(entries, evt.Position)
 		}
 	}
-	return append(entries, state.settle(agentName)...)
+	return append(entries, state.settle(agentName)...), state.turn
 }
 
 // openTurn follows the turn in flight until its signoff.
 type openTurn struct {
+	// cacheLosses is what each call of the turn lost from its cache, by the
+	// call's record time, so a usage record that arrives again counts once.
+	cacheLosses map[int64]cacheLoss
 	// Unix timestamps in milliseconds.
 	start, last int64
 	tools       int
+	// tokensPerSecond is the rate of the latest call that reported its timing.
+	// A usage record can arrive again, so it replaces the rate, never adds to it.
+	tokensPerSecond float64
 	// A live turn ends now, rather than at its last replayed event.
 	live   bool
 	failed bool
 	// answered is whether the agent wrote anything; a turn opened by a note
 	// it never answered has nothing to sign off.
 	answered bool
-	// tokensPerSecond is the rate of the latest call that reported its timing.
-	// A usage record can arrive again, so it replaces the rate, never adds to it.
-	tokensPerSecond float64
-	// cacheLosses is what each call of the turn lost from its cache, by the
-	// call's record time, so a usage record that arrives again counts once.
-	cacheLosses map[int64]cacheLoss
 }
 
 // cacheLoss is what a call read uncached that the call before it left cached:

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"albedo/cli/internal/testutil/tuishots"
 	"strings"
 	"testing"
 	"time"
@@ -71,11 +72,11 @@ func usageProfileModel(width, height int, year daemon.UsageSummary, keys ...stri
 }
 
 func init() {
-	registerShots("usage-profile",
-		shotState{"daily", func(w, h int) string { return usageProfileModel(w, h, usageYear()).View() }},
-		shotState{"weekly", func(w, h int) string { return usageProfileModel(w, h, usageYear(), "w", "h", "h").View() }},
-		shotState{"cumulative", func(w, h int) string { return usageProfileModel(w, h, usageYear(), "c").View() }},
-		shotState{"new", func(w, h int) string {
+	tuishots.Register("usage-profile",
+		tuishots.State{Name: "daily", View: func(w, h int) string { return usageProfileModel(w, h, usageYear()).View() }},
+		tuishots.State{Name: "weekly", View: func(w, h int) string { return usageProfileModel(w, h, usageYear(), "w", "h", "h").View() }},
+		tuishots.State{Name: "cumulative", View: func(w, h int) string { return usageProfileModel(w, h, usageYear(), "c").View() }},
+		tuishots.State{Name: "new", View: func(w, h int) string {
 			year := usageYear()
 			for i := range year.Days {
 				year.Days[i].UsageTotals = daemon.UsageTotals{}
@@ -86,8 +87,14 @@ func init() {
 	)
 }
 
+// profileSizes are the shot gallery's terminal sizes.
+var profileSizes = []struct {
+	name          string
+	width, height int
+}{{"wide", 120, 30}, {"100x24", 100, 24}, {"80x24", 80, 24}, {"narrow", 70, 20}}
+
 func TestUsageProfileTabDrawsStatsCalendarAndPanels(t *testing.T) {
-	for _, size := range shotSizes {
+	for _, size := range profileSizes {
 		view := usageProfileModel(size.width, size.height, usageYear()).View()
 		plain := ansi.Strip(view)
 		lines := strings.Split(plain, "\n")

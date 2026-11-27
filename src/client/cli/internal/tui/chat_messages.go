@@ -2,6 +2,7 @@ package tui
 
 import (
 	"albedo/cli/internal/daemon"
+	"time"
 )
 
 type ChatBackToSessionsMsg struct{}
@@ -19,9 +20,9 @@ type ChatEditorFinishedMsg struct {
 
 // FileOpenResultMsg is sent after attempting to open a file in an external editor.
 type FileOpenResultMsg struct {
+	Err       error
 	SessionID string
 	Target    FileTarget
-	Err       error
 }
 
 // ChatOlderLoadedMsg carries a page of history from before what is shown.
@@ -62,8 +63,8 @@ type ChatExecuteCommandMsg struct {
 
 type ChatShellSubmitMsg struct {
 	Err                      error
-	Command                  daemon.ShellCommand
 	SessionID, OriginalInput string
+	Command                  daemon.ShellCommand
 	Generation               int64
 }
 
@@ -76,8 +77,8 @@ type ChatShellOutputMsg struct {
 
 type ChatShellCancelMsg struct {
 	Err        error
-	Command    daemon.ShellCommand
 	SessionID  string
+	Command    daemon.ShellCommand
 	Generation int64
 }
 
@@ -94,6 +95,7 @@ type ChatLiveDrawMsg struct {
 }
 
 type ChatProgressTickMsg struct {
+	At         time.Time
 	SessionID  string
 	Generation int64
 }
@@ -107,8 +109,8 @@ type ChatClearCopyStatusMsg struct {
 type ChatStatusMsg struct {
 	Err        error
 	Status     *daemon.AgentStatus
-	Glances    []PageGlance
 	SessionID  string
+	Glances    []PageGlance
 	Generation int64
 	Revision   uint64
 }
@@ -153,9 +155,9 @@ type ChatStatusPollMsg struct {
 
 // ChatStreamResultMsg follows all accepted events from the same subscription.
 type ChatStreamResultMsg struct {
+	Err        error
 	SessionID  string
 	Generation int64
-	Err        error
 	Recovering bool
 }
 
@@ -171,26 +173,26 @@ type ChatStreamClosedMsg struct {
 }
 
 type ChatOperationResolvedMsg struct {
-	SessionID  string
-	Generation int64
-	Handle     *daemon.OperationHandle
 	Receipt    daemon.InputReceipt
 	Err        error
+	Handle     *daemon.OperationHandle
+	SessionID  string
+	Generation int64
 }
 
 type ChatTurnSentMsg struct {
+	Err             error
 	Handle          *daemon.OperationHandle
 	OperationID     string
-	Err             error
-	Images          []daemon.ImageAttachment
-	Pastes          []string
 	SessionID       string
 	Prompt          string
+	Images          []daemon.ImageAttachment
+	Pastes          []string
 	Generation      int64
+	AcceptanceOrder int64
 	Continue        bool
 	OK              bool
 	Queued          bool
-	AcceptanceOrder int64
 }
 
 type ChatInterruptMsg struct {
@@ -206,7 +208,9 @@ type ChatInterruptMsg struct {
 type ChatOpenFolderPickerMsg struct{ Retry *WorkspaceRetry }
 
 type ChatOperationPollMsg struct {
+	Handle     *daemon.OperationHandle
 	SessionID  string
 	Generation int64
-	Handle     *daemon.OperationHandle
 }
+
+type ChatOpenAgentsMsg struct{}

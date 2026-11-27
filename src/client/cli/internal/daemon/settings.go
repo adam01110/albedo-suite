@@ -467,6 +467,7 @@ const (
 	SettingText    SettingKind = "text"
 	SettingLimit   SettingKind = "limit"
 	SettingMap     SettingKind = "map"
+	SettingInfo    SettingKind = "info"
 	SettingChoices SettingKind = "choices"
 
 	// SettingTextLimit is the most bytes a text setting holds; the daemon
@@ -533,6 +534,7 @@ type ExtensionSetting struct {
 	Rows                    []protocol.DeclaredSettingRow
 	Options                 []string
 	OptionsFrom             string
+	AllowEmpty              bool
 }
 
 // ExtensionSettingsSection is one declared section of the extension_settings
@@ -608,7 +610,7 @@ func declaredSettings(wire protocol.DeclaredSettings) ([]ExtensionSettingsSectio
 		fields := make([]ExtensionSetting, 0, len(section.Fields))
 		for _, field := range section.Fields {
 			kind := SettingKind(field.Kind)
-			if kind != SettingInteger && kind != SettingText && kind != SettingLimit && kind != SettingMap && kind != SettingChoices {
+			if kind != SettingInteger && kind != SettingText && kind != SettingLimit && kind != SettingMap && kind != SettingChoices && kind != SettingInfo {
 				return nil, fmtField(field.Key, fieldError("kind"))
 			}
 			declared, err := declaredValue(kind, field.Default)
@@ -639,7 +641,7 @@ func declaredValue(kind SettingKind, raw json.RawMessage) (SettingValue, error) 
 		}
 		return SettingValue{Map: pairs}, nil
 	}
-	if kind == SettingText {
+	if kind == SettingText || kind == SettingInfo {
 		var text string
 		if err := json.Unmarshal(raw, &text); err != nil {
 			return SettingValue{}, err

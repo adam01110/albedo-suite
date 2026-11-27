@@ -5,6 +5,7 @@ package tui
 // cell fitting, cost formatting and notification text.
 
 import (
+	"albedo/cli/internal/pickersearch"
 	"fmt"
 	"math"
 	"math/rand"
@@ -21,8 +22,8 @@ import (
 	"albedo/cli/internal/daemon"
 	"albedo/cli/internal/daemon/protocol"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/sahilm/fuzzy"
 	"github.com/charmbracelet/x/ansi/kitty"
+	"github.com/sahilm/fuzzy"
 )
 
 func propConfig(seed int64, max int) *quick.Config {
@@ -674,21 +675,21 @@ func TestPropFuzzyNamesInvariants(t *testing.T) {
 			query = propToken(querySeed)
 		}
 		matches := fuzzyNames(query, names)
-		words := searchWords(query)
+		words := pickersearch.Words(query)
 		seen := map[int]bool{}
-		previous := matchRank{}
+		previous := pickersearch.Rank{}
 		for i, match := range matches {
 			if match.Index < 0 || match.Index >= len(names) || seen[match.Index] || match.Str != names[match.Index] {
 				t.Logf("query=%q names=%v match=%+v", query, names, match)
 				return false
 			}
 			seen[match.Index] = true
-			rank, _, ok := matchFields(words, match.Str)
+			rank, _, ok := pickersearch.Match(words, match.Str)
 			if !ok {
 				t.Logf("query=%q matched %q that matchFields rejects", query, match.Str)
 				return false
 			}
-			if i > 0 && previous.compare(rank) < 0 {
+			if i > 0 && previous.Compare(rank) < 0 {
 				t.Logf("query=%q ranks out of order at %d", query, i)
 				return false
 			}
@@ -733,10 +734,10 @@ func TestPropFuzzyNamesPermutationInvariance(t *testing.T) {
 		for i := range names {
 			rotated[i] = names[(i+at)%n]
 		}
-		ranks := func(matches []fuzzy.Match) []matchRank {
-			out := make([]matchRank, len(matches))
+		ranks := func(matches []fuzzy.Match) []pickersearch.Rank {
+			out := make([]pickersearch.Rank, len(matches))
 			for i, match := range matches {
-				out[i], _, _ = matchFields(searchWords(query), match.Str)
+				out[i], _, _ = pickersearch.Match(pickersearch.Words(query), match.Str)
 			}
 			return out
 		}
@@ -933,13 +934,13 @@ func TestPropStreamImagesReachEntries(t *testing.T) {
 		m.Stopped, m.Stopping, m.TurnFailed = true, true, true
 		m.settledToolLabel, m.ThoughtProgressText = "settled", "thinking"
 		before := struct {
-			status      daemon.AgentStatus
-			order       []string
-			stopped     bool
-			stopping    bool
-			failed      bool
-			label       string
-			thought     string
+			status   daemon.AgentStatus
+			order    []string
+			stopped  bool
+			stopping bool
+			failed   bool
+			label    string
+			thought  string
 		}{m.Status, append([]string{}, m.progressOrder...), m.Stopped, m.Stopping, m.TurnFailed, m.settledToolLabel, m.ThoughtProgressText}
 		old := []daemon.StreamEvent{
 			{Type: daemon.EventTurnCompleted, Outcome: daemon.OutcomeFailed},

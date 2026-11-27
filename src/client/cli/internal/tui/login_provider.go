@@ -101,7 +101,7 @@ var customProviders = []customProvider{
 	},
 	{
 		ID:            "add-anthropic",
-		Label:         "Anthropic",
+		Label:         "Anthropic API",
 		Detail:        "API key · Claude models",
 		Extension:     "claude",
 		DefaultName:   "anthropic",
@@ -181,7 +181,7 @@ func (p customProvider) facts() []loginFact {
 	case p.DefaultURL != "":
 		facts = append(facts, loginFact{"endpoint", p.DefaultURL})
 	case p.FixedEndpoint:
-		facts = append(facts, loginFact{"endpoint", "the extension's own"})
+		facts = append(facts, loginFact{"endpoint", "fixed"})
 	}
 	if p.FixedAPI != "" {
 		facts = append(facts, loginFact{"api", p.FixedAPI})
@@ -375,7 +375,7 @@ func (m *LoginModel) buildProtocolPicker() {
 func (m *LoginModel) buildModelPicker() {
 	items := make([]loginItem, 0, len(m.Catalog)+1)
 	for _, name := range m.Catalog {
-		items = append(items, loginItem{ID: "model:" + name, Label: name, note: "from the models.dev catalog"})
+		items = append(items, loginItem{ID: "model:" + name, Label: name})
 	}
 	items = append(items, loginItem{ID: "manual", Label: "enter a model ID manually", note: "type a model ID yourself"})
 	m.ModelPicker = newLoginPick("model", items, "model:"+m.Draft.Model, m.Width, m.Height)

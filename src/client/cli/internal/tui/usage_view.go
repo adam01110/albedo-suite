@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"albedo/cli/internal/terminalui"
 	"fmt"
 	"math"
 	"net/url"
@@ -10,6 +11,8 @@ import (
 	"time"
 
 	"albedo/cli/internal/daemon"
+
+	"albedo/cli/internal/tui/chrome"
 
 	"github.com/charmbracelet/x/ansi"
 )
@@ -311,9 +314,9 @@ func usageBar(value, scale int64) string {
 	var b strings.Builder
 	for i := range usageBarSlots {
 		if i < filled {
-			b.WriteString(brandInk(float64(i) / (usageBarSlots - 1)).Render("▰"))
+			b.WriteString(chrome.BrandInk(float64(i) / (usageBarSlots - 1)).Render("▰"))
 		} else {
-			b.WriteString(DefaultStyles.Decor.Render("▱"))
+			b.WriteString(chrome.DefaultStyles.Decor.Render("▱"))
 		}
 	}
 	return b.String()
@@ -322,7 +325,7 @@ func usageBar(value, scale int64) string {
 // usageTag is the right edge of a row: the bar, then what went in and out.
 func usageTag(t daemon.UsageTotals, scale int64) string {
 	if t.Calls == 0 {
-		return DefaultStyles.Faint.Render("no use")
+		return chrome.DefaultStyles.Faint.Render("no use")
 	}
 	return usageBar(usageSize(t), scale) + " " + usageCount(t.InputTokens, "in", usageInW) + "  " + usageCount(t.OutputTokens, "out", usageOutW)
 }
@@ -350,7 +353,7 @@ func usageUnits(n int64) string {
 // rest, so the row still says which count it is.
 func usageCount(n int64, label string, w int) string {
 	room := max(1, w-len(label)-1)
-	return svCell(ansi.Truncate(usageUnits(n), room, "")+" "+label, w, true)
+	return chrome.Cell(ansi.Truncate(usageUnits(n), room, "")+" "+label, w, true)
 }
 
 // usageDetails is the pane: how many calls, then the counts as reported, and
@@ -360,7 +363,7 @@ func usageCount(n int64, label string, w int) string {
 func usageDetails(name, who string, t daemon.UsageTotals, width int) []string {
 	lines := paneTitle(name, "", width)
 	if t.Calls == 0 {
-		return append(lines, DefaultStyles.Faint.Render("nothing used"))
+		return append(lines, chrome.DefaultStyles.Faint.Render("nothing used"))
 	}
 	calls := countedText(t.Calls, "call")
 	if t.Errors > 0 {
@@ -376,7 +379,7 @@ func usageDetails(name, who string, t daemon.UsageTotals, width int) []string {
 	lines = append(lines, "")
 	if who != "" {
 		for _, line := range svWrap(who, width, 3) {
-			lines = append(lines, DefaultStyles.Muted.Render(line))
+			lines = append(lines, chrome.DefaultStyles.Muted.Render(line))
 		}
 	}
 	return append(lines, paneNote("Cached input is part of input, not added to it.", width)...)
@@ -413,7 +416,7 @@ func (m UsageModel) summary() string {
 	if text == "" {
 		return ""
 	}
-	return DefaultStyles.Faint.Render(text)
+	return chrome.DefaultStyles.Faint.Render(text)
 }
 
 // rowTotals is what the row a key names used, from whichever section it is in.
@@ -501,25 +504,25 @@ func (m UsageModel) asOf() string {
 }
 
 func (m UsageModel) footer(width int) string {
-	hints := []hint{{"↑↓", "move"}, {"tab", "profile"}, {"ctrl+r", "refresh"}, {"esc", "back"}}
+	hints := []chrome.Hint{{Key: "↑↓", Does: "move"}, {Key: "tab", Does: "profile"}, {Key: "ctrl+r", Does: "refresh"}, {Key: "esc", Does: "back"}}
 	if m.Error != "" {
 		// A failed read offers the retry every list screen offers.
-		hints = []hint{{"ctrl+r", "retry"}, {"esc", "back"}}
+		hints = []chrome.Hint{{Key: "ctrl+r", Does: "retry"}, {Key: "esc", Does: "back"}}
 	}
 	var status string
 	urgent := true
 	switch {
 	case m.Loading:
-		status, urgent = DefaultStyles.Faint.Render("loading…"), false
+		status, urgent = chrome.DefaultStyles.Faint.Render("loading…"), false
 	case m.Error != "":
-		status = DefaultStyles.Error.Render(m.Error)
+		status = chrome.DefaultStyles.Error.Render(m.Error)
 	case len(m.week.Days) > 0 || len(m.today.Days) > 0:
-		status, urgent = DefaultStyles.Faint.Render(m.standing()), false
+		status, urgent = chrome.DefaultStyles.Faint.Render(m.standing()), false
 	}
-	return footerLine(width, hints, status, urgent)
+	return chrome.FooterLine(width, hints, status, urgent)
 }
 
-func (m UsageModel) View() string {
+func (m UsageModel) Page() terminalui.Page {
 	lv := m.listView
 	switch {
 	case m.Loading:
@@ -529,11 +532,11 @@ func (m UsageModel) View() string {
 	default:
 		lv.Empty = "Nothing used yet."
 	}
-	title := brand("albedo") + " " + DefaultStyles.Muted.Render("/usage") + "  " + m.tabsText()
+	title := chrome.Brand("albedo") + " " + chrome.DefaultStyles.Muted.Render("/usage") + "  " + m.tabsText()
 	if m.tab == usageProfileTab {
 		return m.profileView(title)
 	}
-	f := lv.frame(title, DefaultStyles.Faint.Render(m.period()), m.footer(max(1, m.Width)))
-	f.summary = m.summary()
-	return f.view(m.Width, m.Height)
+	f := lv.frame(title, chrome.DefaultStyles.Faint.Render(m.period()), m.footer(max(1, m.Width)))
+	f.Summary = m.summary()
+	return f
 }

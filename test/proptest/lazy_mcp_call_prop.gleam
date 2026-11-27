@@ -15,6 +15,7 @@ import albedo_sdk/capabilities
 import albedo_sdk/extension
 import albedo_sdk/storage
 import albedo_sdk/store
+import albedo_sqlite
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/erlang/process
@@ -36,13 +37,13 @@ pub fn main() -> Nil {
   proptest.remove_tree(home)
   let _ = make_dir(home)
   let assert Ok(ledger) =
-    store.start(home <> "/preferences.db", "", core_store.tables())
+    store.start(home <> "/preferences.db", fn(_) { Ok(Nil) }, core_store.tables())
   let scope = storage.host(ledger)
   let assert Ok(Nil) =
     storage.query(scope, fn(db) {
-      storage.exec(db, "CREATE TABLE sessions(id TEXT PRIMARY KEY);")
+      albedo_sqlite.exec("CREATE TABLE sessions(id TEXT PRIMARY KEY);", on: db)
     })
-  let assert Ok(Nil) = loads.initialise(scope)
+  let assert Ok(Nil) = storage.query(scope, loads.initialise_schema)
   arguments_property(home, scope)
   concurrency_property(home, scope)
   queued_calls_property(home, scope)
@@ -84,7 +85,7 @@ fn open_servers(
   let session = label <> "-" <> int.to_string(proptest.unique())
   let assert Ok(Nil) =
     storage.query(scope, fn(db) {
-      storage.exec(db, "INSERT INTO sessions(id) VALUES('" <> session <> "');")
+      albedo_sqlite.exec("INSERT INTO sessions(id) VALUES('" <> session <> "');", on: db)
     })
   let runtime = mcp_owner_support.start_runtime()
   let configured =

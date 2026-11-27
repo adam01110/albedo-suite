@@ -13,6 +13,7 @@ import albedo_sdk/extension
 import albedo_sdk/page
 import albedo_sdk/session_info
 import albedo_sdk/store
+import albedo_sqlite
 import gleam/int
 import gleam/list
 import gleam/option.{None}
@@ -98,10 +99,10 @@ fn session(ledger: store.Store, id: String, stage: session_info.Stage) -> Nil {
       ),
     )
   let assert Ok(_) =
-    store.write(ledger, "UPDATE sessions SET stage=? WHERE id=?", [
+    store.writing(ledger, fn(db) { albedo_sqlite.run("UPDATE sessions SET stage=? WHERE id=?", on: db, with: [
       sqlight.text(session_info.stage_name(stage)),
       sqlight.text(id),
-    ])
+    ]) })
   Nil
 }
 
@@ -113,10 +114,7 @@ fn child(
   closed: Bool,
 ) -> Nil {
   let assert Ok(_) =
-    store.write(
-      ledger,
-      "INSERT INTO session_family(session,parent,name,depth,created_at,closed_at) VALUES(?,?,?,1,?,?)",
-      [
+    store.writing(ledger, fn(db) { albedo_sqlite.run("INSERT INTO session_family(session,parent,name,depth,created_at,closed_at) VALUES(?,?,?,1,?,?)", on: db, with: [
         sqlight.text(id),
         sqlight.text(parent),
         sqlight.text(id),
@@ -125,13 +123,12 @@ fn child(
           True -> sqlight.int(created_at)
           False -> sqlight.null()
         },
-      ],
-    )
+      ]) })
   Nil
 }
 
 fn glance(children: List(Child)) -> Nil {
-  let assert Ok(ledger) = store.start(":memory:", "", core_store.tables())
+  let assert Ok(ledger) = store.start(":memory:", fn(_) { Ok(Nil) }, core_store.tables())
   let assert Ok(_) = conversation.initialise(ledger)
   let assert Ok(_) = core_family.initialise(ledger)
   session(ledger, "lead", session_info.Idle)
