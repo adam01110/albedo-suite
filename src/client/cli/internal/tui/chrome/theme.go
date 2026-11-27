@@ -286,21 +286,32 @@ func Located(name, place string) string {
 // Hint is a key and what it does.
 type Hint struct{ Key, Does string }
 
-// KeyHints lists keys in Muted and what they do in Faint. A hint without a
-// key is a plain note.
+// KeyHints lists keys in the accent and what they do in Faint. A hint
+// without a key is a plain note.
 func KeyHints(hints ...Hint) string {
 	parts := make([]string, len(hints))
+	key := hintKeyStyle()
 	for i, h := range hints {
 		switch {
 		case h.Key == "":
 			parts[i] = DefaultStyles.Faint.Render(h.Does)
 		case h.Does == "":
-			parts[i] = DefaultStyles.Prompt.Bold(true).Render(h.Key)
+			parts[i] = key.Render(h.Key)
 		default:
-			parts[i] = DefaultStyles.Prompt.Bold(true).Render(h.Key) + " " + DefaultStyles.Faint.Render(h.Does)
+			parts[i] = key.Render(h.Key) + " " + DefaultStyles.Faint.Render(h.Does)
 		}
 	}
 	return strings.Join(parts, DefaultStyles.Decor.Render(" · "))
+}
+
+// hintKeyStyle draws a hint's key. A Base16 palette keeps keys in its
+// foreground text, as before upstream moved them to the bold accent, so
+// footers stay quiet beside the palette's own accents (albedo-suite).
+func hintKeyStyle() lipgloss.Style {
+	if CurrentInk.Base16() {
+		return DefaultStyles.Muted
+	}
+	return DefaultStyles.Prompt.Bold(true)
 }
 
 // SectionRule heads a group in a list: " ─ label count ────".

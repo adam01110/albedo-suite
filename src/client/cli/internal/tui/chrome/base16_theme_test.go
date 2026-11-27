@@ -80,6 +80,10 @@ func TestBase16DetectBypassesTerminal(t *testing.T) {
 	if got := LanguageStyle("Go", "").GetForeground(); got != lipgloss.Color(p[15]) {
 		t.Fatalf("language label %v, want palette slot %s", got, p[15])
 	}
+	// Footer keys stay in the palette's text color, not the bold accent.
+	if got, want := KeyHints(Hint{Key: "esc", Does: "back"}), DefaultStyles.Muted.Render("esc")+" "+DefaultStyles.Faint.Render("back"); got != want {
+		t.Fatalf("key hints %q, want %q", got, want)
+	}
 	host := HostStyle("host").GetForeground()
 	if !slices.ContainsFunc(base16Hues(p), func(hue string) bool { return lipgloss.Color(hue) == host }) {
 		t.Fatalf("host label %v outside the palette", host)

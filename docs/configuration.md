@@ -178,7 +178,8 @@ a missing default file preserves terminal autodetection.
 With a file, colors use the Base16 palette directly rather than contrast-mixing
 terminal replies. This covers transcript accents, effort indicators, pickers,
 language/host labels, orchestrator identities and code highlighting. Diff panels
-use base01; signs retain the red/green state colors. Ordinary text and the canvas
+use base01; signs retain the red/green state colors. Footer key hints keep keys
+in base05 rather than upstream's bold accent. Ordinary text and the canvas
 still inherit the terminal foreground/background; configure the terminal with the
 same theme. Truecolor support is required for exact RGB output. This setting does
 not change the web UI. Restart the CLI to read a changed file; no daemon restart
