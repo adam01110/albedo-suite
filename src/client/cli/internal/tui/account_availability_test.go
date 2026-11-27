@@ -43,6 +43,12 @@ func accountToggleDaemon(t *testing.T) (LoginModel, func() []map[string]any, fun
 		switch {
 		case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/auth/accounts/"):
 			id := strings.TrimPrefix(r.URL.Path, "/auth/accounts/")
+			// The daemon reads every PATCH body as a JSON merge patch.
+			if got := r.Header.Get("Content-Type"); got != "application/merge-patch+json" {
+				t.Errorf("account patch sent as %q", got)
+				testwire.WriteProblem(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "unsupported request media type")
+				return
+			}
 			data, _ := io.ReadAll(r.Body)
 			var body map[string]any
 			if err := json.Unmarshal(data, &body); err != nil {

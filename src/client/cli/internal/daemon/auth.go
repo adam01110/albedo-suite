@@ -91,7 +91,7 @@ func PutKeyAccount(ctx context.Context, conn *Connection, provider, endpoint, ke
 func RenameAccount(ctx context.Context, conn *Connection, id, label string) (Account, error) {
 	var result Account
 	err := executeMutation(ctx, conn, operation{Capability: "provider_auth", Name: "rename provider account", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
-		return protocol.NewPatchAccountRequestWithBody(base, id, "application/json", body)
+		return protocol.NewPatchAccountRequestWithBody(base, id, "application/merge-patch+json", body)
 	}, Body: protocol.AccountPatch{Label: protocol.SetPatch(label)}, Policy: noRecovery}, []int{200}, func(data []byte, _ int) error {
 		var wire protocol.Account
 		if err := decodeRequired(data, &wire); err != nil {
@@ -108,7 +108,7 @@ func RenameAccount(ctx context.Context, conn *Connection, id, label string) (Acc
 func SetAccountEnabled(ctx context.Context, conn *Connection, id string, enabled bool) (Account, error) {
 	var result Account
 	err := executeMutation(ctx, conn, operation{Capability: "provider_auth", Name: "toggle provider account", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
-		return protocol.NewPatchAccountRequestWithBody(base, id, "application/json", body)
+		return protocol.NewPatchAccountRequestWithBody(base, id, "application/merge-patch+json", body)
 	}, Body: protocol.AccountPatch{Enabled: protocol.SetPatch(enabled)}, Policy: noRecovery}, []int{200}, func(data []byte, _ int) error {
 		var wire protocol.Account
 		if err := decodeRequired(data, &wire); err != nil {

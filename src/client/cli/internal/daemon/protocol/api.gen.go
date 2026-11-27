@@ -5593,8 +5593,8 @@ type GetWorkspacesParams struct {
 	Next     *Next  `form:"next,omitempty" json:"next,omitempty"`
 }
 
-// PatchAccountJSONRequestBody defines body for PatchAccount for application/json ContentType.
-type PatchAccountJSONRequestBody = AccountPatch
+// PatchAccountApplicationMergePatchPlusJSONRequestBody defines body for PatchAccount for application/merge-patch+json ContentType.
+type PatchAccountApplicationMergePatchPlusJSONRequestBody = AccountPatch
 
 // PutKeyAccountJSONRequestBody defines body for PutKeyAccount for application/json ContentType.
 type PutKeyAccountJSONRequestBody = KeyAccountRequest
@@ -5906,14 +5906,14 @@ type ClientInterface interface {
 	// Corresponds with PATCH /auth/accounts/{account_id} (the `PatchAccount` operationId).
 	PatchAccountWithBody(ctx context.Context, accountID ID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// PatchAccount Rename, disable or enable a saved provider account
+	// PatchAccountWithApplicationMergePatchPlusJSONBody Rename, disable or enable a saved provider account
 	//
 	// Environment accounts cannot be renamed or disabled (`account_external`). Requires capability `provider_auth: 1`.
 	//
-	// Takes a body of the `application/json` content type.
+	// Takes a body of the `application/merge-patch+json` content type.
 	//
 	// Corresponds with PATCH /auth/accounts/{account_id} (the `PatchAccount` operationId).
-	PatchAccount(ctx context.Context, accountID ID, body PatchAccountJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+	PatchAccountWithApplicationMergePatchPlusJSONBody(ctx context.Context, accountID ID, body PatchAccountApplicationMergePatchPlusJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// PutKeyAccountWithBody Save an API key as a provider account
 	//
@@ -7815,15 +7815,15 @@ func (c *Client) PatchAccountWithBody(ctx context.Context, accountID ID, content
 	return c.Client.Do(req)
 }
 
-// PatchAccount Rename, disable or enable a saved provider account
+// PatchAccountWithApplicationMergePatchPlusJSONBody Rename, disable or enable a saved provider account
 //
 // Environment accounts cannot be renamed or disabled (`account_external`). Requires capability `provider_auth: 1`.
 //
-// Takes a body of the `application/json` content type.
+// Takes a body of the `application/merge-patch+json` content type.
 //
 // Corresponds with PATCH /auth/accounts/{account_id} (the `PatchAccount` operationId).
-func (c *Client) PatchAccount(ctx context.Context, accountID ID, body PatchAccountJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewPatchAccountRequest(c.Server, accountID, body)
+func (c *Client) PatchAccountWithApplicationMergePatchPlusJSONBody(ctx context.Context, accountID ID, body PatchAccountApplicationMergePatchPlusJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPatchAccountRequestWithApplicationMergePatchPlusJSONBody(c.Server, accountID, body)
 	if err != nil {
 		return nil, err
 	}
@@ -12141,15 +12141,15 @@ func NewDeleteAccountRequest(server string, accountID ID) (*http.Request, error)
 	return req, nil
 }
 
-// NewPatchAccountRequest calls the generic PatchAccount builder with application/json body
-func NewPatchAccountRequest(server string, accountID ID, body PatchAccountJSONRequestBody) (*http.Request, error) {
+// NewPatchAccountRequestWithApplicationMergePatchPlusJSONBody calls the generic PatchAccount builder with application/merge-patch+json body
+func NewPatchAccountRequestWithApplicationMergePatchPlusJSONBody(server string, accountID ID, body PatchAccountApplicationMergePatchPlusJSONRequestBody) (*http.Request, error) {
 	var bodyReader io.Reader
 	buf, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
 	}
 	bodyReader = bytes.NewReader(buf)
-	return NewPatchAccountRequestWithBody(server, accountID, "application/json", bodyReader)
+	return NewPatchAccountRequestWithBody(server, accountID, "application/merge-patch+json", bodyReader)
 }
 
 // NewPatchAccountRequestWithBody constructs an http.Request for the PatchAccount method, with any body, and a specified content type
