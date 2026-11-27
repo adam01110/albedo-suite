@@ -14,6 +14,7 @@ import tempfile
 from pathlib import Path
 
 SUITE_CASES = (
+    "account_availability_e2e_test.py",
     "context_inspection_e2e_test.py",
     "formatter_e2e_test.py",
     "kernel_workspace_e2e_test.py",

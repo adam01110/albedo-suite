@@ -38,6 +38,9 @@ type Account struct {
 	// NeedsSignIn marks a saved sign-in the provider no longer accepts; it
 	// works again after signing in again.
 	NeedsSignIn bool
+	// Disabled marks a saved account switched off by the user: it stays
+	// signed in, but no rotation or pin uses it until it is enabled again.
+	Disabled bool
 }
 type SignIns struct {
 	Logins   []SignIn
@@ -50,7 +53,7 @@ type SignInStatus struct {
 }
 
 func accountValue(w protocol.Account) Account {
-	return Account{Provider: string(w.Provider), ID: string(w.ID), Label: w.Label, Detail: w.Detail, Kind: w.Kind, Source: w.Source, Endpoint: w.Endpoint, LimitedUntil: value(w.LimitedUntil), Email: value(w.Email), Plan: value(w.Plan), NeedsSignIn: w.NeedsSignIn, RotatedByProfiles: idsToStrings(w.RotatedByProfiles), Selected: len(w.SelectedByProfiles) > 0, SelectedByProfiles: idsToStrings(w.SelectedByProfiles)}
+	return Account{Provider: string(w.Provider), ID: string(w.ID), Label: w.Label, Detail: w.Detail, Kind: w.Kind, Source: w.Source, Endpoint: w.Endpoint, LimitedUntil: value(w.LimitedUntil), Email: value(w.Email), Plan: value(w.Plan), NeedsSignIn: w.NeedsSignIn, Disabled: w.Enabled != nil && !*w.Enabled, RotatedByProfiles: idsToStrings(w.RotatedByProfiles), Selected: len(w.SelectedByProfiles) > 0, SelectedByProfiles: idsToStrings(w.SelectedByProfiles)}
 }
 func idsToStrings(ids []protocol.ID) []string {
 	if len(ids) == 0 {
@@ -89,7 +92,24 @@ func RenameAccount(ctx context.Context, conn *Connection, id, label string) (Acc
 	var result Account
 	err := executeMutation(ctx, conn, operation{Capability: "provider_auth", Name: "rename provider account", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
 		return protocol.NewPatchAccountRequestWithBody(base, id, "application/json", body)
-	}, Body: protocol.AccountPatch{Label: label}, Policy: noRecovery}, []int{200}, func(data []byte, _ int) error {
+	}, Body: protocol.AccountPatch{Label: protocol.SetPatch(label)}, Policy: noRecovery}, []int{200}, func(data []byte, _ int) error {
+		var wire protocol.Account
+		if err := decodeRequired(data, &wire); err != nil {
+			return err
+		}
+		result = accountValue(wire)
+		return nil
+	})
+	return result, err
+}
+
+// SetAccountEnabled switches one saved account on or off without signing it
+// out; the daemon rejects environment accounts and tool sign-ins.
+func SetAccountEnabled(ctx context.Context, conn *Connection, id string, enabled bool) (Account, error) {
+	var result Account
+	err := executeMutation(ctx, conn, operation{Capability: "provider_auth", Name: "toggle provider account", BuildRequest: func(base string, body io.Reader) (*http.Request, error) {
+		return protocol.NewPatchAccountRequestWithBody(base, id, "application/json", body)
+	}, Body: protocol.AccountPatch{Enabled: protocol.SetPatch(enabled)}, Policy: noRecovery}, []int{200}, func(data []byte, _ int) error {
 		var wire protocol.Account
 		if err := decodeRequired(data, &wire); err != nil {
 			return err

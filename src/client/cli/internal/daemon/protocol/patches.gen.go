@@ -34,7 +34,12 @@ func (p NullablePatchField[T]) MarshalJSON() ([]byte, error) { return json.Marsh
 func ClearPatch[T any]() NullablePatchField[T]               { return NullablePatchField[T]{present: true} }
 func (p AccountPatch) MarshalJSON() ([]byte, error) {
 	fields := map[string]any{}
-	fields["label"] = p.Label
+	if p.Enabled.present {
+		fields["enabled"] = p.Enabled
+	}
+	if p.Label.present {
+		fields["label"] = p.Label
+	}
 	return json.Marshal(fields)
 }
 func (p CapabilitySettingsPatch) MarshalJSON() ([]byte, error) {

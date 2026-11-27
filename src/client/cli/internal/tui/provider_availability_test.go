@@ -79,7 +79,8 @@ func TestProviderAvailabilityDisabledRowStaysVisibleAndCannotBeSelected(t *testi
 	m.backToChoose()
 	m.advanced = false
 	m.backToChoose()
-	if _, cmd := pressCtrl(m, 't'); cmd != nil {
+	// The accounts list's ctrl+t switches one account, never a setup.
+	if next, _ := pressCtrl(m, 't'); next.Profiles.Providers["work"].IsEnabled() {
 		t.Fatal("accounts list toggled a provider")
 	}
 }

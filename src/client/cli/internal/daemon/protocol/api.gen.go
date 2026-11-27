@@ -213,6 +213,9 @@ type Account struct {
 	// Email The sign-in's email when the provider reports one; null for keys, environment accounts, and sign-ins that carry no email. New sign-ins take it as their label until renamed.
 	Email *string `json:"email" nullable:"true"`
 
+	// Enabled False when the account was switched off through `patchAccount`; rotation and account selection skip it until it is switched on again. Absent means enabled.
+	Enabled *bool `json:"enabled,omitempty"`
+
 	// Endpoint The base url a key account sends to; null for sign-in accounts.
 	Endpoint *string `json:"endpoint" nullable:"true"`
 
@@ -247,7 +250,9 @@ type Account struct {
 
 // AccountPatch defines model for AccountPatch.
 type AccountPatch struct {
-	Label string `json:"label"`
+	// Enabled False keeps the saved account but takes it out of every rotation and pin until it is enabled again. Tool sign-ins cannot be disabled.
+	Enabled PatchField[bool]   `json:"enabled,omitempty"`
+	Label   PatchField[string] `json:"label,omitempty"`
 }
 
 // ActionOperation Operation must be declared in this contract, or the installed extension contract version. Bind If-Match from the displayed resource, never from a fresh read. Path, query and header map keys name declared parameters; body map keys are JSON pointers into the request object. Missing optional form values omit their bindings. result_schema is a JSON Schema 2020-12 fragment, with no remote schema retrieval.
@@ -5892,18 +5897,18 @@ type ClientInterface interface {
 	// Corresponds with DELETE /auth/accounts/{account_id} (the `DeleteAccount` operationId).
 	DeleteAccount(ctx context.Context, accountID ID, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// PatchAccountWithBody Rename a saved provider account
+	// PatchAccountWithBody Rename, disable or enable a saved provider account
 	//
-	// Environment accounts cannot be renamed (`account_external`). Requires capability `provider_auth: 1`.
+	// Environment accounts cannot be renamed or disabled (`account_external`). Requires capability `provider_auth: 1`.
 	//
 	// Takes any type of body and a specified content type.
 	//
 	// Corresponds with PATCH /auth/accounts/{account_id} (the `PatchAccount` operationId).
 	PatchAccountWithBody(ctx context.Context, accountID ID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// PatchAccount Rename a saved provider account
+	// PatchAccount Rename, disable or enable a saved provider account
 	//
-	// Environment accounts cannot be renamed (`account_external`). Requires capability `provider_auth: 1`.
+	// Environment accounts cannot be renamed or disabled (`account_external`). Requires capability `provider_auth: 1`.
 	//
 	// Takes a body of the `application/json` content type.
 	//
@@ -7791,9 +7796,9 @@ func (c *Client) DeleteAccount(ctx context.Context, accountID ID, reqEditors ...
 	return c.Client.Do(req)
 }
 
-// PatchAccountWithBody Rename a saved provider account
+// PatchAccountWithBody Rename, disable or enable a saved provider account
 //
-// Environment accounts cannot be renamed (`account_external`). Requires capability `provider_auth: 1`.
+// Environment accounts cannot be renamed or disabled (`account_external`). Requires capability `provider_auth: 1`.
 //
 // Takes any type of body and a specified content type.
 //
@@ -7810,9 +7815,9 @@ func (c *Client) PatchAccountWithBody(ctx context.Context, accountID ID, content
 	return c.Client.Do(req)
 }
 
-// PatchAccount Rename a saved provider account
+// PatchAccount Rename, disable or enable a saved provider account
 //
-// Environment accounts cannot be renamed (`account_external`). Requires capability `provider_auth: 1`.
+// Environment accounts cannot be renamed or disabled (`account_external`). Requires capability `provider_auth: 1`.
 //
 // Takes a body of the `application/json` content type.
 //

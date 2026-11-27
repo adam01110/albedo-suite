@@ -4989,7 +4989,7 @@ paths:
       x-albedo-recovery: no-automatic-replay
     patch:
       operationId: patchAccount
-      summary: Rename a saved provider account
+      summary: Rename, disable or enable a saved provider account
       tags:
         - auth
       requestBody:
@@ -5026,8 +5026,8 @@ paths:
         '409':
           $ref: '#/components/responses/Problem409'
       description:
-        'Environment accounts cannot be renamed (`account_external`). Requires
-        capability `provider_auth: 1`.'
+        'Environment accounts cannot be renamed or disabled
+        (`account_external`). Requires capability `provider_auth: 1`.'
       parameters:
         - name: account_id
           in: path
@@ -17746,6 +17746,12 @@ components:
             The saved sign-in can no longer be used (its renewal was refused, it
             was revoked, or the provider suspended it) until it is signed in
             again. Rotation skips it. Always false for keys.
+        enabled:
+          type: boolean
+          description:
+            False when the account was switched off through `patchAccount`;
+            rotation and account selection skip it until it is switched on
+            again. Absent means enabled.
         selected_by_profiles:
           type: array
           description: Profiles pinned to this account by `account_id`.
@@ -17809,7 +17815,13 @@ components:
           type: string
           minLength: 1
           maxLength: 256
-      required: [label]
+        enabled:
+          type: boolean
+          description:
+            False keeps the saved account but takes it out of every rotation
+            and pin until it is enabled again. Tool sign-ins cannot be
+            disabled.
+      minProperties: 1
       additionalProperties: false
     LoginProvider:
       type: object
