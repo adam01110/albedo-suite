@@ -48,6 +48,10 @@
     linter.enable = true;
     lsp.enable = true;
   };
+  iconified = mkHome {
+    enable = true;
+    icons.brand = "*";
+  };
   unknownActiveProvider = mkHome {
     enable = true;
     activeProvider = "missing";
@@ -137,6 +141,16 @@ in
 
     testFinalPackageIsReadOnly = {
       expr = configured.options.programs.albedo.finalPackage.readOnly;
+      expected = true;
+    };
+
+    testIconsAreOptIn = {
+      expr = !(minimal.config.programs.albedo.environment ? ALBEDO_ICONS_FILE);
+      expected = true;
+    };
+
+    testIconsWriteTheirFile = {
+      expr = lib.hasSuffix "-albedo-icons.json" iconified.config.programs.albedo.environment.ALBEDO_ICONS_FILE;
       expected = true;
     };
 

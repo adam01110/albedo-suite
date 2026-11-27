@@ -301,9 +301,12 @@ func parseColors(reply string) TermColors {
 
 var CurrentInk Ink
 
-// DetectInk loads an explicit theme or mixes a ramp from terminal colors.
-// It must run before the TUI owns the terminal's input.
+// DetectInk loads configured icons and an explicit theme or mixes a ramp
+// from terminal colors. It must run before the TUI owns the terminal's input.
 func DetectInk() error {
+	if err := loadIcons(); err != nil {
+		return err
+	}
 	if loaded, err := loadBase16Theme(); loaded || err != nil {
 		return err
 	}

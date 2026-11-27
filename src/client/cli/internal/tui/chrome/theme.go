@@ -245,7 +245,7 @@ func BrandInk(t float64) lipgloss.Style {
 	return DefaultStyles.Agent
 }
 
-func Brand(name string) string { return GradientText("✦ "+name, true) }
+func Brand(name string) string { return GradientText(Icon.Brand+" "+name, true) }
 
 // TitleRule heads a screen: left, a rule that fades from the brand's end
 // into Decor, then right. Without room for one rule cell it is left alone.
@@ -327,14 +327,15 @@ func GroupHeading(label string, width int) string {
 	return DefaultStyles.Bold.Render(ansi.Truncate(" "+label, width, "…"))
 }
 
-// PromptMark precedes the focused input.
-const PromptMark = "› "
+// PromptMark precedes the focused input. UseIcons sets it (albedo-suite).
+var PromptMark = "› "
+
 const PromptMarkWidth = 2
 
 func PromptLead() string { return DefaultStyles.Prompt.Render(PromptMark) }
 
 // SelectBar marks the selected row.
-func SelectBar() string { return DefaultStyles.Agent.Render("▌") }
+func SelectBar() string { return DefaultStyles.Agent.Render(Icon.Selection) }
 
 // SelectedLine lays the selection surface under a styled line, reopening it
 // after every reset inside the line, and fills it out to width.

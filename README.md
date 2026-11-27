@@ -43,6 +43,7 @@ providers, skills and SOPS declarations stay in Infra.
 | [TUI activity](docs/activity-sidebar.md) | Show passive current and recent tool activity below background jobs. |
 | [Turn notifications](docs/turn-notifications.md) | Raise a desktop notification through the terminal when a turn ends while it is unfocused. |
 | [Zoxide folders](docs/development.md#zoxide-folder-suggestions) | Suggest zoxide directories in `/cd` when zoxide is installed. |
+| [Terminal icons](docs/configuration.md#terminal-icons) | Replace the TUI's row, status, host and agent icons from `~/.config/albedo/icons.json`. |
 | [Inline redraw](docs/development.md#terminal-ux) | Keep the inline TUI from stacking stale header rows when the terminal narrows. |
 | [Image previews](docs/tool-images.md) | Display attachments and tool-returned images in supported terminals. |
 | [Prompt context](docs/prompt-context.md) | Keep startup references compact and retrieve full API docs explicitly. |

@@ -301,7 +301,7 @@ func (m ChatModel) header(width int) string {
 		workspace = chrome.HomePath(workspace)
 	} else {
 		host = cmp.Or(m.Host, host)
-		lead = "● " + host + ":"
+		lead = chrome.Icon.HostConnected + " " + host + ":"
 		workspace = chrome.ScpRelative(chrome.UnderHome(workspace, m.hostHome))
 	}
 	model := m.displayModelName()
@@ -338,7 +338,7 @@ func (m ChatModel) header(width int) string {
 		right := strings.Join(append(counts[:l.counts:l.counts], model), "  ")
 		left := lead + l.place
 		if l.brand {
-			left = "✦ " + m.AgentName + " on " + left
+			left = chrome.Icon.Brand + " " + m.AgentName + " on " + left
 		}
 		if lipgloss.Width(left)+lipgloss.Width(right)+l.rule+2 > width {
 			continue
@@ -361,11 +361,11 @@ func (m ChatModel) header(width int) string {
 func (m ChatModel) hostSegment(host string) string {
 	switch m.Status.KernelLink {
 	case "booting", "reattaching", "busy":
-		return chrome.DefaultStyles.Faint.Render("◌ " + host)
+		return chrome.DefaultStyles.Faint.Render(chrome.Icon.HostConnecting + " " + host)
 	case "lost":
-		return chrome.DefaultStyles.Error.Render("○ " + host)
+		return chrome.DefaultStyles.Error.Render(chrome.Icon.HostLost + " " + host)
 	}
-	return chrome.HostStyle(host).Render("● " + host)
+	return chrome.HostStyle(host).Render(chrome.Icon.HostConnected + " " + host)
 }
 
 // reaching is the remote host a booting or reattaching kernel is on.

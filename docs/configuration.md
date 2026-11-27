@@ -191,3 +191,49 @@ lives in `modules/programs/tui/albedo/theme.nix`. It sets
 `programs.albedo.environment.ALBEDO_THEME_FILE` to the generated path. That module
 requires a suite package containing this feature; the configuration alone does
 not patch an older CLI.
+
+## Terminal icons
+
+The CLI reads `$XDG_CONFIG_HOME/albedo/icons.json` (normally
+`~/.config/albedo/icons.json`) at startup. Set `ALBEDO_ICONS_FILE` to select
+another file. The JSON object overrides any subset of the names below; omitted
+names keep upstream's icon. Each value must be exactly one terminal cell wide,
+because the layouts around it count one cell, so wide emoji, multi-character
+strings, control characters and escape sequences are refused. Nerd Font glyphs
+are one cell wide. Unknown names, invalid files and a missing explicitly
+selected file produce a startup error; a missing default file keeps the
+defaults. Restart the CLI to read a changed file.
+
+| Name | Default | Where |
+| --- | --- | --- |
+| `brand` | `✦` | Screen titles and the chat header |
+| `prompt` | `›` | Input prompt |
+| `selection` | `▌` | Bar beside the selected row |
+| `newSession`, `settings`, `archive`, `accounts` | `✦`, `◇`, `▤`, `◇` | Session list actions |
+| `item`, `itemSelected`, `itemActive` | `·`, `◆`, `●` | Session and folder rows: idle, selected, recent or current |
+| `itemEditing`, `itemPinned`, `itemMoved` | `✎`, `★`, `↗` | Session rows being renamed, pinned or moved |
+| `callSucceeded`, `callFailed`, `callPending` | `✓`, `✗`, `·` | Tool call outcomes in tool cards |
+| `hostConnected`, `hostConnecting`, `hostLost` | `●`, `◌`, `○` | Kernel host in the chat header |
+| `bookmark`, `branch` | `⚑`, `⎇` | Folder picker jj bookmarks and Git branches |
+| `agentYou`, `agentRunning`, `agentPulse` | `◆`, `●`, `◉` | `/agents` graph: you, a running agent and its pulse |
+| `agentDone`, `agentIdle`, `agentPeer` | `✓`, `○`, `◇` | `/agents` graph: closed, idle and peer agents |
+
+```json
+{"brand": "\uf135", "branch": "\ue725", "callFailed": "\uf00d"}
+```
+
+Box drawing, rules, key-hint arrows, gauges and ellipses are structure rather
+than icons and stay fixed. This setting does not change the web UI.
+
+With Home Manager, set `programs.albedo.icons`. The module writes the JSON to
+the Nix store and sets `programs.albedo.environment.ALBEDO_ICONS_FILE` to it:
+
+```nix
+programs.albedo.icons = {
+  brand = "*";
+  callFailed = "x";
+};
+```
+
+The option checks only that values are strings; the CLI checks names and widths
+at startup, so a bad entry fails when the CLI starts, not at build time.

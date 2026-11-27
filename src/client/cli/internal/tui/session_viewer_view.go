@@ -450,7 +450,7 @@ func (m SessionViewer) row(item PickerItem, s daemon.Session, sec int, selected 
 	}
 	bar := " "
 	if selected {
-		bar = st(chrome.DefaultStyles.Agent).Render("▌")
+		bar = st(chrome.DefaultStyles.Agent).Render(chrome.Icon.Selection)
 	}
 	titleStyle := lipgloss.NewStyle()
 	if selected {
@@ -464,14 +464,14 @@ func (m SessionViewer) row(item PickerItem, s daemon.Session, sec int, selected 
 	}
 
 	if sec == secAction {
-		glyph, title, hint, fg := "✦ ", "New session", "in "+sessionText(filepath.Base(m.Workspace)), chrome.DefaultStyles.You
+		glyph, title, hint, fg := chrome.Icon.NewSession+" ", "New session", "in "+sessionText(filepath.Base(m.Workspace)), chrome.DefaultStyles.You
 		switch item.ID {
 		case "settings":
-			glyph, title, hint, fg = "◇ ", "settings", "connections and preferences", chrome.DefaultStyles.Muted
+			glyph, title, hint, fg = chrome.Icon.Settings+" ", "settings", "connections and preferences", chrome.DefaultStyles.Muted
 		case "archive":
-			glyph, title, hint, fg = "▤ ", "Archive", counted(len(m.archivedIDs), "session"), chrome.DefaultStyles.Muted
+			glyph, title, hint, fg = chrome.Icon.Archive+" ", "Archive", counted(len(m.archivedIDs), "session"), chrome.DefaultStyles.Muted
 		case "login":
-			glyph, title, hint, fg = "◇ ", "Accounts", "sign-ins", chrome.DefaultStyles.Muted
+			glyph, title, hint, fg = chrome.Icon.Accounts+" ", "Accounts", "sign-ins", chrome.DefaultStyles.Muted
 		}
 		titleWidth := min(ansi.StringWidth(title), cols.title)
 		return fill(bar + st(fg).Render(glyph) + st(lipgloss.NewStyle()).Render(" ") +
@@ -479,20 +479,20 @@ func (m SessionViewer) row(item PickerItem, s daemon.Session, sec int, selected 
 			st(chrome.DefaultStyles.Faint).Render(chrome.Cell("  "+hint, max(0, width-4-titleWidth), false)))
 	}
 
-	glyph, iconStyle := "· ", chrome.DefaultStyles.Faint
+	glyph, iconStyle := chrome.Icon.Item+" ", chrome.DefaultStyles.Faint
 	switch {
 	case editing:
-		bar, glyph, iconStyle = chrome.DefaultStyles.Prompt.Render("▌"), "✎ ", chrome.DefaultStyles.Prompt
+		bar, glyph, iconStyle = chrome.DefaultStyles.Prompt.Render(chrome.Icon.Selection), chrome.Icon.ItemEditing+" ", chrome.DefaultStyles.Prompt
 	case selected:
-		glyph, iconStyle = "◆ ", chrome.DefaultStyles.Agent
+		glyph, iconStyle = chrome.Icon.ItemSelected+" ", chrome.DefaultStyles.Agent
 	case sec == secPinned:
-		glyph, iconStyle = "★ ", chrome.DefaultStyles.Agent
+		glyph, iconStyle = chrome.Icon.ItemPinned+" ", chrome.DefaultStyles.Agent
 	case s.Moved != nil:
-		glyph = "↗ "
+		glyph = chrome.Icon.ItemMoved + " "
 	case s.MovePending != nil:
-		glyph, iconStyle = "↗ ", chrome.DefaultStyles.Warning
+		glyph, iconStyle = chrome.Icon.ItemMoved+" ", chrome.DefaultStyles.Warning
 	case warm(s, now):
-		glyph, iconStyle = "● ", chrome.DefaultStyles.Success
+		glyph, iconStyle = chrome.Icon.ItemActive+" ", chrome.DefaultStyles.Success
 	}
 	gap := st(lipgloss.NewStyle()).Render("  ")
 	title := st(titleStyle).Render(chrome.Cell(item.Label, cols.title, false))
