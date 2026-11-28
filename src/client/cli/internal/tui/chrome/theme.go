@@ -296,9 +296,9 @@ func KeyHints(hints ...Hint) string {
 		case h.Key == "":
 			parts[i] = DefaultStyles.Faint.Render(h.Does)
 		case h.Does == "":
-			parts[i] = key.Render(h.Key)
+			parts[i] = key.Render(HintKey(h.Key))
 		default:
-			parts[i] = key.Render(h.Key) + " " + DefaultStyles.Faint.Render(h.Does)
+			parts[i] = key.Render(HintKey(h.Key)) + " " + DefaultStyles.Faint.Render(h.Does)
 		}
 	}
 	return strings.Join(parts, DefaultStyles.Decor.Render(" · "))

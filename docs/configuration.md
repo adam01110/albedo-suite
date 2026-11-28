@@ -217,13 +217,15 @@ defaults. Restart the CLI to read a changed file.
 | `bookmark`, `branch` | `⚑`, `⎇` | Folder picker jj bookmarks and Git branches |
 | `agentYou`, `agentRunning`, `agentPulse` | `◆`, `●`, `◉` | `/agents` graph: you, a running agent and its pulse |
 | `agentDone`, `agentIdle`, `agentPeer` | `✓`, `○`, `◇` | `/agents` graph: closed, idle and peer agents |
+| `keyUp`, `keyDown`, `keyLeft`, `keyRight` | `↑`, `↓`, `←`, `→` | Arrow keys in footer key hints, such as `shift+↑↓` |
 
 ```json
 {"brand": "\uf135", "branch": "\ue725", "callFailed": "\uf00d"}
 ```
 
-Box drawing, rules, key-hint arrows, gauges and ellipses are structure rather
-than icons and stay fixed. This setting does not change the web UI.
+Box drawing, rules, gauges and ellipses are structure rather than icons and
+stay fixed. The arrow names apply to footer key hints; a few inline hints
+written as plain text, such as the effort selector's, keep upstream's arrows. This setting does not change the web UI.
 
 With Home Manager, set `programs.albedo.icons`. The module writes the JSON to
 the Nix store and sets `programs.albedo.environment.ALBEDO_ICONS_FILE` to it:

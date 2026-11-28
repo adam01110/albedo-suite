@@ -9,8 +9,8 @@ import (
 
 func saveIcons(t *testing.T) {
 	t.Helper()
-	icons, mark := Icon, PromptMark
-	t.Cleanup(func() { Icon, PromptMark = icons, mark })
+	icons := Icon
+	t.Cleanup(func() { UseIcons(icons) })
 }
 
 func TestIconsOverrideDefaults(t *testing.T) {
@@ -46,11 +46,14 @@ func TestIconsFileSelection(t *testing.T) {
 	if err := loadIcons(); err != nil || Icon != DefaultIcons {
 		t.Fatalf("missing default: %v", err)
 	}
+	if got := KeyHints(Hint{Key: "shift+↑↓", Does: "your messages"}); !strings.Contains(got, "shift+↑↓") {
+		t.Fatalf("default arrows changed: %q", got)
+	}
 	path := filepath.Join(dir, "albedo", "icons.json")
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte(`{"prompt": ">", "selection": "|", "brand": "A"}`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"prompt": ">", "selection": "|", "brand": "A", "keyUp": "k", "keyDown": "j"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := DetectInk(); err != nil {
@@ -58,6 +61,9 @@ func TestIconsFileSelection(t *testing.T) {
 	}
 	if PromptMark != "> " || !strings.Contains(SelectBar(), "|") || !strings.Contains(Brand("albedo"), "A") {
 		t.Fatalf("icons not applied: %q %q %q", PromptMark, SelectBar(), Brand("albedo"))
+	}
+	if got := KeyHints(Hint{Key: "shift+↑↓", Does: "your messages"}); !strings.Contains(got, "shift+kj") || !strings.Contains(got, "your messages") {
+		t.Fatalf("arrow keys not respelt: %q", got)
 	}
 	t.Setenv("ALBEDO_ICONS_FILE", filepath.Join(dir, "missing"))
 	if err := loadIcons(); err == nil {

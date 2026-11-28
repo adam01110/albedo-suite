@@ -9,14 +9,15 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 
 	"github.com/charmbracelet/x/ansi"
 )
 
 // Icons are the marks screens draw beside rows, calls, hosts and agents
 // (albedo-suite). Each is one terminal cell wide, because the layouts
-// around them count it as one. Box drawing, arrows in key hints, bars and
-// ellipses are structure, not icons, and stay fixed.
+// around them count it as one. Box drawing, bars and ellipses are
+// structure, not icons, and stay fixed.
 type Icons struct {
 	Brand     string `json:"brand"`
 	Prompt    string `json:"prompt"`
@@ -50,6 +51,11 @@ type Icons struct {
 	AgentDone    string `json:"agentDone"`
 	AgentIdle    string `json:"agentIdle"`
 	AgentPeer    string `json:"agentPeer"`
+
+	KeyUp    string `json:"keyUp"`
+	KeyDown  string `json:"keyDown"`
+	KeyLeft  string `json:"keyLeft"`
+	KeyRight string `json:"keyRight"`
 }
 
 // DefaultIcons are upstream's marks.
@@ -60,6 +66,7 @@ var DefaultIcons = Icons{
 	CallSucceeded: "✓", CallFailed: "✗", CallPending: "·",
 	HostConnected: "●", HostConnecting: "◌", HostLost: "○", Bookmark: "⚑", Branch: "⎇",
 	AgentYou: "◆", AgentRunning: "●", AgentPulse: "◉", AgentDone: "✓", AgentIdle: "○", AgentPeer: "◇",
+	KeyUp: "↑", KeyDown: "↓", KeyLeft: "←", KeyRight: "→",
 }
 
 // Icon is the set in use.
@@ -69,7 +76,16 @@ var Icon = DefaultIcons
 func UseIcons(icons Icons) {
 	Icon = icons
 	PromptMark = icons.Prompt + " "
+	arrowKeys = strings.NewReplacer("↑", icons.KeyUp, "↓", icons.KeyDown, "←", icons.KeyLeft, "→", icons.KeyRight)
 }
+
+// arrowKeys respells the arrows screens name keys with, such as "shift+↑↓".
+// Screens keep matching hints by upstream's spelling; only the drawn key
+// changes.
+var arrowKeys = strings.NewReplacer()
+
+// HintKey is a hint's key as drawn.
+func HintKey(key string) string { return arrowKeys.Replace(key) }
 
 // loadIcons reads $ALBEDO_ICONS_FILE, else the config directory's
 // albedo/icons.json when it exists, over the defaults.
