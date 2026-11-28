@@ -35,7 +35,7 @@ providers, skills and SOPS declarations stay in Infra.
 | [Zed provider](docs/zed.md) | Native hosted-model streaming with tool choice, thinking, effort and usage. |
 | [Provider availability](docs/provider-availability.md) | Disable or re-enable one account with Ctrl+T on the `/accounts` list, or a whole saved setup under advanced. |
 | [Usage profile](docs/usage-profile.md) | Add a `/usage` profile tab with lifetime stats, streaks and a year-long token calendar. |
-| [Session cost](docs/session-cost.md) | Estimate USD per session in the footer and session list, with a total over every stored session. |
+| [Session cost](docs/session-cost.md) | Estimate USD per session in the footer and session list, with a total over every stored session, optionally shown in another currency at ECB rates. |
 | [Quota display](docs/development.md#quota-display) | Show `/quota` readings as the share remaining rather than the share used. |
 | CLI resume | `albedo resume` without an ID reopens the root session with the newest reply in the current directory, skipping archived sessions, and fails when none has run there. |
 | [Vim editing](docs/vim.md) | Modal composer motions and edits, with the current mode in the footer. |

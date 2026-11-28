@@ -49,3 +49,22 @@ computed over the whole ledger regardless of the listing's filters.
 
 The footer shows only this estimate; `usage.spent` remains unchanged in the
 HTTP API and events.
+
+## Display currency
+
+Set `ALBEDO_CURRENCY` to an ISO 4217 code, such as `EUR`, to show the footer,
+session list, session total and `/status` spent amount in that currency. With
+Home Manager, set `programs.albedo.environment.ALBEDO_CURRENCY = "EUR";`. The
+daemon and HTTP API keep pricing in USD; only the CLI converts.
+
+The CLI converts at the European Central Bank's daily euro reference rates
+(`eurofxref-daily.xml`), cross-rated through the published USD rate. It caches
+the feed at `$XDG_CACHE_HOME/albedo/ecb-eurofxref-daily.xml` and fetches it
+again in the background when the cache is older than 12 hours; the ECB
+publishes once each working day. Until a rate is known, after a failed fetch
+with no cache, and for a code the ECB does not publish, amounts stay in USD
+with `$`. `EUR`, `GBP` and `JPY` show `€`, `£` and `¥`; other codes show
+the code and a space, such as `CHF 1.20`. An unset value, `USD` or anything
+that is not three letters keeps USD without fetching. The converted amount is
+still a catalog-rate estimate, not what a card statement shows. The web UI is
+unchanged.

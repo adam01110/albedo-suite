@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"unicode/utf8"
 
+	"albedo/cli/internal/currency"
 	"albedo/cli/internal/daemon/protocol"
 )
 
@@ -388,19 +389,21 @@ const (
 // FormatCharge writes an amount in the smallest form that keeps its meaning.
 // From one dollar up it shows two decimals, from one cent up three decimals,
 // and from a ten-thousandth of a dollar up four. An amount below that shows as
-// "<$0.0001", so a small amount never shows as $0.00.
+// "<$0.0001", so a small amount never shows as $0.00. The amount is shown in
+// the currency ALBEDO_CURRENCY names (albedo-suite), with the same cut-offs.
 func FormatCharge(usd float64) string {
+	amount, symbol := currency.Convert(usd)
 	switch {
-	case usd >= 1:
-		return fmt.Sprintf("$%.2f", usd)
-	case usd >= 0.01:
-		return fmt.Sprintf("$%.3f", usd)
-	case usd >= 0.0001:
-		return fmt.Sprintf("$%.4f", usd)
-	case usd > 0:
-		return "<$0.0001"
+	case amount >= 1:
+		return fmt.Sprintf("%s%.2f", symbol, amount)
+	case amount >= 0.01:
+		return fmt.Sprintf("%s%.3f", symbol, amount)
+	case amount >= 0.0001:
+		return fmt.Sprintf("%s%.4f", symbol, amount)
+	case amount > 0:
+		return "<" + symbol + "0.0001"
 	default:
-		return "$0"
+		return symbol + "0"
 	}
 }
 
